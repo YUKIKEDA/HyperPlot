@@ -35,6 +35,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | --- | --- | --- | --- |
 | F0 | 開発基盤（規約・スキル・ビルド設定・CI・テンプレート） | done | — |
 | D0 | 要件定義と設計 v1（requirements・design・decisions） | done | — |
+| D1 | 3D に耐える v1 の契約と、v1.x の 3D の計画 | done | [#3](https://github.com/YUKIKEDA/HyperPlot/issues/3) |
 | **A: データとヘッドレス描画の土台** | | | |
 | C1 | 列とチャンク（`Column<T>`、3 種のストレージ、暗黙の列、チャンクの統計） | not-started | |
 | C2 | LOD ピラミッドと区間の min / max、M4 の抽出（CPU） | not-started | |
@@ -64,7 +65,15 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | X1 | XylemUI のホスト | not-started | |
 | Q1 | 性能の受け入れの計測（要件 §5） | not-started | |
 | V1 | v1 の公開（NuGet、利用者向けの文書、サンプル） | not-started | |
-| **v1 の後** | | | |
+| **v1 の後: 3D（v1.x）** | | | |
+| K0 | 3D の設計（八分木・線の単純化・面の LOD・半透明の方式と、性能の仮説の確定） | not-started | |
+| K1 | 3D の座標系・カメラ・軸の箱・3D のインタラクション | not-started | |
+| K2 | 3D 散布（点群、八分木の LOD） | not-started | |
+| K3 | 3D の線（軌跡） | not-started | |
+| K4 | 面（z = f(x, y)、格子の LOD） | not-started | |
+| K5 | メッシュと半透明の合成 | not-started | |
+| K6 | ボリューム（レイマーチ、断面、等値面） | not-started | |
+| **v1 の後: ホストとバックエンド** | | | |
 | A1 | Avalonia のホスト | not-started | |
 | P1 | wgpu-native のバックエンド（Linux） | not-started | |
 | P2 | Metal のバックエンド（macOS） | not-started | |

@@ -13,4 +13,8 @@
 | 目盛り（G2） | Talbot, Lin, Hanrahan. "An Extension of Wilkinson's Algorithm for Positioning Tick Labels on Axes." InfoVis 2010 | 線形の目盛りの選び方 |
 | 大規模のプロットの製品 | SciChart の文書（Resampling、Performance tips）。ScottPlot の文書（SignalPlot、DataStreamer） | 利用者が期待する機能と API の形。速さの主張は製品の文書であり、読んだページを書いてから比べる |
 | WPF の組み込み（W1） | Microsoft Learn: `D3DImage`、「WPF and Direct3D9 Interoperation」。D3D11 の `GetSharedHandle` と D3D9Ex の `CreateTexture` の共有 | 共有テクスチャ、フロントバッファの喪失、ソフトウェア描画 |
+| 3D の点群（K2） | Schütz. "Potree: Rendering Large Point Clouds in Web Browsers." 修士論文, TU Wien, 2016 | 八分木の節点ごとの代表の点、点の予算 |
+| 3D の面（K4） | Losasso, Hoppe. "Geometry Clipmaps." SIGGRAPH 2004。Ulrich. "Rendering Massive Terrains using Chunked Level of Detail Control." 2002 | 格子の LOD と隙間の処理 |
+| 3D の半透明（K5） | McGuire, Bavoil. "Weighted Blended Order-Independent Transparency." JCGT 2(2), 2013 | 描く順によらない合成 |
+| ボリューム（K6） | Engel ら. *Real-Time Volume Graphics*. 2006。Lorensen, Cline. "Marching Cubes." SIGGRAPH 1987 | レイマーチ、伝達関数、等値面 |
 | テキスト（T1） | Microsoft Learn: DirectWrite（`IDWriteTextLayout`、`IDWriteGlyphRunAnalysis`、フォールバック） | 整形とラスタライズ |
