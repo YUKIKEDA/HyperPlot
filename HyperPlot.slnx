@@ -1,1 +1,8 @@
-<Solution />
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/HyperPlot.Core/HyperPlot.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/HyperPlot.Core.Tests/HyperPlot.Core.Tests.csproj" />
+  </Folder>
+</Solution>

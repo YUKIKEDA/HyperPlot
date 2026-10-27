@@ -1,0 +1,13 @@
+<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))" />
+  <PropertyGroup>
+    <!--
+      The zero-allocation tests read GC.GetAllocatedBytesForCurrentThread. When a background GC finishes its mark, the runtime
+      empties every thread's allocation context without taking the unused rest off the thread's count, so a test that allocated
+      nothing can count a few KB that another test's garbage caused (.cursor/rules/bench.mdc). Without concurrent GC
+      there is no background GC. The tests measure the code's allocations, which do not depend on the GC's mode; apps and
+      benchmarks keep the default.
+    -->
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+  </PropertyGroup>
+</Project>
