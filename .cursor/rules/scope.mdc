@@ -1,0 +1,25 @@
+---
+description: Scope is decided by requirements, not by effort; no half-shipped capabilities
+alwaysApply: true
+---
+
+# Scope
+
+The reason for a design choice is the library's goal and the requirements that realize it (`docs/requirements.ja.md`, `docs/design.ja.md` §0, §1, §11). Implementation volume and ease are not reasons. If a requirement cannot be met, recommend "do not build it" over a reduced version.
+
+Do not recommend a partial implementation because it is smaller or easier. If a split is real, the same decision names where the rest lives: a roadmap row with an ID and an Issue, or an entry under **Intentionally out of scope** (and design §12).
+
+Allowed splits:
+
+- A later row applies one capability to every host or GPU backend, and its roadmap row names it (WPF first, then XylemUI and Avalonia; D3D11 first, then Metal and wgpu-native).
+- An entire capability stays unshipped until the milestone where its requirements are met.
+
+Not allowed:
+
+- A public capability that one path supports and its pair does not, without a roadmap row. Examples: a box zoom that series honor and scatter ignores; a mark with a large-data path (§5.5) and no small-data path, or the reverse; streaming appends (§3.5) that the raw column takes and the LOD pyramid or the spatial tiles do not see; a GPU backend that implements the GPU abstraction (§5.2) for one resource kind only.
+- A published package whose behavior differs from `docs/design.ja.md` without the difference written there or in an ADR.
+
+```text
+# BAD — "density aggregation is hard on the GPU, so scatter draws the first 10 million points for now"
+# GOOD — scatter ships when density aggregation meets the requirements §5 at the named sizes, or the owner moves it to a row with an ID
+```

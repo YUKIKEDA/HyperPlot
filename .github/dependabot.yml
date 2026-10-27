@@ -1,0 +1,24 @@
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      analyzers:
+        patterns:
+          - "StyleCop.Analyzers"
+          - "Microsoft.CodeAnalysis*"
+      test:
+        patterns:
+          - "xunit*"
+          - "Microsoft.Extensions.TimeProvider.Testing"
+      benchmarks:
+        patterns:
+          - "BenchmarkDotNet*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

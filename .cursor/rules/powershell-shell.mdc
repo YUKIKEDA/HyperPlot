@@ -1,0 +1,59 @@
+---
+description: PowerShell-safe shell usage for git, gh, and dotnet on Windows
+alwaysApply: true
+---
+
+# PowerShell shell (Windows)
+
+The agent shell on this setup is PowerShell. Do not use bash-only constructs in it.
+
+## Forbidden in PowerShell
+
+- Heredoc: `$(cat <<'EOF' ... EOF)`
+- Unquoted git upstream: `@{u}` (PowerShell parses `@{...}` as a hashtable). Write `'@{u}'`.
+- `export FOO=bar`, bash arrays, `&&` chains that assume bash semantics for `$?`.
+
+## Use instead
+
+- Multi-line text for a commit: a here-string.
+
+```powershell
+git commit -m @"
+type(scope): subject
+
+body
+"@
+```
+
+  `git commit -F -` with a here-string does not work: PowerShell passes the text as an argument and git reads it as a pathspec. Use `-m` as above, or commit from Bash with a heredoc.
+- Long text for `gh`: write a temporary UTF-8 file and pass `--body-file`, then delete it (`.cursor/rules/scratch.mdc`).
+- Do not put `Remove-Item` in the same command as `$env:PATH += ';C:\Program Files ...'`: the agent's PowerShell tool reads `C:\Program` as the item to remove and refuses the whole command. Remove files in a separate call, or from Bash.
+- A command that holds `C:\Program Files (x86)\...` (the `vswhere` path a NativeAOT publish adds to `PATH`) and calls `Remove-Item` is refused by the same check as a removal of a system path, and none of it runs. Clean up in a command of its own.
+- A helper script (Python, a mutant patch, a data generator): write it to a file in the scratchpad first, then run it. Do not build it from a here-string piped to `Set-Content` in the same command that removes files: the tool can read a line break of the here-string as a path for `Remove-Item` and refuse the whole command.
+- Native commands set `$LASTEXITCODE`. Check it before the next step: `dotnet test ...; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`.
+- Variable names are not case-sensitive. A local `$low` is the parameter `$Low`: a loop that sets `$low` overwrites the parameter, and a measurement that depends on it does not end. Give locals names that differ from every parameter in more than case (`$fewer`, not `$low`).
+- Splatting one string (`& $app @args` where `$args` is `'--points'`) passes its characters one by one. Build arguments as an array: `[string[]]$arguments = @(...)`. Runs that drop their scene's arguments this way still produce figures, of the wrong scene.
+- Run `./build.ps1` in PowerShell 7 (`pwsh`, the agent's PowerShell tool), not Windows PowerShell 5.1 (`powershell.exe`): 5.1 has no `$IsWindows`, which the gate reads.
+- A scratch build that reads an environment variable is run from Bash, with `VAR=value cmd` and `env -u VAR cmd`. After `[Environment]::SetEnvironmentVariable(name, $null)` in PowerShell, child processes were seen to still get the variable (cause not traced), and runs meant to differ came out the same.
+- Quote paths with spaces. Prefer repository-relative paths, except for .NET methods: `[IO.File]::ReadAllText` and the like read a relative path from the process's working directory, not from `Set-Location`. Pass them an absolute path; otherwise a replacement in a worktree reads the main checkout's file and reports its text missing.
+- In Bash, `rm -rf "$DIR"/*` is refused by the agent's safety check, because an empty `$DIR` would make it `/*`. Write `"${DIR:?}"/*` or a literal path.
+
+## Writing files
+
+Write files with the editor tools, not with shell redirection. A Python script sent through the Bash tool loses the backslashes of `\f`, `\r`, `\t`, and `\v` in its string literals: a path such as `static\file.lib` does not match, and a carriage return is written into a path that held `\r`. Edit text that holds backslashes with the editor tool. A script that another script writes is written with the editor tool too: nested quoting fails in ways that only show after a long run, such as the byte 0 itself written in place of a C# escape, which builds and then makes `grep` take the file for a binary.
+
+After an edit by a script, count the control bytes in the files it wrote with `tr -cd '\000-\010\013\014\016-\037' < <file> | wc -c`; the count is 0. `grep -cP '[\x00-\x08\x0B\x0C\x0E-\x1F]'` counts no byte 0, so it misses the worst case.
+
+The Edit tool does not match a line that holds a `\uXXXX` escape in a C# string, in either form, and a Python script sent through Bash loses the backslash of `\\u` and does not run. Edit the ranges before and after the line, and write a script that holds such text to a file first.
+
+`Copy-Item` keeps the file's last write time, so an incremental build does not see a file put back from a copy and keeps the old output: a shader variant copied over the source is not built, and the other variant is measured. After copying a source file into place, set its time to now (`(Get-Item <file>).LastWriteTime = Get-Date`).
+
+```powershell
+# BAD — one string splatted: the app receives '-', '-', 'p', ...
+$args = '--points 100000000'
+& $app @args
+
+# GOOD
+[string[]]$arguments = @('--points', '100000000')
+& $app @arguments
+```

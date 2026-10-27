@@ -1,0 +1,19 @@
+---
+description: Do not leave scratch files, worktrees, or drafts behind
+alwaysApply: true
+---
+
+# Scratch files
+
+Remove, in the turn that made them: extra worktrees and checkouts, throwaway projects, profiler output (`*.diagsession`, `*.etl`, `*.nettrace`), GPU captures, generated data files, scripts, logs, and drafts of Issue or PR bodies. A gitignore entry is not a place to keep them.
+
+- The checkout that is already open is where edits go.
+- The only paths allowed to stay: build output (`bin/`, `obj/`, `artifacts/`), `BenchmarkDotNet.Artifacts/`, `TestResults/`, `.repos/` (shallow clones for reading upstream code, `docs/references.md`), and `.dev/` for the owner's local notes and the agent's worktrees. All are gitignored.
+- A script that writes scratch stops at its first failed command (`$ErrorActionPreference = 'Stop'`) and names its targets by absolute path.
+- Long text for `gh` goes through a temporary UTF-8 file that is deleted after the call.
+- A removal names its targets with a literal absolute path, or with `"${DIR:?}"` in Bash. `rm -rf "$DIR"/*` is refused by the agent's safety check and stops the whole command, the steps before the removal included (`.cursor/rules/powershell-shell.mdc`).
+
+```text
+# BAD — a 40 GB generated column file stays in the scratchpad "for the next run"
+# GOOD — the generator's command and seed go into the benchmark record; the file is deleted in the same turn
+```

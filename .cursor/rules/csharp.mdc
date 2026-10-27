@@ -1,0 +1,66 @@
+---
+description: C# style, naming, types, and API shape
+globs: "**/*.cs"
+alwaysApply: false
+---
+
+# C#
+
+Formatting is CSharpier's (`.cursor/rules/engineering.mdc`). This rule covers what a formatter cannot.
+
+## Style
+
+- Modern C# is allowed: `var` when the type is apparent on the right, collection expressions, target-typed `new`, primary constructors, file-scoped namespaces, `required` members, `ref struct`, `scoped`, `allows ref struct`.
+- Private fields are `_camelCase`, static ones included. Constants are PascalCase. No `this.` unless needed to disambiguate. Interfaces start with `I`.
+- Namespaces follow assembly names (`HyperPlot.Rendering.D3D11`, `HyperPlot.Wpf`), not folders. Core is the exception the design names: the types a user writes are all in `HyperPlot`, and the contracts a backend implements in `HyperPlot.Rendering` (design §2.1); Core's layers are folders, not namespaces.
+- One type per file by default. A file name matches its main type.
+- No `using` alias to shorten a BCL type name. Qualify the name where it collides.
+- Library `await` uses `ConfigureAwait(false)` except where the code must resume on the UI thread, which says so in a comment. `CancellationToken` is the last parameter.
+- A new overload goes above the XML docs and attributes of the member it joins, not between them and that member: put between `[MethodImpl(...)]` and a method, it takes the attribute from it.
+- No alignment component in an interpolated string (`{value, 4}`). CSharpier writes `{value, 4}` and StyleCop then reports SA1001, so the format check and the build cannot both pass; pad with `PadLeft` instead.
+- A property with a one-line getter and a setter of several lines does not pass the gate: CSharpier puts the getter on one line and SA1504 refuses accessors of mixed shapes. The setter is one line too, and calls a method that does the work.
+
+## Types
+
+Make an invalid state unrepresentable; do not document it away or catch it at run time.
+
+- One choice, one slot: an enum, a sealed record hierarchy, or a generic parameter, not a `bool` plus a nullable that the `bool` makes meaningless.
+- A parameter that belongs to one variant lives in that variant (a log scale's base lives in the log scale, not as a nullable on every scale).
+- Handles are distinct types (`Handle<T>`), so a series handle cannot be passed where a chunk handle is expected.
+- The `default` of a handle or id type never refers to a live value, so a zeroed field means "none" and cannot alias the first item. Start generations or ids at 1, and test `default` against the first allocated value. Stored links use that `default`, not `Nullable<Handle<T>>`, which adds a flag and padding.
+
+```csharp
+// BAD — the first slot is Index 0, Generation 0, which is also default(Handle<T>)
+return new Handle<T>(index, slot.Generation);   // Generation starts at 0
+
+// GOOD — a new slot starts at generation 1, so default is never alive (Handle<T>.IsNone)
+_slots[index].Generation = 1;
+```
+
+- A struct that a struct `T` holds cannot have a field of a generic type over `T` (`Handle<T>`): the runtime does not load `T` (`TypeLoadException`). Such a link is a field of `T` itself.
+- A method that cannot fail returns its value, not a `bool`/`out` pair or a nullable.
+- A public method does not throw because the caller used the wrong phase of the same type; split the type instead (a spec builder and the compiled spec it makes).
+- Core's implementation types are `internal`. The public surface is the one design §4.9 and §5.2 give: the spec model and its builders, the column types, and the contracts the backends and hosts implement.
+- A `global using` alias exists only inside its assembly. A public signature that uses it shows the real type to apps; decide the public name when the API is public.
+
+## Errors
+
+- Argument and state checks throw through `ThrowHelper` (`.cursor/rules/perf.mdc`), with one-sentence English messages that name the condition.
+- An internal invariant violation calls `Invariant.Fail` (debug: throws `InvariantViolationException`, so a test can observe it; release: `Environment.FailFast`, design §0.1). Never `Debug.Fail`: without a debugger attached it ends the process. It is not caught.
+- Public exception types are few and documented in the XML docs of the members that throw them.
+- A `catch` that runs cleanup which can throw keeps the exception it caught: when the cleanup throws too, throw an `AggregateException` with the caught exception first, then the cleanup's. The rule holds in benchmarks and tools too (a `Process.Kill` in a `catch`).
+- A comment that states how a runtime or OS API behaves names what was checked: the call, the version, and the result. What the documentation says and what a run showed are written apart.
+- A call that can fail by its result is checked: `Matrix3x2.Invert` returns `false` for a singular matrix and fills the result with NaN. A singular transform is a normal input (a zoom to a range of 0, an axis with one distinct value).
+- Work counted across threads counts the threads that fail to start: a `Thread.Start` that throws leaves its share undone, and a wait for the count never returns. Do that share on the calling thread.
+- One quantity computed in two places and compared (a bucket's bounds from the pyramid and from the raw data) is computed the same way in both, or compared with a tolerance whose size and reason are written beside it. The tolerance goes into every comparison of that quantity, and of two stages in a row, the later accepts twice the tolerance, so that their bounds do not meet.
+- A check that runs in Debug builds only does not change the state it checks: a check that reads through a cache must not fill the cache, or Debug and Release differ in memory and in what they compute.
+- A static value that threads share and that is made when first read uses `Lazy<T>` with `LazyThreadSafetyMode.ExecutionAndPublication`, not `??=`. With `??=`, two threads (a worker and the UI thread) can each make one, each with an id of its own.
+- A check on a combination of a positional record's members runs where the value is taken (a setter, a constructor's parameter), not in the record. `with` copies the value and sets members through `init`, and never calls the primary constructor, so a check there does not see `value with { ... }`; a check in `init` sees one member set before the other and refuses a valid result.
+
+## XML docs
+
+- Public members under `src/` have `summary`, and `param` / `returns` / `exception` when a caller might be unsure. Sentences end with a period. Properties start with "Gets" / "Gets or sets"; constructors with "Initializes a new instance of the <see cref="T"/> class".
+- XML docs state the caller's contract only. How it works lives in `docs/design.ja.md`; refer to the section instead of restating it.
+- Use `<inheritdoc />` when an implementation has the interface's contract.
+- A member that returns one shared instance of a public `IDisposable` says in its XML docs that callers do not dispose it.
+- Wording and terminology: `.agents/skills/english-writing/SKILL.md`.

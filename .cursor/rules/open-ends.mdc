@@ -1,0 +1,30 @@
+---
+description: A PR does not go out with work it names as not done, or a figure it cannot explain
+alwaysApply: true
+---
+
+# No open ends in a PR
+
+A PR is opened when its work is finished, not when it runs. These sentences do not belong in a PR body or in a report to the owner:
+
+- "The speed was not tuned." A PR that adds a frame-path or data-path stage (input handling, viewport change, LOD level selection, aggregation readout, draw IR build, GPU upload, compute dispatch, draw, compositing; or a worker pass such as a pyramid build, a tile build, an append) times its stages and counts its allocations before it is opened, tunes what stands out, and reports the numbers before and after (`.cursor/rules/bench.mdc`). What is left is stated with a number and the reason it stays.
+- "We take it that ..., not checked." A figure's explanation that one look can check is checked before it is written: a size that grew less than expected because a dependency was already linked is one search of the map file or the PDB.
+- "The cause is not confirmed." A figure the agent cannot explain (an allocation that the Zero-Alloc test reports, a pixel difference in a golden image, a benchmark that disagrees with its neighbors) is traced to its cause from the data before the PR is opened. A guess is not written as an explanation, with or without "probably".
+
+What is out of the row's scope is a roadmap row that names when (`.cursor/rules/defer.mdc`), not a caveat. A finding about code the row did not change becomes its own Issue at once (`.cursor/rules/pace.mdc`). "Not investigated" next to a figure is either an Issue that `main` shares or a row that owns it, never a line in the PR alone.
+
+A reason written as likely ("probably", 「と考えられる」) is checked first when a cheap check exists: reading values from a picture the PR kept, reading the data file, one more run. A reason that is half right (the same points, not the same order) is found only by the check.
+
+A size a record gives for a type is read from the type's definition (its fields' types, or `Unsafe.SizeOf`), not from what the field stands for: a field that "holds a reference" may be a 16-byte handle.
+
+A comment in the code is held to the same line: it says what was measured, and marks a cause that was not confirmed as not confirmed, with the Issue number.
+
+```text
+# BAD
+1 億点の M4 集約は詰めていません。1 フレームに 48 バイト確保されますが、おそらく JIT の初回コストです。
+
+# GOOD
+ビューポート変更時の LOD 選択とアップロードは 1 億点・幅 1,920 px で 0.84 → 0.31 ms。内訳を測るとチャンク索引の
+線形探索が 6 割だったので、二分探索に変えた。48 バイトの確保は Dictionary の列挙子のボクシングで、IEnumerable 経由の
+foreach を構造体の列挙子に変えて 0 になった（ウォームアップ後 1,000 フレームで確認）。
+```

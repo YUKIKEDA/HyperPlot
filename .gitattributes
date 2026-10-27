@@ -1,0 +1,11 @@
+* text=auto eol=lf
+*.cs text eol=lf
+*.md text eol=lf
+*.ps1 text eol=lf
+*.hlsl text eol=lf
+*.png binary
+*.ttf binary
+*.otf binary
+*.dll binary
+*.lib binary
+*.a binary

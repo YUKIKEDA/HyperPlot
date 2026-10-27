@@ -1,0 +1,83 @@
+<Project>
+  <!-- Shared settings for every project. Conventions: docs/conventions.md. Dependency rules: .cursor/rules/dependencies.mdc. -->
+  <PropertyGroup>
+    <TargetFramework Condition="'$(TargetFramework)' == '' And '$(TargetFrameworks)' == ''">net10.0</TargetFramework>
+    <LangVersion>14</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NeutralLanguage>en</NeutralLanguage>
+
+    <!-- Warnings are errors from the first commit (AOT / trim warnings must be zero, design §0.1). -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Features>strict</Features>
+
+    <!-- Deterministic builds; CI paths are normalized for Source Link. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- Library code does not depend on the current culture (design §0.1). Tests and samples run with invariant globalization. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <IsPackable>false</IsPackable>
+
+    <!-- net10.0-windows projects (the D3D11 backend, the WPF adapter) build on every OS; their tests run on Windows only (build.ps1). -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+
+    <_HyperPlotRelativeDir>$([MSBuild]::MakeRelative('$(MSBuildThisFileDirectory)', '$(MSBuildProjectDirectory)').Replace('\', '/'))</_HyperPlotRelativeDir>
+    <HyperPlotIsSrcProject>false</HyperPlotIsSrcProject>
+    <HyperPlotIsSrcProject Condition="$(_HyperPlotRelativeDir.StartsWith('src/'))">true</HyperPlotIsSrcProject>
+    <HyperPlotIsTestProject>false</HyperPlotIsTestProject>
+    <HyperPlotIsTestProject Condition="$(_HyperPlotRelativeDir.StartsWith('tests/'))">true</HyperPlotIsTestProject>
+  </PropertyGroup>
+
+  <!--
+    Libraries under src/ ship as NuGet packages and must be AOT compatible.
+    HyperPlot.Wpf is the exception: WPF cannot be NativeAOT-published, so its project file sets IsAotCompatible to false itself
+    (.cursor/rules/aot.mdc). A project file is read after this file, so its value wins.
+  -->
+  <PropertyGroup Condition="'$(HyperPlotIsSrcProject)' == 'true'">
+    <IsAotCompatible>true</IsAotCompatible>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IsPackable>true</IsPackable>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <Authors>YUKIKEDA</Authors>
+    <Copyright>Copyright (c) 2026 YUKIKEDA</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/YUKIKEDA/HyperPlot</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/YUKIKEDA/HyperPlot</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(HyperPlotIsTestProject)' == 'true'">
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(MSBuildProjectExtension)' == '.csproj'">
+    <PackageReference
+      Include="StyleCop.Analyzers"
+      PrivateAssets="all"
+      IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive"
+    />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)stylecop.json" Link="stylecop.json" />
+  </ItemGroup>
+
+  <!--
+    Banned APIs for the engine (design §8.3, .cursor/rules/perf.mdc, .cursor/rules/aot.mdc).
+    HyperPlot.Wpf and HyperPlot.Testing own real clocks and threads (the WPF dispatcher and its rendering events, the test
+    clock), so they are exempt.
+  -->
+  <ItemGroup Condition="'$(HyperPlotIsSrcProject)' == 'true' And '$(MSBuildProjectName)' != 'HyperPlot.Wpf' And '$(MSBuildProjectName)' != 'HyperPlot.Testing'">
+    <PackageReference
+      Include="Microsoft.CodeAnalysis.BannedApiAnalyzers"
+      PrivateAssets="all"
+      IncludeAssets="runtime; build; native; contentfiles; analyzers; buildtransitive"
+    />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" Link="BannedSymbols.txt" />
+  </ItemGroup>
+</Project>

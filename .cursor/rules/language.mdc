@@ -1,0 +1,34 @@
+---
+description: Which text is English and which may be Japanese
+alwaysApply: true
+---
+
+# Language
+
+Reports and replies to the owner in chat are in Japanese: the end-of-turn report, answers to questions, and the questions put to the owner. Identifiers, file names, and quoted English text stay as they are. The owner asked for this after reports came in English and had to be asked for again.
+
+## English
+
+- Code: identifiers, XML docs, inline comments, shader source and its comments, exception and diagnostic messages, `BannedSymbols.txt` messages.
+- Tests: method names, `summary` and `remarks`, assertion and skip messages.
+- Commit subjects, PR titles, the `type` and `scope` of both, and the PR template headings.
+- `.cursor/rules/`, `.agents/skills/` written in this repository (and their `.claude/skills/` copies), `.github/` templates, `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, `SECURITY.md`, `CHANGELOG.md`.
+- `README.md` and package descriptions.
+
+Before writing XML docs or comments, read `.agents/skills/english-writing/SKILL.md`. When a review corrects wording, add the general rule there in the same change.
+
+## Japanese is allowed
+
+- The requirements, the design, and the documents next to them: `docs/requirements.ja.md` (canonical requirements), `docs/design.ja.md` (the canonical spec), `docs/design-decisions.md`, `docs/roadmap.md`, `docs/references.md`, `docs/conventions.md`, `docs/adr/`, `README.ja.md`. An English design is a roadmap row, not kept in sync before then.
+- Issue bodies, PR bodies (below the English headings), commit bodies, and review replies.
+- Test data that is Japanese or another script on purpose (axis titles and tick labels in CJK or Arabic for the text path, §5.6). Explain it in an English comment next to it.
+- `.agents/skills/natural-japanese/` (vendored; do not edit).
+
+## Japanese writing
+
+Japanese documents use plain form (常体), keep identifiers and code in English, and are checked with `.agents/skills/natural-japanese/` by someone other than their author when they are published.
+
+```text
+# BAD — /// <summary>列のチャンクを返す。</summary>
+# GOOD — /// <summary>Returns the chunk of the column that holds the row.</summary>
+```

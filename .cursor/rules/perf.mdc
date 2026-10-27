@@ -1,0 +1,97 @@
+---
+description: Hot-path rules for the frame path and the data path - allocation, data-size bounds, dispatch, inlining, buffers, layout in memory
+alwaysApply: true
+---
+
+# Performance rules
+
+The hot path is the frame path (`docs/design.ja.md` §5, §6, §8): input dispatch (pan, zoom, hover, selection), the viewport change, LOD level selection, the readout of aggregated buffers, the draw IR build (§5.1), GPU upload, compute dispatch, draw, layer compositing (§5.4), and present. Building a column, a pyramid, or a tile index, and compiling a spec, may allocate; the steady-state frame does not.
+
+These rules come from the shape of Cysharp's R3, ZLinq, ZString, MemoryPack, and MagicOnion (read in `.repos/`), applied to this library. A claim that a rule was followed is a measurement, not a reading of the code (`.cursor/rules/bench.mdc`).
+
+## Bounded by pixels, not by data
+
+- Per-frame GPU upload is bounded by the viewport's pixel count (and the series count), not by the data size (design §11, invariant 2). A frame uploads what the plot area can show (one bucket per pixel column for a series, one cell per pixel for a density) or what changed; the raw data reaches the GPU once, when it is loaded or appended, and stays there or in the pyramid (§5.5).
+- No O(N) pass over the data on the frame path, where N is the number of points. A frame reads the pyramid level or the tiles that the viewport selects, with an index found by binary search or arithmetic, not by a scan. O(N) work (building a pyramid level, a tile index, a density at a new resolution, a sort) runs on workers, produces a new version, and the frame reads the newest finished version while the next one is built (§3.3, §3.4, §8).
+- A benchmark of a frame-path stage measures it at two data sizes an order of magnitude apart (for example 10^7 and 10^9 points) at the same viewport. A time that grows with the data size is an O(N) pass to find.
+- A worker's result is versioned (design §8.1, invariant 4): a reader names the version it holds, a writer never changes a version a reader may hold, and a version is freed only when no reader holds it.
+
+## Allocation
+
+- The frame path does not allocate in steady state. The Zero-Alloc tests (design §10) assert it; an allowed exception needs an Issue and a design entry.
+- No LINQ, `params` arrays, `string` concatenation or interpolation into `string`, boxing (`object` parameters, non-generic interfaces on structs, `Enum.HasFlag` on old paths, `foreach` over an interface), or lambdas that capture on the frame path. A `static` lambda is fine: its delegate is cached.
+- `foreach` over a `List<T>` field goes through `CollectionsMarshal.AsSpan`; over a `Dictionary` it uses the struct enumerator directly, never `IEnumerable<T>`.
+- A cache or pool that grows on demand has a hard upper bound and a counter of the requests it refused at the bound. Its steady-state limit is not enough: a caller that never starts a new frame, or a viewport that keeps zooming into new levels, would grow it without end.
+- A pool's demand follows what is held at once, not what a frame asks for in all: a user gives an item back when it is done with it, and a later user of the same frame takes it. A GPU resource that a draw has just read is not drawn into by the next draw: that waits for the read. Two resources take turns, and the PR measures the GPU time of each choice.
+- A resource the frame path makes when it needs one (a layer's texture, a larger upload buffer) goes to the path of degradation when the device has no memory for it (`E_OUTOFMEMORY`), as when the pool is at its limit; it does not throw in the middle of writing a frame. A lost device and other failures still throw. A test replaces the function that makes the resource to fail.
+- Buffers that live across frames are owned and reused: reset the used length, grow only when full. Short-lived scratch comes from `ArrayPool<T>.Shared` or `stackalloc` (fixed small size only), and is returned in a `finally`. Scratch for runs that nest comes from a per-thread stack of its own, given back in a `finally`: `ArrayPool<T>.Shared` keeps one array of a size on a thread, so a nested array goes to the pool's shared stacks, and a `Return` in the steady state was measured to allocate now and then on the CI runners. Clear a returned array only when `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`.
+- A `[ThreadStatic]` scratch buffer may back a builder that is disposed before the method returns (ZString, MagicOnion). In debug builds the rent takes the buffer out of the slot, so nested use throws instead of corrupting it.
+- Static data is a `ReadOnlySpan<byte>` (read wider values with `BinaryPrimitives`). A `ReadOnlySpan<ushort>` or `ReadOnlySpan<uint>` of constants points into the executable's data only in Release: a Debug build makes an array at each read, so a Zero-Alloc test fails in Debug alone.
+- A step added to a path that runs on every data change or every viewport change (an append, a zoom) is timed on that path in the PR, before and after.
+- An `async` API on a repeated path returns `ValueTask` backed by a pooled `IValueTaskSource` (`ManualResetValueTaskSourceCore<T>`), not a new `Task` each time.
+
+## Order of work and conversions
+
+- Work that can be refused is done after it is accepted: a tile is aggregated after the cache has room for it, not before.
+- An unsigned integer becomes a `float` through `int` (`(float)(int)value`) where the value fits: x64 has no instruction from an unsigned integer to a float, and the conversion showed in profiles of a scaler.
+- Data values become `float` for the GPU only as a difference from an origin, computed in `double` (design §3.6, invariant 6): a `float` holds 24 bits, so a timestamp or a value far from 0 loses whole pixels when converted as it is.
+
+## Collections of subscribers and handles
+
+- A subscriber list that changes during notification is an intrusive linked list whose node is the subscription itself (R3 `Subject`): no separate `IDisposable` per subscription, O(1) removal, and a version stamp so nodes added during a notification are skipped without copying the list.
+- An add/remove set keyed by slot uses a free list: removal nulls the slot, the index is the removal key, and the next add reuses the first empty slot (R3 `FreeListCore`). Do not use `ImmutableArray` or copy-on-write arrays for lists that change at run time.
+- A fixed small number of items is held in fields, not an array (R3 `Disposable.Combine` up to eight).
+
+## Dispatch and generics
+
+- No interface or virtual dispatch per element (per point, per bucket, per tile) on the frame path or in a worker's inner loop. Dispatch once per call (a `switch` on a type tag, a sealed class hierarchy matched once), or use a generic method constrained to a struct (`where T : struct, IFoo`) so the JIT and NativeAOT specialize it.
+- A feature that most frames do not use gets a copy of the loop without it: a struct with a `static abstract` flag, chosen once per call. Then the copy's functions are compared with the loop before, instruction by instruction (`dumpbin /disasm`, as in `bench.mdc`). The native compiler may not inline small generic helpers, a struct copied into a local can call `Memmove`, and values kept across a call cost saved XMM registers; each shows only in the disassembly.
+- Per-type data is a `static class Cache<T>` field, filled by generated code or a static constructor without reflection, never a `Dictionary<Type, ...>` lookup on the frame path. JIT-constant checks (`typeof(T) == typeof(double)`, `RuntimeHelpers.IsReferenceOrContainsReferences<T>()`) choose fast paths at no cost.
+- A struct walker over a tree (`ITraverser`-style, ZLinq) iterates without allocating; its explicit stack comes from a pool and is returned on `Dispose`.
+- Iteration over a sequence the library owns uses a single `TryGetNext(out T)` call per element rather than `MoveNext` + `Current` (ZLinq).
+
+## Fast path and slow path
+
+- Throwing lives in a separate method marked `[DoesNotReturn]` (and `[StackTraceHidden]` when the frame is noise), so the caller stays small enough to inline. Throw helpers in this repository are `ThrowHelper.*`.
+- Rare work (growing a buffer, mapping a new chunk) lives in a `[MethodImpl(MethodImplOptions.NoInlining)]` method; the common check stays inline (MemoryPack `GetSpanReference` / `RequestNewBuffer`).
+- A shader on the frame path does not branch on a value of the pixel or of the instance; it chooses with a conditional value (`a ? b : c` on values both computed). A branch was measured to cost GPU time even when every pixel of an instance took the same way, and with `[branch]`; a temporary variant with one side emptied tells the cost of the branch from the cost of the code in it.
+- A variant of a shader is the same source compiled with a macro (`#ifdef`), and the variant without the macro is checked to be the shader's machine code before the change (`D3DDisassemble`). A `bool` parameter folded to `false` is not the same: the compiler can order the instructions differently.
+- A new kind of mark gets a shader of its own, and its values a stream of their own, not fields in a record the frame path already writes. Code in a shader slows every pixel it draws even where no pixel takes it, and a larger record makes every existing mark clear and write more.
+- `[MethodImpl(MethodImplOptions.AggressiveInlining)]` only where a measurement shows an effect, and the PR says which.
+- A writer over a buffer may be a `ref struct` holding a `ref` field and a remaining length instead of a `Span` field (MemoryPack `MemoryPackWriter`). Bounds are checked once per reservation, not per byte.
+
+## Memory layout
+
+- Data read together is stored together. Columns are SoA: one array per column, cut into chunks (design §3.1, §3.2); a pyramid level stores its minimums and maximums the way its reader walks them (§3.3). GPU-bound data is SoA and copied with `MemoryMarshal.AsBytes`.
+- A chunk starts at the alignment the design gives it, so a vector load and a GPU copy of it need no realignment, and its length is the one the design fixes. Code that reads a chunk does not assume a stronger alignment or another length than the design's; a test covers the last, partial chunk.
+- Unmanaged structs that cross to native code or the GPU have `[StructLayout(LayoutKind.Sequential)]` and the packing the shader's buffer expects (16-byte rows for constant buffers); others may use `LayoutKind.Auto`.
+- A field added to a struct on the frame path goes where the struct has padding, with `Unsafe.SizeOf` read before and after. A 4-byte field before an array of entries can add 8 bytes to every item and slow the pass that walks them.
+- The size of a class's instance is measured by what making one allocates (`GC.GetAllocatedBytesForCurrentThread` before and after); `Unsafe.SizeOf<T>` of a class is the size of a reference, 8 bytes.
+- A function that every item calls (one per series, per tile, per mark) keeps the locals of its rare paths out of its own frame when they hold references: NativeAOT zeroes such locals on each call. Move the rare paths to a `NoInlining` method that ordinary items do not call, and compare the frames with `dumpbin /disasm` (the `sub rsp` and the registers saved).
+- A design that wraps a user's callback on the frame path (running a handler in a scope) says how the wrapping allocates nothing. A lambda around the handler makes a closure per event, and a lambda cannot capture an `in` argument.
+- A frame's first call runs with cold caches, where a field it reads costs a miss and a field it only writes does not. State that only a slow path uses lives in an object of its own, and a table that is usually empty is emptied when it is next used, not read every frame to see whether it is.
+- A cache that each of many items holds keeps the keys it is looked up by, and the values a hit returns, in the cache's own object (an `InlineArray`), not in its entries, so that a hit reads no entry.
+- A fast form with a limited range is checked against the range the design allows for the value before it goes in. Rounding by adding and taking away 1.5 × 2^23 is exact only below 2^22, which large data coordinates pass. A rounding on the frame path is measured in the NativeAOT build (`MathF.Round` against SSE4.1's `RoundToNearestIntegerScalar`), with the scalar path kept and a test that compares them bit for bit.
+- A loop over items on the frame path reads only what it needs, and work for a part the change did not touch stays constant: a hidden series or a facet out of view is not walked.
+- A check per item for a feature that most items do not use reads a flag set when the feature is set, and comes after the test that most items take.
+- A `ref` into a growable buffer or a mapped chunk is never held across an operation that can grow the buffer or unmap the chunk (design §11).
+- `MathF.Min` and `MathF.Max` order NaN and -0, about 13 instructions each in NativeAOT. Where that order does not matter, a comparison (`a < b ? a : b`, one `minss`) is used. Where NaN in the data does matter (a min/max over a bucket), the design says what a NaN does, and the fast form keeps it.
+- A comparison on the frame path does not use the generated `==` of a record struct: it goes through `EqualityComparer<T>` field by field and is not inlined. Compare the fields directly.
+- The frame path does not read a buffer mapped for writing (`D3D11_MAP_WRITE_DISCARD`): it is write-combined and slow to read. Compute a value before writing it, not by reading it back.
+- Explicit SIMD (`Vector128<T>`, `Vector256<T>`, `Vector<T>`) only where a measurement shows the path is the bottleneck, with a scalar path that gives the same result, and a test that compares them.
+
+## Claims
+
+A speed or memory improvement is claimed with numbers against a named baseline, at named data and viewport sizes (`.cursor/rules/bench.mdc`). Not with a hunch, an IL reading, or a micro-benchmark of a different path.
+
+```csharp
+// BAD — allocates a closure, a delegate, an enumerator, and a list every frame, and walks every point
+var visible = series.Points.Where(p => p.X >= view.MinX && p.X <= view.MaxX).ToList();
+
+// GOOD — no allocation; the work is bounded by the pixel columns of the plot, not by the points
+var level = pyramid.LevelFor(view.MinX, view.MaxX, plotWidthInPixels);
+foreach (ref readonly var bucket in level.Range(view.MinX, view.MaxX))
+{
+    // write the bucket's minimum and maximum into the frame's upload buffer
+}
+```

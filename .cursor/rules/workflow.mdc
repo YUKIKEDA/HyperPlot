@@ -1,0 +1,84 @@
+---
+description: Order of work, Issues, branches, PRs, who merges, and the retrospective
+alwaysApply: true
+---
+
+# Workflow
+
+```text
+Grill (when the design branches) → Issue → branch → work → PR → human review → squash merge → retrospective
+```
+
+1. Grill when the API, the meaning, or a roadmap boundary branches. Skill: `.agents/skills/grilling/SKILL.md`. Skip it when the Issue already has acceptance text and `docs/design.ja.md` settles the question.
+2. One Issue is one PR. Create the Issue from a template in `.github/ISSUE_TEMPLATE/`. Blank issues are off.
+3. A change to the meaning of the design is a `design` Issue that updates `docs/design.ja.md` before any implementation Issue (`.cursor/rules/design-docs.mdc`). A change to a requirement updates `docs/requirements.ja.md` in the same way, first.
+4. Acceptance text lives on the Issue. `docs/roadmap.md` keeps ID, title, Issue, and status only. A spike's result goes into the `## Result` section of the Issue body (`gh issue edit --body-file`), with the evidence table and the reproduction commands, before the PR is called ready. A comment on the Issue does not fill it.
+   - The PR also sets its roadmap row to `done` and moves the roadmap's current-row marker (**今**) to the next row before it is called ready, a PR stacked on another one included. A PR left at `in-progress`, or a row set to `done` with the marker still on it, is not ready.
+   - When the owner picks the next row out of the table's order, the PR that starts that row (its design PR) also moves the row to its place in the table, so that the table's order stays the order of work.
+   - An acceptance figure says what it measures and how, and is one that the compared libraries can meet. The bound of a rounding or a tolerance is not a quantity measured from pixels or timings.
+5. Branch from `main`: `type/<issue-number>-<slug>`, for example `feat/12-column-chunks`. `type` is a Conventional Commits type.
+6. Open the PR in the same turn that the branch is pushed. Use `.github/pull_request_template.md` (`.cursor/rules/pull-requests.mdc`). `Closes #N` stands alone on a line under `## Related` (`.cursor/rules/github-closing.mdc`).
+   - Before calling a PR ready, and before answering a review, read the checks of the pushed head (`gh pr checks <n>`): a local `./build.ps1` does not run on the runners, and the Linux runner runs code paths the local gate does not.
+   - A PR that shows no checks is first checked for a conflict with `main` (`gh pr view <n> --json mergeable`): the pull_request workflow does not run on a conflicting PR, and a run started by hand (`gh workflow run`) does not show as the PR's checks.
+   - After a job is run again, its result is read by the run's attempt (`gh api repos/{owner}/{repo}/actions/runs/<id>` gives `run_attempt`, and `.../attempts/<n>/jobs` the jobs of one). Read right after asking for the rerun, the job still shows the attempt before, and one attempt's success is easily taken for the next one's.
+7. A human reviews and squash-merges. An agent merges only when the owner names the PR and orders it (「#N のコンフリクトを修正してマージしてください」); it squash-merges after the checks pass, with one message in the form of `.cursor/rules/conventional-commits.mdc`.
+8. After the merge, delete the local and remote branch. After stacked PRs are squash-merged, `git merge-base --is-ancestor` cannot show that a commit reached `main` (the squash made a new commit); search `main` for what the last commit changed instead.
+9. Retrospective, below, before the next feature branch.
+
+## Issue templates and labels
+
+Labels have the form `<axis>:<value>`. The only axis today is `type`.
+
+| Template   | Label           | Commit / PR type           |
+| ---------- | --------------- | -------------------------- |
+| `feat`     | `type:feat`     | `feat`                     |
+| `spike`    | `type:spike`    | `chore` (code is scratch)  |
+| `bug`      | `type:bug`      | `fix`                      |
+| `refactor` | `type:refactor` | `refactor`                 |
+| `test`     | `type:test`     | `test`                     |
+| `design`   | `type:docs`     | `docs`                     |
+| `task`     | `type:chore`    | `chore` / `build` / `ci`   |
+
+## Gates
+
+- `./build.ps1`: tool restore, CSharpier check, restore, then Release and Debug builds with warnings as errors, each followed by every `tests/**/*.Tests.csproj`.
+- The NativeAOT publish check runs where the Issue names it (`.cursor/rules/aot.mdc`).
+- Benchmarks are not a gate. The Zero-Alloc tests are (`.cursor/rules/bench.mdc`).
+- After each merge, read `main`'s CI. A red `main` gets its own Issue and PR before the next merge.
+
+## Forbidden
+
+- Starting implementation without an Issue number and a branch.
+- Treating a roadmap title, or a file under `.dev/`, as permission to code.
+- Copying acceptance text onto the roadmap.
+- Adding or removing roadmap rows, or touching **Intentionally out of scope**, without a Grill. A row that a measurement shows to be needed is put to the owner as a question with a recommendation before the PR, not added inside it.
+- Merging. Closing an Issue or PR without an order that names it.
+- Ending a turn on a branch that has no Issue and no PR.
+
+## Numbers
+
+Create an Issue before its number is written anywhere: a branch name, a commit, a PR body, an ADR. Issue and PR numbers share one sequence; the next one is not predictable.
+
+```text
+# BAD — write `Closes #8` into the body, then create the Issue, which gets #9
+# GOOD — create the Issue, read its number from the output, then write the body
+```
+
+## Stacked PRs
+
+A second Issue that builds on an open PR gets its own branch and PR based on the first. A stacked PR is merged only after its base has merged. When the base merges, retarget the next PR to `main` first, then delete the merged branch.
+
+## Retrospective
+
+After a squash merge, in the turn that learns of it, write three points as a comment on the merged PR. Write "none" when a point is empty.
+
+1. A lesson for `.cursor/rules/`, a skill, `docs/design.ja.md`, or one ADR under `docs/adr/`. Tacit knowledge the work relied on is a lesson: a way of measuring, a way a tool fails on this setup, a mistake the review or the owner had to catch.
+2. The Issue that will carry it, if any.
+3. Whether to refactor. Yes opens a `refactor` Issue that comes next. Postponing it needs a roadmap row (`.cursor/rules/defer.mdc`).
+
+Then, without waiting for an ask, file a `chore` Issue and one PR that writes each lesson into the file it names. The next feature branch waits until that PR is open.
+
+```text
+# BAD — the PR merged; the next row starts; what the row taught stays in the conversation
+# GOOD — the PR merged; three points on it; a chore PR with the lessons is open; then the next row
+```

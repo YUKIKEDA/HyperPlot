@@ -1,0 +1,29 @@
+---
+description: Deferral is an exception and must be a named roadmap row
+alwaysApply: true
+---
+
+# Deferral
+
+Deferral is an exception. Do not ship "temporary", "for now", "until v1", or "in a later Issue" unless a roadmap row with an ID names the work, the item is under **Intentionally out of scope** in `docs/roadmap.md`, or the design names the phase.
+
+A row says when. A promise to file an Issue later does not.
+
+Before saying that work stays in its row, find that row's ID in `docs/roadmap.md`, and read that the row's text names the work. A sentence of the design that defers is held to the same: "the row that adds X" is not a row until it has an ID. When the row a contract waits for does not exist, the work goes into a row before the sentence is written: into an existing row whose subject it is, or into a new row put to the owner (`.cursor/rules/workflow.mdc`).
+
+A recommendation to drop or defer work is not argued from what its result would be. "The measurement will not change the decision" is a result nobody has; the work exists to find it out. What may be put to the owner is what the work costs and what it is for.
+
+A row that is `done` did everything its design section gives it. Before a row is closed, search `docs/design.ja.md` for its ID and title.
+
+Not allowed:
+
+- "Temporary until the next milestone" when that milestone's row does not name the split.
+- Closing a milestone while a temporary gap is still in the code.
+- A `TODO` comment that stands in for a roadmap row.
+
+When a row becomes `done` or moves out of scope, search `docs/`, the READMEs, and `.cursor/rules/` for its title and keywords, and rewrite stale "until X" text in the same PR.
+
+```text
+# BAD — "Hover on scatter waits for the interaction row." (no such row exists)
+# GOOD — "Hover on scatter is row I3 (#41)." (the row exists, and its text names scatter hover)
+```

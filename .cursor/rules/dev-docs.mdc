@@ -1,0 +1,23 @@
+---
+description: Figures and math in the design documents
+globs: "docs/**/*.md"
+alwaysApply: false
+---
+
+# Figures and math in the design
+
+- Figures: a fenced `mermaid` block. No ASCII-art diagrams. A directory tree or a code signature in a code block is not a diagram.
+- Math: inline `$...$`, display `$$...$$`. Do not use `\(` or `\[`. Do not put `$` inside a code block.
+- A new formula does not reuse a symbol defined nearby with another meaning ($N$ for the points and $W$ for the plot width in pixels stay what they are wherever they appear).
+- An ordered list (the frame stages, the steps of a resize, the levels of a pyramid build) is written in one place. A section that adds to it names the steps it follows and points back.
+- Code in the design is C# pseudo-code that follows `.cursor/rules/csharp.mdc` naming, so it can be copied into an implementation without renaming.
+- Japanese prose is plain form (常体). Do not run the `natural-japanese` rewriting on code or formulas.
+
+````text
+# BAD — a box-and-arrow drawing of the frame stages in a plain code block
+# GOOD
+```mermaid
+flowchart LR
+  Input --> Viewport --> Lod[LOD selection] --> Upload --> Draw --> Present
+```
+````

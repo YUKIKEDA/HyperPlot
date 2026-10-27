@@ -1,0 +1,30 @@
+---
+description: Checks and tests implement the design's full statement, not a necessary condition of it
+alwaysApply: true
+---
+
+# Checking the design's statements
+
+A check or a test that stands for a statement in `docs/design.ja.md` implements the whole statement, not a necessary condition of it.
+
+- Every documented contract has a code path and a test. A sentence with no code behind it is a defect.
+- Before the PR, list each contract sentence the PR adds to `docs/design.ja.md` next to the test that checks it. Sentences a PR writes itself (an order of a queue, a count taken at the call, each case of a method, a continuation that throws) are the ones most often left with no test.
+- An API that runs the caller's code (an event handler, a data source callback, a custom formatter, a hit-test callback) is tested with that code doing what it may do to the same subsystem: change the spec or the data it is called for, remove itself, add another of its kind, throw. A callback that throws must not lose the other work of the same pass.
+- A walk up a tree (layers, facets, the spec's nesting) stops at the root the tree names, not at the first node without a parent: nodes are built before they are attached.
+- A rejection in `docs/design-decisions.md` whose reason is behavior ("an aggregation per frame over the raw data misses the budget at 10^9 points") has a test or a benchmark that fails when the rejected option is put in its place.
+- When the design fixes an order (the frame stages, the resize steps, the disposal order, the error priority), test it with one input that fails two adjacent steps and assert the first.
+- When the design fixes a state machine (a data source's load states, a worker job's states, a device's lost and restored states), test every transition it lists and one transition it does not allow.
+- A test of an invariant (§11) includes the input that would break it: a stale handle, a chunk read after its file is unmapped, a version read from a worker that has moved on, a call from the wrong thread.
+- A fixed-size buffer on a path every frame takes has a test above its capacity.
+- A comparison removed from a key as the same as another is shown to have no input where the two differ, or it stays.
+- When a statement lists the values a mechanism covers (column types, mark kinds, scale kinds), each value has a test on an input where the other values' paths do not run.
+- When a design statement changes, search `docs/`, the READMEs, `.cursor/rules/`, and XML docs for every restatement and update them in the same PR.
+- A result that the design matches to a reference (M4's equivalence with drawing the raw line, a tick algorithm, a color scale's interpolation, the density of a scatter against counting the points) is tested at the reference's corner cases: NaN and infinities in the data, a value past the scale's range, a pixel column with one point and one with none, a chunk boundary inside a pixel column, the last partial chunk, a viewport smaller than one bucket, and the input where the cases of a formula meet.
+- Before a PR says "every X does Y" (every mark kind has a large-data path, every GPU resource is released on device loss), search the whole solution for X. The PR's test plan names the search and the exceptions.
+
+```text
+BAD:  "M4 keeps the first, last, minimum, and maximum point of each pixel column"
+      → test checks that the drawn line reaches the minimum and maximum
+GOOD: data where the first and last points differ from the minimum and maximum in every column, plus a column with
+      one point and an empty one; assert the exact points kept for each column, in order
+```

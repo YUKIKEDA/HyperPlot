@@ -1,0 +1,107 @@
+---
+description: Test framework, layers, structure, and documentation of tests
+globs: "tests/**/*.cs"
+alwaysApply: false
+---
+
+# Tests
+
+The test layers are in `docs/design.ja.md` §10. This rule is how a test is written.
+
+## Framework
+
+- xUnit v3 with its built-in `Assert`. No assertion library.
+- Tests run on Microsoft.Testing.Platform (`global.json` `test.runner`). The .NET 10 SDK refuses VSTest for these projects, so there is no `Microsoft.NET.Test.Sdk` or `xunit.runner.visualstudio`. Run one project with `dotnet test --project <path>`, and some of its tests with `dotnet test --project <path> -- --filter-method <pattern>`. The test executable takes xUnit's own options (`-method`); given `--filter-method`, it prints `error: unknown option`, runs no test, and exits 3, which a loop that looks only for failed tests counts as a pass. Read the exit code and the count of tests run.
+- Before calling a failing test a defect, look for what a mutation run leaves (`git status`, `*.orig` beside the source) and build again. A test that fails on a build that still has a mutant in it points to a defect that does not exist.
+- A test checked by a mutant reads the mutant's build first: a mutant that does not compile leaves the last binary, and its tests pass.
+- A test of an invariant (`InvariantViolationException`) runs in the Debug configuration only, because release builds end the process. Start it with a `RequireDebugBuild()` helper that calls `Assert.Skip` when `DEBUG` is not defined. The gate runs both configurations; an invariant test without the skip ends the Release test process at its first assertion.
+- Process-wide state (a WPF `Dispatcher`, the native handle table, a window, a D3D11 device shared by a fixture) is touched only from one dedicated thread per test assembly (a fixture). xUnit v3 runs each test assembly in its own process.
+- Time and frames come from a fake `TimeProvider` and the test frame scheduler (design §8.3, §10). A test never sleeps, never waits on the wall clock, and never asserts what the clock decides.
+- The exception is a test of how the OS or the host itself waits and wakes (a message loop, WPF's rendering event). It is marked `[Trait("Category", "OsTiming")]`, waits in real time with bounds an order of magnitude above what was measured, and has a watchdog that wakes and fails a loop that does not finish, so that it cannot hang the run.
+- A test that wakes a loop or a worker from another thread owns that thread and joins it before the test ends. A wake queued to the thread pool outlives the test and reaches the next one, which runs in another order on CI than locally. A test that waits for its own wake also counts and asserts the iterations before it, so a stray wake fails loudly instead of being measured.
+- A loop checks a test's done condition only when it wakes. When another thread sets that condition, it wakes the loop after setting it; otherwise the loop stays blocked and the watchdog fails the test.
+- A test that reads pixels or places content by coordinates asserts the size of the render target first: a window's outer size is not its client size, and a WPF element's size is in device-independent pixels.
+- `TestContext.Current` is async-local and does not flow to a fixture's dedicated thread. Read `TestContext.Current.TestOutputHelper` on the test thread before handing work to that thread. To see the output of a passing test, run the test executable with `-showLiveOutput`.
+- A test that needs an OS component (a font, a GPU feature level) skips, with its name, when the machine lacks it, and calls that check for each one it assumes, so that it does not fail on Server Core or a runner without the component.
+- Tests that need a GPU use WARP and run on Windows only; they are marked so the other layers run on every OS. Tests of `HyperPlot.Wpf` run on Windows only.
+- A Core type that the tests on Linux make calls no Windows API and no native library in its constructor or field initializers; such a call goes where the code that needs it runs. The local gate runs on Windows only, so such a call first fails in CI, in every test that makes the type.
+- Code whose shape depends on a size (a buffer grown for the largest so far, a texture made for the viewport, a pyramid with one level per factor) is tested at the small end too, and with the small case first: an empty column, one point, one chunk, a viewport of one pixel.
+- WARP golden images and draw IR (`RenderList`) snapshots render with the bundled fonts only (design §10).
+- Before a failure is taken for one that comes now and then, check whether it repeats and after which change it began. A failure in every local gate is a defect to bisect, not noise to rerun.
+- A test that allocates or maps tens of megabytes (a large column, a deep pyramid) runs in a collection apart from the others (`DisableParallelization`), and a large input it needs is built in pieces or generated into a mapped file rather than made as one array. Next to a Zero-Alloc test, its garbage makes that test count kilobytes with no collection.
+- The warm-up of a Zero-Alloc test over a cache that overwrites its oldest entry runs the measured loops as they are measured, until one run of them allocates nothing (with a limit). Which entry holds which key depends on the order of the runs before, and an entry grows its arrays the first time it holds a larger need.
+- A Zero-Alloc test whose iteration takes an index from the measuring helper uses the index range the helper documents (its unmeasured window may hand negative indices), continues the warm-up's run of indices, and counts the work the iterations claim to do (frames presented, buckets written).
+- A test that a part is skipped (a hidden series, a facet out of view) checks something the skipped path would do besides its pixels, such as a function that must not be called: a skipped part often draws no pixel either way.
+- A test of what asks for a frame changes one kind of state after another (a data append, then a style change, then a zoom), not each alone on a fresh plot.
+- A clue added to a test that fails now and then lives in the test, not in shipped code, and is checked once with a failure caused on purpose.
+- Every run of `./build.ps1` writes its output to a file in the scratchpad, so that a failure seen once can be named.
+
+## Structure
+
+- `tests/<Project>.Tests` mirrors `src/<Project>`. `Foo.cs` → `FooTests.cs`, in the same folder.
+- Method names: `{Target}_{Scenario}_{Expected}` in PascalCase, English.
+- Each test owns its state. Tests run in parallel; a test that cannot (a real window, a fixture's thread, a large mapped file) says why in its collection definition.
+
+## Documentation
+
+Every `[Fact]` and `[Theory]` has XML docs in this shape, in English:
+
+```csharp
+/// <summary>
+/// One line: the behavior this test guards.
+/// </summary>
+/// <remarks>
+/// Preconditions:
+/// - ...
+///
+/// Steps:
+/// - ...
+///
+/// Expected:
+/// - ...
+/// </remarks>
+[Fact]
+public void Build_ChunkBoundaryInsideBucket_KeepsMinimumAndMaximumOfBothChunks()
+{
+}
+```
+
+- A `[Theory]` is documented once; list what the cases cover under Preconditions or Steps.
+- No custom XML tags. Link a design section when the why is not obvious.
+
+## What a test checks
+
+- A test stands for the whole design statement (`.cursor/rules/spec-checks.mdc`).
+- The expected value of a subtle result (which points M4 keeps, a tick set, an interpolated color, a density cell's count) comes from an independent reference, not from reasoning: the raw data drawn or counted on the CPU, a reference implementation's output (the paper's algorithm, a library the design names), a golden image produced by an earlier reviewed run. Do not compare a function with a re-implementation of itself.
+- Before the design takes an outside implementation as the reference for a value, make one case with it and check that it really computed that value: a reference that drops an input it does not support silently tests its default.
+- A row checked against an outside reference also makes cases of its feature with each feature of an earlier row that changes the same values (a log scale with the pyramid, an append with a zoom, NaN with density), before the PR. A Risk line that names the combinations as unchecked does not replace them.
+- Code written to match an outside reference is ported from the version that made the expected values.
+- The number of reference cases that pass is read from the test run: the passed tests and the skipped ones with each reason, not from a skip reason that names only the first missing feature.
+- A random test of incremental work (appends, zooms, style changes) puts several changes before one pass, and changes that keep a size but not what a later stage reads: some wrong results need two changes in one pass.
+- A pixel test that draws several marks in one frame and compares them with a CPU reference keeps the marks apart, their antialiased edges included, or composes the reference in the draw order: the reference adds the colors, while the renderer composites one over the other, so a shared pixel differs.
+- A test of an API that takes input calls it with the input in the form it really comes in (the host's integer or device-independent coordinates, not a pixel's center).
+- A function that answers at a position from local context (a chunk lookup from an index, a bucket from a coordinate) is compared with a walk from the start, at every position of the test data, the chunk and bucket boundaries included.
+- A test of code that measures or compares floating-point positions also runs at sizes and scales that are not whole (13.3 px, 125 %), and at data far from 0 (timestamps), where the conversions differ.
+- A tolerance (pixel difference, float comparison) is a fixed number written in the test, with the reason in a comment when it is not the default.
+- A check for NaN looks at each value: a rectangle with infinite edges (no clip) sums to NaN, since -∞ + ∞ is NaN.
+- The setup that a mutant needs reaches the branch it changes, and the test asserts that it does. A cache "full" for one size may still have room for a smaller item, so the mutant that changes what fits passes unless the test checks where the next item lands.
+- A memo or cache key of several values is tested by changing each value alone, the others kept: a step that changes two at once lets the mutant that drops either comparison pass.
+- A surviving mutant is first a question about the setup (the item above). When the branch cannot be reached at all, show why and remove the branch instead of listing the mutant (`.cursor/rules/no-dead-code.mdc`).
+- A test of a comparison (a least-recently-used pick, a priority, a tie-break) sets up candidates whose values differ; with equal values, the mutant that picks the other end passes.
+- Mutation check for a guard: change the guarded term and see the test fail, then restore it by copying the file aside and back (not `git checkout`). List the mutations in the PR.
+- A mutant must build. With warnings as errors, a mutant such as `if (false)` fails to compile (CS0162), `dotnet test --no-build` then runs the previous binaries, and the mutant looks survived. Check the build's exit code before reading the test result, and write the mutant so that it compiles (`if (IsActive && count < 0)`). A style analyzer fails the build too (a trailing space is SA1028). A mutant run that names no failing test counts as a failed build until its build output says otherwise.
+- A script that runs mutants decides from the exit code of `dotnet test`, not from its text: Microsoft.Testing.Platform exits with 2 when a test failed, and its messages follow the OS language. `python -I` ignores `PYTHONIOENCODING`; a script that prints test output calls `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`.
+- A mutant that would dereference null or read out of range in unsafe code is not run: it ends the test process and the other tests do not run. List it in the PR with that reason. A mutant that only leaks a COM reference cannot be caught without the D3D11 debug layer; say so too.
+- Every test of a contract the design states gets that mutation check before the PR, not only the guards a review names. A test that passes against the mutant passes for another reason, and the reason is usually the test's own setup or cleanup.
+- Read the state you assert before a shared helper's cleanup runs. A helper that resets state on the way out makes an assertion after it check the helper, not the code. Record the state inside the run, where the code under test left it.
+
+```csharp
+// BAD — RunFrames' finally stops the render loop: this passes even when the frame never stops it
+RunFrames(host, frames: 1);
+Assert.False(host.IsRendering);
+
+// GOOD — read the state inside the run, after the frame and before the cleanup
+bool? renderingAfterFrame = null;
+RunFrames(host, frames: 1, afterFrame: () => renderingAfterFrame = host.IsRendering);
+Assert.False(renderingAfterFrame);
+```

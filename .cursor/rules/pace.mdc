@@ -1,0 +1,62 @@
+---
+description: One investigation does not hold the rest of the work; what is outside the row is split off; long runs go to the side
+alwaysApply: true
+---
+
+# Keep the work moving
+
+The owner's time is the scarce thing. A row is finished when its own work is done and measured. Everything else that turns up is written down and handed on, and the row goes on.
+
+## What belongs to the row, and what is split off
+
+`.cursor/rules/open-ends.mdc` asks that a PR time its stages and explain its figures. That is about the code the row adds or changes. A finding about code the row did not change is another piece of work, however it was found:
+
+1. Write what was measured on a new Issue: the numbers, what was tried, what is known and what is not.
+2. Add a roadmap row that names it (`.cursor/rules/defer.mdc`). Say whether it blocks the rows after it.
+3. Go on with the row. The PR body points to the Issue; it does not carry the investigation. An investigation of a failure that `main` also has does not go into the row's PR comments and commits, with the code it needs; it goes to its own Issue and PR.
+
+The test is one question: would this be there if the row had never been written?
+
+Before filing an Issue for a failure, search the open Issues and the roadmap's rows (the rows that track open measurements above all) for the same symptom. When one exists, add the new figures to it, and offer options that start from the decisions recorded there: the owner may already have decided how failures of that kind are handled until they are explained.
+
+## A limit on an investigation
+
+After two attempts that change nothing, stop and decide before a third:
+
+- The cause is known and the fix is not worth it: write the numbers and leave it.
+- The cause is not known: it needs another tool (a profile, a disassembly, an allocation trace, a GPU capture), not another rewrite. If the figure is the row's own, use the tool now. If not, split it off as above.
+
+Report to the owner at that point, in a line: what stands, what was tried, what happens next. Do not go on silently.
+
+## What comes next is decided, not read off a list
+
+Before starting a piece of work, write one line for it: what a user of the library has after it that they do not have now. Write the same line for everything else that is open. Start the one with the strongest line. The classes, strongest first:
+
+1. A wrong result, a red `main`, an open review finding.
+2. A capability the requirements name that is missing or half done.
+3. Speed or memory a user can see, with the case (data size, viewport) and the ratio named.
+4. An explanation of a figure, with nothing to fix.
+
+Within a class, work whose result can change how existing code is built (a spike, a measurement of a whole subsystem, a review of an interface) comes before work that is put on top of it.
+
+## Long runs do not hold the working tree
+
+A benchmark, a NativeAOT publish, a profile, or the generation of a billion-point data file keeps the tree busy for minutes.
+
+- Run it in the background, never in the foreground with a wait loop.
+- Run it on a copy of the tree (`git worktree add` for a committed state) with its own `bin/` and `obj/`. Two worktrees never share build output.
+- While it runs, do what does not depend on its result. Name that work before starting the run.
+- Runs that need a quiet machine (compared benchmarks) do not overlap each other.
+
+A CI run started for an experiment (`gh workflow run`, `gh run rerun`) is a long run too: while it runs, go on with work that does not need its result, on another branch. Do not wait on rounds of reruns with the next row's research undone.
+
+Before a long run, a short one: run the script on one case, and look at the output of a background run within its first minute.
+
+A scratch variant (a source file swapped for a measurement) is built on its own worktree, never in the tree the gate runs in. A publish with `-r` still builds the referenced libraries into the tree's shared `obj/`, and a source put back with `Copy-Item` keeps its old time (`.cursor/rules/powershell-shell.mdc`), so the gate can then test the variant instead of the source.
+
+A background run has a time limit and a watch on its output: when the output stops growing for a few minutes, the run is stopped and looked at, not waited on. While it runs, check that the output still grows. A gate that prints nothing for half an hour is stuck, and the owner should not be the one to notice.
+
+```text
+# BAD — the row's PR grows three commits that chase a Zero-Alloc failure main also has
+# GOOD — the figures go to a new Issue and a roadmap row; the PR links it and goes on
+```

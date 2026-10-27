@@ -1,0 +1,34 @@
+---
+description: PR title and body follow the repository template
+alwaysApply: true
+---
+
+# Pull requests
+
+## Title
+
+Conventional Commits: `type(optional-scope): subject`, in English (`.cursor/rules/conventional-commits.mdc`).
+
+## Body
+
+Follow `.github/pull_request_template.md` with the same headings in the same order:
+
+1. `## Summary`
+2. `## Related`
+3. `## Verification`
+4. `## Measurements`
+5. `## Risk / Rollback`
+6. `## Checklist`
+
+- The headings stay English. The body text may be Japanese (`.cursor/rules/language.mdc`).
+- Empty sections say `N/A`; do not delete them.
+- `## Related` has `Closes #N` alone on a line when the PR finishes the Issue, `Part of #N` when it does not (`.cursor/rules/github-closing.mdc`).
+- `## Verification` names the commands that ran and their result: `./build.ps1`, the NativeAOT publish when the Issue names it, any search a "every X does Y" claim rests on (`.cursor/rules/spec-checks.mdc`). A search is written with the terms that were searched, and only a search that ran is written: a PR that says it searched for one name when it searched for a neighbouring one leaves the first name behind in the design.
+- A count the body gives ("the other 9 places") is the output of a command that selects exactly what the count names, not a reading of a broader search.
+- `## Measurements` carries the numbers for a frame-path or data-path change: time per stage before and after, allocations per frame, bytes uploaded per frame, at the named data and viewport sizes, against a named baseline (`.cursor/rules/bench.mdc`). `N/A` only when nothing on those paths changed.
+- Pass the body to `gh pr create` through a temporary UTF-8 file (`--body-file`), deleted after the call (`.cursor/rules/scratch.mdc`).
+
+```text
+# BAD — "Verification: searched for every caller" (no command, no terms)
+# GOOD — "Verification: `rg -n 'ChunkIndex\.' src tests` — 7 callers, all updated"
+```

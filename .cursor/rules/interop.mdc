@@ -1,0 +1,50 @@
+---
+description: P/Invoke, COM, unsafe code, mapped memory, and the native boundary
+globs: "src/**/*.cs"
+alwaysApply: false
+---
+
+# Interop and unsafe code
+
+The design for this is `docs/design.ja.md` §3.2 (mapped storage), §5.2 and §5.3 (the GPU abstraction and D3D11), §7 (hosts), and §8 (threads). This rule is the set of promises reviews hold.
+
+## Where unsafe code may live
+
+- `unsafe`, function pointers, and `Unsafe`/`MemoryMarshal` reinterpretation are allowed only in the GPU backends (`HyperPlot.Rendering.*`), the host adapters, and the storage of Core's data layer (native and memory-mapped chunks, design §3.2). `AllowUnsafeBlocks` is set in those projects only, and inside a project the unsafe code stays in the types that own the native or mapped memory. The rest stays safe.
+- Every `unsafe` block has a comment that states the invariant that makes it safe (lifetime, length, alignment).
+- A read or write through a pointer into mapped, native, or GPU-mapped memory checks its index against that memory's size first. Out of range, a Release build ends with an access violation and a Debug build may pass by luck, so only the Release test run shows it.
+- A pointer into a mapped view lives no longer than the view: the code that unmaps a chunk is the code that knows no reader holds a pointer into it (a version count, `.cursor/rules/perf.mdc`). A view handed out as a `Span<T>` cannot outlive the call that made it.
+- A length read from a file (a row count, a chunk size, an offset) is untrusted: it is checked against the file's length before a view is mapped or a buffer is made (`.cursor/rules/design-docs.mdc`).
+
+## Calling native code
+
+- C APIs: `[LibraryImport]` with blittable signatures. No `DllImport` with runtime marshalling, no `string` marshalling on a frame path; pass UTF-16 or UTF-8 spans.
+- Windows declarations come from TerraFX.Interop.Windows. COM is called through the vtable; no `ComImport` RCWs. Every `AddRef` has a matching `Release` in the same owner, and views are released before the texture they view is resized or made again: the shared textures of the WPF host when the front buffer is lost (§7.2), a swap chain's back buffers before `ResizeBuffers` when a host has one.
+- A failed `HRESULT` becomes `InvalidOperationException` with the result in `HResult` (`COMException` is reserved by CA2201), and a lost device its own exception. Do not give a namespace a segment named like a TerraFX class: `HyperPlot.Rendering.D3D11` hides TerraFX's `D3D11` class, so write `TerraFX.Interop.DirectX.D3D11` in full.
+- A waitable object that counts (a DXGI frame latency object, a semaphore, a fence) is tested with a user that takes one and does not give it back. A frame that returns without `Present` can leave the swap chain's object unsignaled so that no frame comes again; the wait has a timeout.
+- A COM object that the OS calls back is a native struct whose first field points to a vtable of `[UnmanagedCallersOnly]` functions, not source-generated COM: `[GeneratedComClass]` with `StrategyBasedComWrappers` reads the interface's attributes by reflection, which links NativeAOT's reflection runtime and its metadata (about 0.4 MB measured). An object with many interfaces (UI Automation providers) is measured again in its row.
+- On a path that must always end, an OS object of a kind the code cannot use is treated as absent, not thrown on: an adapter without the feature level the design needs is skipped, and the choice falls to the next one or to WARP as the design says.
+- When a value an OS or GPU API returns selects the form of an output (a pixel format, a texture type, a feature level, a sharing mode), every value its documentation allows is handled, first those a compared implementation handles.
+- A design that starts using an OS component writes what the component needs from the thread and the process: COM initialization and its apartment, the threads that may call it, the device's multithread protection. WPF's `D3DImage` is updated on the UI thread, where v1 also draws; the workers never touch the device context (§7.2, §8.1).
+- The scale of a surface comes from the window or the visual it is on (`GetDpiForWindow`, WPF's DPI of the visual), not from `GetDpiForSystem`: the system DPI stays the one of the sign-in when the display's scale changes after it.
+- In HLSL, the base of a `pow` whose exponent is not a constant is kept above 0 (`max(x, 1e-7)`): `pow` of 0 was seen to drop pixels on a real GPU. A compute shader checks its thread id against the buffer's length before it reads or writes; a dispatch rounds the group count up, so the last group runs past the end.
+- The Metal backend (a later row) calls through `objc_msgSend` P/Invoke. An Obj-C shim is added only where a block or a callback cannot be expressed in C#, and the PR says why.
+
+## Callbacks from native code
+
+- A callback is a `static` method with `[UnmanagedCallersOnly]`. It catches every exception at its entry; a managed exception never crosses into native code. An invariant failure still fails fast. A callback whose body only reads and writes through its pointer arguments, calls nothing that can throw, and allocates nothing cannot throw a managed exception and has no `catch`, which would be a branch nothing reaches; its type says so in a comment.
+- Native code never holds a managed object's address. It holds a generational id from a handle table. No long-lived `GCHandle.Alloc(..., Pinned)`.
+- A callback that arrives on a thread other than the one that owns the state does not touch that state; it posts to the owner's queue (design §8).
+
+## Native libraries
+
+- A native library (wgpu-native on Linux, a later row) is linked statically in NativeAOT builds and loaded as a shared library under the JIT, from the same `LibraryImport` declarations. Its version is pinned (`.cursor/rules/dependencies.mdc`).
+- A static library linked into a NativeAOT executable on Windows is built with the static CRT (`/MT`): the NativeAOT runtime uses it, and a `/MD` static library fails the link with `LNK2038` (RuntimeLibrary mismatch). The DLL for the JIT uses `/MD`.
+
+```csharp
+// BAD — trusts the header's row count and maps past the end of a short file
+var view = file.CreateViewAccessor(HeaderSize, header.RowCount * sizeof(double));
+
+// GOOD — the claimed size is checked against what the file can hold before anything is mapped
+if (header.RowCount > (fileLength - HeaderSize) / sizeof(double)) ThrowHelper.ThrowInvalidData("The row count exceeds the file.");
+```

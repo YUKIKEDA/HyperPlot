@@ -1,0 +1,32 @@
+---
+description: Conventional Commits format for every commit and PR title
+alwaysApply: true
+---
+
+# Conventional Commits
+
+```text
+type(optional-scope): subject
+
+optional body
+
+optional footer
+```
+
+- Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `build`, `ci`. A speed or memory change is `feat` or `fix` with its measurement in the body; there is no `perf` type.
+- Scope: English, a short noun for the area. Examples, not a closed list: `core`, `data`, `lod`, `tiles`, `spec`, `scale`, `render`, `gpu`, `d3d11`, `shaders`, `interaction`, `wpf`, `testing`, `bench`, `rules`, `deps`.
+- Subject: English, imperative, no trailing period. The type and scope are always English (`.cursor/rules/language.mdc`).
+- Breaking change: `type(scope)!: subject` and/or a `BREAKING CHANGE:` footer.
+- A closing keyword (`Closes #N`) never goes in a commit body; the squash message concatenates commit bodies (`.cursor/rules/github-closing.mdc`). Write `Refs #N` or `Part of #N`.
+- Every commit takes one of the types above, the ones in the middle of a row too. There is no `wip`: `wip(...)` commits leave the owner to rewrite the squash message.
+
+```text
+feat(lod): build the min/max pyramid of a column chunk on a worker
+fix(d3d11): release every back-buffer view before ResizeBuffers
+chore(rules): record the chunk-boundary rule from the retrospective
+```
+
+```text
+# BAD — wip(data): more chunk work
+# GOOD — feat(data): map column chunks from a file
+```

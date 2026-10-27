@@ -1,0 +1,18 @@
+---
+description: Remove everything that only served a removed path
+alwaysApply: true
+---
+
+# No dead code
+
+When a path is removed, remove in the same change everything that only served it: methods, parameters threaded through callers, fields, flags, constants, `#if` branches, tests, XML docs, and the sentences in `docs/`, the READMEs, and `.cursor/rules/` that describe it.
+
+- Do not keep a public API that has no effect "for compatibility" while the packages are unpublished. After the first release, removals follow the versioning policy in `CONTRIBUTING.md`.
+- Names and comments that carry the words of a removed mechanism change with it.
+- Before a test goes with a removed path, name the claims it was the only test of. A claim the design still states keeps a test.
+- A debug-only helper (`[Conditional("DEBUG")]`) stays only while something calls it.
+
+```text
+# BAD — the CPU fallback of the aggregation is removed; its `useCpu` parameter stays on three callers, always false
+# GOOD — the parameter, its callers' arguments, its test, and the design sentence that described the fallback go too
+```

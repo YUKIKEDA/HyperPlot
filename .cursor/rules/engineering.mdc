@@ -1,0 +1,51 @@
+---
+description: Layout, targets, analyzers, and the local gate
+alwaysApply: true
+---
+
+# Engineering
+
+Details: `docs/conventions.md`. C# style: `.cursor/rules/csharp.mdc`. Tests: `.cursor/rules/testing.mdc`.
+
+## Layout
+
+- Solution: `HyperPlot.slnx` only. Do not commit a `.sln`.
+- Projects follow `docs/design.ja.md` §2.1: `src/HyperPlot.*`, `tests/*.Tests`, `samples/`, `benchmarks/`, `tools/`. Do not collapse them into one project, and do not create a project, folder, script, or skill step before the Issue that needs it.
+- The dependency direction is `HyperPlot.Core` ← `HyperPlot.Rendering.*` ← hosts (`HyperPlot.Wpf`, later `HyperPlot.XylemUI` and `HyperPlot.Avalonia`) (design §2.2). `HyperPlot.Core` references no `HyperPlot.Rendering.*` or host project, and a Rendering project references no host project. A UI stack is referenced only by its own host adapter.
+- A project's line in `docs/conventions.md` is added in the PR that adds the project, and the project joins `HyperPlot.slnx` in a solution folder named after its top-level folder (`/src/`, `/tests/`, ...).
+
+## Targets and build
+
+- `net10.0` everywhere (`Directory.Build.props`); `net10.0-windows10.0.17763.0` for the D3D11 backend and the WPF adapter (`UseWPF`), as design §2.1 gives. C# 14. Nullable on. `InvariantGlobalization` on.
+- `TreatWarningsAsErrors` is on from the first commit. Do not add `NoWarn` or `#pragma warning disable` to get a build through; fix the cause, or change `.editorconfig` with the reason in a comment when a rule is wrong for this repository, in a PR that says so.
+- Libraries under `src/` are `IsAotCompatible` and need XML docs on the public API. `HyperPlot.Wpf` sets `IsAotCompatible` to `false` in its own project file, since WPF cannot be NativeAOT-published (`.cursor/rules/aot.mdc`); it is the only one.
+- Package versions live in `Directory.Packages.props` (Central Package Management). A new package goes through `.cursor/rules/dependencies.mdc` first.
+- Engine projects (everything under `src/` except `HyperPlot.Wpf` and `HyperPlot.Testing`) build with `BannedSymbols.txt`. Do not remove an entry to get a build through.
+
+## Format and analyzers
+
+- CSharpier is the only formatter (`.config/dotnet-tools.json`, `.csharpierrc.json`). It also formats `.csproj`, `.props`, and `.slnx`, with LF line endings: a file written by a tool that writes CRLF (PowerShell's `Set-Content`) fails the check. Run `dotnet csharpier format .` before a commit.
+- StyleCop.Analyzers and the .NET analyzers at `latest-recommended` run in every build. `EnforceCodeStyleInBuild` is on.
+- Do not use an alignment in an interpolated string (`{x,5}`): CSharpier writes it `{x, 5}`, which StyleCop's SA1001 refuses, so the format check and the build cannot both pass. Pad with `PadLeft` instead.
+
+## Gate
+
+`./build.ps1` before a PR. It runs tool restore, the CSharpier check, restore, then for Release and for Debug a build and every test project. Release is what ships; Debug runs the checks that only exist there (`Invariant.Fail` throws instead of ending the process). Hosted CI runs the same script, on Windows (the merge gate) and Linux. A step the gate needs later (a native library build) joins `build.ps1` and CI in the PR that adds what needs it. The shader generator (`tools/ShaderGen`) does not run in the gate: its output is committed, and a test compares the SHA-256 written in it with the HLSL's (design §5.7), so a shader changed without generating fails on every OS.
+
+A script calls an operating-system tool by its full path, not the first one on `PATH`: run from Git Bash, `tar` is GNU tar, which reads the `C:` of a path as a remote host (`System32/tar.exe` is the Windows one).
+
+A commit and a push follow the build only through its exit code. Piping the build's output into `grep` and chaining `git commit ... && git push` after it runs the commit even when the build failed, since the pipe's status is `grep`'s, and a commit that does not compile reaches the PR. Write `if dotnet build ...; then git commit ...; fi`, or check `$LASTEXITCODE` in PowerShell.
+
+If `dotnet --list-sdks` does not show a 10.0 SDK, install it; do not stop to ask.
+
+A NativeAOT publish on Windows needs `C:\Program Files (x86)\Microsoft Visual Studio\Installer` on `PATH`: Visual Studio's environment scripts call `vswhere.exe` by name, and when it is missing its error text ends up in the linker command (`MSB3073 ... 'vswhere.exe' is not recognized`). Add it for the session (`$env:PATH += ';C:\Program Files (x86)\Microsoft Visual Studio\Installer'`) before `dotnet publish`; from Bash, add `/c/Program Files (x86)/Microsoft Visual Studio/Installer` to `PATH` the same way.
+
+If `dotnet csharpier` says to run `dotnet tool restore` right after a successful restore, delete `%USERPROFILE%\.dotnet\toolResolverCache\1\csharpier` (a stale cache entry from another sandbox) and restore again.
+
+```bash
+# BAD — the commit runs even when the build failed: the pipeline's status is grep's
+dotnet build HyperPlot.slnx 2>&1 | grep -E "error|warn" ; git commit -am "..." && git push
+
+# GOOD
+if dotnet build HyperPlot.slnx; then git commit -am "..." && git push; fi
+```

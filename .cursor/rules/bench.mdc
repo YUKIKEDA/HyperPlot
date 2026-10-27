@@ -1,0 +1,94 @@
+---
+description: How time and allocations are measured, and what a measurement claim needs
+alwaysApply: true
+---
+
+# Benchmarks and measurements
+
+Correctness comes first. A performance claim comes with a measurement in the same PR.
+
+## Tools
+
+- Allocation: the Zero-Alloc tests (`PerformanceAssert.DoesNotAllocate` in `HyperPlot.Testing`, design §10) measure `GC.GetAllocatedBytesForCurrentThread()` after a warm-up, in the scenarios the design names. They run in `./build.ps1` and are a gate. An allowed count stays or goes down; raising it needs an Issue.
+- Kernels: BenchmarkDotNet with `[MemoryDiagnoser]` in `benchmarks/HyperPlot.Benchmarks` (design §9). Not a gate; CI does not run them on shared runners.
+- End-to-end: `benchmarks/HyperPlot.E2E` on a NativeAOT Release build, headless, replaying zoom, pan, and hover input (design §9), against the targets of `docs/requirements.ja.md` §5. Recorded in `docs/benchmarks/`, not a gate.
+- Profiles: `.agents/skills/cpu-profile/SKILL.md`. GPU time: timestamp queries around each pass, read a few frames later, never in the frame that wrote them.
+- Benchmark data comes from a seeded generator, so that a figure can be made again. Files of generated data live outside the repository (`.dev/` or the scratchpad) and are deleted after the run; the generator's command and seed are recorded with the figure (`.cursor/rules/scratch.mdc`).
+
+## Measuring allocations
+
+- Measuring code must not allocate itself. `GC.KeepAlive(object)` on an `int` boxes it (24 bytes per call in debug builds, optimized away in release); keep a result observable with a static sink field instead.
+- A test project that asserts zero allocation runs with `<TieredCompilation>false</TieredCompilation>`: with tiering on, a runner can report a one-off few kilobytes on the measuring thread in a window with no JIT on that thread. To find such a figure, split the measurement into windows and log the bytes with `JitInfo.GetCompiledMethodCount(currentThread: true)` for each.
+- The test projects run without concurrent GC (`<ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>` in `tests/Directory.Build.props`). At the end of a background GC's mark, the runtime empties every thread's allocation context without taking the unused rest off the thread's count (`void_allocation` in `gc.cpp`, dotnet/runtime v10.0.9), so a thread that allocated nothing counts up to about 8 KB in one window, with no collection counted in that window; another test's garbage starts the background GC. End-to-end allocation figures are measured with concurrent GC on, as apps run, so a one-off figure of up to about 8 KB in them can come from this, not from the code.
+- An experiment that tests whether the allocation counter itself counts what was not allocated leaves room in the measured thread's allocation context first (one small allocation right before the window): a thread that allocated nothing since the last GC has an empty context, and the runtime's emptying of it changes nothing.
+- A measuring helper does not call the measured code for the first time inside a window: it measures the code's compilation. Check a new way of measuring against what it counts by itself, beside an allocation put in on purpose.
+- When such a figure is chased on the runners, change one condition a run. How many passes show that it is gone follows from the rate it showed: with 1 failure in 35, 10 passes in a row come about 3 times in 4.
+- A commit names as the cause only what was measured, and only after the figure stopped in reruns (10 runs in a row). A cause named earlier and then undone costs a second investigation.
+- A hypothesis written off is written with the conditions of the experiment that ruled it out, so that a later one under other conditions can take it up again.
+- Before measuring what a cache saves, count its hits: a cache whose slot two callers overwrite in turn never hits, and every mutant of its key survives.
+- A Zero-Alloc failure is an allocation to find, and blocks the merge. It is not run again until it passes.
+
+## Rules
+
+- Performance acceptance is judged on a NativeAOT Release build. JIT numbers include tiering and are only for finding where time goes.
+- A measurement names the data size (points, series, chunks), the viewport size in pixels, the GPU (or WARP), and the build. A speed claim on large data holds at the sizes `docs/requirements.ja.md` §5 names, on the reference machine design §9 fixes.
+- Profile before a speed row, and write on the Issue where the time goes. Order the work by the profile, not by the roadmap number.
+- To find where the time of a path goes, cut it short: skip a stage, time what is left, take the difference. The stage that stands out is the one to work on.
+- Compare both sides with the same configuration, data, and machine state, interleaved, three rounds or more, best of each side. Stop leftover processes from earlier runs. A difference inside the spread is not a result; "spread" is the statistics of repeated runs, not a guess.
+- Two builds compared run in a balanced order (A, B, B, A, repeated), so that each side runs first as often as second; a build that always runs first can read several percent slower or faster.
+- This machine's CPU (Core i5-13400F) has performance and efficiency cores. Cycles and time are measured with the process pinned to one performance core (logical processor 2) at high priority. Unpinned, the cycles of one pass move by about ±5 % and cannot decide a 2 % difference, and a run on an efficiency core takes about twice as long.
+- Two scenes compared to show the cost of one stage do the same other work, or the work only one does is left out first.
+- Equal instruction counts alone do not make a difference "the machine's conditions". Instructions do not see the waits for caches, branches, or memory. Read the pinned cycles too, and count the stall events for a difference the instructions do not explain. Streaming over mapped data is bound by memory and the page cache: a first run after the file was written reads it from the cache, a run after a reboot from the disk. Say which, and measure both when the design names both.
+- A row that names scenes or figures measures each of them, or says which it did not measure.
+- A baseline built from `main` or an earlier head in a worktree sits under `.dev/` (`.dev/<row>-base`), not in the scratchpad: there `git worktree remove` fails with `Filename too long`.
+- A NativeAOT publish (`dotnet publish -r win-x64`) runs from PowerShell with `C:\Program Files (x86)\Microsoft Visual Studio\Installer` on `PATH`. From Git Bash the link step fails: `vswhere.exe` is not found, and nothing is published.
+- Variants of a shader are measured against the head before the change, alternated, each with the GPU time of every scene the shader draws. The variants and their figures go into the benchmark document, so that a variant is not tried again.
+- A difference in a path the change did not touch is called code placement only after the function's machine code is shown the same in both builds (`dumpbin /disasm` of the published executable, the function's instructions compared without their addresses).
+- A call shorter than the clock's resolution is repeated inside one sample until the sample is long enough.
+- `./build.ps1` runs with its output kept in a file (`./build.ps1 *> <scratch>\gate.txt`), so that a failure seen once can be named.
+- GPU time moves between the GPU's clock steps. Two builds' GPU times are compared over enough frames (1,200 or more), alternated.
+- The level of the CPU stages moves from one session of measuring to the next. Figures from different sessions are not compared; each comparison is made inside one session, alternated.
+- A cost on the frame path is also measured inside a real frame: skip the stage in the sample and take the difference. A tight loop warms the caches, and the first call of a frame can take ten times the loop's figure. Report both, and say which one a budget is compared with. To find which part of such a first call grew, push the caches out before each call (walk 64 MB) and time each step of it alone. The stages of a frame move by several µs from one process to the next, so a difference of 1 µs needs five or more pairs, alternated.
+- Two builds that draw a different number of pixels are first compared in a loop that does the CPU work without drawing, and the frame's difference is read against it.
+- A speed PR reports time for the inputs the Issue names, next to a named baseline, and measures the paths it did not change. A change to code several subsystems share is measured on each of them.
+- A figure that moved is explained from the rows, not from a guess (`.cursor/rules/open-ends.mdc`).
+- A target names what it measures before it gets a number, and every side is measured with that definition: the time to the first frame on the screen is not the time to the first present, and GPU time from timestamp queries is not a GPU-busy figure from a tool.
+- Latency from input or present to display is compared at the same frame period.
+- A change that makes the default path heavier (more memory, more work in a frame) measures again, before the PR, the figures of `docs/requirements.ja.md` §5 it moves: idle memory, memory per point, startup, frame times.
+- A measurement that watches the screen runs alone, with no other process showing windows. A covered or minimized window's frames are not displayed, so its present-to-display time means nothing; a hidden window (`Start-Process -WindowStyle Hidden`) never reaches the display.
+- A child process that waits for an event (the first frame on the display, a marker) has a deadline and ends with a non-zero exit code past it.
+- Another heavy process on the machine does not stop a comparison: run both sides in the same time window, alternating, and say in the PR that it ran. Startup is the exception: it is compared in at least 6 alternating runs a side, with no other heavy process on the machine (check before and after).
+- A host's startup compared with another shows its window at the same point (before or after the renderer is made), or measures the difference first.
+- A run without a result is counted and reported, not dropped. Dropping the runs that time out makes the median faster than the code is.
+- A harness that launches a process ends it on every path, a throw included. A leftover app from one run changes the next.
+- PresentMon without elevation misses the first presents of a process it learns of late, so it does not measure startup. Started before the app, it records nothing of the app; start the app first and pass `--process_id`. It writes stderr in UTF-16.
+
+## Comparing with other libraries
+
+- A comparison measures each library at the version it ships with, and every library of the comparison set (`docs/references.md`) before a reference is chosen. Before a comparison, check each library's latest stable release in a primary source (NuGet, npm, PyPI, the tag of the latest release) and build with it; the comparison build writes the versions it used, and a table names them.
+- The comparison apps are built for the comparison, not taken from an earlier build in the checkout, and every app of a comparison times at the same resolution: a whole-microsecond timer reads 2.7 µs as 2.0.
+- A scene added to the comparison goes into every comparison app in the same PR.
+- Another library is measured through its normal pipeline: a chart control measured outside a window or a host may skip its layout or render loop and read as free.
+- A browser-based library compared by eye is shown in a browser started with `--force-color-profile=srgb`, every other window of that browser closed; otherwise the browser converts the colors to the monitor's profile while HyperPlot writes sRGB as it is. A headless screenshot is not converted, so pixel comparisons do not show it.
+- A picture the owner judges by eye comes from a window that is DPI aware; Windows stretches one that is not, and the picture shows the stretching, not the drawing.
+
+## Reading figures
+
+- A figure that is too fast is explained by the work done, like one that is too slow: a change that did not reach the stage it should reach measures as free.
+- A script that turns pictures or traces into figures is checked against every app and every condition it reads before a figure is read from it. When one app or one size stands out, suspect the script first.
+- A scratch build changed by a script is checked for the change before it is measured: a `sed` that did not match measures the old code.
+- A difference that stays when a stage of one's own is turned off rules out only that stage, not the other side's.
+- A first-time cost is measured once in a fresh process, with an input no cache has seen, and with the caches that the OS keeps across processes in mind (the page cache for mapped files, the shader cache of the driver). Rounds repeated in one process measure the warm cost.
+- A second run of a path that keeps the last item it made puts another item between the two runs, or it reads the cache.
+- A gain inside the spread is reverted, not shipped with other changes. A change tried for speed and not kept is reported with its measurement, so that it is not tried again.
+- A design that names a technique for its speed is measured before the design PR says so. A prototype in a scratch project is enough.
+- A measurement that a design or an Issue plans states what it expects before it runs, the worst case and the practical range, so that the result can be judged.
+- Named baselines: one per milestone, recorded with the commit, the command, and the data generator's seed. A measurement quoted in an ADR, a comment, or a PR is recorded once and quoted from there.
+- Do not add SIMD, caching, pooling, or unsafe code for speed unless a measurement shows the path is the bottleneck.
+- A cache measures with every caller that reads it, on a change of one item in a large set (one appended chunk, one moved series), not only on a full rebuild. Two callers that evict each other's entries make a one-item change cost a full rebuild.
+
+```text
+# BAD — "M4 readout: 0.4 ms" (no data size, no viewport, no build, no baseline)
+# GOOD — "M4 readout, 10^9 points, 1,920 px, NativeAOT Release, pinned: 0.41 ms (main 1.30 ms), 5 alternated pairs;
+#         10^7 points at the same viewport: 0.40 ms, so the readout does not grow with N"
+```

@@ -1,0 +1,46 @@
+---
+description: A question is not a decision; options need a recommendation and an order from the owner
+alwaysApply: true
+---
+
+# Consent
+
+A question is not a decision. Do not close a design choice, an Issue, or a PR in the same turn as a question.
+
+These are questions, not orders. Do not create, edit, close, or retitle Issues or PRs, and do not rewrite `docs/roadmap.md`, `docs/requirements.ja.md`, or `docs/design.ja.md` to settle them:
+
+- "Is it required?" "Should it be X?"
+- Any yes/no about scope, a milestone, or whether a roadmap row exists.
+
+For such a question, list the options, give a recommendation, and state each option's advantage and disadvantage. Then stop and wait.
+
+The reason for a recommendation is the library's goal and its functional and non-functional requirements (`docs/requirements.ja.md`, `docs/design.ja.md` §0, §11). Implementation effort, volume, or ease is not a reason (`.cursor/rules/scope.mdc`), and neither is how soon it can be built.
+
+The goal is SciChart-class speed and quality on data of billions of points. Before recommending how to build a mechanism (a chunk layout, an LOD pyramid, an aggregation, a tile cache, a GPU path, a host integration), find how the fastest plotting libraries and the engines and papers under them do it (`docs/references.md`), cite the sources, and judge each way against the requirements (the targets of `docs/requirements.ja.md` §5, the memory bounds). A way recommended because it is simple, with no comparison behind it, is not a recommendation: the comparison is what settles it.
+
+Before recommending a design, search `docs/design-decisions.md` for a rejection of the same shape, and say how the recommendation differs from it. A recommendation that repeats a rejected shape under a narrower scope makes the owner decide the same question twice.
+
+A statement about how another library behaves is checked in its source or its official documentation before it goes to the owner, and what was not checked is said to be unchecked. The same holds for a comparison written into the design: an unchecked sentence about another library's API has been the opposite of its documentation more than once.
+
+When the owner corrects a criterion, go back over the decisions made before the correction and judge them by the new criterion: the design, the decision records, and the conversation logs, where reasons given only in passing are kept ("leave it for now" in a review, a public API added only for a sample's check). Each one that fails gets a roadmap row or a Grill before the row that depends on it.
+
+A consequence written in a report is not a decision either. A report that says failures "will be run again" is not the owner's decision to run them again, and does not go into a rule as one.
+
+"Go ahead" and "next" mean the current roadmap row only. They are not consent to add rows, file extra Issues, or widen an open design.
+
+An outward-facing action (creating a GitHub repository, publishing a package, posting outside this repository) needs an order that names it. The steps of the workflow in this repository are not such actions: creating the Issue for a row, pushing its branch, opening its PR, and recording results on the Issue are done without asking (`.cursor/rules/git.mdc`).
+
+The owner's screen is the owner's. Before a run opens windows on it (a WPF sample, a startup measurement, a GPU test), say how many it opens and the time after which a stuck one is stopped. A window that hangs is not launched again to see whether it hangs again: find the cause first, without windows if possible. Do not report what the screen shows from a process list: say what was checked.
+
+A decision rests on the figures it was given. When a later change moves those figures (a cost, a frame budget, a memory bound, a binary size), report the new ones beside the old before the PR that carries the change is merged, and let the owner decide again.
+
+```text
+# BAD
+Owner: Should the LOD pyramid be built when a column is loaded?
+Agent: switches the design to eager builds and opens the PR
+
+# GOOD
+Owner: Should the LOD pyramid be built when a column is loaded?
+Agent: eager / on first view / in the background with a coarse level first, each with its cost in time and memory
+       at the sizes of the requirements §5; recommends one; waits
+```

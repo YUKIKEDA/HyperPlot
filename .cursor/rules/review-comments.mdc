@@ -1,0 +1,40 @@
+---
+description: A review finding is about the pull request head it was written on; a review the owner asks for is posted on the pull request
+alwaysApply: true
+---
+
+# Review findings
+
+A comment on a pull request is about that pull request's head. Read it against that head before calling the pull request ready to merge.
+
+A finding that asks for a change is still open when that head does not contain the change. Say so. A later pull request stacked above the head does not resolve it.
+
+A finding that is tried and not adopted is answered with the measurement or the reason, on the pull request it was written on (`.cursor/rules/bench.mdc`).
+
+Before acting on a finding or declining it, check its claim against the code of that head: run the reproduction, or read the lines it names. A finding can be right about the reader's difficulty and wrong about the fact.
+
+A finding that asks to change a decision the owner made is not declined by citing the rule that records the decision. Reply with what the decision was and what the finding shows, and ask the owner (`.cursor/rules/consent.mdc`).
+
+A review the owner asks for is posted on the pull request, in the same turn, without waiting for an ask to post it. A review shown only in the conversation is not seen by anyone else, and the pull request does not show that it was reviewed. A re-review after fixes is posted the same way.
+
+Before calling a PR ready, and whenever the owner asks for the next step, read the reviews and inline comments of every open PR (`gh pr view <n> --json reviews,comments` and `gh api repos/{owner}/{repo}/pulls/<n>/comments`).
+
+Read the pull request's comments again just before posting a reply to a review: a re-review can land while the reply waits for the checks, and a reply posted without reading it answers a review that is no longer the latest.
+
+```text
+# BAD
+The chunk-boundary check is missing. A later pull request sits on this head, so merge.
+
+# GOOD
+The chunk-boundary check is not in this head. The finding stays open.
+```
+
+```text
+# BAD
+Owner: 12をレビューして下さい
+Agent: writes the findings in the conversation, and asks whether to post them
+
+# GOOD
+Owner: 12をレビューして下さい
+Agent: posts the findings as a comment on the pull request, and gives the link and a summary in the conversation
+```

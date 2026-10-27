@@ -1,0 +1,95 @@
+---
+description: Where the design lives and how it changes, so code and design do not drift
+alwaysApply: true
+---
+
+# Design docs
+
+## Locations
+
+| Document | Role |
+| --- | --- |
+| `docs/requirements.ja.md` | Canonical requirements (Japanese). What the library must do and how well |
+| `docs/design.ja.md` | Canonical design (Japanese). Contracts, invariants, phases |
+| `docs/design-decisions.md` | Rejected alternatives and why (Decision / Reason / Rejected) |
+| `docs/adr/NNNN-*.md` | One decision per file whose reason is a measurement (Status, Date, Issue, Context, Decision) |
+| `docs/roadmap.md` | Rows: ID, title, Issue, status. No acceptance text |
+| `docs/references.md` | Which upstream file or paper to read before a layer is built |
+| `docs/conventions.md` | Directory tree, project responsibilities, coding conventions |
+
+`.dev/` is local scratch and is gitignored. Do not put lasting decisions there.
+
+## Changing the design
+
+- Requirement, contract, public API, invariant, or phase: open a `design` Issue, update `docs/requirements.ja.md` or `docs/design.ja.md` (and `docs/design-decisions.md` for what was rejected) in its PR, and merge it before implementation Issues.
+- Wording, typos, and examples: may ship in the same PR as code.
+- Do not implement first and update the design later. If code and design conflict, stop and fix the design through the process above.
+- A design PR writes what the Grill decided. A better shape found while writing does not replace a decision in the PR, even with a note in its body: it goes to the owner as a question with a recommendation (`.cursor/rules/consent.mdc`).
+- A design PR that changes a decision searches the whole design for the sections that restate it, and changes them in the same PR: the diagrams, the tables of failures, the test sections, and the examples included.
+- A design that changes the shape of a type rewrites every example in the design that uses the type so that it works with the new shape; changing the comment beside it is not enough. A design whose text names a member of a type adds that member to the type in the same section's code block.
+- Before a row's design is written, the whole design is searched for the row's ID, and every contract an earlier row sent to it is taken into the new section.
+- A design that leaves a point to another row ("row X decides") names a row that exists in `docs/roadmap.md`, and that row's text names the point, in the same PR (`.cursor/rules/defer.mdc`).
+- A sentence added to the design to answer a review is a claim like any other and is checked before it goes in.
+- After a script edits a Markdown table, read `git diff --stat`. A diff of the whole table means its columns were padded again: restore the file and replace only the rows that change.
+
+## Claims about other implementations
+
+- A comparison of approaches in the design includes the approach of each library that a measurement found fastest, judged by the requirements, not only a reason of structure.
+- A claim about what another implementation has or does (a library version, a chart type, an aggregation, a GPU path) names the file and line, or the documentation page or the paper's section, where it was read, and is read there before it goes in. The claim keeps the conditions the source states: "it does not redraw a frame that is not dirty" is wrong when the source redraws under a condition the sentence leaves out.
+- A claim a Grill question makes (what another implementation does, as a reason for an option) is read in its source before the round is sent, as a claim in the design is.
+- A rule, an algorithm, or a list taken from a specification or a paper (M4, an LTTB variant, a tick algorithm, a color space) is copied from its section, read for the purpose, and the section is named. Read the text itself (download the paper or the page and read the section), not a summarizing tool's answer, which drops parts and may describe an older version.
+- A design does not say what all the compared libraries do or lack when one of them was not read: read it (fetch the file at the same commit) or leave it out of the claim.
+- A sentence that says a list is the same as another implementation's is checked item by item in that implementation's source, and an item it lacks is written as HyperPlot's own. A design that says it does what another implementation does names the parameters that are the same.
+- How a cross-platform library draws on one OS is read on that OS's path (the backend, the rasterizer it uses there), and a path behind a build or an OS condition is checked in the shipped build.
+- A model that reproduces a compared implementation's pixels reads every stage a pixel passes through, from the data reduction to the fragment shader.
+- When the version of a compared library changes, the claims that cite the old version are checked again in the new one.
+- A design that picks the side a compared implementation avoids for a stated reason writes what that reason costs, and its acceptance measures it.
+
+## What a design writes down
+
+- A decision that changes one case of an algorithm is written together with the algorithm's general rule, so that the case does not read as a new rule.
+- An option a Grill offers relies only on what the code or the design already has, checked before the Grill; an option that needs something new says so and offers adding it.
+- Every type in a signature the design writes is defined in the design or the code.
+- A design that fixes the shape of a public C# API compiles its signatures and its sample code in a scratch project with the repository's settings (implicit usings, C# 14, `InvariantGlobalization`, the analyzers) before the design PR writes them. The diagnostics that turn up there and not on paper: a name that collides with an implicit using (CS0104), a type hidden by a namespace of the same name inside `HyperPlot.*` (CS0118), a public member that shows an internal type (CS0053), a `ref` field to a `ref struct` (CS9050), an interpolated-string handler that cannot take a receiver by `ref` (CS1620), and `CultureInfo.CurrentUICulture`, which `InvariantGlobalization` makes invariant.
+- A design that names the type or method a call goes in reads which project that type is in and what the project may reference (design §2.2): Core references no Rendering or host project.
+- A new public command or API states what it does with an argument that is NaN, infinite, empty, or out of range, as the APIs before it do. Data with NaN is a normal input for a plotting library, not an error.
+- A design that changes the unit of a quantity (data units, plot-area pixels, physical pixels, WPF device-independent pixels) lists every API that carries it across a boundary, arguments and return values, input coordinates and hit tests included, and writes the unit of each.
+- A type in a design signature that holds a size or a coordinate is checked against the scale factors the design supports (125 %, 150 %) and against the range of the data (a float holds 24 bits: a position far from its origin loses whole pixels, §3.6).
+- A figure the design derives (a memory bound, a count, a level count of a pyramid) writes its arithmetic beside it.
+- A design that keeps a cache or a state per item (per series, per chunk, per tile, per pyramid level) writes its size as a formula of the content, and its acceptance bounds it with a number a test checks. Reporting the size is not a bound. A value that only some items use goes behind a reference of its own, made for the items that use it; fields added to a side object that every item holds are paid by every item.
+- A design that allocates by a size the content decides (an offscreen layer as large as its content, a density texture as large as the plot) writes what cuts the size (the clip, the target), the cap (D3D11 textures are at most 16,384 pixels a side), and what is drawn when the cap refuses it.
+- A design that adds a new kind of edge (a clip, a plot-area border) says whether it is put on pixels by the rounding the other edges take, and under the same condition; otherwise a gap or a seam shows where the two edges meet.
+- A mechanism applied per command (a clip, a style, an opacity) says which kinds of command and mark it applies to, text included.
+- A type that takes a visual value (a line width, a point size, how a color scale interpolates, a blur radius) says what each value means, after listing how each compared implementation reads it, with lines.
+- A design that reads data from a file or a stream treats it as untrusted input and writes its limits (size, how much it allocates, the structure it accepts) and what happens past them. Those limits bound what is allocated, not only what is read: a size the input claims (a row count, a chunk length) is checked against what the input can hold (the file's length) before a buffer of that size is made or a range is mapped, and a test measures the allocation of the worst input.
+- A design that puts outside data into the repository (reference data sets, test images, fonts) names its source, its version, and its license, quoted from the file in the distribution.
+- A design that adds threads, workers, or OS resources writes their lifetime: who creates them, when they stop, who releases them, and what happens when they cannot be created.
+- A design that calls an OS or GPU API from several threads where its documentation says nothing about threads checks correctness apart from speed: the parallel result is the serial one, byte for byte, over hundreds of repetitions.
+- A design split into steps (a coarse level now, finer levels later; a worker that rebuilds while the frame reads) says which arrays a later step rewrites, which version their readers see, and how a reader that holds an old version is kept from reading freed memory.
+- A design that removes a dependency lists every place that calls it now and what replaces each.
+- A contract that hands work to an OS or GPU API is written after reading that API's output parameters, not only its inputs: what it returns when it finds nothing, and what else it returns.
+- A design that says an OS API does something names the version that has that capability (the interface number and the overload), after reading its declaration in the SDK the build uses.
+- A design that uses a value read from the OS or the host (a DPI, a refresh rate, an adapter) says which unit it is read for (the system, the window's monitor, the visual), when it is read, and when it is read again. Values read from a host's message or event name the field they come from, or the call that reads them when the message has none, after reading its documentation.
+- A design that draws with an OS component or a GPU feature it has not used measures the first-use cost and the memory in a scratch prototype before the Grill decides, at the scales the design supports (100, 125, and 150 %).
+- A design that changes what an algorithm reads checks every cache and boundary rule against the change, the path that hits a cache included.
+- A design of what drives a frame or a loop lists every call that the code driving it today makes (a sample, a benchmark scene) and checks each against its own steps.
+- A design that calls a user's handler in the middle of changing its own state says what happens when the handler comes back into it: a frame run synchronously, a message pumped inside the handler, the spec or the data changed inside the handler.
+- A mechanism where a stage clears marks only for the items of a list says that every path that sets the mark puts the item in the list.
+- A design in which pending work asks for the next turn of a loop (a frame, a worker pass) says which work asks for it, including work a turn puts back after a failure, so that a step that keeps failing does not run every frame.
+- A value a later stage needs that an earlier stage resolves by rules that differ case by case is kept from that stage's result and read, not resolved again.
+- An acceptance that a change allocates nothing is checked against each API that makes the change.
+- A design that stops a propagation with a comparison decides two things in the design itself: everything the propagation carried, and what happens when a value to compare is gone.
+
+## Judge the current optimum
+
+The design records a decision made at that time. It is not proof that the decision is still the best one.
+
+- Recommend the best solution for the problem as it stands now.
+- Do not cite an existing sentence as the reason to keep that shape.
+- Do not add public API only so an older shape can stay.
+- If the written decision is no longer the best one, say so and change the design through the process above.
+
+```text
+# BAD — the design says "as datashader does" for the density path, and its PR body says datashader was not read
+# GOOD — the design names datashader's file and lines for each step it shares, and the steps it does not share are HyperPlot's own
+```

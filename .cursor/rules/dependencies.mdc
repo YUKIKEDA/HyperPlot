@@ -1,0 +1,43 @@
+---
+description: When an external package or native library may be added
+alwaysApply: true
+---
+
+# Dependencies
+
+Avoiding dependencies is not a goal in itself. What must not be lost is: control over performance, NativeAOT, and an app that ships HyperPlot with no extra file to distribute (`docs/design.ja.md` §0, §0.1). A library that keeps all three may be used, and replaced with our own code when a measurement says so.
+
+## Before adding a package or a native library
+
+Check each point and write the result in the PR's `## Verification`:
+
+1. **AOT**: the package declares `IsAotCompatible` or `IsTrimmable`, and a NativeAOT publish of a sample that calls it has zero trim / AOT warnings. No reflection or dynamic code generation on the path we call.
+2. **No extra file**: on Windows it adds no file for an app to distribute. A native library links statically into a NativeAOT app (`DirectPInvoke` + `NativeLibrary`).
+3. **Hot path**: if it runs on the frame path or the data path, its time and allocations are measured in our benchmarks, and its types do not appear in our public API, so it can be replaced without a breaking change.
+4. **License and upkeep**: MIT-compatible, maintained, a version pinned in `Directory.Packages.props` (or in the pinned-versions file of the native build, when one exists).
+
+Then add a row to the Dependency Decision Matrix in `docs/design.ja.md` §0 in the same PR. A dependency that changes what the library means (a new runtime layer, a GPU abstraction, a UI toolkit) is a `design` Issue first.
+
+## Native libraries
+
+No native library is built today. The row that adds the first one (wgpu-native) adds its build to the gate and a file that pins its version and SHA-256, through a `design` Issue. From then on:
+
+- A new version is taken once it has been out for two weeks. A security fix is the exception: it is taken at once.
+- Native builds are outside Dependabot. Before each milestone row and when an advisory is published, compare the pinned versions with the upstream releases and security advisories of each library, and write what was found on the row's Issue.
+- A pinned download lists a mirror after the main URL when the main host is a single server; the SHA-256 checks whichever answers.
+
+## Already decided
+
+- Managed: TerraFX.Interop.Windows (declarations only).
+- Future native: wgpu-native (Linux, a later row).
+- Not as dependencies of the engine: GPU abstraction libraries (Silk.NET, Vortice), Skia, and other UI stacks inside Core or Rendering. A UI stack appears only in its own host adapter project: `HyperPlot.Wpf`, later `HyperPlot.Avalonia` and `HyperPlot.XylemUI`.
+
+Test, benchmark, and tool projects may use packages that only those projects reference (xUnit v3, BenchmarkDotNet, `Microsoft.Extensions.TimeProvider.Testing`); point 2 and point 3 do not apply to them.
+
+Comparison apps (other plotting libraries drawing the same scene, for a baseline), when they are added under `benchmarks/compare/`, exist to reproduce that baseline. Their own `Directory.Build.props` and `Directory.Packages.props` cut them off from the repository's settings, their lock files are committed, and Dependabot skips them (`exclude-paths` in `.github/dependabot.yml`). Their versions move only when the baseline is measured again.
+
+```text
+# BAD — adds a package because it was convenient; the AOT publish now warns IL2026, found two PRs later
+# GOOD — NativeAOT publish of samples/ with the package: 0 warnings; binary +38 KB; not on the frame path;
+#        matrix row added in docs/design.ja.md §0
+```
