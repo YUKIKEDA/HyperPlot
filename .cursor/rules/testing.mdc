@@ -86,6 +86,7 @@ public void Build_ChunkBoundaryInsideBucket_KeepsMinimumAndMaximumOfBothChunks()
 - A check for NaN looks at each value: a rectangle with infinite edges (no clip) sums to NaN, since -∞ + ∞ is NaN.
 - The setup that a mutant needs reaches the branch it changes, and the test asserts that it does. A cache "full" for one size may still have room for a smaller item, so the mutant that changes what fits passes unless the test checks where the next item lands.
 - A memo or cache key of several values is tested by changing each value alone, the others kept: a step that changes two at once lets the mutant that drops either comparison pass.
+- A function that combines two partial results (statistics, a min/max, bounds) and has a branch for an empty side is tested with the empty side first and last, and with the other side's values all positive and all negative. The empty side's placeholder (0, `default`) lies inside one of those ranges, so a single case lets the mutant that drops the branch pass.
 - A surviving mutant is first a question about the setup (the item above). When the branch cannot be reached at all, show why and remove the branch instead of listing the mutant (`.cursor/rules/no-dead-code.mdc`).
 - A test of a comparison (a least-recently-used pick, a priority, a tie-break) sets up candidates whose values differ; with equal values, the mutant that picks the other end passes.
 - Mutation check for a guard: change the guarded term and see the test fail, then restore it by copying the file aside and back (not `git checkout`). List the mutations in the PR.
