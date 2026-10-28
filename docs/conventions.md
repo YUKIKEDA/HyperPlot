@@ -19,7 +19,7 @@ build.ps1                    ローカルのゲート（CI も同じスクリプ
 src/                         ライブラリ（HyperPlot.*、NuGet パッケージになる）
 tests/                       テスト（src/ の各プロジェクトに対応する *.Tests）
 samples/                     サンプル（NativeAOT の検査に使う、WPF を使わないサンプルを含む）
-benchmarks/                  計測（BenchmarkDotNet と End-to-end）
+benchmarks/                  計測（カーネル・データの経路・End-to-end）
 tools/                       リポジトリの生成器など
 docs/                        要件・設計・判断・ロードマップ・規約（本書）
 .cursor/rules/               エージェント向けの規約
