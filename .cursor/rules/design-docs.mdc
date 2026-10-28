@@ -32,6 +32,7 @@ alwaysApply: true
 - Before a row's design is written, the whole design is searched for the row's ID, and every contract an earlier row sent to it is taken into the new section.
 - A design that leaves a point to another row ("row X decides") names a row that exists in `docs/roadmap.md`, and that row's text names the point, in the same PR (`.cursor/rules/defer.mdc`).
 - A new design checks each invariant of design §11 that it touches, one by one, and writes an exception into the invariant's own sentence. In C2, `Dispose` waited for a worker on the UI thread against invariant 7 until a review found it.
+- A design PR that adds a sentence of contract adds the test that checks it to the row of design §10 in the same PR (`.cursor/rules/spec-checks.mdc`). The C2 design and its correction (#10, #21) both left it to a review.
 - A design that readies a contract for a later row separates the contract's shape, which the current row builds, from the implementation behind it, which the later row builds. The current row implements only what one of its requirements asks; the later row's text names the rest. D1 first had v1's shaders take depth and 3-component positions that no v1 requirement draws.
 - A sentence added to the design to answer a review is a claim like any other and is checked before it goes in.
 - After a script edits a Markdown table, read `git diff --stat`. A diff of the whole table means its columns were padded again: restore the file and replace only the rows that change.
