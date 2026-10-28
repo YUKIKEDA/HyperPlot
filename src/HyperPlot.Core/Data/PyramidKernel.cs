@@ -19,27 +19,6 @@ internal static class PyramidKernel
         return MinMaxInteger(values, out min, out max);
     }
 
-    /// <summary>Returns the number of values that are not NaN.</summary>
-    internal static int CountNumbers<T>(ReadOnlySpan<T> values)
-        where T : unmanaged, INumber<T>
-    {
-        if (typeof(T) != typeof(float) && typeof(T) != typeof(double))
-        {
-            return values.Length;
-        }
-
-        var numbers = 0;
-        foreach (var value in values)
-        {
-            if (!T.IsNaN(value))
-            {
-                numbers++;
-            }
-        }
-
-        return numbers;
-    }
-
     private static int MinMaxFloating<T>(ReadOnlySpan<T> values, out T min, out T max)
         where T : unmanaged, INumber<T>
     {

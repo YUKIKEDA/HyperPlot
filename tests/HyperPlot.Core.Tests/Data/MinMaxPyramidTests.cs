@@ -65,6 +65,41 @@ public sealed class MinMaxPyramidTests
     }
 
     /// <summary>
+    /// With NaN in every bucket, Count comes from the buckets' counts: a query reads at most the raw ends of its partial chunks.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two chunks and 70,001 floats with NaN at one in eight (every 64-element bucket partly NaN); the pyramid built and the
+    ///   chunk statistics computed.
+    ///
+    /// Steps:
+    /// - Query [100, 2 chunks + 5,000), whose first and last chunks are partial and whose middle chunk is whole; count the raw
+    ///   values the query read.
+    ///
+    /// Expected:
+    /// - Count, Min, and Max equal the loop's; at most 2 · (63 + 2 · 64) raw values were read: per partial chunk, the raw end
+    ///   (at most 63) and the 64-element buckets where the minimum and the maximum are located.
+    /// </remarks>
+    [Fact]
+    public void GetMinMax_SparseNaN_ReadsOnlyTheRawEnds()
+    {
+        var random = new Random(53);
+        var values = Enumerable.Range(0, PyramidData.Length).Select(_ => random.Next(8) == 0 ? float.NaN : (float)random.NextDouble()).ToArray();
+        using var pool = new PlotWorkerPool(2);
+        using var column = Column.Wrap(values);
+        using var pyramid = Build(pool, column);
+        const long start = 100;
+        const long end = (2L * Column.ChunkLength) + 5000;
+        var before = pyramid.RawElementsRead;
+
+        var range = pyramid.GetMinMax(start, end - start);
+
+        var expected = Reference.MinMax(PyramidData.AsStored(values), start, end);
+        Assert.Equal((expected.Count, expected.Min, expected.Max), (range.Count, (double)range.Min, (double)range.Max));
+        Assert.InRange(pyramid.RawElementsRead - before, 0, 2 * (63 + (2 * 64)));
+    }
+
+    /// <summary>
     /// The pyramid's blocks stay within the bound of design §3.3.
     /// </summary>
     /// <remarks>
@@ -75,8 +110,9 @@ public sealed class MinMaxPyramidTests
     /// - Read the bytes of the blocks.
     ///
     /// Expected:
-    /// - At most n · 2 · sizeof(T) · (1/64 + 1/512 + 1/4096 + 1/32768 + 1/262144) plus, per chunk, 5 partial buckets of
-    ///   2 · sizeof(T) bytes, and the 2-bit states of every bucket plus 5 bytes of rounding per chunk.
+    /// - At most n · 2 · sizeof(T) · (1/64 + 1/512 + 1/4096 + 1/32768 + 1/262144) for the minima and maxima, plus the counts
+    ///   n · (1/64 + 2/512 + 2/4096 + 2/32768 + 4/262144), plus per chunk 5 partial buckets of 2 · sizeof(T) + 4 bytes and 3
+    ///   bytes of alignment (design §3.3).
     /// </remarks>
     [Fact]
     public void BlockBytes_Columns_StayWithinTheDesignBound()
@@ -95,8 +131,10 @@ public sealed class MinMaxPyramidTests
             using var pyramid = pool.BuildPyramid(column);
             var size = System.Runtime.CompilerServices.Unsafe.SizeOf<T>();
             var fraction = (1.0 / 64) + (1.0 / 512) + (1.0 / 4096) + (1.0 / 32768) + (1.0 / 262144);
-            var buckets = (length * fraction) + (5.0 * column.ChunkCount);
-            var bound = (length * 2.0 * size * fraction) + (column.ChunkCount * 5.0 * 2 * size) + (buckets / 4) + (5.0 * column.ChunkCount);
+            var counts = (length / 64.0) + (2.0 * length * ((1.0 / 512) + (1.0 / 4096) + (1.0 / 32768))) + (4.0 * length / 262144);
+
+            // Per chunk: 5 partial buckets of min, max, and a count of at most 4 bytes, and at most 3 bytes of alignment.
+            var bound = (length * 2.0 * size * fraction) + counts + (column.ChunkCount * 5.0 * ((2 * size) + 4)) + (3.0 * column.ChunkCount);
             Assert.InRange(pyramid.BlockBytes, 1, (long)bound);
         }
     }

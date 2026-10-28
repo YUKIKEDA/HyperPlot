@@ -220,7 +220,7 @@ public static class M4
         var start = x.LowerBound(boundaries[0]);
         if (start > 0)
         {
-            var before = gaps == M4Gaps.Break ? start - 1 : y.FindNumber(0, start, fromEnd: true, ref provisional);
+            var before = gaps == M4Gaps.Break ? start - 1 : Known(y.FindNumber(0, start, fromEnd: true, ref provisional), start - 1);
             if (before >= 0)
             {
                 writer.Emit(before, x.ValueAt(before), double.CreateTruncating(column.GetValue(before)), M4Roles.Before);
@@ -243,7 +243,9 @@ public static class M4
             {
                 y.Query(start, end, wantCount: false, out var range);
                 provisional |= range.IsProvisional;
-                if (!range.Found)
+                var first = gaps == M4Gaps.Break ? start : Known(y.FindNumber(start, end, fromEnd: false, ref provisional), start);
+                var last = gaps == M4Gaps.Break ? end - 1 : Known(y.FindNumber(start, end, fromEnd: true, ref provisional), end - 1);
+                if (!range.Found && !range.IsProvisional)
                 {
                     // Every value of the column is NaN: nothing is drawn, and with Break the line breaks there.
                     if (gaps == M4Gaps.Break)
@@ -251,11 +253,21 @@ public static class M4
                         writer.Break();
                     }
                 }
+                else if (!range.Found)
+                {
+                    // Only chunks with no statistics yet: the minimum and maximum are unknown, and first and last stand alone.
+                    if (first >= 0)
+                    {
+                        writer.Emit(first, x.ValueAt(first), double.CreateTruncating(column.GetValue(first)), M4Roles.First);
+                    }
+
+                    if (last >= 0)
+                    {
+                        writer.Emit(last, x.ValueAt(last), double.CreateTruncating(column.GetValue(last)), M4Roles.Last);
+                    }
+                }
                 else
                 {
-                    var first = gaps == M4Gaps.Break ? start : y.FindNumber(start, end, fromEnd: false, ref provisional);
-                    var last = gaps == M4Gaps.Break ? end - 1 : y.FindNumber(start, end, fromEnd: true, ref provisional);
-
                     // A provisional range may hold a value that the column's elements do not; the provisional points stand in.
                     first = first < 0 ? range.MinIndex : first;
                     last = last < 0 ? range.MaxIndex : last;
@@ -276,7 +288,7 @@ public static class M4
 
         if (start < length)
         {
-            var after = gaps == M4Gaps.Break ? start : y.FindNumber(start, length, fromEnd: false, ref provisional);
+            var after = gaps == M4Gaps.Break ? start : Known(y.FindNumber(start, length, fromEnd: false, ref provisional), start);
             if (after >= 0)
             {
                 writer.Emit(after, x.ValueAt(after), double.CreateTruncating(column.GetValue(after)), M4Roles.After);
@@ -285,6 +297,9 @@ public static class M4
 
         return new M4Result(writer.Count, provisional);
     }
+
+    /// <summary>Returns the boundary element in place of a search that could not answer without a scan (design §5.5.1).</summary>
+    private static long Known(long found, long boundary) => found == MinMaxPyramid<byte>.Unknown ? boundary : found;
 
     private static void SortByIndex(Span<Candidate> candidates)
     {

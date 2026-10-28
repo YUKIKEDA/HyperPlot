@@ -87,6 +87,9 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     private const int Done = 3;
     private const int Failed = 4;
 
+    /// <summary>What <see cref="FindNumber"/> returns when a chunk on its way cannot answer without a scan of the raw values.</summary>
+    internal const long Unknown = -3;
+
     /// <summary>
     /// What a search inside a read returns when the block disagrees with the raw values: a rebuild overlapped the read, or the
     /// caller changed values without Invalidate yet.
@@ -104,6 +107,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     private readonly int[] _passed;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _firstPassRemaining;
+    private long _rawReads;
     private long _version;
     private Exception? _fault;
 
@@ -182,6 +186,9 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     /// <summary>Gets or sets a call a worker makes after writing a block, before the sequence goes even again. Tests only.</summary>
     internal Action? TestBlockWritten { get; set; }
 
+    /// <summary>Gets the number of raw values queries have read, to check that a query reads at most the ends. Tests only; not exact beside other threads.</summary>
+    internal long RawElementsRead => Volatile.Read(ref _rawReads);
+
     /// <summary>Gets the part of the pyramid that the pool drives.</summary>
     internal PoolWork Work { get; }
 
@@ -252,10 +259,10 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             var lo = (int)(Math.Max(start, chunkStart) - chunkStart);
             var hi = (int)(Math.Min(end, chunkStart + layout.ChunkLength) - chunkStart);
             var whole = lo == 0 && hi == layout.ChunkLength;
-            if (whole && wantCount)
+            if (whole && wantCount && Column.TryGetStoredStats(chunk, out var wholeStats))
             {
-                // The chunk statistics are exact for a whole chunk, built or not; the positions are not needed here.
-                MergeStats(ref result, Column.GetStats(chunk), chunkStart, chunkStart + hi - 1, provisional: false);
+                // Statistics already computed are exact for a whole chunk, built or not; the positions are not needed here.
+                MergeStats(ref result, wholeStats, chunkStart, chunkStart + hi - 1, provisional: false);
                 continue;
             }
 
@@ -263,7 +270,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             {
                 TestAfterSequenceRead?.Invoke();
                 var local = default(LocalResult);
-                QueryChunk(chunk, layout, lo, hi, wantCount, ref local);
+                QueryChunk(chunk, layout, lo, hi, ref local);
 
                 // The position of an extremum is missing when the raw values changed under the block: a rebuild overlapped the
                 // read, or the caller wrote values and has not called Invalidate yet. Either way the chunk is answered provisionally.
@@ -274,13 +281,23 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
                 }
             }
 
-            MergeStats(ref result, Column.GetStats(chunk), chunkStart + lo, chunkStart + hi - 1, provisional: true);
+            // The provisional path reads statistics already computed and never computes them: computing them here would scan
+            // the chunk on the caller's thread (design §3.3, invariant 2). Without them the chunk adds nothing.
+            if (Column.TryGetStoredStats(chunk, out var stats))
+            {
+                MergeStats(ref result, stats, chunkStart + lo, chunkStart + hi - 1, provisional: true);
+            }
+            else
+            {
+                result.IsProvisional = true;
+            }
         }
     }
 
     /// <summary>
-    /// Returns the first (or last) element in [start, end) that is not NaN, or -1. Skips buckets that are all NaN; a chunk
-    /// whose pyramid is not built is scanned and sets <paramref name="provisional"/>.
+    /// Returns the first (or last) element in [start, end) that is not NaN, or -1 when there is none. Skips buckets that are
+    /// all NaN. A chunk whose pyramid is not built, or whose block disagrees with the raw values, is not scanned (design
+    /// §5.5.1): the search returns <see cref="Unknown"/> and sets <paramref name="provisional"/>.
     /// </summary>
     internal long FindNumber(long start, long end, bool fromEnd, ref bool provisional)
     {
@@ -298,22 +315,19 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             var layout = LayoutOf(chunk);
             var lo = (int)(Math.Max(start, chunkStart) - chunkStart);
             var hi = (int)(Math.Min(end, chunkStart + layout.ChunkLength) - chunkStart);
-            var found = -1;
-            if (TryBeginRead(chunk, out var sequence))
-            {
-                found = fromEnd ? FindLastInChunk(chunk, layout, lo, hi) : FindFirstInChunk(chunk, layout, lo, hi);
-
-                // As in Query, a block that disagrees with the raw values (Inconsistent) is not trusted.
-                if (!EndRead(chunk, sequence) || found == Inconsistent)
-                {
-                    provisional = true;
-                    found = ScanForNumber(Column.GetChunk(chunk), lo, hi, fromEnd);
-                }
-            }
-            else
+            if (!TryBeginRead(chunk, out var sequence))
             {
                 provisional = true;
-                found = ScanForNumber(Column.GetChunk(chunk), lo, hi, fromEnd);
+                return Unknown;
+            }
+
+            var found = fromEnd ? FindLastInChunk(chunk, layout, lo, hi) : FindFirstInChunk(chunk, layout, lo, hi);
+
+            // As in Query, a block that disagrees with the raw values (Inconsistent) is not trusted.
+            if (!EndRead(chunk, sequence) || found == Inconsistent)
+            {
+                provisional = true;
+                return Unknown;
             }
 
             if (found >= 0)
@@ -405,8 +419,9 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         }
     }
 
-    private static int ScanForNumber(ReadOnlySpan<T> values, int lo, int hi, bool fromEnd)
+    private int ScanForNumber(ReadOnlySpan<T> values, int lo, int hi, bool fromEnd)
     {
+        _rawReads += hi - lo;
         if (fromEnd)
         {
             for (var i = hi - 1; i >= lo; i--)
@@ -587,33 +602,53 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
 
     private Span<T> Maxs(int chunk, PyramidLayout layout, int level) => new((byte*)_blocks[chunk] + layout.MaxOffset(level), layout.Count(level));
 
-    private Span<byte> States(int chunk, PyramidLayout layout, int level) =>
-        new((byte*)_blocks[chunk] + layout.StateOffset(level), (layout.Count(level) + 3) >> 2);
+    /// <summary>Returns a bucket's count of values that are not NaN, read in its level's width.</summary>
+    private int NumberOf(int chunk, PyramidLayout layout, int level, int bucket)
+    {
+        var at = (byte*)_blocks[chunk] + layout.NumberOffset(level);
+        return PyramidLayout.NumberWidth(level) switch
+        {
+            1 => at[bucket],
+            2 => ((ushort*)at)[bucket],
+            _ => (int)((uint*)at)[bucket],
+        };
+    }
 
-    private BucketNaN StateOf(int chunk, PyramidLayout layout, int level, int bucket) =>
-        (BucketNaN)((States(chunk, layout, level)[bucket >> 2] >> ((bucket & 3) * 2)) & 3);
+    private void SetNumber(int chunk, PyramidLayout layout, int level, int bucket, int number)
+    {
+        var at = (byte*)_blocks[chunk] + layout.NumberOffset(level);
+        switch (PyramidLayout.NumberWidth(level))
+        {
+            case 1:
+                at[bucket] = (byte)number;
+                break;
+            case 2:
+                ((ushort*)at)[bucket] = (ushort)number;
+                break;
+            default:
+                ((uint*)at)[bucket] = (uint)number;
+                break;
+        }
+    }
+
+    private BucketNaN StateOf(int chunk, PyramidLayout layout, int level, int bucket)
+    {
+        var number = NumberOf(chunk, layout, level, bucket);
+        return number == layout.BucketLength(level, bucket) ? BucketNaN.None
+            : number == 0 ? BucketNaN.All
+            : BucketNaN.Some;
+    }
 
     private void BuildBlock(int chunk, ReadOnlySpan<T> values)
     {
         var layout = LayoutOf(chunk);
-        for (var level = 0; level < PyramidLayout.LevelCount; level++)
-        {
-            States(chunk, layout, level).Clear();
-        }
-
         var mins = Mins(chunk, layout, 0);
         var maxs = Maxs(chunk, layout, 0);
-        var states = States(chunk, layout, 0);
         for (var bucket = 0; bucket < layout.Count(0); bucket++)
         {
             var first = bucket << PyramidLayout.FirstShift;
-            var slice = values.Slice(first, Math.Min(PyramidLayout.BucketSize(0), values.Length - first));
-            var numbers = PyramidKernel.MinMax(slice, out mins[bucket], out maxs[bucket]);
-            var state =
-                numbers == slice.Length ? BucketNaN.None
-                : numbers == 0 ? BucketNaN.All
-                : BucketNaN.Some;
-            states[bucket >> 2] |= (byte)((int)state << ((bucket & 3) * 2));
+            var slice = values.Slice(first, layout.BucketLength(0, bucket));
+            SetNumber(chunk, layout, 0, bucket, PyramidKernel.MinMax(slice, out mins[bucket], out maxs[bucket]));
         }
 
         for (var level = 1; level < PyramidLayout.LevelCount; level++)
@@ -623,34 +658,27 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             var childCount = layout.Count(level - 1);
             mins = Mins(chunk, layout, level);
             maxs = Maxs(chunk, layout, level);
-            states = States(chunk, layout, level);
             for (var bucket = 0; bucket < layout.Count(level); bucket++)
             {
-                var found = false;
-                var anyNaN = false;
+                var numbers = 0;
                 var min = default(T);
                 var max = default(T);
                 var end = Math.Min((bucket + 1) << PyramidLayout.ShiftStep, childCount);
                 for (var child = bucket << PyramidLayout.ShiftStep; child < end; child++)
                 {
-                    var childState = StateOf(chunk, layout, level - 1, child);
-                    anyNaN |= childState != BucketNaN.None;
-                    if (childState == BucketNaN.All)
+                    var childNumbers = NumberOf(chunk, layout, level - 1, child);
+                    if (childNumbers == 0)
                     {
                         continue;
                     }
 
-                    min = found ? T.Min(min, childMins[child]) : childMins[child];
-                    max = found ? T.Max(max, childMaxs[child]) : childMaxs[child];
-                    found = true;
+                    min = numbers > 0 ? T.Min(min, childMins[child]) : childMins[child];
+                    max = numbers > 0 ? T.Max(max, childMaxs[child]) : childMaxs[child];
+                    numbers += childNumbers;
                 }
 
                 (mins[bucket], maxs[bucket]) = (min, max);
-                var state =
-                    !anyNaN ? BucketNaN.None
-                    : found ? BucketNaN.Some
-                    : BucketNaN.All;
-                states[bucket >> 2] |= (byte)((int)state << ((bucket & 3) * 2));
+                SetNumber(chunk, layout, level, bucket, numbers);
             }
         }
     }
@@ -659,7 +687,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     /// Covers [lo, hi) of a chunk with raw runs at the ends (at most 63 elements each) and the coarsest whole buckets
     /// between (design §3.3), and locates the first occurrence of the minimum and the maximum.
     /// </summary>
-    private void QueryChunk(int chunk, PyramidLayout layout, int lo, int hi, bool wantCount, ref LocalResult local)
+    private void QueryChunk(int chunk, PyramidLayout layout, int lo, int hi, ref LocalResult local)
     {
         var values = Column.GetChunk(chunk);
         var minPiece = default(Piece);
@@ -673,6 +701,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             if (piece.Level < 0)
             {
                 var slice = values[piece.Start..piece.End];
+                _rawReads += slice.Length;
                 var numbers = PyramidKernel.MinMax(slice, out min, out max);
                 local.Count += numbers;
                 local.HasNaN |= numbers < slice.Length;
@@ -684,18 +713,14 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             }
             else
             {
-                var state = StateOf(chunk, layout, piece.Level, piece.Bucket);
-                local.HasNaN |= state != BucketNaN.None;
-                if (state == BucketNaN.All)
+                // The bucket's count answers Count and HasNaN without reading its values (design §3.3).
+                var numbers = NumberOf(chunk, layout, piece.Level, piece.Bucket);
+                local.Count += numbers;
+                local.HasNaN |= numbers < piece.End - piece.Start;
+                if (numbers == 0)
                 {
                     position = piece.End;
                     continue;
-                }
-
-                if (wantCount)
-                {
-                    local.Count +=
-                        state == BucketNaN.None ? piece.End - piece.Start : CountInBucket(chunk, layout, values, piece.Level, piece.Bucket);
                 }
 
                 min = Mins(chunk, layout, piece.Level)[piece.Bucket];
@@ -778,35 +803,9 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         }
 
         var start = bucket << PyramidLayout.FirstShift;
-        return FirstEqual(values, start, Math.Min(start + PyramidLayout.BucketSize(0), values.Length), target);
-    }
-
-    private long CountInBucket(int chunk, PyramidLayout layout, ReadOnlySpan<T> values, int level, int bucket)
-    {
-        var state = StateOf(chunk, layout, level, bucket);
-        var start = bucket << PyramidLayout.Shift(level);
-        var end = Math.Min(start + PyramidLayout.BucketSize(level), layout.ChunkLength);
-        switch (state)
-        {
-            case BucketNaN.None:
-                return end - start;
-            case BucketNaN.All:
-                return 0;
-        }
-
-        if (level == 0)
-        {
-            return PyramidKernel.CountNumbers(values[start..end]);
-        }
-
-        long count = 0;
-        var childEnd = Math.Min((bucket + 1) << PyramidLayout.ShiftStep, layout.Count(level - 1));
-        for (var child = bucket << PyramidLayout.ShiftStep; child < childEnd; child++)
-        {
-            count += CountInBucket(chunk, layout, values, level - 1, child);
-        }
-
-        return count;
+        var stop = Math.Min(start + PyramidLayout.BucketSize(0), values.Length);
+        _rawReads += stop - start;
+        return FirstEqual(values, start, stop, target);
     }
 
     private int FindFirstInChunk(int chunk, PyramidLayout layout, int lo, int hi)

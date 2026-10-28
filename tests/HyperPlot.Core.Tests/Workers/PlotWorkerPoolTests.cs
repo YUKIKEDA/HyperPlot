@@ -22,10 +22,14 @@ public sealed class PlotWorkerPoolTests
     /// - A pool of 1 thread, parked on chunk 0 of the pyramid under test (3 chunks of seeded floats).
     ///
     /// Steps:
-    /// - Query a part of chunk 2 and extract M4 over it; release chunk 0; wait for Completion; query again.
+    /// - Query a part of chunk 2 and extract M4 over it with Break and with Connect; release chunk 0; wait for Completion;
+    ///   query again.
     ///
     /// Expected:
-    /// - Before: chunk 1 unbuilt, chunk 2 requested; the range is provisional and spans chunk 2's statistics; M4 is provisional.
+    /// - Before: chunk 1 unbuilt, chunk 2 requested; with no statistics of chunk 2 yet, the range is provisional with Count 0
+    ///   and HasNaN false, and the query did not compute them; M4 is provisional and writes only First and Last in each column
+    ///   (and Before and After), and with Connect it uses the boundary elements: Before at the element before the view, then
+    ///   10 first-last pairs, then After. None of it read a raw value of the pyramid's chunks.
     /// - After: the pool built the chunks in the order 0, 2, 1; the range equals the loop's and is not provisional; IsComplete.
     /// </remarks>
     [Fact]
@@ -39,17 +43,26 @@ public sealed class PlotWorkerPoolTests
         storage.WaitForWorker(0);
         var start = (2L * Column.ChunkLength) + 100;
 
+        var rawBefore = pyramid.RawElementsRead;
         var before = pyramid.GetMinMax(start, 1000);
         var points = new M4Point[M4.MaxPointCount(10)];
         var x = Column.Uniform(0, 1, values.Length);
         var boundaries = Enumerable.Range(0, 11).Select(k => (double)(start + (k * 100))).ToArray();
         var provisional = M4.Extract(x, pyramid, boundaries, points);
+        var roles = points[..provisional.Count].Aggregate(M4Roles.None, (all, p) => all | p.Roles);
+        var connected = M4.Extract(x, pyramid, boundaries, points, new M4Options(M4Gaps.Connect));
+        var connectedPoints = points[..connected.Count].Select(p => (p.Index, p.Roles)).ToArray();
+        var rawRead = pyramid.RawElementsRead - rawBefore;
 
         Assert.Equal((Unbuilt, Requested), (pyramid.GetState(1), pyramid.GetState(2)));
-        Assert.True(before.IsProvisional);
-        var chunkStats = column.GetStats(2);
-        Assert.Equal((chunkStats.Min, chunkStats.Max), (before.Min, before.Max));
+        Assert.Equal((true, 0L, false), (before.IsProvisional, before.Count, before.HasNaN));
+        Assert.False(column.TryGetStoredStats(2, out _));
         Assert.True(provisional.IsProvisional);
+        Assert.Equal(M4Roles.Before | M4Roles.First | M4Roles.Last | M4Roles.After, roles);
+        Assert.True(connected.IsProvisional);
+        Assert.Equal(start - 1, connectedPoints[0].Index);
+        Assert.Equal(22, connectedPoints.Length);
+        Assert.Equal(0, rawRead);
 
         storage.Release(0);
         Eventually.Completes(pyramid.Completion);
@@ -76,8 +89,8 @@ public sealed class PlotWorkerPoolTests
     ///   element that is not NaN.
     ///
     /// Expected:
-    /// - The query is provisional (the block's minimum -5 is no longer in the raw values); the search finds element 64 and is
-    ///   provisional.
+    /// - The query is provisional (the block's minimum -5 is no longer in the raw values); the search does not scan the raw
+    ///   values to make up for the block: it answers Unknown and is provisional.
     /// </remarks>
     [Fact]
     public void Query_ValuesChangedWithoutInvalidate_AnswersProvisionally()
@@ -97,7 +110,7 @@ public sealed class PlotWorkerPoolTests
         var first = pyramid.FindNumber(0, 200, fromEnd: false, ref provisional);
 
         Assert.True(range.IsProvisional);
-        Assert.Equal((64L, true), (first, provisional));
+        Assert.Equal((MinMaxPyramid<float>.Unknown, true), (first, provisional));
     }
 
     /// <summary>
