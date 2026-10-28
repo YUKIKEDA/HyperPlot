@@ -131,6 +131,46 @@ public sealed class Column<T> : Column, IDisposable
     /// <summary>Releases native memory or the mapped file. A wrapped array is left as it is.</summary>
     public void Dispose() => _storage.Dispose();
 
+    /// <summary>Returns a chunk's statistics if they were computed for its current values; never computes them.</summary>
+    internal bool TryGetStoredStats(int chunkIndex, out ChunkStats<T> stats)
+    {
+        var generation = Volatile.Read(ref _generations[chunkIndex]);
+        var entry = Volatile.Read(ref _stats[chunkIndex]);
+        if (entry is not null && entry.Generation == generation)
+        {
+            stats = entry.Stats;
+            return true;
+        }
+
+        stats = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Tells whether the column is non-decreasing from statistics already computed, without computing any: false when a
+    /// chunk's statistics are missing (design §5.5.1).
+    /// </summary>
+    internal bool TryIsNonDecreasing(out bool nonDecreasing)
+    {
+        nonDecreasing = true;
+        var total = ChunkStats<T>.Empty;
+        for (var chunk = 0; chunk < ChunkCount; chunk++)
+        {
+            if (!TryGetStoredStats(chunk, out var stats))
+            {
+                return false;
+            }
+
+            total = chunk == 0 ? stats : ChunkStats<T>.Combine(total, stats);
+        }
+
+        nonDecreasing = ChunkCount == 0 || total.IsNonDecreasing;
+        return true;
+    }
+
+    /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>
+    internal long GetGeneration(int chunkIndex) => Volatile.Read(ref _generations[chunkIndex]);
+
     private int ChunkLengthOf(int chunkIndex) => (int)Math.Min(ChunkLength, Length - ((long)chunkIndex << ChunkShift));
 
     private sealed class StatsEntry(long generation, ChunkStats<T> stats)
