@@ -2,11 +2,12 @@ namespace HyperPlot.Rendering;
 
 /// <summary>
 /// Draws into an offscreen render target of any backend and reads it back, as pixels or a PNG (design §7.5). For tests,
-/// image output, and the NativeAOT check. Row R1 draws clears only.
+/// image output, and the NativeAOT check.
 /// </summary>
 /// <remarks>One thread at a time uses a renderer and its backend.</remarks>
 public sealed class HeadlessRenderer : IDisposable
 {
+    private readonly IGpuBackend _backend;
     private readonly IRenderTarget _target;
     private bool _disposed;
 
@@ -24,6 +25,7 @@ public sealed class HeadlessRenderer : IDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(width, RenderTargetDescription.MaxSide);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(height, RenderTargetDescription.MaxSide);
+        _backend = backend;
         _target = backend.CreateRenderTarget(new RenderTargetDescription(width, height));
     }
 
@@ -42,6 +44,19 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _target.Clear(color);
+    }
+
+    /// <summary>Draws a list's commands over the image (design §7.5): clear first for a background.</summary>
+    /// <param name="list">The commands.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="list"/> is null.</exception>
+    /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or the target could not be made again; the next call tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The renderer or its backend was disposed.</exception>
+    public void Render(RenderList list)
+    {
+        ArgumentNullException.ThrowIfNull(list);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _backend.Draw(_target, list);
     }
 
     /// <summary>Reads the image as RGBA, top row first, alpha not premultiplied. Allocates nothing after the first call.</summary>

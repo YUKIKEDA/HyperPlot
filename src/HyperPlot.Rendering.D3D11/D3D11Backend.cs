@@ -22,6 +22,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly bool _useWarp;
     private readonly bool _isShared;
     private readonly List<D3D11RenderTarget> _targets = [];
+    private readonly D3D11LinePipeline _lines;
     private ID3D11Device* _device;
     private ID3D11DeviceContext* _context;
     private State _state;
@@ -31,6 +32,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _useWarp = useWarp;
         _isShared = isShared;
         CreateDevice = createDevice;
+        _lines = new D3D11LinePipeline(this);
         MakeDevice();
     }
 
@@ -64,6 +66,8 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     internal ID3D11DeviceContext* Context => _context;
 
+    internal D3D11LinePipeline Lines => _lines;
+
     /// <summary>Makes a backend with a device of its own.</summary>
     /// <param name="useWarp">Use WARP even when there is hardware: for tests, which need the same pixels on every machine.</param>
     /// <returns>The backend. Dispose it after its render targets.</returns>
@@ -96,6 +100,22 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         {
             MakeAgain();
         }
+    }
+
+    /// <inheritdoc />
+    public void Draw(IRenderTarget target, RenderList list)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(list);
+        if (target is not D3D11RenderTarget own || !own.BelongsTo(this))
+        {
+            throw new ArgumentException("The render target belongs to another backend.", nameof(target));
+        }
+
+        own.ThrowIfDisposed();
+        BeginFrame();
+        _lines.Draw(own, list);
+        EndFrame();
     }
 
     /// <inheritdoc />
@@ -221,6 +241,17 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
 
         _state = State.Ready;
+        try
+        {
+            _lines.Make();
+        }
+        catch (InvalidOperationException)
+        {
+            // The pipeline is part of the device: without it the backend stays lost, and the next frame tries again.
+            ReleaseDevice();
+            _state = State.Lost;
+            throw;
+        }
     }
 
     private int TryMakeDevice(D3D_DRIVER_TYPE driver)
@@ -260,6 +291,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     private void ReleaseDevice()
     {
+        _lines.Release();
         if (_context != null)
         {
             _context->ClearState();

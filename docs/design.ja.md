@@ -408,7 +408,7 @@ public readonly record struct LineStyle(Color Color, float Width, LineDash? Dash
 
 public sealed class RenderList
 {
-    public void Clear();                                   // 命令を消し、バッファは残す
+    public void Clear();                                   // 命令を消し、切り抜きを描画先の全体に戻す。バッファは残す
     public void SetClip(int x, int y, int width, int height);   // 整数の画素の矩形
     public void ResetClip();                               // 描画先の全体
     public void DrawPolyline(ReadOnlySpan<Vector2> points, in LineStyle style);   // 物理画素

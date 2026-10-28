@@ -92,10 +92,11 @@ public sealed class HeadlessRendererTests
     /// - A fake backend of 1 × 1 pixels.
     ///
     /// Steps:
-    /// - Write a PNG to null; dispose the renderer twice; clear, read, and write.
+    /// - Write a PNG to null and render null; render a list; dispose the renderer twice; clear, read, write, and render.
     ///
     /// Expected:
-    /// - ArgumentNullException; the target is disposed once and the backend not at all; ObjectDisposedException afterwards.
+    /// - ArgumentNullException for the nulls; the backend draws the list; the target is disposed once and the backend not at
+    ///   all; ObjectDisposedException afterwards.
     /// </remarks>
     [Fact]
     public void Dispose_Renderer_ReleasesOnlyItsTarget()
@@ -104,10 +105,15 @@ public sealed class HeadlessRendererTests
         var renderer = new HeadlessRenderer(backend, 1, 1);
         Assert.Throws<ArgumentNullException>(() => renderer.WritePng(null!));
 
+        Assert.Throws<ArgumentNullException>(() => renderer.Render(null!));
+        var list = new RenderList();
+        renderer.Render(list);
+        Assert.Same(list, backend.Drawn);
         renderer.Dispose();
         renderer.Dispose();
 
         Assert.Equal((1, false), (backend.Target!.DisposeCount, backend.IsDisposed));
+        Assert.Throws<ObjectDisposedException>(() => renderer.Render(list));
         Assert.Throws<ObjectDisposedException>(() => renderer.Clear(default));
         Assert.Throws<ObjectDisposedException>(() => renderer.ReadPixels(new byte[4]));
         Assert.Throws<ObjectDisposedException>(() => renderer.WritePng(new MemoryStream()));
@@ -147,7 +153,11 @@ public sealed class HeadlessRendererTests
 
         public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => Target = new FakeTarget(description, pixels);
 
+        public RenderList? Drawn { get; private set; }
+
         public void BeginFrame() { }
+
+        public void Draw(IRenderTarget target, RenderList list) => Drawn = list;
 
         public void EndFrame() { }
 
