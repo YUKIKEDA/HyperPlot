@@ -19,8 +19,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 
 - **フェーズ:** A（データとヘッドレス描画の土台）
 - **作業中:** C2（C1 は #1 の PR で済み）
-- **ブランチ:** `docs/9-c2-design`（設計の PR）
-- **Issue:** [#9](https://github.com/YUKIKEDA/HyperPlot/issues/9)（設計）
+- **ブランチ:** `docs/14-exact-m4`（設計の修正）
+- **Issue:** [#9](https://github.com/YUKIKEDA/HyperPlot/issues/9)（設計、済み）、[#14](https://github.com/YUKIKEDA/HyperPlot/issues/14)（設計の修正）
 
 ## ツールチェーン
 
