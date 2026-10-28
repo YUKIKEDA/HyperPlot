@@ -284,7 +284,7 @@ Rejected:
 ## S1 のサンプルと行の分け方
 
 Decision:
-  行 S1 をサンプル・NativeAOT の検査・系列ごとの並列にし、End-to-end の計測と GPU 時間を行 S2、ゴールデン画像と `HyperPlot.Testing` を行 S3 に分ける。サンプルは `HelloPlot`（1e6 点、NativeAOT と P-10）と `BillionSeries`（1e9 点のメモリマップ）の 2 つで、データの線と格子の線だけを描く（Issue #50）。
+  行 S1 をサンプル・NativeAOT の検査・系列ごとの並列にし、End-to-end の計測と GPU 時間を行 S2、ゴールデン画像と `HyperPlot.Testing` を行 S3 に分ける。サンプルは `HelloPlot`（1e6 点、NativeAOT と P-10）と `BillionSeries`（1e9 点のメモリマップ）の 2 つで、データの線と格子の線だけを描く。値から画素への変換は、サンプルのコードが倍精度で行う。`RenderList` は物理画素しか受けず、`SetTransform` は行 G1 で足すためである（Issue #50）。
 
 Reason:
   6 つの仕事はどれも 1 つの PR になる大きさで、S2 は S1 のサンプルの場面を測り、S3 は S1 の画像を基準にする。NativeAOT の検査は数秒で終わる小さなサンプルで回したい。
