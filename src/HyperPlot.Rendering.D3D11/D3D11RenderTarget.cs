@@ -13,6 +13,9 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     private ID3D11Texture2D* _texture;
     private ID3D11RenderTargetView* _view;
     private ID3D11Texture2D* _staging;
+    private ID3D11Texture2D* _coverage;
+    private ID3D11RenderTargetView* _coverageView;
+    private ID3D11ShaderResourceView* _coverageResourceView;
     private bool _disposed;
 
     internal D3D11RenderTarget(D3D11Backend backend, RenderTargetDescription description)
@@ -33,6 +36,14 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
 
     /// <inheritdoc />
     public RenderTargetDescription Description { get; }
+
+    internal ID3D11RenderTargetView* View => _view;
+
+    /// <summary>Gets the view of the R8 coverage texture as a target: the polylines' pass 1 and 3 (design §5.3).</summary>
+    internal ID3D11RenderTargetView* CoverageView => _coverageView;
+
+    /// <summary>Gets the view of the R8 coverage texture as a shader resource: the polylines' pass 2.</summary>
+    internal ID3D11ShaderResourceView* CoverageResourceView => _coverageResourceView;
 
     /// <inheritdoc />
     public void Clear(Color color)
@@ -143,14 +154,34 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
         _backend.Check(device->CreateTexture2D(&description, null, &staging), "CreateTexture2D");
         _staging = staging;
 
-        // D3D11 leaves a new texture's contents undefined; transparent is what a read right after sees.
+        // The coverage of the polylines' passes: one byte a pixel, as large as the target (design §5.3).
+        description.Format = DXGI_FORMAT.DXGI_FORMAT_R8_UNORM;
+        description.Usage = D3D11_USAGE.D3D11_USAGE_DEFAULT;
+        description.CPUAccessFlags = 0;
+        description.BindFlags = (uint)(D3D11_BIND_FLAG.D3D11_BIND_RENDER_TARGET | D3D11_BIND_FLAG.D3D11_BIND_SHADER_RESOURCE);
+        ID3D11Texture2D* coverage;
+        _backend.Check(device->CreateTexture2D(&description, null, &coverage), "CreateTexture2D");
+        _coverage = coverage;
+        ID3D11RenderTargetView* coverageView;
+        _backend.Check(device->CreateRenderTargetView((ID3D11Resource*)_coverage, null, &coverageView), "CreateRenderTargetView");
+        _coverageView = coverageView;
+        ID3D11ShaderResourceView* coverageResourceView;
+        _backend.Check(device->CreateShaderResourceView((ID3D11Resource*)_coverage, null, &coverageResourceView), "CreateShaderResourceView");
+        _coverageResourceView = coverageResourceView;
+
+        // D3D11 leaves a new texture's contents undefined; transparent is what a read right after sees, and the coverage
+        // starts at 0 for the first polyline.
         var transparent = stackalloc float[4];
         _backend.Context->ClearRenderTargetView(_view, transparent);
+        _backend.Context->ClearRenderTargetView(_coverageView, transparent);
     }
 
     /// <summary>Releases the textures; the description stays, so that the backend can make them again.</summary>
     internal void ReleaseResources()
     {
+        Release(ref _coverageResourceView);
+        Release(ref _coverageView);
+        Release(ref _coverage);
         Release(ref _view);
         Release(ref _staging);
         Release(ref _texture);
@@ -166,7 +197,9 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
         }
     }
 
-    private void ThrowIfDisposed()
+    internal bool BelongsTo(D3D11Backend backend) => _backend == backend;
+
+    internal void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _backend.ThrowIfDisposed();

@@ -11,4 +11,7 @@
     <Project Path="tests/HyperPlot.Core.Tests/HyperPlot.Core.Tests.csproj" />
     <Project Path="tests/HyperPlot.Rendering.D3D11.Tests/HyperPlot.Rendering.D3D11.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/ShaderGen/ShaderGen.csproj" />
+  </Folder>
 </Solution>

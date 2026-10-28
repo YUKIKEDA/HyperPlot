@@ -49,6 +49,19 @@ public interface IGpuBackend : IDisposable
     /// <exception cref="ObjectDisposedException">The backend was disposed.</exception>
     void BeginFrame();
 
+    /// <summary>
+    /// Draws a list's commands into a render target, in a frame of its own if none is open (design §5.3). Allocates
+    /// nothing once the backend's buffers have grown to the list's size.
+    /// </summary>
+    /// <param name="target">A render target of this backend.</param>
+    /// <param name="list">The commands.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="target"/> or <paramref name="list"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="target"/> belongs to another backend.</exception>
+    /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The backend or the target was disposed.</exception>
+    void Draw(IRenderTarget target, RenderList list);
+
     /// <summary>Ends a frame, and checks that the device is still there. Does nothing while the device is lost.</summary>
     /// <exception cref="GpuDeviceLostException">The device was lost during the frame.</exception>
     void EndFrame();
