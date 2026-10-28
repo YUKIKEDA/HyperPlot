@@ -1,5 +1,4 @@
 using System.Numerics;
-using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -174,7 +173,7 @@ public sealed partial class RenderListTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The repository's src/HyperPlot.Rendering.D3D11/Shaders, found from this file's path.
+    /// - The repository's src/HyperPlot.Rendering.D3D11/Shaders, found by walking up from the test's output directory.
     ///
     /// Steps:
     /// - Hash every *.hlsl in ordinal name order (name, 0, text with LF line ends, 0) and read HlslSha256 from Shaders.g.cs.
@@ -185,7 +184,7 @@ public sealed partial class RenderListTests
     [Fact]
     public void Shaders_Generated_MatchTheHlsl()
     {
-        var shaders = Path.GetFullPath(Path.Combine(SourceDirectory(), "..", "..", "..", "src", "HyperPlot.Rendering.D3D11", "Shaders"));
+        var shaders = Path.Combine(RepositoryRoot(), "src", "HyperPlot.Rendering.D3D11", "Shaders");
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var path in Directory.GetFiles(shaders, "*.hlsl").Order(StringComparer.Ordinal))
         {
@@ -201,7 +200,22 @@ public sealed partial class RenderListTests
         Assert.Equal(Convert.ToHexString(hash.GetHashAndReset()), recorded);
     }
 
-    private static string SourceDirectory([CallerFilePath] string path = "") => Path.GetDirectoryName(path)!;
+    /// <summary>
+    /// Walks up from the test's output directory to the one with HyperPlot.slnx. Not [CallerFilePath]: the CI build maps
+    /// source paths to /_/ (ContinuousIntegrationBuild), where no file is.
+    /// </summary>
+    private static string RepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory); directory is not null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "HyperPlot.slnx")))
+            {
+                return directory.FullName;
+            }
+        }
+
+        throw new InvalidOperationException("The test runs from outside the repository.");
+    }
 
     [GeneratedRegex("HlslSha256 = \"([0-9A-F]{64})\"")]
     private static partial Regex HashLine();
