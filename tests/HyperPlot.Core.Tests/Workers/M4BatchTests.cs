@@ -167,7 +167,7 @@ public sealed class M4BatchTests
         };
         var batch = fixture.Batch(4);
         var extraction = Task.Run(() => pool.Extract(batch, fixture.Boundaries), TestContext.Current.CancellationToken);
-        Eventually.True(() => batch.HasWork, "the batch to be queued");
+        Eventually.True(() => pool.IsQueued(batch), "the batch to be in the workers' list");
 
         storage.Release(0);
         Eventually.Completes(extraction);
@@ -294,6 +294,7 @@ public sealed class M4BatchTests
         var extraction = Task.Run(() => pool.Extract(batch, fixture.Boundaries), TestContext.Current.CancellationToken);
         try
         {
+            Eventually.True(() => pool.IsQueued(batch), "the batch to be in the workers' list");
             Assert.False(SpinWait.SpinUntil(() => extraction.IsCompleted, 200), "Extract returned while its job waited on a held worker.");
         }
         finally

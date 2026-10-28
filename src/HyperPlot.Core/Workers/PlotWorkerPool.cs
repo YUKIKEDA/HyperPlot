@@ -176,7 +176,7 @@ public sealed class PlotWorkerPool : IDisposable
         lock (_gate)
         {
             batch.Next = _batches;
-            _batches = batch;
+            Volatile.Write(ref _batches, batch);
         }
 
         try
@@ -233,6 +233,23 @@ public sealed class PlotWorkerPool : IDisposable
         // The event is not disposed: a query on another thread may still call Wake, which must not throw.
     }
 
+    /// <summary>Returns whether a batch is in the list the workers read; tests wait for it before they release a worker.</summary>
+    internal bool IsQueued(M4Batch batch)
+    {
+        lock (_gate)
+        {
+            for (var candidate = _batches; candidate is not null; candidate = candidate.Next)
+            {
+                if (candidate == batch)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     /// <summary>Gets or sets a value indicating whether the caller of Extract takes jobs; tests turn it off to see the workers' order.</summary>
     internal bool CallerTakesJobs { get; set; } = true;
 
@@ -266,7 +283,7 @@ public sealed class PlotWorkerPool : IDisposable
         {
             if (_batches == batch)
             {
-                _batches = batch.Next;
+                Volatile.Write(ref _batches, batch.Next);
             }
             else
             {
@@ -307,16 +324,20 @@ public sealed class PlotWorkerPool : IDisposable
 
     private bool RunOne()
     {
-        // The jobs of a frame come before pyramid chunks (design §8.1).
+        // The jobs of a frame come before pyramid chunks (design §8.1). With no batch, the build path takes no lock; a batch
+        // linked just after this read wakes the threads, so it is not missed.
         M4Batch? batch = null;
-        lock (_gate)
+        if (Volatile.Read(ref _batches) is not null)
         {
-            for (var candidate = _batches; candidate is not null; candidate = candidate.Next)
+            lock (_gate)
             {
-                if (candidate.HasWork)
+                for (var candidate = _batches; candidate is not null; candidate = candidate.Next)
                 {
-                    batch = candidate;
-                    break;
+                    if (candidate.HasWork)
+                    {
+                        batch = candidate;
+                        break;
+                    }
                 }
             }
         }
