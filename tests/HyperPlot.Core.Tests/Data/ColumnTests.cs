@@ -54,14 +54,14 @@ public sealed class ColumnTests
     /// - The values 0, 1, 2, ... over one chunk and 10 elements.
     ///
     /// Steps:
-    /// - Make a wrapped, a native-copied, a native-filled, and a mapped column from them.
+    /// - Make a wrapped, a pointer-wrapped, a native-copied, a native-filled, and a mapped column from them.
     /// - Read elements on both sides of the seam with GetValue, and the second chunk with GetChunk.
     ///
     /// Expected:
     /// - Each element equals its index, in every storage, and StorageKind names the storage.
     /// </remarks>
     [Fact]
-    public void GetValue_EveryStorage_ReadsTheValuesAcrossTheChunkSeam()
+    public unsafe void GetValue_EveryStorage_ReadsTheValuesAcrossTheChunkSeam()
     {
         const int length = Column.ChunkLength + 10;
         var values = new int[length];
@@ -84,12 +84,23 @@ public sealed class ColumnTests
             }
         );
         using var mapped = Column.MapFile<int>(file.Path);
+        fixed (int* pointer = values)
+        {
+            using var pointed = Column.Wrap(pointer, length);
+            Assert.Equal(ColumnStorageKind.Native, pointed.StorageKind);
+            AssertReadsIndices(pointed);
+        }
 
         Assert.Equal(ColumnStorageKind.Managed, wrapped.StorageKind);
         Assert.Equal(ColumnStorageKind.Native, copied.StorageKind);
         Assert.Equal(ColumnStorageKind.Native, filled.StorageKind);
         Assert.Equal(ColumnStorageKind.MemoryMapped, mapped.StorageKind);
         foreach (var column in new[] { wrapped, copied, filled, mapped })
+        {
+            AssertReadsIndices(column);
+        }
+
+        static void AssertReadsIndices(Column<int> column)
         {
             Assert.Equal(length, column.Length);
             foreach (var index in new long[] { 0, Column.ChunkLength - 1, Column.ChunkLength, length - 1 })
@@ -127,6 +138,76 @@ public sealed class ColumnTests
 
         Assert.Equal(20, wrapped.GetValue(1));
         Assert.Equal(2, copied.GetValue(1));
+    }
+
+    /// <summary>
+    /// Wrap of a pointer reads the caller's memory itself, and Dispose leaves the memory to the caller.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Native memory of 3 floats that the test allocates.
+    ///
+    /// Steps:
+    /// - Wrap it, read the statistics, change an element, and invalidate it.
+    /// - Dispose the column, then free the memory.
+    ///
+    /// Expected:
+    /// - The column reads the new value and the new Max (no copy, requirement D-3).
+    /// - Disposing the column does not free the memory: the test's own free succeeds and the memory reads the same.
+    /// </remarks>
+    [Fact]
+    public unsafe void Wrap_PointerChanged_ReadsTheChangeAndLeavesTheMemoryToTheCaller()
+    {
+        var memory = (float*)NativeMemory.Alloc(3, sizeof(float));
+        try
+        {
+            memory[0] = 1;
+            memory[1] = 2;
+            memory[2] = 3;
+            var column = Column.Wrap(memory, 3);
+            Assert.Equal(3, column.GetStats(0).Max);
+
+            memory[1] = 20;
+            column.Invalidate(1, 1);
+
+            Assert.Equal(20, column.GetValue(1));
+            Assert.Equal(20, column.GetStats(0).Max);
+            column.Dispose();
+            Assert.Equal(20, memory[1]);
+        }
+        finally
+        {
+            NativeMemory.Free(memory);
+        }
+    }
+
+    /// <summary>
+    /// Wrap of a pointer takes a null pointer only for an empty column, and refuses a negative length.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A null pointer and a valid one.
+    ///
+    /// Steps:
+    /// - Wrap null with length 0 and with length 1; wrap the valid pointer with length -1; wrap a short pointer.
+    ///
+    /// Expected:
+    /// - An empty column; ArgumentNullException; ArgumentOutOfRangeException; NotSupportedException.
+    /// </remarks>
+    [Fact]
+    public unsafe void Wrap_PointerArguments_AcceptOnlyAValidPair()
+    {
+        var value = 1f;
+        short other = 1;
+        var valid = &value;
+        var unsupported = &other;
+
+        using var empty = Column.Wrap<float>(null, 0);
+
+        Assert.Equal(0, empty.ChunkCount);
+        Assert.Throws<ArgumentNullException>(() => Column.Wrap<float>(null, 1));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Column.Wrap(valid, -1));
+        Assert.Throws<NotSupportedException>(() => Column.Wrap(unsupported, 1));
     }
 
     /// <summary>
@@ -334,7 +415,8 @@ public sealed class ColumnTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A wrapped, a native, and a mapped column of two chunks, whose statistics were read once: every storage of design §3.2.
+    /// - A wrapped, a pointer-wrapped, a native, and a mapped column of two chunks, whose statistics were read once: every
+    ///   storage of design §3.2.
     ///
     /// Steps:
     /// - Read every chunk, a value, and every chunk's statistics 100 times while counting this thread's allocations.
@@ -343,26 +425,32 @@ public sealed class ColumnTests
     /// - 0 bytes.
     /// </remarks>
     [Fact]
-    public void GetChunkAndGetStats_SteadyState_AllocateNothing()
+    public unsafe void GetChunkAndGetStats_SteadyState_AllocateNothing()
     {
         var values = new float[Column.ChunkLength + 5];
         using var file = TempFile.Write<float>(values, prefixBytes: 0);
         using var wrapped = Column.Wrap(values);
         using var native = Column.CopyToNative<float>(values);
         using var mapped = Column.MapFile<float>(file.Path);
-        Read(wrapped);
-        Read(native);
-        Read(mapped);
-
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 100; i++)
+        fixed (float* pointer = values)
         {
+            using var pointed = Column.Wrap(pointer, values.Length);
             Read(wrapped);
+            Read(pointed);
             Read(native);
             Read(mapped);
-        }
 
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 100; i++)
+            {
+                Read(wrapped);
+                Read(pointed);
+                Read(native);
+                Read(mapped);
+            }
+
+            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        }
 
         static void Read(Column<float> column)
         {

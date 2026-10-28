@@ -4,8 +4,8 @@ namespace HyperPlot;
 
 /// <summary>
 /// A column with stored values, read one chunk at a time (design §3.1, §3.2). Make one with <see cref="Column.Wrap{T}(T[])"/>,
-/// <see cref="Column.CopyToNative{T}(ReadOnlySpan{T})"/>, <see cref="Column.CreateNative{T}(long, NativeChunkFiller{T})"/>, or
-/// <see cref="Column.MapFile{T}(string, long, long?)"/>.
+/// <see cref="Column.Wrap{T}(T*, long)"/>, <see cref="Column.CopyToNative{T}(ReadOnlySpan{T})"/>,
+/// <see cref="Column.CreateNative{T}(long, NativeChunkFiller{T})"/>, or <see cref="Column.MapFile{T}(string, long, long?)"/>.
 /// </summary>
 /// <typeparam name="T">The element type: <see cref="float"/>, <see cref="double"/>, <see cref="int"/>, <see cref="long"/>, or <see cref="byte"/>.</typeparam>
 /// <remarks>

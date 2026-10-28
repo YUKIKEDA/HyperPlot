@@ -150,7 +150,7 @@ public sealed class Column<T> : Column, IDisposable where T : unmanaged, INumber
 - **暗黙の列**: 等間隔の X（`UniformColumn`: 開始値と刻み、要件 D-5）は値を持たない。i 番目の値は `start + i * step` を倍精度で計算する。時系列で最も多い形で、索引も二分探索も要らない
 - **欠損**: `float` / `double` は NaN を欠損とする。整数の列は任意の有効ビット列（1 ビット/要素）を持つ
 - **表**: `DataTable` は長さの等しい名前付きの列の集合である。API は型付きの参照 `ColumnRef<T>`（表と列の位置）で列を指す。文字列の列名は `table.Col<float>("y")` で参照に解決し、その時点で型を確かめる
-- **ゼロコピー**: 利用者の `T[]`・`Memory<T>`・ポインタを写さずに包める（要件 D-3）。包んだ領域を利用者が書き換えたら `column.Invalidate(start, length)` を呼ぶ契約とする。写す API は名前に `Copy` を含める
+- **ゼロコピー**: 利用者の `T[]`・`Memory<T>`・ポインタ（`Column.Wrap<T>(T* pointer, long length)`）を写さずに包める（要件 D-3）。ポインタは `Memory<T>` の `int` の上限を超える長さを包め、メモリの寿命は利用者が持つ。包んだ領域を利用者が書き換えたら `column.Invalidate(start, length)` を呼ぶ契約とする。写す API は名前に `Copy` を含める
 
 ### 3.2 チャンクとストレージ
 
@@ -160,7 +160,7 @@ public sealed class Column<T> : Column, IDisposable where T : unmanaged, INumber
 | 種類 | 実体 | 用途 |
 | --- | --- | --- |
 | マネージド | `T[]` または `Memory<T>` | 小〜中規模、利用者の配列を包む |
-| ネイティブ | `NativeMemory.AlignedAlloc`（64 バイト境界）をチャンクごとに | 追記・リングバッファ・大規模なメモリ上のデータ |
+| ネイティブ | `NativeMemory.AlignedAlloc`（64 バイト境界）をチャンクごとに列が持つ。または利用者が持つメモリをポインタと `long` の長さで包む（写さない。境界は利用者のメモリのまま） | 追記・リングバッファ・大規模なメモリ上のデータ、計測機器のバッファ |
 | メモリマップ | `MemoryMappedFile` のビュー。列の範囲を 1 つのビューで写像し、チャンクはその中の位置で切り出す | RAM に載らない 10 億点のファイル |
 
 - メモリマップの列は、生のリトルエンディアンの配列のファイル（先頭のオフセット・型・長さを指定）を読む。ファイル形式の網羅はしない（要件 D-8）

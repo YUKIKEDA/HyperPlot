@@ -65,6 +65,30 @@ public abstract class Column
         return new Column<T>(new ManagedColumnStorage<T>(values), values.Length);
     }
 
+    /// <summary>
+    /// Wraps native memory that the caller owns, without copying it. The length may exceed what a managed array or a
+    /// <see cref="Memory{T}"/> can hold.
+    /// </summary>
+    /// <typeparam name="T">The element type: <see cref="float"/>, <see cref="double"/>, <see cref="int"/>, <see cref="long"/>, or <see cref="byte"/>.</typeparam>
+    /// <param name="pointer">
+    /// The first value. The memory stays valid and in place until the column is no longer read; disposing the column does
+    /// not free it. After changing values, call <see cref="Column{T}.Invalidate(long, long)"/>.
+    /// </param>
+    /// <param name="length">The number of values. <paramref name="pointer"/> may be null only when it is 0.</param>
+    /// <returns>A column that reads the memory, with <see cref="ColumnStorageKind.Native"/> storage.</returns>
+    public static unsafe Column<T> Wrap<T>(T* pointer, long length)
+        where T : unmanaged, INumber<T>
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(length);
+        if (pointer == null && length != 0)
+        {
+            throw new ArgumentNullException(nameof(pointer), "A null pointer can only wrap a length of 0.");
+        }
+
+        ColumnElement<T>.Validate();
+        return new Column<T>(new PointerColumnStorage<T>(pointer), length);
+    }
+
     /// <summary>Copies values into native memory that the column owns, aligned to 64 bytes per chunk.</summary>
     /// <typeparam name="T">The element type: <see cref="float"/>, <see cref="double"/>, <see cref="int"/>, <see cref="long"/>, or <see cref="byte"/>.</typeparam>
     /// <param name="values">The values to copy.</param>

@@ -9,7 +9,10 @@ public enum ColumnStorageKind
     /// <summary>A managed array or memory region, wrapped without a copy.</summary>
     Managed,
 
-    /// <summary>Native memory that the column owns, one 64-byte aligned block per chunk.</summary>
+    /// <summary>
+    /// Native memory: one 64-byte aligned block per chunk that the column owns, or memory that the caller owns and wrapped
+    /// with a pointer.
+    /// </summary>
     Native,
 
     /// <summary>A file mapped for reading.</summary>
@@ -105,6 +108,22 @@ internal sealed unsafe class NativeColumnStorage<T> : ColumnStorage<T>
             }
         }
     }
+}
+
+internal sealed unsafe class PointerColumnStorage<T>(T* first) : ColumnStorage<T>
+    where T : unmanaged
+{
+    public override ColumnStorageKind Kind => ColumnStorageKind.Native;
+
+    public override ReadOnlySpan<T> GetChunk(int chunkIndex, int length)
+    {
+        // The column checked chunkIndex and computed length from Length, which the caller gave for this memory. The caller
+        // keeps the memory valid while the column is read (the contract of Column.Wrap).
+        return new ReadOnlySpan<T>(first + ((long)chunkIndex << Column.ChunkShift), length);
+    }
+
+    /// <summary>Leaves the wrapped memory as it is; the caller owns it.</summary>
+    public override void Dispose() { }
 }
 
 internal sealed unsafe class MappedColumnStorage<T> : ColumnStorage<T>
