@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** A（データとヘッドレス描画の土台）
-- **作業中:** S1（R2 は #46 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** S1（設計: サンプルと系列ごとの並列）
+- **ブランチ:** `docs/50-s1-sample-batch`
+- **Issue:** [#50](https://github.com/YUKIKEDA/HyperPlot/issues/50)
 
 ## ツールチェーン
 
@@ -42,7 +42,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | B1 | ベンチマークの基盤と参照機の固定（統計・LOD・M4 のカーネル、統計と水準 1 の走査の統合、暫定の表示が替わるまでの時間、メモリマップのページキャッシュに載る前の 1 フレーム） | done | [#26](https://github.com/YUKIKEDA/HyperPlot/issues/26)（設計）、[#30](https://github.com/YUKIKEDA/HyperPlot/issues/30) |
 | R1 | D3D11 のデバイス、ヘッドレスの描画先、readback、PNG（WARP のテスト、NativeAOT のスクラッチの発行を 1 回） | done | [#34](https://github.com/YUKIKEDA/HyperPlot/issues/34)（設計）、[#38](https://github.com/YUKIKEDA/HyperPlot/issues/38) |
 | R2 | シェーダの生成器と線分のパイプライン（アンチエイリアス、丸い結合、破線、喪失の後のパイプラインの作り直し、CPU（記録と書き込み）と GPU（参照機、1,920 列の M4 の線 1 本と 16 本）の計測） | done | [#42](https://github.com/YUKIKEDA/HyperPlot/issues/42)（設計）、[#46](https://github.com/YUKIKEDA/HyperPlot/issues/46) |
-| S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（NativeAOT の検査、系列ごとの M4 のフレーム内の並列、End-to-end の計測の基盤、GPU 時間の計測、ゴールデン画像の比較（`HyperPlot.Testing`）） | not-started | |
+| S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（`HelloPlot`・`BillionSeries`、NativeAOT の検査と P-10 の確定、系列ごとの M4 の並列 `M4Batch`） | in-progress | [#50](https://github.com/YUKIKEDA/HyperPlot/issues/50)（設計） |
+| S2 | End-to-end の計測（`benchmarks/HyperPlot.E2E`）、公開の GPU 時間の計測、P-1 の計測、系列が少ないときの画素列の範囲での分け方の要否 | not-started | |
+| S3 | ゴールデン画像の比較（`HyperPlot.Testing`） | not-started | |
 | **B: GoG** | | | |
 | G1 | 仕様モデルとビルダ（Plot / Layer / Encoding / コンパイル）、`RenderList.SetTransform`（§3.6） | not-started | |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計 | not-started | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11) |
