@@ -33,8 +33,10 @@ docs/                        要件・設計・判断・ロードマップ・規
 
 | プロジェクト | 責務 |
 | --- | --- |
-| `src/HyperPlot.Core` | エンジン本体。今はデータ層の列（`Column`・`Column<T>`・`UniformColumn`）、3 種のストレージ（マネージド・ネイティブ・メモリマップ）、チャンクの統計（`ChunkStats<T>`、SIMD のカーネル）、min / max のピラミッド（`MinMaxPyramid<T>`・`MinMax<T>`）と M4 の抽出（`M4`）（`Data/`、設計書 §3.1〜§3.3・§5.5.1。ストレージとピラミッドのブロックに unsafe 可）と、ワーカーのプール（`PlotWorkerPool`、`Workers/`、設計書 §8.1） |
+| `src/HyperPlot.Core` | エンジン本体。今はデータ層の列（`Column`・`Column<T>`・`UniformColumn`）、3 種のストレージ（マネージド・ネイティブ・メモリマップ）、チャンクの統計（`ChunkStats<T>`、SIMD のカーネル）、min / max のピラミッド（`MinMaxPyramid<T>`・`MinMax<T>`）と M4 の抽出（`M4`）（`Data/`、設計書 §3.1〜§3.3・§5.5.1。ストレージとピラミッドのブロックに unsafe 可）と、ワーカーのプール（`PlotWorkerPool`、`Workers/`、設計書 §8.1）。色の型（`Color`）と、GPU の契約・ヘッドレスの描画・PNG の書き出し（`Rendering/`、`HyperPlot.Rendering`、設計書 §5.2・§7.5） |
+| `src/HyperPlot.Rendering.D3D11` | D3D11 のバックエンド（`D3D11Backend`、設計書 §5.3）: 共有のデバイス、ハードウェアから WARP、オフスクリーンの描画先と readback、デバイスの喪失と作り直し。TerraFX で COM の vtable を呼ぶ（unsafe 可） |
 | `tests/HyperPlot.Core.Tests` | Core の単体テスト。統計はスカラーのループと、ピラミッドと M4 はすべての要素を回るループ（`Data/Reference.cs`）と比べ、ゼロアロケーションを確かめる。ワーカーの状態は、ワーカーのスレッドでの読み出しを止める・失敗させるストレージ（`Data/TestStorage.cs`）で作る |
+| `tests/HyperPlot.Rendering.D3D11.Tests` | D3D11 のバックエンドのテスト。WARP で、Windows でだけ回す。喪失は internal の差し込み口（HRESULT・理由・デバイスの作成）で起こす。PNG は Core のテストの復号器（`Rendering/PngDecoder.cs`）をリンクして読み戻す |
 | `benchmarks/HyperPlot.Benchmarks` | カーネルの計測（BenchmarkDotNet、設計書 §9）。チャンクの統計・水準 1・統計と水準 1 をまとめた試作（`FusedChunkPass`）、区間の min / max、M4。internal のカーネルを呼ぶ。ゲートではない |
 | `benchmarks/HyperPlot.DataPath` | データの経路の計測（NativeAOT、GPU なし、設計書 §9）と、シードから系列のファイルをバッファなしで書く生成器。場面は構築・暫定が替わるまで・冷えた 1 フレーム。ゲートではない |
 

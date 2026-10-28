@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>HyperPlot.Rendering.D3D11.Tests</RootNamespace>
+    <!-- The allocation test reads GC.GetAllocatedBytesForCurrentThread; tiering could allocate in its window (.cursor/rules/bench.mdc). -->
+    <TieredCompilation>false</TieredCompilation>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\HyperPlot.Rendering.D3D11\HyperPlot.Rendering.D3D11.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The PNG decoder written apart from the writer, shared with Core's tests. -->
+    <Compile Include="..\HyperPlot.Core.Tests\Rendering\PngDecoder.cs" Link="PngDecoder.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+</Project>
