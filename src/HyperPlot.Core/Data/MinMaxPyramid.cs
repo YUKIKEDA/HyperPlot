@@ -327,11 +327,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
 
     private void OnPoolDisposed()
     {
-        if (Volatile.Read(ref _firstPassRemaining) == 0)
-        {
-            return;
-        }
-
+        // No chunk is built again after the pool is gone, even after an Invalidate, so the fault is set in every case.
         var disposed = new ObjectDisposedException(nameof(PlotWorkerPool));
         Interlocked.CompareExchange(ref _fault, disposed, null);
         _completion.TrySetException(disposed);

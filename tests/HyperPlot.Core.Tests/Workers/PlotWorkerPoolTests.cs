@@ -300,23 +300,28 @@ public sealed class PlotWorkerPoolTests
     }
 
     /// <summary>
-    /// Disposing the pool lets the worker finish its chunk, joins it, and gives the pyramids with chunks left ObjectDisposedException.
+    /// Disposing the pool lets the worker finish its chunk, joins it, and gives every pyramid of the pool ObjectDisposedException
+    /// as its fault, since nothing is built again after it.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread; a pyramid over 3 chunks whose chunk 0 is held while the worker reads it.
+    /// - A pool of 1 thread; a small pyramid built to completion; a pyramid over 3 chunks whose chunk 0 is held while the
+    ///   worker reads it.
     ///
     /// Steps:
     /// - Dispose the pool on a thread of the test; release chunk 0; join; build another pyramid on the pool.
     ///
     /// Expected:
     /// - Chunk 0 is done, chunks 1 and 2 unbuilt; Fault and Completion carry ObjectDisposedException; BuildPyramid throws it;
-    ///   the shared pool's Dispose does nothing.
+    ///   the built pyramid's Fault is ObjectDisposedException too, while its Completion stays successful; the shared pool's
+    ///   Dispose does nothing.
     /// </remarks>
     [Fact]
     public void Dispose_Pool_FinishesTheChunkAndFaultsWhatIsLeft()
     {
         var pool = new PlotWorkerPool(1);
+        using var small = Column.Wrap(new float[100]);
+        using var built = MinMaxPyramidTests.Build(pool, small);
         using var column = TestStorage<float>.MakeColumn(new float[PyramidData.Length], out var storage);
         storage.Hold(0);
         using var pyramid = pool.BuildPyramid(column);
@@ -331,6 +336,8 @@ public sealed class PlotWorkerPoolTests
         Assert.IsType<ObjectDisposedException>(pyramid.Fault);
         Assert.IsType<ObjectDisposedException>(Eventually.Faults(pyramid.Completion));
         Assert.Throws<ObjectDisposedException>(() => pool.BuildPyramid(column));
+        Assert.IsType<ObjectDisposedException>(built.Fault);
+        Assert.True(built.Completion.IsCompletedSuccessfully);
         PlotWorkerPool.Shared.Dispose();
         Assert.True(PlotWorkerPool.Shared.ThreadCount >= 1);
         using var shared = PlotWorkerPool.Shared.BuildPyramid(Column.Wrap(new float[3]));

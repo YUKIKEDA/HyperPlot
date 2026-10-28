@@ -35,9 +35,26 @@ public sealed class PlotWorkerPool : IDisposable
             _threads[i] = new Thread(Run) { IsBackground = true, Name = $"HyperPlot worker {i}" };
         }
 
-        foreach (var thread in _threads)
+        var started = 0;
+        try
         {
-            thread.Start();
+            foreach (var thread in _threads)
+            {
+                thread.Start();
+                started++;
+            }
+        }
+        catch
+        {
+            // Stop the threads that did start, so that none is left waiting for work that never comes.
+            _disposed = true;
+            _wake.Set();
+            for (var i = 0; i < started; i++)
+            {
+                _threads[i].Join();
+            }
+
+            throw;
         }
     }
 
@@ -63,10 +80,21 @@ public sealed class PlotWorkerPool : IDisposable
         ArgumentNullException.ThrowIfNull(column);
         ObjectDisposedException.ThrowIf(_disposed, this);
         var pyramid = new MinMaxPyramid<T>(this, column);
+        var registered = false;
         lock (_gate)
         {
-            ObjectDisposedException.ThrowIf(_disposed, this);
-            _pyramids = [.. _pyramids, pyramid.Work];
+            if (!_disposed)
+            {
+                _pyramids = [.. _pyramids, pyramid.Work];
+                registered = true;
+            }
+        }
+
+        if (!registered)
+        {
+            // The pool was disposed while the pyramid was made: free its blocks before throwing.
+            pyramid.Dispose();
+            throw new ObjectDisposedException(nameof(PlotWorkerPool));
         }
 
         Wake();

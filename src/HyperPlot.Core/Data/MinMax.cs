@@ -30,8 +30,8 @@ public readonly struct MinMax<T>
 
     /// <summary>
     /// Gets a value indicating whether a chunk whose pyramid was not built yet was answered from the chunk's statistics. The
-    /// range of such a result covers the whole chunk, so it may be wider than the true one; ask again after
-    /// <see cref="MinMaxPyramid{T}.Version"/> changes.
+    /// minimum, the maximum, <see cref="Count"/>, and <see cref="HasNaN"/> of such a chunk are the whole chunk's, so the range
+    /// may be wider and the count larger than the true ones; ask again after <see cref="MinMaxPyramid{T}.Version"/> changes.
     /// </summary>
     public bool IsProvisional { get; }
 }
