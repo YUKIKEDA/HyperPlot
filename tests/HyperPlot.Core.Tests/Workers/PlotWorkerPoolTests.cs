@@ -167,8 +167,10 @@ public sealed class PlotWorkerPoolTests
     /// - While chunk 1 is building, write 7 into it and invalidate it; release it; wait for Completion and for IsComplete.
     ///
     /// Expected:
-    /// - Chunk 1 is building and the pyramid is not complete while held; the worker read chunk 1 twice; afterwards the pyramid
-    ///   is complete and the range over chunk 1 has Max 7, not provisional.
+    /// - Chunk 1 is building and the pyramid is not complete while held; the worker read chunk 1 twice, once a build, since the
+    ///   statistics and the first level come from one pass (design §3.3); afterwards the pyramid is complete, the range over
+    ///   chunk 1 has Max 7, not provisional, and the stored statistics are those of the second build (Max 7), not of the
+    ///   first, which read the old values.
     /// </remarks>
     [Fact]
     public void Build_InvalidateDuringBuild_BuildsTheChunkAgain()
@@ -189,8 +191,10 @@ public sealed class PlotWorkerPoolTests
         Eventually.Completes(pyramid.Completion);
         Eventually.True(() => pyramid.IsComplete, "the pyramid to be complete");
         var range = pyramid.GetMinMax(Column.ChunkLength, 1000);
-        Assert.True(storage.WorkerReads(1) >= 4, "The stats pass and the pyramid pass read chunk 1 in each of the two builds.");
+        Assert.Equal(2, storage.WorkerReads(1));
         Assert.Equal((7f, false), (range.Max, range.IsProvisional));
+        Assert.True(column.TryGetStoredStats(1, out var stats));
+        Assert.Equal(7f, stats.Max);
     }
 
     /// <summary>

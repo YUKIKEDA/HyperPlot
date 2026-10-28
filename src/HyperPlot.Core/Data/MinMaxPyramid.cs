@@ -389,21 +389,29 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         var generation = Column.GetGeneration(chunk);
         try
         {
-            // The statistics are computed ahead here, so that queries of whole chunks find them (design §3.2).
-            _ = Column.GetStats(chunk);
             var values = Column.GetChunk(chunk);
+
+            // The statistics are computed here if no one has yet, so that queries of whole chunks find them (design §3.2),
+            // in the same pass as the first level (§3.3).
+            var withStats = !Column.TryGetStoredStats(chunk, out _);
 
             // Rule 1 makes this worker the only writer of the block, so the sequence goes odd and even again (seqlock).
             Interlocked.Increment(ref _sequences[chunk]);
+            ChunkStats<T> stats;
             try
             {
-                BuildBlock(chunk, values);
+                stats = BuildBlock(chunk, values, withStats);
                 Volatile.Write(ref _builtGenerations[chunk], generation);
                 TestBlockWritten?.Invoke();
             }
             finally
             {
                 Interlocked.Increment(ref _sequences[chunk]);
+            }
+
+            if (withStats)
+            {
+                Column.StoreStats(chunk, generation, stats);
             }
         }
         catch (Exception exception)
@@ -650,16 +658,21 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             : BucketNaN.Some;
     }
 
-    private void BuildBlock(int chunk, ReadOnlySpan<T> values)
+    /// <summary>Writes the block; with <paramref name="withStats"/>, returns the chunk's statistics from the same pass.</summary>
+    private ChunkStats<T> BuildBlock(int chunk, ReadOnlySpan<T> values, bool withStats)
     {
         var layout = LayoutOf(chunk);
         var mins = Mins(chunk, layout, 0);
         var maxs = Maxs(chunk, layout, 0);
-        for (var bucket = 0; bucket < layout.Count(0); bucket++)
+        var level1Numbers = Numbers<byte>(chunk, layout, 0);
+        var stats = default(ChunkStats<T>);
+        if (withStats)
         {
-            var first = bucket << PyramidLayout.FirstShift;
-            var slice = values.Slice(first, layout.BucketLength(0, bucket));
-            SetNumber(chunk, layout, 0, bucket, PyramidKernel.MinMax(slice, out mins[bucket], out maxs[bucket]));
+            stats = PyramidKernel.StatsAndLevel1(values, mins, maxs, level1Numbers);
+        }
+        else
+        {
+            PyramidKernel.Level1(values, mins, maxs, level1Numbers);
         }
 
         for (var level = 1; level < PyramidLayout.LevelCount; level++)
@@ -692,6 +705,8 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
                 SetNumber(chunk, layout, level, bucket, numbers);
             }
         }
+
+        return stats;
     }
 
     /// <summary>
