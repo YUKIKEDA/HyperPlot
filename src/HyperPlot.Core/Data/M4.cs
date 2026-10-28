@@ -180,10 +180,9 @@ public static class M4
         return Run(ref source, y, boundaries, destination, options.Gaps);
     }
 
-    private static void Validate<TY>(Column x, MinMaxPyramid<TY> y, ReadOnlySpan<double> boundaries, Span<M4Point> destination)
-        where TY : unmanaged, INumber<TY>
+    /// <summary>Throws unless there are at least 2 boundaries, finite and strictly increasing (design §5.5.1).</summary>
+    internal static void ValidateBoundaries(ReadOnlySpan<double> boundaries)
     {
-        y.ThrowIfDisposed();
         if (boundaries.Length < 2)
         {
             throw new ArgumentException("At least 2 boundaries (1 pixel column) are needed.", nameof(boundaries));
@@ -196,7 +195,13 @@ public static class M4
                 throw new ArgumentException("The boundaries must be finite and strictly increasing.", nameof(boundaries));
             }
         }
+    }
 
+    private static void Validate<TY>(Column x, MinMaxPyramid<TY> y, ReadOnlySpan<double> boundaries, Span<M4Point> destination)
+        where TY : unmanaged, INumber<TY>
+    {
+        y.ThrowIfDisposed();
+        ValidateBoundaries(boundaries);
         if (destination.Length < MaxPointCount(boundaries.Length - 1))
         {
             throw new ArgumentException($"The destination needs {MaxPointCount(boundaries.Length - 1)} points.", nameof(destination));

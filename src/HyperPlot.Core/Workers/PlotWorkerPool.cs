@@ -3,7 +3,8 @@ using System.Numerics;
 namespace HyperPlot;
 
 /// <summary>
-/// A fixed set of background threads that build pyramids and compute column statistics ahead, chunk by chunk (design §8.1).
+/// A fixed set of background threads that build pyramids and compute column statistics ahead, chunk by chunk, and extract
+/// the series of an <see cref="M4Batch"/> within a frame (design §8.1).
 /// Use <see cref="Shared"/>, or make a pool of your own and dispose it when done.
 /// </summary>
 public sealed class PlotWorkerPool : IDisposable
@@ -17,7 +18,12 @@ public sealed class PlotWorkerPool : IDisposable
     private readonly ManualResetEventSlim _wake = new(initialState: false);
     private readonly Lock _gate = new();
     private readonly bool _isShared;
+
+    [ThreadStatic]
+    private static bool _isWorkerThread;
+
     private PoolWork[] _works = [];
+    private M4Batch? _batches;
     private volatile bool _disposed;
 
     /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
@@ -134,6 +140,64 @@ public sealed class PlotWorkerPool : IDisposable
     }
 
     /// <summary>
+    /// Extracts M4 for every series of a batch between the same boundaries, the series spread over the workers and the
+    /// calling thread, and returns when all have ended (design §5.5.1, §8.1). The workers take these jobs before pyramid
+    /// chunks, and the caller takes jobs too, so the wait is at most one chunk a worker is building. Allocates nothing.
+    /// </summary>
+    /// <param name="batch">The series. One thread at a time extracts a batch; other batches may be extracted at once.</param>
+    /// <param name="boundaries">The W + 1 boundaries of the pixel columns, finite and strictly increasing, read by every series.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="batch"/> or <paramref name="boundaries"/> is null.</exception>
+    /// <exception cref="ArgumentException">The boundaries are fewer than 2, not finite, or not strictly increasing; checked once, before any series.</exception>
+    /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
+    /// <exception cref="InvalidOperationException">Called on one of a pool's worker threads, which would wait for its own work.</exception>
+    /// <remarks>
+    /// A series that throws fails alone: the others still end and keep their results. After all have ended, the exception
+    /// of the failed series with the smallest number is thrown again as it was; <see cref="M4Batch.GetError(int)"/> tells
+    /// each series' failure. If the pool is disposed during the call, the caller ends the jobs left.
+    /// </remarks>
+    public void Extract(M4Batch batch, double[] boundaries)
+    {
+        ArgumentNullException.ThrowIfNull(batch);
+        ArgumentNullException.ThrowIfNull(boundaries);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_isWorkerThread)
+        {
+            throw new InvalidOperationException("A worker thread cannot extract a batch: it would wait for its own work.");
+        }
+
+        // The arguments every series shares are checked once, so that a caller's mistake is one exception (design §5.5.1).
+        M4.ValidateBoundaries(boundaries);
+        if (batch.Count == 0)
+        {
+            return;
+        }
+
+        batch.Begin(boundaries);
+        lock (_gate)
+        {
+            batch.Next = _batches;
+            _batches = batch;
+        }
+
+        try
+        {
+            Wake();
+            while (CallerTakesJobs && batch.TryRunOne()) { }
+
+            batch.Wait();
+        }
+        finally
+        {
+            Unlink(batch);
+        }
+
+        if (batch.FirstError() is { } error)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+        }
+    }
+
+    /// <summary>
     /// Stops taking work, lets each thread finish the chunk it is building, and joins the threads (design §8.1). No chunk is
     /// built again afterwards, even after an Invalidate, so every pyramid of the pool gets
     /// <see cref="ObjectDisposedException"/> as its <see cref="MinMaxPyramid{T}.Fault"/>, built ones included (their
@@ -169,6 +233,12 @@ public sealed class PlotWorkerPool : IDisposable
         // The event is not disposed: a query on another thread may still call Wake, which must not throw.
     }
 
+    /// <summary>Gets or sets a value indicating whether the caller of Extract takes jobs; tests turn it off to see the workers' order.</summary>
+    internal bool CallerTakesJobs { get; set; } = true;
+
+    /// <summary>Gets or sets a test hook called on a worker as it takes a job: true for a frame job, false for a chunk.</summary>
+    internal Action<bool>? TestTook { get; set; }
+
     /// <summary>Wakes the threads to look for work. Neither allocates nor waits (design §3.3).</summary>
     internal void Wake()
     {
@@ -190,8 +260,33 @@ public sealed class PlotWorkerPool : IDisposable
         }
     }
 
+    private void Unlink(M4Batch batch)
+    {
+        lock (_gate)
+        {
+            if (_batches == batch)
+            {
+                _batches = batch.Next;
+            }
+            else
+            {
+                for (var previous = _batches; previous is not null; previous = previous.Next)
+                {
+                    if (previous.Next == batch)
+                    {
+                        previous.Next = batch.Next;
+                        break;
+                    }
+                }
+            }
+
+            batch.Next = null;
+        }
+    }
+
     private void Run()
     {
+        _isWorkerThread = true;
         while (!_disposed)
         {
             if (RunOne())
@@ -212,6 +307,26 @@ public sealed class PlotWorkerPool : IDisposable
 
     private bool RunOne()
     {
+        // The jobs of a frame come before pyramid chunks (design §8.1).
+        M4Batch? batch = null;
+        lock (_gate)
+        {
+            for (var candidate = _batches; candidate is not null; candidate = candidate.Next)
+            {
+                if (candidate.HasWork)
+                {
+                    batch = candidate;
+                    break;
+                }
+            }
+        }
+
+        if (batch is not null && batch.TryRunOne())
+        {
+            TestTook?.Invoke(true);
+            return true;
+        }
+
         var works = Volatile.Read(ref _works);
 
         // Requested chunks of every pyramid come before the rest (design §3.3).
@@ -219,6 +334,7 @@ public sealed class PlotWorkerPool : IDisposable
         {
             if (work.RunOne(requestedOnly: true))
             {
+                TestTook?.Invoke(false);
                 return true;
             }
         }
@@ -227,6 +343,7 @@ public sealed class PlotWorkerPool : IDisposable
         {
             if (work.RunOne(requestedOnly: false))
             {
+                TestTook?.Invoke(false);
                 return true;
             }
         }

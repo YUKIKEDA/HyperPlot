@@ -3,6 +3,10 @@
     <Project Path="benchmarks/HyperPlot.Benchmarks/HyperPlot.Benchmarks.csproj" />
     <Project Path="benchmarks/HyperPlot.DataPath/HyperPlot.DataPath.csproj" />
   </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/BillionSeries/BillionSeries.csproj" />
+    <Project Path="samples/HelloPlot/HelloPlot.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/HyperPlot.Core/HyperPlot.Core.csproj" />
     <Project Path="src/HyperPlot.Rendering.D3D11/HyperPlot.Rendering.D3D11.csproj" />
