@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** A（データとヘッドレス描画の土台）
-- **作業中:** R1（B1 は #30 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** R1（設計: GPU の契約とヘッドレスの描画）
+- **ブランチ:** `docs/34-r1-gpu-contract`
+- **Issue:** [#34](https://github.com/YUKIKEDA/HyperPlot/issues/34)
 
 ## ツールチェーン
 
@@ -40,13 +40,13 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | C1 | 列とチャンク（`Column<T>`、3 種のストレージ、暗黙の列、チャンクの統計） | done | [#1](https://github.com/YUKIKEDA/HyperPlot/issues/1) |
 | C2 | LOD ピラミッドと区間の min / max、M4 の抽出（CPU） | done | [#9](https://github.com/YUKIKEDA/HyperPlot/issues/9)（設計）、[#18](https://github.com/YUKIKEDA/HyperPlot/issues/18) |
 | B1 | ベンチマークの基盤と参照機の固定（統計・LOD・M4 のカーネル、統計と水準 1 の走査の統合、暫定の表示が替わるまでの時間、メモリマップのページキャッシュに載る前の 1 フレーム） | done | [#26](https://github.com/YUKIKEDA/HyperPlot/issues/26)（設計）、[#30](https://github.com/YUKIKEDA/HyperPlot/issues/30) |
-| R1 | D3D11 のデバイス、ヘッドレスの描画先、readback、PNG（WARP のテスト） | not-started | |
-| R2 | シェーダの生成器と線分のパイプライン（アンチエイリアス） | not-started | |
-| S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（NativeAOT の検査、系列ごとの M4 のフレーム内の並列、End-to-end の計測の基盤） | not-started | |
+| R1 | D3D11 のデバイス、ヘッドレスの描画先、readback、PNG（WARP のテスト、NativeAOT のスクラッチの発行を 1 回） | in-progress | [#34](https://github.com/YUKIKEDA/HyperPlot/issues/34)（設計） |
+| R2 | シェーダの生成器と線分のパイプライン（アンチエイリアス）、喪失の後の常駐キャッシュからの資源の作り直し、ゴールデン画像の比較（`HyperPlot.Testing`） | not-started | |
+| S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（NativeAOT の検査、系列ごとの M4 のフレーム内の並列、End-to-end の計測の基盤、GPU 時間の計測） | not-started | |
 | **B: GoG** | | | |
 | G1 | 仕様モデルとビルダ（Plot / Layer / Encoding / コンパイル） | not-started | |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計 | not-started | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11) |
-| G2 | スケール（linear / log / time / band / 色）と目盛り | not-started | |
+| G2 | スケール（linear / log / time / band / 色）と目盛り、名前つきの色とパレット | not-started | |
 | T1 | テキスト（契約、DirectWrite、アトラス、グリフのパイプライン） | not-started | |
 | G3 | ガイドと配置（軸・凡例・タイトル・テーマ） | not-started | |
 | G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image） | not-started | |

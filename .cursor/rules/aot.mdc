@@ -18,7 +18,7 @@ Apps that use HyperPlot may ship as NativeAOT; development runs on the JIT (desi
 
 ## The check
 
-A PR that adds or changes a `src/` project's public surface, a dependency, or interop runs a NativeAOT publish of the sample its Issue names. That sample uses Core and `HyperPlot.Rendering.D3D11` without WPF (headless, design §7.5: `samples/HelloPlot` draws offscreen and writes a PNG), so that the WPF exception cannot hide a warning of the engine:
+A PR that adds or changes a `src/` project's public surface, a dependency, or interop runs a NativeAOT publish of the sample its Issue names. That sample uses Core and `HyperPlot.Rendering.D3D11` without WPF (headless, design §7.5: `samples/HelloPlot` draws offscreen and writes a PNG), so that the WPF exception cannot hide a warning of the engine. A row that comes before its sample exists (R1, before `HelloPlot` in S1) publishes a scratch program that uses the row's types instead, states its warnings and size, and does not keep it (`.cursor/rules/scratch.mdc`):
 
 ```powershell
 $env:PATH += ';C:\Program Files (x86)\Microsoft Visual Studio\Installer'
