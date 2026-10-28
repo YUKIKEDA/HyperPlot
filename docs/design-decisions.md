@@ -236,3 +236,14 @@ Reason:
 
 Rejected:
   - `D3D11Backend` を受けて `HyperPlot.Rendering.D3D11` に置く: バックエンドごとに同じ型と PNG の書き出しを書くことになる
+
+## `WritePng` の画素の確保
+
+Decision:
+  `HeadlessRenderer.WritePng` は、画像 1 枚分の画素（幅 × 高さ × 4 バイト、最大 1 GiB）を読んでから PNG に書く（設計書 §7.5、Issue #38、オーナーの判断 2026-10-28）。
+
+Reason:
+  `IRenderTarget.ReadPixels` は画像全体を読む形である。PNG の書き出しはフレームの経路ではなく、普通の画像（4K で約 33 MB）では問題にならない。
+
+Rejected:
+  - `IRenderTarget` に行の範囲を読む `ReadPixels` を足し、確保を 1 行と 64 KiB に抑える: 公開の契約が 1 つ増える

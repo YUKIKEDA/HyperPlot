@@ -183,9 +183,25 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private void MakeAgain()
     {
         MakeDevice();
-        foreach (var target in _targets)
+        try
         {
-            target.MakeResources();
+            foreach (var target in _targets)
+            {
+                target.MakeResources();
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            // A target that failed to come back leaves the backend lost, with nothing half made, so that the next frame
+            // tries the whole remake again (design §5.3). A loss in the middle has already done this through Lose.
+            foreach (var target in _targets)
+            {
+                target.ReleaseResources();
+            }
+
+            ReleaseDevice();
+            _state = State.Lost;
+            throw;
         }
     }
 

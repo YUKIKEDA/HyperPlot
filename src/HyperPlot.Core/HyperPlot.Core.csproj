@@ -12,6 +12,5 @@
     <InternalsVisibleTo Include="HyperPlot.DataPath" />
     <!-- The D3D11 backend premultiplies and takes out the alpha with Core's integer forms (design §5.2). -->
     <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11" />
-    <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
   </ItemGroup>
 </Project>

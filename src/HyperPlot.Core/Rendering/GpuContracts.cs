@@ -36,13 +36,17 @@ public interface IGpuBackend : IDisposable
     /// <exception cref="ArgumentOutOfRangeException">A side is below 1 or above <see cref="RenderTargetDescription.MaxSide"/>.</exception>
     /// <exception cref="NotSupportedException"><see cref="RenderTargetDescription.Depth"/> is not <see cref="DepthFormat.None"/>.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The backend was disposed.</exception>
     IRenderTarget CreateRenderTarget(in RenderTargetDescription description);
 
     /// <summary>
     /// Starts a frame. After a device loss, makes the device and every render target again, cleared to transparent; what
     /// they held is gone.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The device could not be made again; the next frame tries again.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="GpuDeviceLostException">The device was lost while the render targets were made again.</exception>
+    /// <exception cref="ObjectDisposedException">The backend was disposed.</exception>
     void BeginFrame();
 
     /// <summary>Ends a frame, and checks that the device is still there. Does nothing while the device is lost.</summary>
@@ -59,6 +63,8 @@ public interface IRenderTarget : IDisposable
     /// <summary>Fills the target with one color, in a frame of its own if none is open.</summary>
     /// <param name="color">The color, premultiplied by the target as design §5.2 writes.</param>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The backend or the target was disposed.</exception>
     void Clear(Color color);
 
     /// <summary>
@@ -68,5 +74,7 @@ public interface IRenderTarget : IDisposable
     /// <param name="destination">At least Width · Height · 4 bytes.</param>
     /// <exception cref="ArgumentException"><paramref name="destination"/> is shorter than Width · Height · 4 bytes.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The backend or the target was disposed.</exception>
     void ReadPixels(Span<byte> destination);
 }

@@ -235,6 +235,46 @@ public sealed class D3D11BackendTests
     }
 
     /// <summary>
+    /// A render target that fails to come back after a loss leaves the backend lost, with nothing half made; the next frame
+    /// makes everything again (design §5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend with two targets; a loss injected through Map; the seam makes CreateTexture2D fail with
+    ///   E_OUTOFMEMORY.
+    ///
+    /// Steps:
+    /// - Begin a frame; begin another; remove the seam; begin a frame; read both targets.
+    ///
+    /// Expected:
+    /// - Both frames with the seam throw InvalidOperationException with HResult E_OUTOFMEMORY (the backend stayed lost and
+    ///   tried again); after the seam is gone, the frame begins, and both targets read back transparent.
+    /// </remarks>
+    [Fact]
+    public void Lost_TargetRemakeFails_StaysLostUntilALaterFrame()
+    {
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var first = backend.CreateRenderTarget(new RenderTargetDescription(2, 2));
+        using var second = backend.CreateRenderTarget(new RenderTargetDescription(1, 3));
+        backend.CheckResult = (call, result) => call == "Map" ? DXGI.DXGI_ERROR_DEVICE_REMOVED : result;
+        _ = Assert.Throws<GpuDeviceLostException>(() => first.ReadPixels(new byte[16]));
+        backend.CheckResult = (call, result) => call == "CreateTexture2D" ? E.E_OUTOFMEMORY : result;
+
+        var failure = Assert.Throws<InvalidOperationException>(backend.BeginFrame);
+        var again = Assert.Throws<InvalidOperationException>(backend.BeginFrame);
+
+        Assert.Equal((E.E_OUTOFMEMORY, E.E_OUTOFMEMORY), (failure.HResult, again.HResult));
+        backend.CheckResult = null;
+        backend.BeginFrame();
+        foreach (var target in new[] { first, second })
+        {
+            var pixels = new byte[target.Description.Width * target.Description.Height * 4];
+            target.ReadPixels(pixels);
+            Assert.All(pixels, p => Assert.Equal(0, p));
+        }
+    }
+
+    /// <summary>
     /// A backend whose device cannot be made, WARP included, throws InvalidOperationException with the HRESULT (design §5.3).
     /// </summary>
     /// <remarks>

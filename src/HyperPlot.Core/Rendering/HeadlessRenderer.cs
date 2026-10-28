@@ -18,6 +18,12 @@ public sealed class HeadlessRenderer : IDisposable
     public HeadlessRenderer(IGpuBackend backend, int width, int height)
     {
         ArgumentNullException.ThrowIfNull(backend);
+
+        // Checked here too, so that the exception names the caller's argument, not the backend's description.
+        ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(width, RenderTargetDescription.MaxSide);
+        ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(height, RenderTargetDescription.MaxSide);
         _target = backend.CreateRenderTarget(new RenderTargetDescription(width, height));
     }
 
@@ -30,6 +36,8 @@ public sealed class HeadlessRenderer : IDisposable
     /// <summary>Fills the image with one color.</summary>
     /// <param name="color">The color.</param>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or the target could not be made again; the next call tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The renderer or its backend was disposed.</exception>
     public void Clear(Color color)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -40,6 +48,8 @@ public sealed class HeadlessRenderer : IDisposable
     /// <param name="destination">At least Width · Height · 4 bytes.</param>
     /// <exception cref="ArgumentException"><paramref name="destination"/> is too short.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or the target could not be made again; the next call tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The renderer or its backend was disposed.</exception>
     public void ReadPixels(Span<byte> destination)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -53,6 +63,8 @@ public sealed class HeadlessRenderer : IDisposable
     /// <param name="stream">Where the PNG goes; it need not seek.</param>
     /// <exception cref="ArgumentNullException"><paramref name="stream"/> is null.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or the target could not be made again; the next call tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The renderer or its backend was disposed.</exception>
     public void WritePng(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);

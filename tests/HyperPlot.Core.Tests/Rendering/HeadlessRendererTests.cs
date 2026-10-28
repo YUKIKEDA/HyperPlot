@@ -113,6 +113,30 @@ public sealed class HeadlessRendererTests
         Assert.Throws<ObjectDisposedException>(() => renderer.WritePng(new MemoryStream()));
     }
 
+    /// <summary>
+    /// A width or height outside 1 to 16,384 throws with the caller's argument name, before the backend is asked (design §7.5).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A fake backend.
+    ///
+    /// Steps:
+    /// - Make renderers of width 0 and 16,385, and of height 0 and 16,385.
+    ///
+    /// Expected:
+    /// - ArgumentOutOfRangeException with ParamName width, width, height, height; the backend made no target.
+    /// </remarks>
+    [Fact]
+    public void Constructor_SideOutOfRange_NamesTheArgument()
+    {
+        var backend = new FakeBackend(new byte[4]);
+        Assert.Equal("width", Assert.Throws<ArgumentOutOfRangeException>(() => new HeadlessRenderer(backend, 0, 1)).ParamName);
+        Assert.Equal("width", Assert.Throws<ArgumentOutOfRangeException>(() => new HeadlessRenderer(backend, 16385, 1)).ParamName);
+        Assert.Equal("height", Assert.Throws<ArgumentOutOfRangeException>(() => new HeadlessRenderer(backend, 1, 0)).ParamName);
+        Assert.Equal("height", Assert.Throws<ArgumentOutOfRangeException>(() => new HeadlessRenderer(backend, 1, 16385)).ParamName);
+        Assert.Null(backend.Target);
+    }
+
     private sealed class FakeBackend(byte[] pixels) : IGpuBackend
     {
         public bool IsWarp => true;
