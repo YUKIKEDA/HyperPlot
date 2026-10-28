@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/HyperPlot.Benchmarks/HyperPlot.Benchmarks.csproj" />
+    <Project Path="benchmarks/HyperPlot.DataPath/HyperPlot.DataPath.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/HyperPlot.Core/HyperPlot.Core.csproj" />
   </Folder>

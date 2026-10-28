@@ -147,6 +147,14 @@ public sealed class Column<T> : Column, IDisposable
     }
 
     /// <summary>
+    /// Stores a chunk's statistics that a pyramid build computed from the chunk's values (design §3.3), as
+    /// <see cref="GetStats(int)"/> would store them. <paramref name="generation"/> is the chunk's generation read before the
+    /// values were, so that statistics of values that changed meanwhile are not returned.
+    /// </summary>
+    internal void StoreStats(int chunkIndex, long generation, in ChunkStats<T> stats) =>
+        Volatile.Write(ref _stats[chunkIndex], new StatsEntry(generation, stats));
+
+    /// <summary>
     /// Tells whether the column is non-decreasing from statistics already computed, without computing any: false when a
     /// chunk's statistics are missing (design §5.5.1).
     /// </summary>

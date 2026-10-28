@@ -100,6 +100,49 @@ public sealed class MinMaxPyramidTests
     }
 
     /// <summary>
+    /// A build stores the statistics of the chunks it computed them for, so that queries of whole chunks and X searches find
+    /// them (design §3.2, §3.3), equal to the statistics the column computes itself.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two chunks and 70,001 floats with sparse NaN, and as many doubles without NaN, sorted; no statistics computed.
+    ///
+    /// Steps:
+    /// - Build each pyramid to completion; read each chunk's stored statistics; compute the statistics of a copy of each
+    ///   column, which shares no state.
+    ///
+    /// Expected:
+    /// - Every chunk has stored statistics, equal to the copy's in every field; the sorted column is non-decreasing.
+    /// </remarks>
+    [Fact]
+    public void Build_NoStatsYet_StoresTheStatsOfItsPass()
+    {
+        using var pool = new PlotWorkerPool(2);
+        CheckStored(PyramidData.Convert<float>(PyramidData.Values(PyramidData.Length, "Sparse", 5, integral: false)));
+        CheckStored(Enumerable.Range(0, PyramidData.Length).Select(i => i * 0.5).ToArray());
+
+        void CheckStored<T>(T[] values)
+            where T : unmanaged, INumber<T>
+        {
+            using var column = Column.Wrap(values);
+            using var copy = Column.Wrap((T[])values.Clone());
+            using var pyramid = Build(pool, column);
+            for (var chunk = 0; chunk < column.ChunkCount; chunk++)
+            {
+                Assert.True(column.TryGetStoredStats(chunk, out var stored));
+                var expected = copy.GetStats(chunk);
+                Assert.Equal(
+                    (expected.Min, expected.Max, expected.First, expected.Last, expected.Sum, expected.Count, expected.NaNCount),
+                    (stored.Min, stored.Max, stored.First, stored.Last, stored.Sum, stored.Count, stored.NaNCount)
+                );
+                Assert.Equal(expected.IsNonDecreasing, stored.IsNonDecreasing);
+            }
+
+            Assert.Equal(typeof(T) == typeof(double), column.IsNonDecreasing());
+        }
+    }
+
+    /// <summary>
     /// The pyramid's blocks stay within the bound of design §3.3.
     /// </summary>
     /// <remarks>

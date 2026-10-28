@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>HyperPlot.DataPath</RootNamespace>
+    <!-- Figures are taken from the NativeAOT Release build (.cursor/rules/bench.mdc). -->
+    <PublishAot>true</PublishAot>
+    <!-- The generator fills a sector-aligned native buffer for unbuffered writes. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\HyperPlot.Core\HyperPlot.Core.csproj" />
+  </ItemGroup>
+</Project>
