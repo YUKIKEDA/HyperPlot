@@ -86,8 +86,13 @@ public readonly struct M4Result
     public int Count { get; }
 
     /// <summary>
-    /// Gets a value indicating whether a pixel column touched a chunk whose pyramid is not built yet. Such a column takes the
-    /// chunk's statistics, and the chunk is requested; extract again after <see cref="MinMaxPyramid{T}.Version"/> changes.
+    /// Gets a value indicating whether the points are a stand-in (design §5.5.1). It is true when a pixel column touched a
+    /// chunk whose pyramid is not built yet, or when a stored X column does not have every chunk's statistics computed yet.
+    /// A column over such chunks takes the minimum and maximum of their statistics if already computed; with no statistics,
+    /// it has only its first and last element. For <see cref="M4Gaps.Connect"/>, an element that would need a scan of an
+    /// unbuilt chunk is replaced by the column's boundary element. The chunks are requested; extract again after
+    /// <see cref="MinMaxPyramid{T}.Version"/> changes, or after <see cref="PlotWorkerPool.PrecomputeStats{T}(Column{T})"/>
+    /// ends.
     /// </summary>
     public bool IsProvisional { get; }
 }
@@ -299,7 +304,7 @@ public static class M4
     }
 
     /// <summary>Returns the boundary element in place of a search that could not answer without a scan (design §5.5.1).</summary>
-    private static long Known(long found, long boundary) => found == MinMaxPyramid<byte>.Unknown ? boundary : found;
+    private static long Known(long found, long boundary) => found == PyramidSearch.Unknown ? boundary : found;
 
     private static void SortByIndex(Span<Candidate> candidates)
     {

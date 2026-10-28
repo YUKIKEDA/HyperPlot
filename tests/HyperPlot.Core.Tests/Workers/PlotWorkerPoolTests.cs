@@ -110,7 +110,7 @@ public sealed class PlotWorkerPoolTests
         var first = pyramid.FindNumber(0, 200, fromEnd: false, ref provisional);
 
         Assert.True(range.IsProvisional);
-        Assert.Equal((MinMaxPyramid<float>.Unknown, true), (first, provisional));
+        Assert.Equal((PyramidSearch.Unknown, true), (first, provisional));
     }
 
     /// <summary>

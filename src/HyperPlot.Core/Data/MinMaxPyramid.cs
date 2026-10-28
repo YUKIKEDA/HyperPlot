@@ -43,7 +43,10 @@ internal abstract class PoolWork
         }
     }
 
-    /// <summary>Called once the pool has stopped its threads with work of this pyramid left.</summary>
+    /// <summary>
+    /// Called once the pool has stopped its threads, for every work still registered: nothing of it runs again, so a pyramid
+    /// sets its fault and statistics computed ahead end their task, both with <see cref="ObjectDisposedException"/>.
+    /// </summary>
     internal abstract void OnPoolDisposed();
 
     private protected abstract int TryTake(bool requestedOnly);
@@ -69,6 +72,16 @@ internal abstract class PoolWork
     }
 }
 
+/// <summary>What the searches of a pyramid return besides a position; the same for every element type.</summary>
+internal static class PyramidSearch
+{
+    /// <summary>
+    /// What <see cref="MinMaxPyramid{T}.FindNumber"/> returns when a chunk on its way cannot answer without a scan of the
+    /// raw values.
+    /// </summary>
+    internal const long Unknown = -3;
+}
+
 /// <summary>
 /// A min/max pyramid over one column, built chunk by chunk in the background by a <see cref="PlotWorkerPool"/> (design §3.3).
 /// Make one with <see cref="PlotWorkerPool.BuildPyramid{T}(Column{T})"/>.
@@ -76,7 +89,8 @@ internal abstract class PoolWork
 /// <typeparam name="T">The element type of the column.</typeparam>
 /// <remarks>
 /// Queries may run on any thread while the pyramid is built. A chunk that is not built yet is answered from its chunk
-/// statistics and marked provisional. Dispose the pyramid before its column, and not beside a query.
+/// statistics if they are already computed; otherwise the chunk adds nothing. Either way the answer is marked provisional,
+/// and no query computes statistics or scans the raw values of such a chunk (design §3.3). Dispose the pyramid before its column, and not beside a query.
 /// </remarks>
 public sealed unsafe class MinMaxPyramid<T> : IDisposable
     where T : unmanaged, INumber<T>
@@ -86,9 +100,6 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     private const int Building = 2;
     private const int Done = 3;
     private const int Failed = 4;
-
-    /// <summary>What <see cref="FindNumber"/> returns when a chunk on its way cannot answer without a scan of the raw values.</summary>
-    internal const long Unknown = -3;
 
     /// <summary>
     /// What a search inside a read returns when the block disagrees with the raw values: a rebuild overlapped the read, or the
@@ -297,7 +308,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     /// <summary>
     /// Returns the first (or last) element in [start, end) that is not NaN, or -1 when there is none. Skips buckets that are
     /// all NaN. A chunk whose pyramid is not built, or whose block disagrees with the raw values, is not scanned (design
-    /// §5.5.1): the search returns <see cref="Unknown"/> and sets <paramref name="provisional"/>.
+    /// §5.5.1): the search returns <see cref="PyramidSearch.Unknown"/> and sets <paramref name="provisional"/>.
     /// </summary>
     internal long FindNumber(long start, long end, bool fromEnd, ref bool provisional)
     {
@@ -318,7 +329,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             if (!TryBeginRead(chunk, out var sequence))
             {
                 provisional = true;
-                return Unknown;
+                return PyramidSearch.Unknown;
             }
 
             var found = fromEnd ? FindLastInChunk(chunk, layout, lo, hi) : FindFirstInChunk(chunk, layout, lo, hi);
@@ -327,7 +338,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             if (!EndRead(chunk, sequence) || found == Inconsistent)
             {
                 provisional = true;
-                return Unknown;
+                return PyramidSearch.Unknown;
             }
 
             if (found >= 0)
@@ -596,37 +607,37 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         }
     }
 
-    // The spans below cover regions of a block that the constructor allocated for the chunk's layout, and live no longer
-    // than the call that made them. Blocks are freed only in Dispose, which must not run beside a query or a build.
+    // The spans below (minima, maxima, and the counts in each level's width) cover regions of a block that the constructor
+    // allocated for the chunk's layout, and live no longer than the call that made them; every read and write through them
+    // is bounds-checked. Blocks are freed only in Dispose, which must not run beside a query or a build.
     private Span<T> Mins(int chunk, PyramidLayout layout, int level) => new((byte*)_blocks[chunk] + layout.MinOffset(level), layout.Count(level));
 
     private Span<T> Maxs(int chunk, PyramidLayout layout, int level) => new((byte*)_blocks[chunk] + layout.MaxOffset(level), layout.Count(level));
 
+    private Span<TNumber> Numbers<TNumber>(int chunk, PyramidLayout layout, int level)
+        where TNumber : unmanaged => new((byte*)_blocks[chunk] + layout.NumberOffset(level), layout.Count(level));
+
     /// <summary>Returns a bucket's count of values that are not NaN, read in its level's width.</summary>
-    private int NumberOf(int chunk, PyramidLayout layout, int level, int bucket)
-    {
-        var at = (byte*)_blocks[chunk] + layout.NumberOffset(level);
-        return PyramidLayout.NumberWidth(level) switch
+    private int NumberOf(int chunk, PyramidLayout layout, int level, int bucket) =>
+        PyramidLayout.NumberWidth(level) switch
         {
-            1 => at[bucket],
-            2 => ((ushort*)at)[bucket],
-            _ => (int)((uint*)at)[bucket],
+            1 => Numbers<byte>(chunk, layout, level)[bucket],
+            2 => Numbers<ushort>(chunk, layout, level)[bucket],
+            _ => (int)Numbers<uint>(chunk, layout, level)[bucket],
         };
-    }
 
     private void SetNumber(int chunk, PyramidLayout layout, int level, int bucket, int number)
     {
-        var at = (byte*)_blocks[chunk] + layout.NumberOffset(level);
         switch (PyramidLayout.NumberWidth(level))
         {
             case 1:
-                at[bucket] = (byte)number;
+                Numbers<byte>(chunk, layout, level)[bucket] = (byte)number;
                 break;
             case 2:
-                ((ushort*)at)[bucket] = (ushort)number;
+                Numbers<ushort>(chunk, layout, level)[bucket] = (ushort)number;
                 break;
             default:
-                ((uint*)at)[bucket] = (uint)number;
+                Numbers<uint>(chunk, layout, level)[bucket] = (uint)number;
                 break;
         }
     }

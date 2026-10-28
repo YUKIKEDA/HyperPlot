@@ -3,8 +3,8 @@ using System.Numerics;
 namespace HyperPlot;
 
 /// <summary>
-/// A fixed set of background threads that build pyramids chunk by chunk (design §8.1). Use <see cref="Shared"/>, or make
-/// a pool of your own and dispose it when done.
+/// A fixed set of background threads that build pyramids and compute column statistics ahead, chunk by chunk (design §8.1).
+/// Use <see cref="Shared"/>, or make a pool of your own and dispose it when done.
 /// </summary>
 public sealed class PlotWorkerPool : IDisposable
 {
@@ -17,7 +17,7 @@ public sealed class PlotWorkerPool : IDisposable
     private readonly ManualResetEventSlim _wake = new(initialState: false);
     private readonly Lock _gate = new();
     private readonly bool _isShared;
-    private PoolWork[] _pyramids = [];
+    private PoolWork[] _works = [];
     private volatile bool _disposed;
 
     /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
@@ -68,8 +68,8 @@ public sealed class PlotWorkerPool : IDisposable
     public int ThreadCount => _threads.Length;
 
     /// <summary>
-    /// Starts building a min/max pyramid over a column and returns it at once (design §3.3). Queries answer from the chunk
-    /// statistics until each chunk is built.
+    /// Starts building a min/max pyramid over a column and returns it at once (design §3.3). Until a chunk is built, queries
+    /// answer provisionally from its statistics if already computed, and without the chunk otherwise.
     /// </summary>
     /// <typeparam name="T">The element type of the column.</typeparam>
     /// <param name="column">The column. Dispose the pyramid before it.</param>
@@ -85,7 +85,7 @@ public sealed class PlotWorkerPool : IDisposable
         {
             if (!_disposed)
             {
-                _pyramids = [.. _pyramids, pyramid.Work];
+                _works = [.. _works, pyramid.Work];
                 registered = true;
             }
         }
@@ -126,7 +126,7 @@ public sealed class PlotWorkerPool : IDisposable
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            _pyramids = [.. _pyramids, work];
+            _works = [.. _works, work];
         }
 
         Wake();
@@ -134,8 +134,11 @@ public sealed class PlotWorkerPool : IDisposable
     }
 
     /// <summary>
-    /// Stops taking work, lets each thread finish the chunk it is building, and joins the threads. Pyramids with chunks left
-    /// get <see cref="ObjectDisposedException"/> as their fault. Does nothing for <see cref="Shared"/>.
+    /// Stops taking work, lets each thread finish the chunk it is building, and joins the threads (design §8.1). No chunk is
+    /// built again afterwards, even after an Invalidate, so every pyramid of the pool gets
+    /// <see cref="ObjectDisposedException"/> as its <see cref="MinMaxPyramid{T}.Fault"/>, built ones included (their
+    /// <see cref="MinMaxPyramid{T}.Completion"/> stays successful), and every <see cref="PrecomputeStats{T}(Column{T})"/>
+    /// task not yet ended faults with the same exception. Does nothing for <see cref="Shared"/>.
     /// </summary>
     public void Dispose()
     {
@@ -154,13 +157,13 @@ public sealed class PlotWorkerPool : IDisposable
         PoolWork[] left;
         lock (_gate)
         {
-            left = _pyramids;
-            _pyramids = [];
+            left = _works;
+            _works = [];
         }
 
-        foreach (var pyramid in left)
+        foreach (var work in left)
         {
-            pyramid.OnPoolDisposed();
+            work.OnPoolDisposed();
         }
 
         // The event is not disposed: a query on another thread may still call Wake, which must not throw.
@@ -175,14 +178,14 @@ public sealed class PlotWorkerPool : IDisposable
         }
     }
 
-    internal void Unregister(PoolWork pyramid)
+    internal void Unregister(PoolWork work)
     {
         lock (_gate)
         {
-            var index = Array.IndexOf(_pyramids, pyramid);
+            var index = Array.IndexOf(_works, work);
             if (index >= 0)
             {
-                _pyramids = [.. _pyramids[..index], .. _pyramids[(index + 1)..]];
+                _works = [.. _works[..index], .. _works[(index + 1)..]];
             }
         }
     }
@@ -209,20 +212,20 @@ public sealed class PlotWorkerPool : IDisposable
 
     private bool RunOne()
     {
-        var pyramids = Volatile.Read(ref _pyramids);
+        var works = Volatile.Read(ref _works);
 
         // Requested chunks of every pyramid come before the rest (design §3.3).
-        foreach (var pyramid in pyramids)
+        foreach (var work in works)
         {
-            if (pyramid.RunOne(requestedOnly: true))
+            if (work.RunOne(requestedOnly: true))
             {
                 return true;
             }
         }
 
-        foreach (var pyramid in pyramids)
+        foreach (var work in works)
         {
-            if (pyramid.RunOne(requestedOnly: false))
+            if (work.RunOne(requestedOnly: false))
             {
                 return true;
             }
