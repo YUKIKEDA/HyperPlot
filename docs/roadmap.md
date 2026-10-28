@@ -67,7 +67,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | V1 | v1 の公開（NuGet、利用者向けの文書、サンプル） | not-started | |
 | **v1 の後: 3D（v1.x）** | | | |
 | K0 | 3D の設計（八分木・線の単純化・面の LOD・半透明の方式と、性能の仮説の確定） | not-started | |
-| K1 | 3D の座標系・カメラ・軸の箱・3D のインタラクション | not-started | |
+| K1 | 3D の座標系・カメラ・軸の箱・3D のインタラクション、線分と点のパイプラインの深度と 3 成分の位置 | not-started | |
 | K2 | 3D 散布（点群、八分木の LOD） | not-started | |
 | K3 | 3D の線（軌跡） | not-started | |
 | K4 | 面（z = f(x, y)、格子の LOD） | not-started | |
