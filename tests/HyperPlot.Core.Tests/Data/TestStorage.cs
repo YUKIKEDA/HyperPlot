@@ -61,10 +61,14 @@ internal sealed class TestStorage<T> : ColumnStorage<T>
     public void WaitForWorker(int chunk) =>
         Assert.True(_entered[chunk].Wait(WatchdogMilliseconds), $"No worker read chunk {chunk} within the watchdog.");
 
+    /// <summary>Gets or sets an action run on the worker thread as it reads a chunk, before the hold.</summary>
+    public Action? OnWorkerRead { get; set; }
+
     public override ReadOnlySpan<T> GetChunk(int chunkIndex, int length)
     {
         if (Thread.CurrentThread.Name?.StartsWith("HyperPlot worker", StringComparison.Ordinal) == true)
         {
+            OnWorkerRead?.Invoke();
             Interlocked.Increment(ref _workerReads[chunkIndex]);
             lock (_lock)
             {
