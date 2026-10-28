@@ -66,6 +66,10 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | ホスト、ホストアダプタ | host, host adapter |
 | 共有テクスチャ | shared texture |
 | 縮退動作 | degradation |
+| カメラ、オービット | camera, orbit |
+| 八分木、点の予算、代表の点 | octree, point budget, representative points |
+| 軸の箱 | axis box |
+| 描く順によらない半透明の合成 | order-independent transparency (OIT) |
 | 不変条件 | invariant |
 | 定常状態 | steady state |
 | ホットパス、フレームの経路 | frame path |
