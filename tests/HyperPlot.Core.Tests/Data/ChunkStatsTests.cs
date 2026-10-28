@@ -146,6 +146,47 @@ public sealed class ChunkStatsTests
     }
 
     /// <summary>
+    /// A chunk with no values (all NaN) adds nothing to the total Min and Max, whichever side of the seam it is on.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One chunk and 7 elements. One chunk is all NaN, the full first one or the short last one; the other holds 1, 2, 3, ...
+    ///   or -1, -2, -3, ... The empty chunk's own Min and Max are 0, which lies outside both ranges.
+    ///
+    /// Steps:
+    /// - Read the total statistics for each of the four cases.
+    ///
+    /// Expected:
+    /// - Min and Max are the ends of the values chunk's range, Count is its length, and the column is not non-decreasing.
+    /// </remarks>
+    [Theory]
+    [InlineData(true, 1)]
+    [InlineData(true, -1)]
+    [InlineData(false, 1)]
+    [InlineData(false, -1)]
+    public void GetTotalStats_AllNaNChunkOnEitherSide_KeepsTheOtherChunksRange(bool nanFirst, int sign)
+    {
+        const int length = Column.ChunkLength + 7;
+        var nanStart = nanFirst ? 0 : Column.ChunkLength;
+        var nanEnd = nanFirst ? Column.ChunkLength : length;
+        var values = new float[length];
+        var count = 0;
+        for (var i = 0; i < length; i++)
+        {
+            values[i] = i >= nanStart && i < nanEnd ? float.NaN : sign * ++count;
+        }
+
+        using var column = Column.Wrap(values);
+        var total = column.GetTotalStats();
+
+        Assert.Equal(sign > 0 ? 1 : -count, total.Min);
+        Assert.Equal(sign > 0 ? count : -1, total.Max);
+        Assert.Equal(count, total.Count);
+        Assert.Equal(length - count, total.NaNCount);
+        Assert.False(total.IsNonDecreasing);
+    }
+
+    /// <summary>
     /// Invalidate drops the statistics of the chunks it touches, keeps the others, and raises Version.
     /// </summary>
     /// <remarks>

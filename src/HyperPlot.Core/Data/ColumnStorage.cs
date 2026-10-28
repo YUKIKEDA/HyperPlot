@@ -81,10 +81,18 @@ internal sealed unsafe class NativeColumnStorage<T> : ColumnStorage<T>
             ThrowHelper.ThrowColumnDisposed();
         }
 
+        // The column checked chunkIndex and computed length from Length, which this chunk's block was allocated for. The
+        // block lives until Dispose, which the contract of Column<T> keeps from running beside a read.
         return new ReadOnlySpan<T>((void*)pointer, length);
     }
 
-    public Span<T> GetWritableChunk(int chunkIndex, int length) => new((void*)_chunks[chunkIndex], length);
+    /// <summary>Returns a chunk to write. Only the factories call it, before the column is handed out.</summary>
+    public Span<T> GetWritableChunk(int chunkIndex, int length)
+    {
+        // The factory loops over ChunkCount and computes length as the constructor did for the block's size; nothing can
+        // dispose the storage before the factory returns it.
+        return new Span<T>((void*)_chunks[chunkIndex], length);
+    }
 
     public override void Dispose()
     {
@@ -102,12 +110,22 @@ internal sealed unsafe class NativeColumnStorage<T> : ColumnStorage<T>
 internal sealed unsafe class MappedColumnStorage<T> : ColumnStorage<T>
     where T : unmanaged
 {
-    private readonly MemoryMappedFile _file;
-    private readonly MemoryMappedViewAccessor _view;
+    private readonly MemoryMappedFile? _file;
+    private readonly MemoryMappedViewAccessor? _view;
     private byte* _first;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MappedColumnStorage{T}"/> class that maps <paramref name="length"/>
+    /// values at <paramref name="offset"/>, which the caller checked against the file.
+    /// </summary>
     public MappedColumnStorage(string path, long offset, long length)
     {
+        if (length == 0)
+        {
+            // A view of 0 bytes cannot be made, and a column of no values has no chunk to read.
+            return;
+        }
+
         _file = MemoryMappedFile.CreateFromFile(path, FileMode.Open, null, 0, MemoryMappedFileAccess.Read);
         try
         {
@@ -136,6 +154,8 @@ internal sealed unsafe class MappedColumnStorage<T> : ColumnStorage<T>
             ThrowHelper.ThrowColumnDisposed();
         }
 
+        // The column checked chunkIndex and computed length from Length, and the view covers Length values. The pointer
+        // lives until Dispose, which the contract of Column<T> keeps from running beside a read.
         return new ReadOnlySpan<T>(first + (((long)chunkIndex << Column.ChunkShift) * sizeof(T)), length);
     }
 
@@ -147,8 +167,8 @@ internal sealed unsafe class MappedColumnStorage<T> : ColumnStorage<T>
         }
 
         _first = null;
-        _view.SafeMemoryMappedViewHandle.ReleasePointer();
+        _view!.SafeMemoryMappedViewHandle.ReleasePointer();
         _view.Dispose();
-        _file.Dispose();
+        _file!.Dispose();
     }
 }

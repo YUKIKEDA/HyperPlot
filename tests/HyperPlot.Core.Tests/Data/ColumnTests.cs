@@ -206,17 +206,19 @@ public sealed class ColumnTests
     }
 
     /// <summary>
-    /// MapFile refuses an offset that is not a multiple of the element size, and a length past the end of the file.
+    /// MapFile refuses an offset that is not a multiple of the element size, and an offset or a length past the end of the file.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - A file of 4 floats.
     ///
     /// Steps:
-    /// - Map it at offset 2, and with a length of 5.
+    /// - Map it at offset 2, at offset 20 (past the 16 bytes), and with a length of 5.
+    /// - Map it at offset 16 (the end).
     ///
     /// Expected:
-    /// - ArgumentException for the offset and ArgumentOutOfRangeException for the length.
+    /// - ArgumentException for offset 2; ArgumentOutOfRangeException for offset 20 and for the length.
+    /// - At the end: an empty column.
     /// </remarks>
     [Fact]
     public void MapFile_BadOffsetOrLength_Throws()
@@ -224,7 +226,10 @@ public sealed class ColumnTests
         using var file = TempFile.Write<float>([1, 2, 3, 4], prefixBytes: 0);
 
         Assert.Throws<ArgumentException>(() => Column.MapFile<float>(file.Path, offset: 2));
-        Assert.Throws<ArgumentOutOfRangeException>(() => Column.MapFile<float>(file.Path, length: 5));
+        Assert.Equal("offset", Assert.Throws<ArgumentOutOfRangeException>(() => Column.MapFile<float>(file.Path, offset: 20)).ParamName);
+        Assert.Equal("length", Assert.Throws<ArgumentOutOfRangeException>(() => Column.MapFile<float>(file.Path, length: 5)).ParamName);
+        using var atEnd = Column.MapFile<float>(file.Path, offset: 16);
+        Assert.Equal(0, atEnd.Length);
     }
 
     /// <summary>
@@ -238,7 +243,7 @@ public sealed class ColumnTests
     /// - Map it.
     ///
     /// Expected:
-    /// - A column with length 0 and no chunks.
+    /// - A column with length 0 and no chunks, whose storage is still the mapped kind.
     /// </remarks>
     [Fact]
     public void MapFile_EmptyFile_MakesAnEmptyColumn()
@@ -249,6 +254,7 @@ public sealed class ColumnTests
 
         Assert.Equal(0, column.Length);
         Assert.Equal(0, column.ChunkCount);
+        Assert.Equal(ColumnStorageKind.MemoryMapped, column.StorageKind);
     }
 
     /// <summary>
@@ -328,7 +334,7 @@ public sealed class ColumnTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A wrapped and a native column of two chunks, whose statistics were read once.
+    /// - A wrapped, a native, and a mapped column of two chunks, whose statistics were read once: every storage of design §3.2.
     ///
     /// Steps:
     /// - Read every chunk, a value, and every chunk's statistics 100 times while counting this thread's allocations.
@@ -339,16 +345,21 @@ public sealed class ColumnTests
     [Fact]
     public void GetChunkAndGetStats_SteadyState_AllocateNothing()
     {
-        using var wrapped = Column.Wrap(new float[Column.ChunkLength + 5]);
-        using var native = Column.CopyToNative<float>(new float[Column.ChunkLength + 5]);
+        var values = new float[Column.ChunkLength + 5];
+        using var file = TempFile.Write<float>(values, prefixBytes: 0);
+        using var wrapped = Column.Wrap(values);
+        using var native = Column.CopyToNative<float>(values);
+        using var mapped = Column.MapFile<float>(file.Path);
         Read(wrapped);
         Read(native);
+        Read(mapped);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {
             Read(wrapped);
             Read(native);
+            Read(mapped);
         }
 
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);

@@ -115,9 +115,9 @@ public abstract class Column
     /// <summary>Maps a file of raw little-endian values for reading, without loading it into memory.</summary>
     /// <typeparam name="T">The element type: <see cref="float"/>, <see cref="double"/>, <see cref="int"/>, <see cref="long"/>, or <see cref="byte"/>.</typeparam>
     /// <param name="path">The file.</param>
-    /// <param name="offset">The byte offset of the first value. A multiple of the size of <typeparamref name="T"/>.</param>
+    /// <param name="offset">The byte offset of the first value. A multiple of the size of <typeparamref name="T"/>, at most the file's length.</param>
     /// <param name="length">The number of values, or <see langword="null"/> for all the values after <paramref name="offset"/>.</param>
-    /// <returns>A column that keeps the file open until it is disposed.</returns>
+    /// <returns>A column that keeps the file open until it is disposed. A range of no values maps nothing and keeps nothing open.</returns>
     public static unsafe Column<T> MapFile<T>(string path, long offset = 0, long? length = null)
         where T : unmanaged, INumber<T>
     {
@@ -130,16 +130,16 @@ public abstract class Column
         }
 
         var fileLength = new FileInfo(path).Length;
-        var available = Math.Max(0, fileLength - offset) / sizeof(T);
+        if (offset > fileLength)
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset), offset, $"The file holds {fileLength} bytes.");
+        }
+
+        var available = (fileLength - offset) / sizeof(T);
         var count = length ?? available;
         if (count < 0 || count > available)
         {
             throw new ArgumentOutOfRangeException(nameof(length), count, $"The file holds {available} values after the offset.");
-        }
-
-        if (count == 0)
-        {
-            return new Column<T>(new ManagedColumnStorage<T>(ReadOnlyMemory<T>.Empty), 0);
         }
 
         return new Column<T>(new MappedColumnStorage<T>(path, offset, count), count);

@@ -18,6 +18,7 @@ internal static class ChunkStatsKernel
             return ChunkStats<T>.Empty;
         }
 
+        // The typeof checks make T and the target the same type, so the casts and Unsafe.As change no layout.
         if (typeof(T) == typeof(float))
         {
             var stats = ComputeSingle(MemoryMarshal.Cast<T, float>(values));
@@ -35,6 +36,7 @@ internal static class ChunkStatsKernel
 
     private static ChunkStats<float> ComputeSingle(ReadOnlySpan<float> values)
     {
+        // Unchecked reads: the vector loop loads [i, i + width) only while i <= length - width, and the tail reads i < length.
         ref var first = ref MemoryMarshal.GetReference(values);
         var length = values.Length;
         var width = Vector<float>.Count;
@@ -100,6 +102,7 @@ internal static class ChunkStatsKernel
 
     private static ChunkStats<double> ComputeDouble(ReadOnlySpan<double> values)
     {
+        // Unchecked reads: the vector loop loads [i, i + width) only while i <= length - width, and the tail reads i < length.
         ref var first = ref MemoryMarshal.GetReference(values);
         var length = values.Length;
         var width = Vector<double>.Count;
@@ -157,6 +160,7 @@ internal static class ChunkStatsKernel
     private static ChunkStats<T> ComputeInteger<T>(ReadOnlySpan<T> values)
         where T : unmanaged, INumber<T>
     {
+        // Unchecked reads: the vector loop loads [i, i + width) only while i <= length - width, and the tail reads i < length.
         ref var first = ref MemoryMarshal.GetReference(values);
         var length = values.Length;
         var width = Vector<T>.Count;
@@ -200,6 +204,7 @@ internal static class ChunkStatsKernel
     private static bool IsNonDecreasing<T>(ReadOnlySpan<T> values)
         where T : unmanaged, INumber<T>
     {
+        // Unchecked reads: the vector loop loads up to i + width, at most pairs = length - 1, and the tail reads i + 1 <= pairs.
         ref var first = ref MemoryMarshal.GetReference(values);
         var pairs = values.Length - 1;
         var width = Vector<T>.Count;
