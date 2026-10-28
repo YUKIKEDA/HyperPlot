@@ -131,6 +131,9 @@ public sealed class Column<T> : Column, IDisposable
     /// <summary>Releases native memory or the mapped file. A wrapped array is left as it is.</summary>
     public void Dispose() => _storage.Dispose();
 
+    /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>
+    internal long GetGeneration(int chunkIndex) => Volatile.Read(ref _generations[chunkIndex]);
+
     private int ChunkLengthOf(int chunkIndex) => (int)Math.Min(ChunkLength, Length - ((long)chunkIndex << ChunkShift));
 
     private sealed class StatsEntry(long generation, ChunkStats<T> stats)
