@@ -5,8 +5,10 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/HyperPlot.Core/HyperPlot.Core.csproj" />
+    <Project Path="src/HyperPlot.Rendering.D3D11/HyperPlot.Rendering.D3D11.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/HyperPlot.Core.Tests/HyperPlot.Core.Tests.csproj" />
+    <Project Path="tests/HyperPlot.Rendering.D3D11.Tests/HyperPlot.Rendering.D3D11.Tests.csproj" />
   </Folder>
 </Solution>

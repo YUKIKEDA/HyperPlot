@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>HyperPlot.Rendering.D3D11</RootNamespace>
+    <Description>The Direct3D 11 backend of HyperPlot: the shared device and offscreen render targets.</Description>
+    <!-- D3D11 and DXGI are called through their COM vtables (.cursor/rules/interop.mdc). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\HyperPlot.Core\HyperPlot.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="TerraFX.Interop.Windows" />
+  </ItemGroup>
+</Project>
