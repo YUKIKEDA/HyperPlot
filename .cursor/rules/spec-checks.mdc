@@ -20,6 +20,7 @@ A check or a test that stands for a statement in `docs/design.ja.md` implements 
 - When a statement lists the values a mechanism covers (column types, mark kinds, scale kinds), each value has a test on an input where the other values' paths do not run.
 - When a design statement changes, search `docs/`, the READMEs, `.cursor/rules/`, and XML docs for every restatement and update them in the same PR.
 - A result that the design matches to a reference (M4's equivalence with drawing the raw line, a tick algorithm, a color scale's interpolation, the density of a scatter against counting the points) is tested at the reference's corner cases: NaN and infinities in the data, a value past the scale's range, a pixel column with one point and one with none, a chunk boundary inside a pixel column, the last partial chunk, a viewport smaller than one bucket, and the input where the cases of a formula meet.
+- A claim that two results are the same says how far, as the test compares them: by value, or bit for bit. PR #31 wrote "bit for bit" for a test that compared the minimum and maximum by value, where -0 equals +0 and the vector minimum can differ in the sign of a zero.
 - Before a PR says "every X does Y" (every mark kind has a large-data path, every GPU resource is released on device loss), search the whole solution for X. The PR's test plan names the search and the exceptions.
 
 ```text
