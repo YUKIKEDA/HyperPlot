@@ -128,22 +128,29 @@ HyperPlot.Testing                          （ヘッドレスは Rendering.D3D11
 列は 1 つの型の値の並びで、長さは `long` である。
 
 ```csharp
-public sealed class Column<T> where T : unmanaged
+public abstract class Column                           // Column<T> と UniformColumn の基底
 {
     public long Length { get; }
     public int ChunkCount { get; }
-    public ReadOnlySpan<T> GetChunk(int chunkIndex);   // 1 チャンク分の連続領域
-    public ChunkStats<T> GetStats(int chunkIndex);     // §3.2
     public long Version { get; }                       // 追記・変更で増える
 }
+
+public sealed class Column<T> : Column, IDisposable where T : unmanaged, INumber<T>
+{
+    public ReadOnlySpan<T> GetChunk(int chunkIndex);   // 1 チャンク分の連続領域
+    public ChunkStats<T> GetStats(int chunkIndex);     // §3.2
+    public void Invalidate(long start, long length);   // 包んだ領域を利用者が書き換えたとき
+}
 ```
+
+- `INumber<T>` の制約は、統計のカーネル（§3.2）と統計の結合が `T` の比較と NaN の判定を要るためである。値の型の一覧に入らない数値の型は、作るときに `NotSupportedException` になる
 
 - 値の型: `float`・`double`・`int`・`long`・`byte`。日時は `long`（ティック）の列にスケールで意味を与える。カテゴリは `int` の符号の列と辞書の組（`CategoricalColumn`）
 - 要素ごとの仮想呼び出しを避けるため、読み出しの単位はチャンク（`ReadOnlySpan<T>`）である。ストレージの違い（§3.2）はチャンクを取り出すところで一度だけ分岐する
 - **暗黙の列**: 等間隔の X（`UniformColumn`: 開始値と刻み、要件 D-5）は値を持たない。i 番目の値は `start + i * step` を倍精度で計算する。時系列で最も多い形で、索引も二分探索も要らない
 - **欠損**: `float` / `double` は NaN を欠損とする。整数の列は任意の有効ビット列（1 ビット/要素）を持つ
 - **表**: `DataTable` は長さの等しい名前付きの列の集合である。API は型付きの参照 `ColumnRef<T>`（表と列の位置）で列を指す。文字列の列名は `table.Col<float>("y")` で参照に解決し、その時点で型を確かめる
-- **ゼロコピー**: 利用者の `T[]`・`Memory<T>`・ポインタを写さずに包める（要件 D-3）。包んだ領域を利用者が書き換えたら `column.Invalidate(range)` を呼ぶ契約とする。写す API は名前に `Copy` を含める
+- **ゼロコピー**: 利用者の `T[]`・`Memory<T>`・ポインタ（`Column.Wrap<T>(T* pointer, long length)`）を写さずに包める（要件 D-3）。ポインタは `Memory<T>` の `int` の上限を超える長さを包め、メモリの寿命は利用者が持つ。包んだ領域を利用者が書き換えたら `column.Invalidate(start, length)` を呼ぶ契約とする。写す API は名前に `Copy` を含める
 
 ### 3.2 チャンクとストレージ
 
@@ -153,8 +160,8 @@ public sealed class Column<T> where T : unmanaged
 | 種類 | 実体 | 用途 |
 | --- | --- | --- |
 | マネージド | `T[]` または `Memory<T>` | 小〜中規模、利用者の配列を包む |
-| ネイティブ | `NativeMemory.AlignedAlloc`（64 バイト境界）をチャンクごとに | 追記・リングバッファ・大規模なメモリ上のデータ |
-| メモリマップ | `MemoryMappedFile` のビュー。チャンクの境界で写像する | RAM に載らない 10 億点のファイル |
+| ネイティブ | `NativeMemory.AlignedAlloc`（64 バイト境界）をチャンクごとに列が持つ。または利用者が持つメモリをポインタと `long` の長さで包む（写さない。境界は利用者のメモリのまま） | 追記・リングバッファ・大規模なメモリ上のデータ、計測機器のバッファ |
+| メモリマップ | `MemoryMappedFile` のビュー。列の範囲を 1 つのビューで写像し、チャンクはその中の位置で切り出す | RAM に載らない 10 億点のファイル |
 
 - メモリマップの列は、生のリトルエンディアンの配列のファイル（先頭のオフセット・型・長さを指定）を読む。ファイル形式の網羅はしない（要件 D-8）
 - **チャンクの統計**: チャンクごとに SIMD で `min`・`max`・最初と最後の値・和（`double`、NaN を除く）・値の数・NaN の数・単調非減少かどうかを計算し、`ChunkStats<T>` に持つ。統計は初めて読まれたときに計算して持ち、`Invalidate` でそのチャンクの分を捨てる（チャンクごとの世代で、古い世代の結果を返さない）。ワーカー（§8.1）ができたら、チャンクを足したときに先に計算させる。スケールの domain（§4.2）、Y の自動範囲（§6.2）、X の二分探索の絞り込みは、まずこの統計を読む。統計の総数はチャンクの数（10 億点で 954 個）なので、全体の範囲が O(チャンク数) で分かる
