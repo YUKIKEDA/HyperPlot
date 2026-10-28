@@ -225,3 +225,14 @@ Rejected:
   - 喪失を中で作り直してやり直し、呼び出し側に見せない: 描き直しが要ることが伝わらない
   - §5.2 の契約を全部いま公開し、まだないものは `NotSupportedException`: 半分だけの機能（`scope.mdc`）
   - `_SRGB` のビューで線形の空間で合成する: WPF の合成と結果が変わる。線の見た目の調整は R2 のシェーダで行う
+
+## `HeadlessRenderer` の置き場所
+
+Decision:
+  `HeadlessRenderer` と PNG の書き出しは Core の `HyperPlot.Rendering` に置き、`IGpuBackend` を受け取る（設計書 §7.5、Issue #34、オーナーの判断 2026-10-28）。
+
+Reason:
+  使うのは GPU の契約と BCL の `ZLibStream` だけで、バックエンドに固有の readback（D3D11 の staging と `RowPitch`）は描画先の実装の側にある。Metal / wgpu のバックエンドを足すときに書き直さない（要件 N-6）。
+
+Rejected:
+  - `D3D11Backend` を受けて `HyperPlot.Rendering.D3D11` に置く: バックエンドごとに同じ型と PNG の書き出しを書くことになる
