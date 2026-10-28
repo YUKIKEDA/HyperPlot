@@ -7,7 +7,7 @@ public sealed class PyramidKernelTests
     private static readonly int[] Lengths = [.. Enumerable.Range(1, 70), 127, 128, 129, 4097, 100_003];
 
     /// <summary>
-    /// The one pass of a build (design §3.3) gives the same statistics, bit for bit, and the same first level as the
+    /// The one pass of a build (design §3.3) gives the same statistics (the sum bit for bit; a zero minimum or maximum may differ in sign) and the same first level as the
     /// statistics kernel and the first-level kernel run apart.
     /// </summary>
     /// <remarks>
@@ -22,7 +22,7 @@ public sealed class PyramidKernelTests
     /// - Run StatsAndLevel1, and ChunkStatsKernel.Compute with Level1, on each input.
     ///
     /// Expected:
-    /// - Min, Max, First, Last, Sum, Count, NaNCount, and IsNonDecreasing are equal (Sum compared exactly); the bucket minima,
+    /// - Min, Max, First, Last, Sum, Count, NaNCount, and IsNonDecreasing are equal (Sum compared bit for bit; Min and Max by value, so that -0 equals +0); the bucket minima,
     ///   maxima, and counts are equal.
     /// </remarks>
     [Fact]

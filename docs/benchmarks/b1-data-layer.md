@@ -41,7 +41,7 @@ dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64 -o .dev/b1-da
 - 判断（設計書 §3.3）: 1 回の走査は別々の 0.53〜0.72 倍で、揺れの外にある。構築に入れた。統計がすでにあるチャンクは、1 回の走査より速い「水準 1 だけ」を使う
 - 「統計だけ」は、ランダムウォークが単調でないので、非減少の検査が最初のベクトルで終わる。単調な列（X など）では、統計のカーネルに 2 回目の走査が加わる。1 回の走査は非減少の検査も同じ走査で行う
 - 試作（同じ処理をベンチマークのプロジェクトに置いたもの）で 1 回目を測り、Core に入れた後に 3 回測り直した。上の表は測り直した値
-- BenchmarkDotNet は 1 操作あたり 0〜3 B の確保を報告する。段階的なコンパイルを切った回（`DOTNET_TieredCompilation=0`）でも 0〜1 B 残った。カーネルが確保しないことは `PyramidKernelTests.Passes_SteadyState_AllocateNothing` が 0 バイトで示すので、この数はカーネルの外（計測の枠）のものである。どこで確保されるかは調べていない
+- BenchmarkDotNet は 1 操作あたり 0〜3 B の確保を報告する。カーネルが確保しないことは `PyramidKernelTests.Passes_SteadyState_AllocateNothing` が 0 バイトで示す。この数が計測の枠のものであることは、同じクラスに足した確保のないループで確かめた: 1 操作 0.41〜0.42 ms のループは 0 B、1.60〜1.66 ms のループは 1 B だった（各 2 回）。空のメソッドは 0 B である。1 操作が長いほど 1 回の計測の操作の数が減り、枠の一定の確保が 1 操作あたりの数として見えるようになる、と読める（確保のないループでも出るので、カーネルの外である）。段階的なコンパイルを切った回（`DOTNET_TieredCompilation=0`）でも 0〜1 B 残った。確かめたループは記録の後に消した
 
 ## カーネル: 問い合わせと M4
 
@@ -53,12 +53,13 @@ dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64 -o .dev/b1-da
 | `GetMinMax`、長さ 4,096 | 294 ns |
 | `GetMinMax`、長さ 100,000 | 480 ns |
 | `GetMinMax`、全体（1e7） | 26 ns（すべて丸ごとのチャンクで、統計をそのまま使う） |
-| M4、X が `UniformColumn`、`Break` | 1.00 ms（1 列あたり 0.52 µs） |
-| M4、X が `UniformColumn`、`Connect` | 1.05 ms |
-| M4、X が保存された列、`Break` | 1.84 ms（境界ごとの二分探索の分） |
+| M4、X が `UniformColumn`、`Break` | 0.95 ms（1 列あたり 0.50 µs） |
+| M4、X が `UniformColumn`、`Connect` | 1.01 ms |
+| M4、X が保存された列、`Break` | 1.75 ms（境界ごとの二分探索の分） |
+| M4、X が保存された列、`Connect` | 1.78 ms |
 
-- M4 は、区間の長さを変えた 1 回目の計測で 0.95〜1.71 ms だった。上の値は M4 を別のクラスに分けた後の回のもので、回の間の差は比べない（`bench.mdc`）
-- M4 の確保は、ゼロアロケーションのテスト（`GetMinMaxAndExtract_SteadyState_AllocateNothing`）が 0 バイトで示す。BenchmarkDotNet の 0〜5 B は上と同じ枠の分である
+- M4 の 4 つは同じ回（3 回、最良）の値。区間の問い合わせとは別の回で測ったので、両者の差は比べない（`bench.mdc`）
+- M4 の確保は、ゼロアロケーションのテスト（`GetMinMaxAndExtract_SteadyState_AllocateNothing`）が 0 バイトで示す。BenchmarkDotNet の 0〜5 B は、上で確かめた枠の分である（1 操作が 1〜2 ms と長い）
 
 ## データの経路（1e9 点、NativeAOT）
 

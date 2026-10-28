@@ -83,6 +83,10 @@ public class M4Benchmarks : IDisposable
     [Benchmark]
     public int StoredBreak() => M4.Extract(_series!.StoredX, _series.Pyramid, _boundaries, _points).Count;
 
+    /// <summary>A stored X column; NaN skipped.</summary>
+    [Benchmark]
+    public int StoredConnect() => M4.Extract(_series!.StoredX, _series.Pyramid, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
+
     /// <summary>Releases the series.</summary>
     [GlobalCleanup]
     public void Dispose()

@@ -26,7 +26,7 @@ internal static class PyramidKernel
     /// Writes the minimum, the maximum, and the count of the values that are not NaN of each 64-element bucket (the first
     /// level of a pyramid, design §3.3), and returns the chunk's statistics (§3.2). For <see cref="float"/> and
     /// <see cref="double"/>, both come from one pass over the values; the row B1 measurement found the one pass 0.53 to 0.72
-    /// times the time of the two (docs/benchmarks/b1-data-layer.md). The result equals <see cref="ChunkStatsKernel.Compute"/>.
+    /// times the time of the two (docs/benchmarks/b1-data-layer.md). The result equals <see cref="ChunkStatsKernel.Compute"/> in value, and in its bits for the sum; a minimum or maximum of 0 may differ in sign, since the vector minimum and maximum keep the second operand of two zeros and the two kernels combine in another order.
     /// </summary>
     internal static ChunkStats<T> StatsAndLevel1<T>(ReadOnlySpan<T> values, Span<T> mins, Span<T> maxs, Span<byte> numbers)
         where T : unmanaged, INumber<T>
