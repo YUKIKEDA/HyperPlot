@@ -127,12 +127,12 @@ Decision:
 
 Reason:
   要件 P-2（8 コアで 1 GB/s 以上、構築中も操作できる）と N-8（UI のスレッドを O(N) で止めない）を、C2 の行で満たして測れる。ピラミッドは元データの約 3.6% なので、データが RAM に載らなくてもピラミッドは載る。
-  比べた実装の索引は、ScottPlot 5 の `SegmentedTree` がデータの 2〜4 倍、Perfetto の `ImplicitSegmentForest` が約 2.5 倍である。
+  比べた実装の索引は、ScottPlot 5 の `SegmentedTree` がデータの 2〜4 倍、Perfetto の `ImplicitSegmentForest` が約 2.5 倍である（読んだファイルとコミットは `docs/references.md` の「時系列の間引き（比べた実装、C2）」の行）。
 
 Rejected:
   - ワーカーを後の行にして、C2 は同期の並列構築だけにする: P-2 の「構築中も操作」を C2 で確かめられず、行が 1 つ増える
   - メモリマップの列では、ピラミッドも一時ファイルに写像する: 問い合わせのたびにページを読む。3.6% の RAM を惜しむ理由がない
-  - 構築中の問い合わせで生データを読む（ScottPlot 5 の `SegmentedTree` が木のできる前にすること）: 10 億点ではフレームが O(N) になる（不変条件 2）
+  - 構築中の問い合わせで生データを読む（ScottPlot 5 の `SegmentedTree` が木のできる前にすること。`SegmentedTree.cs` の `MinMaxRangeQuery`、`docs/references.md` の同じ行）: 10 億点ではフレームが O(N) になる（不変条件 2）
   - 作り終わるまで問い合わせを待たせる: P-2 の「構築中も操作」に反する
   - ピラミッドを `Column<T>` に持たせる: 列の型がワーカーに依存し、C1 の契約が変わる。同じ列に複数のピラミッドを持てない
 
