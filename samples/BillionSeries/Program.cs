@@ -46,11 +46,9 @@ var columns = new Column<float>[seriesCount];
 var pyramids = new MinMaxPyramid<float>[seriesCount];
 for (var s = 0; s < seriesCount; s++)
 {
-    var path = Path.Combine(directory, $"series{s}.f32");
-    if (!File.Exists(path) || new FileInfo(path).Length != points * sizeof(float))
+    var made = Stopwatch.StartNew();
+    if (WalkFile.Ensure(directory, s, points, out var path))
     {
-        var made = Stopwatch.StartNew();
-        Generate(path, points, seed: 0x48797065UL + (ulong)s);
         Console.WriteLine($"Made {path} in {made.Elapsed.TotalSeconds:F1} s.");
     }
 
@@ -130,27 +128,4 @@ void Draw(string name, double from, double to)
     }
 
     Console.WriteLine($"Wrote {path}: M4 of {seriesCount} series in {extractMs:F2} ms ({(backend.IsWarp ? "WARP" : "hardware")}).");
-}
-
-// A seeded random walk of floats (xorshift64*), written in blocks of 4 MiB.
-static void Generate(string path, long count, ulong seed)
-{
-    var state = seed;
-    var y = 0.0;
-    var block = new float[1 << 20];
-    using var stream = File.Create(path);
-    for (long written = 0; written < count; written += block.Length)
-    {
-        var length = (int)Math.Min(block.Length, count - written);
-        for (var i = 0; i < length; i++)
-        {
-            state ^= state >> 12;
-            state ^= state << 25;
-            state ^= state >> 27;
-            y += (((state * 0x2545F4914F6CDD1DUL) >> 11) * (1.0 / (1UL << 53))) - 0.5;
-            block[i] = (float)y;
-        }
-
-        stream.Write(System.Runtime.InteropServices.MemoryMarshal.AsBytes(block.AsSpan(0, length)));
-    }
 }

@@ -41,8 +41,9 @@ docs/                        要件・設計・判断・ロードマップ・規
 | `tools/ShaderGen` | `Shaders/*.hlsl` を Windows SDK の `fxc` でシェーダモデル 5.0 にコンパイルし、`Shaders.g.cs` に書き出す（設計書 §5.7）。シェーダを変えたら手で走らせる。ゲートは走らせず、Core のテストが HLSL の SHA-256 を比べる |
 | `samples/HelloPlot` | メモリの 1e6 点の 4 系列を、ピラミッド・`M4Batch`・`RenderList` でヘッドレスに描いて PNG に書くサンプル（設計書 §2.1）。NativeAOT の検査に使う（`aot.mdc`、`--auto`） |
 | `samples/BillionSeries` | 1e9 点のメモリマップのファイル（なければシードから作る）の系列を、全体と拡大の表示で PNG に書くサンプル |
-| `samples/Shared` | サンプルが共有する、データから画素への写し方（倍精度、`PlotArea.cs`）。ライブラリの API ではない（スケールは行 G2） |
+| `samples/Shared` | サンプルと計測が共有するもの: データから画素への写し方（倍精度、`PlotArea.cs`）と、1e9 点の系列のファイル（シードからのランダムウォーク、`WalkFile.cs`）。ライブラリの API ではない（スケールは行 G2） |
 | `benchmarks/HyperPlot.DataPath` | データの経路の計測（NativeAOT、GPU なし、設計書 §9）と、シードから系列のファイルをバッファなしで書く生成器。場面は構築・暫定が替わるまで・冷えた 1 フレーム。ゲートではない |
+| `benchmarks/HyperPlot.E2E` | End-to-end のフレームの計測（NativeAOT、設計書 §9）: 1e9 点の系列（`samples/Shared/WalkFile.cs`）を、ズームとパンの台本で、抽出・写しと記録・描画の命令のフレームにし、段ごとの CPU 時間・GPU 時間（`LastFrameTime`）・フレームごとの確保・メモリを書く。要件 P-1 を測る。ゲートではない |
 
 予定しているプロジェクトの全体は設計書 §2.1 にある。
 

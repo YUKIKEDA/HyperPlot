@@ -10,5 +10,6 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="..\Shared\PlotArea.cs" Link="PlotArea.cs" />
+    <Compile Include="..\Shared\WalkFile.cs" Link="WalkFile.cs" />
   </ItemGroup>
 </Project>
