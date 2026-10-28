@@ -52,6 +52,9 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | 空間タイル索引、タイル | spatial tile index, tile |
 | ストリーミング、追記 | streaming, append |
 | 版（列と派生の結果の世代） | version |
+| 暫定（できていない索引の代わりに統計で答えた結果） | provisional |
+| ワーカー、ワーカーのプール | worker, worker pool (`PlotWorkerPool`) |
+| 画素列の境界 | pixel-column boundary |
 | GoG、仕様モデル | Grammar of Graphics, spec (the spec model) |
 | Geom、Stat、Position | geom, stat, position |
 | レイヤー（GoG の重ね合わせ） | layer |

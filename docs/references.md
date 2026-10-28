@@ -7,6 +7,7 @@
 | 先行の POC | `D:\home\Programs\CSharpProjects\HighPerfPlotPOC`（`spec.md`、`HighPerfPlot.Core/Renderring/`、`Spatial/QuadTree.cs`、`Chart/InteractiveChartRenderer.cs`） | 層の差分描画、インスタンス描画、ホバーの経路。精度と軸のラベルの問題 |
 | 同じ方針の GPU のコード | `D:\home\Programs\CSharpProjects\XylemUI`（`src/XylemUI.Rendering.D3D11/`、`docs/design.ja.md` §5） | TerraFX での D3D11 の呼び方、WARP のテスト、シェーダのビルド、デバイスの喪失 |
 | 時系列の間引き（C2） | Jugel, Jerzak, Hackenbroich, Markl. "M4: A Visualization-Oriented Time Series Data Aggregation." PVLDB 7(10), 2014 | M4 が画素の結果を保つ条件 |
+| 時系列の間引き（比べた実装、C2） | Jugel ら 2014 の §2・§4.1〜§4.4・式 (2)。tsdownsample（commit 567f68f5）の `downsample_rs/src/m4.rs`・`searchsorted.rs`。plotly-resampler（commit 989043e5）の `plotly_resampler/aggregation/gap_handlers.py`。ScottPlot 5（`main`、2026-10-28）の `src/ScottPlot5/ScottPlot5/DataSources/SegmentedTree.cs`・`MinMaxCache.cs`。Perfetto（`main`、2026-10-28）の `src/trace_processor/containers/implicit_segment_forest.h`。SciChart WPF の文書（Data Performance Tips、`LineDrawMode`） | 設計書 §3.3・§5.5.1 と `design-decisions.md` の「LOD ピラミッドの構築と置き場所」「M4 の入出力」の比較の出典。ScottPlot と Perfetto はコミットを固定していないので、引く前に同じファイルを読み直す |
 | 時系列の間引き（比較） | Steinarsson. "Downsampling Time Series for Visual Representation." 2013（LTTB）。`MinMaxLTTB`（Van Der Donckt ら 2023） | M4 を既定にした理由の比較 |
 | 散布の密度（C3・R3） | datashader の文書（Pipeline: aggregation と shading） | 集計と色の写像を分ける構成、eq_hist |
 | GoG（G1〜G6） | Wilkinson. *The Grammar of Graphics*. 2005。Wickham. *ggplot2: Elegant Graphics for Data Analysis* 3e。Vega-Lite の仕様（encoding、scale、selection / param、facet、concat） | 仕様モデル、チャネル、Stat と Position、selection |
