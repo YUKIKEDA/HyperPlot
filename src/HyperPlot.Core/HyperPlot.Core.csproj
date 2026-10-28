@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>HyperPlot</RootNamespace>
+    <Description>The HyperPlot engine: columns and indexes, the grammar of graphics, interaction, and the render IR.</Description>
+    <!-- Native and memory-mapped column storage hands out spans over unmanaged memory (design §3.2). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HyperPlot.Core.Tests" />
+  </ItemGroup>
+</Project>

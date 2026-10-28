@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>HyperPlot.Tests</RootNamespace>
+    <!-- The alignment test reads the address of native chunks. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!--
+      The allocation tests measure GC.GetAllocatedBytesForCurrentThread under the JIT. Tiered compilation can allocate in the
+      measured window when it promotes a method, so it is off.
+    -->
+    <TieredCompilation>false</TieredCompilation>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\HyperPlot.Core\HyperPlot.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+</Project>

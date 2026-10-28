@@ -18,7 +18,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** A（データとヘッドレス描画の土台）
-- **作業中:** C1
+- **作業中:** C2（C1 は #1 の PR で済み）
 - **ブランチ:** —
 - **Issue:** —
 
@@ -37,7 +37,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | D0 | 要件定義と設計 v1（requirements・design・decisions） | done | — |
 | D1 | 3D に耐える v1 の契約と、v1.x の 3D の計画 | done | [#3](https://github.com/YUKIKEDA/HyperPlot/issues/3) |
 | **A: データとヘッドレス描画の土台** | | | |
-| C1 | 列とチャンク（`Column<T>`、3 種のストレージ、暗黙の列、チャンクの統計） | not-started | |
+| C1 | 列とチャンク（`Column<T>`、3 種のストレージ、暗黙の列、チャンクの統計） | done | [#1](https://github.com/YUKIKEDA/HyperPlot/issues/1) |
 | C2 | LOD ピラミッドと区間の min / max、M4 の抽出（CPU） | not-started | |
 | B1 | ベンチマークの基盤と参照機の固定（統計・LOD・M4 のカーネル） | not-started | |
 | R1 | D3D11 のデバイス、ヘッドレスの描画先、readback、PNG（WARP のテスト） | not-started | |
