@@ -61,6 +61,7 @@ _slots[index].Generation = 1;
 
 - Public members under `src/` have `summary`, and `param` / `returns` / `exception` when a caller might be unsure. Sentences end with a period. Properties start with "Gets" / "Gets or sets"; constructors with "Initializes a new instance of the <see cref="T"/> class".
 - XML docs state the caller's contract only. How it works lives in `docs/design.ja.md`; refer to the section instead of restating it.
+- A commit that changes a contract also searches the XML docs for the old contract's words and rewrites what they say in the same push. PR #19 changed what a provisional answer reads and when the pool sets a fault, and its review found five summaries and remarks that still said "answered from its chunk statistics" and "pyramids with chunks left".
 - Use `<inheritdoc />` when an implementation has the interface's contract.
 - A member that returns one shared instance of a public `IDisposable` says in its XML docs that callers do not dispose it.
 - Wording and terminology: `.agents/skills/english-writing/SKILL.md`.
