@@ -126,12 +126,13 @@ public sealed class M4Tests
     /// - A pyramid over 8 floats; an evenly spaced X of 8 and of 7; a stored X that decreases.
     ///
     /// Steps:
-    /// - Extract with 1 boundary, a NaN boundary, an infinite one, equal ones, a destination 1 short, an X of another length,
-    ///   the decreasing X, and after disposing the pyramid.
+    /// - Extract with 1 boundary, a NaN boundary, an infinite one, equal ones, a destination 1 short, an X of another length.
+    /// - Extract with the decreasing X before and after its statistics are computed; extract after disposing the pyramid.
     ///
     /// Expected:
-    /// - ArgumentException for the boundaries, the destination, and the length; InvalidOperationException for the decreasing X;
-    ///   ObjectDisposedException after Dispose.
+    /// - ArgumentException for the boundaries, the destination, and the length.
+    /// - Before its statistics, the decreasing X gives a provisional result; after, InvalidOperationException.
+    /// - ObjectDisposedException after Dispose.
     /// </remarks>
     [Fact]
     public void Extract_BadArguments_Throw()
@@ -149,6 +150,8 @@ public sealed class M4Tests
         Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [0, 2, 2], points));
         Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [0, 2, 4], points.AsSpan(0, points.Length - 1)));
         Assert.Throws<ArgumentException>(() => M4.Extract(Column.Uniform(0, 1, 7), pyramid, [0, 2, 4], points));
+        Assert.True(M4.Extract(decreasing, pyramid, [0, 2, 4], points).IsProvisional);
+        Eventually.Completes(pool.PrecomputeStats(decreasing));
         Assert.Throws<InvalidOperationException>(() => M4.Extract(decreasing, pyramid, [0, 2, 4], points));
         pyramid.Dispose();
         Assert.Throws<ObjectDisposedException>(() => M4.Extract(x, pyramid, [0, 2, 4], points));
@@ -167,6 +170,14 @@ public sealed class M4Tests
         foreach (var kind in new[] { "Uniform", "Double", "Long", "Float" })
         {
             var (x, xValues) = PyramidData.X(kind, values.Length, 41);
+            var stats = x switch
+            {
+                Column<double> doubles => pool.PrecomputeStats(doubles),
+                Column<long> longs => pool.PrecomputeStats(longs),
+                Column<float> floats => pool.PrecomputeStats(floats),
+                _ => Task.CompletedTask,
+            };
+            Eventually.Completes(stats);
             for (var view = 0; view < 8; view++)
             {
                 var boundaries = PyramidData.Boundaries(xValues, random);

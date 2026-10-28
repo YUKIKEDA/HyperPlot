@@ -110,7 +110,11 @@ public static class M4
     /// <summary>Extracts the M4 points of a series whose X is a stored column. Does not allocate.</summary>
     /// <typeparam name="TX">The element type of the X column.</typeparam>
     /// <typeparam name="TY">The element type of the Y column.</typeparam>
-    /// <param name="x">The X column: non-decreasing, with no NaN, as long as the Y column.</param>
+    /// <param name="x">
+    /// The X column: non-decreasing, with no NaN, as long as the Y column. Compute its statistics first with
+    /// <see cref="PlotWorkerPool.PrecomputeStats{T}(Column{T})"/>; until they are all computed, the result is provisional and
+    /// the column is not checked.
+    /// </param>
     /// <param name="y">The pyramid over the Y column.</param>
     /// <param name="boundaries">
     /// The W + 1 pixel-column boundaries in X units: finite and strictly increasing. Pixel column k is [b_k, b_k+1).
@@ -131,13 +135,18 @@ public static class M4
         ArgumentNullException.ThrowIfNull(x);
         ArgumentNullException.ThrowIfNull(y);
         Validate(x, y, boundaries, destination);
-        if (!x.IsNonDecreasing())
+
+        // The X statistics are read only if computed (PlotWorkerPool.PrecomputeStats): scanning X here would put O(N) on the
+        // frame path (design §5.5.1, invariant 2). Without them the result is provisional and X is not checked yet.
+        var statsReady = x.TryIsNonDecreasing(out var nonDecreasing);
+        if (statsReady && !nonDecreasing)
         {
             throw new InvalidOperationException("The X column must be non-decreasing and hold no NaN.");
         }
 
         var source = new ColumnX<TX>(x);
-        return Run(ref source, y, boundaries, destination, options.Gaps);
+        var result = Run(ref source, y, boundaries, destination, options.Gaps);
+        return statsReady ? result : new M4Result(result.Count, isProvisional: true);
     }
 
     /// <summary>Extracts the M4 points of a series whose X is evenly spaced. Does not allocate.</summary>
@@ -354,7 +363,12 @@ public static class M4
             while (low < high)
             {
                 var middle = (low + high) >>> 1;
-                if (double.CreateTruncating(column.GetStats(middle).Last) >= boundary)
+                if (!column.TryGetStoredStats(middle, out var stats))
+                {
+                    return SearchElements(boundary);
+                }
+
+                if (double.CreateTruncating(stats.Last) >= boundary)
                 {
                     high = middle;
                 }
@@ -386,6 +400,27 @@ public static class M4
             }
 
             return ((long)low << Column.ChunkShift) + first;
+        }
+
+        /// <summary>The same search over the elements, for chunks whose statistics are not computed: O(log N) reads.</summary>
+        private long SearchElements(double boundary)
+        {
+            long first = 0;
+            var last = column.Length;
+            while (first < last)
+            {
+                var middle = first + ((last - first) >>> 1);
+                if (double.CreateTruncating(column.GetValue(middle)) >= boundary)
+                {
+                    last = middle;
+                }
+                else
+                {
+                    first = middle + 1;
+                }
+            }
+
+            return first;
         }
     }
 

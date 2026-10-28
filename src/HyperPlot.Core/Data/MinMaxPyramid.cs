@@ -4,10 +4,10 @@ using System.Runtime.InteropServices;
 namespace HyperPlot;
 
 /// <summary>
-/// The part of a pyramid that a <see cref="PlotWorkerPool"/> drives, without the element type, so that one pool holds
-/// pyramids of every type.
+/// Work that a <see cref="PlotWorkerPool"/> drives a chunk at a time (a pyramid, or statistics computed ahead), without the
+/// element type, so that one pool holds work of every type.
 /// </summary>
-internal abstract class PyramidWork
+internal abstract class PoolWork
 {
     private int _inFlight;
     private int _disposed;
@@ -183,7 +183,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     internal Action? TestBlockWritten { get; set; }
 
     /// <summary>Gets the part of the pyramid that the pool drives.</summary>
-    internal PyramidWork Work { get; }
+    internal PoolWork Work { get; }
 
     /// <summary>Gets the bytes of native memory the pyramid's blocks take.</summary>
     internal long BlockBytes => _blocks.Length == 0 ? 0 : (((long)_blocks.Length - 1) * _fullLayout.ByteCount) + _lastLayout.ByteCount;
@@ -926,7 +926,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     }
 
     /// <summary>Forwards the pool's calls to the pyramid.</summary>
-    private sealed class WorkItem(MinMaxPyramid<T> pyramid) : PyramidWork
+    private sealed class WorkItem(MinMaxPyramid<T> pyramid) : PoolWork
     {
         internal override void OnPoolDisposed() => pyramid.OnPoolDisposed();
 

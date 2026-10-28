@@ -17,7 +17,7 @@ public sealed class PlotWorkerPool : IDisposable
     private readonly ManualResetEventSlim _wake = new(initialState: false);
     private readonly Lock _gate = new();
     private readonly bool _isShared;
-    private PyramidWork[] _pyramids = [];
+    private PoolWork[] _pyramids = [];
     private volatile bool _disposed;
 
     /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
@@ -74,6 +74,38 @@ public sealed class PlotWorkerPool : IDisposable
     }
 
     /// <summary>
+    /// Computes the chunk statistics of a column in the background (design §3.2). Do this for a stored X column before M4
+    /// extraction reads it: until every chunk's statistics are computed, an extraction over it is provisional and does not
+    /// check that the column is non-decreasing (design §5.5.1).
+    /// </summary>
+    /// <typeparam name="T">The element type of the column.</typeparam>
+    /// <param name="column">The column. Do not dispose it before the task ends.</param>
+    /// <returns>
+    /// A task that ends when every chunk's statistics are computed; it faults with the first exception a chunk threw, and with
+    /// <see cref="ObjectDisposedException"/> when the pool is disposed first.
+    /// </returns>
+    public Task PrecomputeStats<T>(Column<T> column)
+        where T : unmanaged, INumber<T>
+    {
+        ArgumentNullException.ThrowIfNull(column);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var work = new StatsWork<T>(this, column);
+        if (column.ChunkCount == 0)
+        {
+            return work.Completion;
+        }
+
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _pyramids = [.. _pyramids, work];
+        }
+
+        Wake();
+        return work.Completion;
+    }
+
+    /// <summary>
     /// Stops taking work, lets each thread finish the chunk it is building, and joins the threads. Pyramids with chunks left
     /// get <see cref="ObjectDisposedException"/> as their fault. Does nothing for <see cref="Shared"/>.
     /// </summary>
@@ -91,7 +123,7 @@ public sealed class PlotWorkerPool : IDisposable
             thread.Join();
         }
 
-        PyramidWork[] left;
+        PoolWork[] left;
         lock (_gate)
         {
             left = _pyramids;
@@ -115,7 +147,7 @@ public sealed class PlotWorkerPool : IDisposable
         }
     }
 
-    internal void Unregister(PyramidWork pyramid)
+    internal void Unregister(PoolWork pyramid)
     {
         lock (_gate)
         {

@@ -186,6 +186,7 @@ public sealed class MinMaxPyramidTests
         using var stored = Column.Wrap(Enumerable.Range(0, values.Length).Select(i => (double)i).ToArray());
         var boundaries = Enumerable.Range(0, 1921).Select(k => k * (values.Length / 1920.0)).ToArray();
         var points = new M4Point[M4.MaxPointCount(1920)];
+        Eventually.Completes(pool.PrecomputeStats(stored));
         Run();
 
         var before = GC.GetAllocatedBytesForCurrentThread();

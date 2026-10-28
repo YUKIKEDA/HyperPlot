@@ -338,6 +338,92 @@ public sealed class PlotWorkerPoolTests
     }
 
     /// <summary>
+    /// Until a stored X column's statistics are computed, M4 does not compute them on the calling thread: it finds the boundaries
+    /// by a search over the elements and marks the result provisional; after PrecomputeStats the same extraction is not.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread; a built pyramid over two chunks and 70,001 floats; a stored double X whose chunk 1 is held when
+    ///   the worker reads it.
+    ///
+    /// Steps:
+    /// - PrecomputeStats on X; while chunk 1 is held, extract M4 over 500 columns; release; wait for the task; extract again.
+    ///
+    /// Expected:
+    /// - The first extraction is provisional, its points equal the loop's, and the X statistics of chunk 1 are still missing;
+    ///   the second is not provisional and gives the same points; after an Invalidate of X, the next is provisional again.
+    /// </remarks>
+    [Fact]
+    public void Extract_XStatisticsMissing_IsProvisionalUntilPrecomputed()
+    {
+        var values = PyramidData.Convert<float>(PyramidData.Values(PyramidData.Length, "Sparse", 13, integral: false));
+        var xValues = Enumerable.Range(0, values.Length).Select(i => i * 0.5).ToArray();
+        using var pool = new PlotWorkerPool(1);
+        using var column = Column.Wrap(values);
+        using var pyramid = MinMaxPyramidTests.Build(pool, column);
+        using var x = TestStorage<double>.MakeColumn(xValues, out var storage);
+        storage.Hold(1);
+        var stats = pool.PrecomputeStats(x);
+        storage.WaitForWorker(1);
+        var boundaries = Enumerable.Range(0, 501).Select(k => k * (xValues[^1] / 500)).ToArray();
+        var points = new M4Point[M4.MaxPointCount(500)];
+        var expected = Reference.M4(xValues, PyramidData.AsStored(values), boundaries, M4Gaps.Break);
+
+        var early = M4.Extract(x, pyramid, boundaries, points);
+        var earlyPoints = points[..early.Count].Select(p => new Reference.Point(p.Index, p.X, p.Y, p.Roles, p.BreakBefore)).ToArray();
+        var missing = !x.TryGetStoredStats(1, out _);
+        storage.Release(1);
+        Eventually.Completes(stats);
+        var late = M4.Extract(x, pyramid, boundaries, points);
+
+        Assert.True(early.IsProvisional);
+        Assert.True(missing);
+        Assert.Equal(expected, earlyPoints);
+        Assert.False(late.IsProvisional);
+        Assert.Equal(expected, points[..late.Count].Select(p => new Reference.Point(p.Index, p.X, p.Y, p.Roles, p.BreakBefore)));
+        x.Invalidate(5, 1);
+        Assert.True(M4.Extract(x, pyramid, boundaries, points).IsProvisional);
+    }
+
+    /// <summary>
+    /// PrecomputeStats ends at once for an empty column, faults with a chunk's exception, and faults with ObjectDisposedException
+    /// when the pool is disposed first.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread; an empty column; a column of 3 chunks whose chunk 1 throws on the worker; a column of 3 chunks
+    ///   whose chunk 0 is held.
+    ///
+    /// Steps:
+    /// - PrecomputeStats on each; dispose the pool on a thread of the test while chunk 0 of the last column is held; release it.
+    ///
+    /// Expected:
+    /// - The empty column's task has ended; the failing column's task faults with the IOException; the last one faults with
+    ///   ObjectDisposedException.
+    /// </remarks>
+    [Fact]
+    public void PrecomputeStats_EmptyFailingOrDisposed_EndsAsTheDesignSays()
+    {
+        var pool = new PlotWorkerPool(1);
+        using var empty = Column.Wrap(Array.Empty<float>());
+        Assert.True(pool.PrecomputeStats(empty).IsCompletedSuccessfully);
+        using var failing = TestStorage<float>.MakeColumn(new float[PyramidData.Length], out var failingStorage);
+        failingStorage.FailOn(1, fail: true);
+        Assert.IsType<IOException>(Eventually.Faults(pool.PrecomputeStats(failing)));
+
+        using var held = TestStorage<float>.MakeColumn(new float[PyramidData.Length], out var heldStorage);
+        heldStorage.Hold(0);
+        var task = pool.PrecomputeStats(held);
+        heldStorage.WaitForWorker(0);
+        var disposer = new Thread(pool.Dispose);
+        disposer.Start();
+        heldStorage.Release(0);
+        Assert.True(disposer.Join(30_000));
+
+        Assert.IsType<ObjectDisposedException>(Eventually.Faults(task));
+    }
+
+    /// <summary>
     /// The pool refuses a thread count below 1.
     /// </summary>
     /// <remarks>
