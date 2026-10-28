@@ -155,11 +155,13 @@ public sealed class HeadlessRendererTests
 
         public RenderList? Drawn { get; private set; }
 
-        public void BeginFrame() { }
+        public GpuFrameTime? LastFrameTime => null;
+
+        public FrameScope BeginFrame() => new(this, 1);
 
         public void Draw(IRenderTarget target, RenderList list) => Drawn = list;
 
-        public void EndFrame() { }
+        public void EndFrame(long token) { }
 
         public void Dispose() => IsDisposed = true;
     }

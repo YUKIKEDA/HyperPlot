@@ -23,6 +23,11 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly bool _isShared;
     private readonly List<D3D11RenderTarget> _targets = [];
     private readonly D3D11LinePipeline _lines;
+    private readonly D3D11FrameTimer _timer;
+    private long[] _open = new long[8];
+    private int _depth;
+    private long _nextToken = 1;
+    private long _frames;
     private ID3D11Device* _device;
     private ID3D11DeviceContext* _context;
     private State _state;
@@ -33,6 +38,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _isShared = isShared;
         CreateDevice = createDevice;
         _lines = new D3D11LinePipeline(this);
+        _timer = new D3D11FrameTimer(this);
         MakeDevice();
     }
 
@@ -53,6 +59,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     /// <inheritdoc />
     public bool IsWarp { get; private set; }
 
+    /// <inheritdoc />
+    public GpuFrameTime? LastFrameTime => _timer.Last;
+
     /// <summary>Gets or sets a test hook that replaces the HRESULT of a checked call; the name of the call comes first.</summary>
     internal Func<string, int, int>? CheckResult { get; set; }
 
@@ -67,6 +76,11 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     internal ID3D11DeviceContext* Context => _context;
 
     internal D3D11LinePipeline Lines => _lines;
+
+    internal D3D11FrameTimer Timer => _timer;
+
+    /// <summary>Gets the number of frames open, for the tests of nesting.</summary>
+    internal int OpenFrames => _depth;
 
     /// <summary>Makes a backend with a device of its own.</summary>
     /// <param name="useWarp">Use WARP even when there is hardware: for tests, which need the same pixels on every machine.</param>
@@ -86,20 +100,35 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             throw new NotSupportedException("A depth texture comes with the 3D rows after v1 (design §13.1).");
         }
 
-        BeginFrame();
+        using var frame = BeginFrame();
         var target = new D3D11RenderTarget(this, description);
         _targets.Add(target);
         return target;
     }
 
     /// <inheritdoc />
-    public void BeginFrame()
+    public FrameScope BeginFrame()
     {
         ObjectDisposedException.ThrowIf(_state == State.Disposed, this);
         if (_state == State.Lost)
         {
             MakeAgain();
         }
+
+        if (_depth == _open.Length)
+        {
+            Array.Resize(ref _open, _open.Length * 2);
+        }
+
+        var token = _nextToken++;
+        _open[_depth++] = token;
+        if (_depth == 1)
+        {
+            // The outermost frame: it gets a number and, if a query set is free, its GPU time (design §5.2).
+            _timer.Begin(_frames++);
+        }
+
+        return new FrameScope(this, token);
     }
 
     /// <inheritdoc />
@@ -113,25 +142,45 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
 
         own.ThrowIfDisposed();
-        BeginFrame();
+        using var frame = BeginFrame();
         _lines.Draw(own, list);
-        EndFrame();
     }
 
     /// <inheritdoc />
-    public void EndFrame()
+    public void EndFrame(long token)
     {
-        ObjectDisposedException.ThrowIf(_state == State.Disposed, this);
-        if (_state == State.Lost)
+        // A token that is not open (closed already, 0, or of a disposed backend) does nothing: closing never throws for
+        // the order of the calls (design §5.2).
+        if (token <= 0 || _depth == 0)
         {
             return;
         }
 
-        // Clears and copies return no HRESULT, so the frame's end asks the device once whether it is still there.
+        var at = Array.LastIndexOf(_open, token, _depth - 1, _depth);
+        if (at < 0)
+        {
+            return;
+        }
+
+        // The frame and every frame still open inside it close.
+        _depth = at;
+        if (_state != State.Ready)
+        {
+            return;
+        }
+
+        // Clears and copies return no HRESULT, so closing asks the device once whether it is still there.
         var reason = ReadRemovedReason();
         if (reason != S.S_OK)
         {
             Lose(reason, reason, "The device was lost during the frame.");
+        }
+
+        // A frame that saw a loss has no time, even if an inner call made the device again: the loss released its queries,
+        // and the timer made again has no frame open (design §5.2).
+        if (_depth == 0)
+        {
+            _timer.End();
         }
     }
 
@@ -244,6 +293,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         try
         {
             _lines.Make();
+            _timer.Make();
         }
         catch (InvalidOperationException)
         {
@@ -291,6 +341,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     private void ReleaseDevice()
     {
+        _timer.Release();
         _lines.Release();
         if (_context != null)
         {
