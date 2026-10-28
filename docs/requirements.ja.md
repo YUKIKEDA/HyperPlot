@@ -124,7 +124,7 @@ v1 では実装しない。v1 の後の版（v1.x）で入れる。v1 の公開 
 
 ## 5. 性能要件
 
-参照機は最初の計測の行で固定する（暫定: 8 コア以上の x64 CPU、32 GB RAM、NVMe SSD、ディスクリートの GPU。最低限の動作確認は WARP で行う）。値は Release・NativeAOT のヘッドレス描画で測る。
+参照機は次の機械に固定する（最初の計測の行 B1、Issue #26）: Intel Core i5-13400F（P コア 6・E コア 4、16 スレッド）、48 GB RAM、NVMe SSD（WD Blue SN580 1TB）、NVIDIA GeForce RTX 3060 Ti、Windows 11。最低限の動作確認は WARP で行う。値は Release・NativeAOT のヘッドレス描画で測る。P-2 の「8 コア」はワーカー 8 本で測り、既定の数のワーカーの値も並べる（設計書 §9）。
 
 | ID | 場面 | 目標（仮説） |
 | --- | --- | --- |

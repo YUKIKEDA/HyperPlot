@@ -11,7 +11,9 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 
 - Allocation: the Zero-Alloc tests (`PerformanceAssert.DoesNotAllocate` in `HyperPlot.Testing`, design §10) measure `GC.GetAllocatedBytesForCurrentThread()` after a warm-up, in the scenarios the design names. They run in `./build.ps1` and are a gate. An allowed count stays or goes down; raising it needs an Issue.
 - Kernels: BenchmarkDotNet with `[MemoryDiagnoser]` in `benchmarks/HyperPlot.Benchmarks` (design §9). Not a gate; CI does not run them on shared runners.
-- End-to-end: `benchmarks/HyperPlot.E2E` on a NativeAOT Release build, headless, replaying zoom, pan, and hover input (design §9), against the targets of `docs/requirements.ja.md` §5. Recorded in `docs/benchmarks/`, not a gate.
+- Data path: `benchmarks/HyperPlot.DataPath` on a NativeAOT Release build, no GPU: the scenes of 1e9 points that go through the workers and a mapped file (the pyramid build, the time until a provisional result is replaced, the first frame of a file not in the page cache, design §9). It also holds the seeded data generator. Recorded in `docs/benchmarks/`, not a gate.
+- End-to-end: `benchmarks/HyperPlot.E2E` on a NativeAOT Release build, headless, replaying zoom, pan, and hover input (design §9), against the targets of `docs/requirements.ja.md` §5. Made in row S1, the first row that draws. Recorded in `docs/benchmarks/`, not a gate.
+- A file not in the page cache is one the generator has just written unbuffered (`FILE_FLAG_NO_BUFFERING`); rewriting a cached file the same way makes it cold again. Each cold run checks the file's first read speed against the warm one before its figure counts: in the B1 prototype on the reference machine, a mapped 2 GiB file read a byte per 4 KiB at 1.9 to 2.1 GB/s cold and 4.4 GB/s warm (Issue #26).
 - Profiles: `.agents/skills/cpu-profile/SKILL.md`. GPU time: timestamp queries around each pass, read a few frames later, never in the frame that wrote them.
 - Benchmark data comes from a seeded generator, so that a figure can be made again. Files of generated data live outside the repository (`.dev/` or the scratchpad) and are deleted after the run; the generator's command and seed are recorded with the figure (`.cursor/rules/scratch.mdc`).
 
@@ -31,7 +33,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 ## Rules
 
 - Performance acceptance is judged on a NativeAOT Release build. JIT numbers include tiering and are only for finding where time goes.
-- A measurement names the data size (points, series, chunks), the viewport size in pixels, the GPU (or WARP), and the build. A speed claim on large data holds at the sizes `docs/requirements.ja.md` §5 names, on the reference machine design §9 fixes.
+- A measurement names the data size (points, series, chunks), the viewport size in pixels, the GPU (or WARP), and the build. A speed claim on large data holds at the sizes `docs/requirements.ja.md` §5 names, on the reference machine `docs/requirements.ja.md` §5 fixes.
 - Profile before a speed row, and write on the Issue where the time goes. Order the work by the profile, not by the roadmap number.
 - To find where the time of a path goes, cut it short: skip a stage, time what is left, take the difference. The stage that stands out is the one to work on.
 - Compare both sides with the same configuration, data, and machine state, interleaved, three rounds or more, best of each side. Stop leftover processes from earlier runs. A difference inside the spread is not a result; "spread" is the statistics of repeated runs, not a guess.

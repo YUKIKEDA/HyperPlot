@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** A（データとヘッドレス描画の土台）
-- **作業中:** B1（C2 は #18 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** B1（設計: 参照機と計測の範囲）
+- **ブランチ:** `docs/26-b1-benchmark-design`
+- **Issue:** [#26](https://github.com/YUKIKEDA/HyperPlot/issues/26)
 
 ## ツールチェーン
 
@@ -39,10 +39,10 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | **A: データとヘッドレス描画の土台** | | | |
 | C1 | 列とチャンク（`Column<T>`、3 種のストレージ、暗黙の列、チャンクの統計） | done | [#1](https://github.com/YUKIKEDA/HyperPlot/issues/1) |
 | C2 | LOD ピラミッドと区間の min / max、M4 の抽出（CPU） | done | [#9](https://github.com/YUKIKEDA/HyperPlot/issues/9)（設計）、[#18](https://github.com/YUKIKEDA/HyperPlot/issues/18) |
-| B1 | ベンチマークの基盤と参照機の固定（統計・LOD・M4 のカーネル、統計と水準 1 の走査の統合、暫定の表示が替わるまでの時間、メモリマップのページキャッシュに載る前の 1 フレーム） | not-started | |
+| B1 | ベンチマークの基盤と参照機の固定（統計・LOD・M4 のカーネル、統計と水準 1 の走査の統合、暫定の表示が替わるまでの時間、メモリマップのページキャッシュに載る前の 1 フレーム） | in-progress | [#26](https://github.com/YUKIKEDA/HyperPlot/issues/26)（設計） |
 | R1 | D3D11 のデバイス、ヘッドレスの描画先、readback、PNG（WARP のテスト） | not-started | |
 | R2 | シェーダの生成器と線分のパイプライン（アンチエイリアス） | not-started | |
-| S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（NativeAOT の検査、系列ごとの M4 のフレーム内の並列） | not-started | |
+| S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（NativeAOT の検査、系列ごとの M4 のフレーム内の並列、End-to-end の計測の基盤） | not-started | |
 | **B: GoG** | | | |
 | G1 | 仕様モデルとビルダ（Plot / Layer / Encoding / コンパイル） | not-started | |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計 | not-started | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11) |
