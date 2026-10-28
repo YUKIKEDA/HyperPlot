@@ -28,6 +28,7 @@ alwaysApply: true
 - A design PR writes what the Grill decided. A better shape found while writing does not replace a decision in the PR, even with a note in its body: it goes to the owner as a question with a recommendation (`.cursor/rules/consent.mdc`).
 - A design PR that changes a decision searches the whole design for the sections that restate it, and changes them in the same PR: the diagrams, the tables of failures, the test sections, and the examples included.
 - That search uses the shortest word that names the concept, and its synonyms, not a phrase from one sentence: a search for 「画面へのアフィン」 missed 「アフィン変換で求める」 in another section.
+- Every line the search finds is either changed or named in the PR body with the reason it stays. PR #27's search found 「BenchmarkDotNet と End-to-end」 in `docs/conventions.md` and left it, and the review had to ask.
 - A design that changes the shape of a type rewrites every example in the design that uses the type so that it works with the new shape; changing the comment beside it is not enough. A design whose text names a member of a type adds that member to the type in the same section's code block.
 - Before a row's design is written, the whole design is searched for the row's ID, and every contract an earlier row sent to it is taken into the new section.
 - A design that leaves a point to another row ("row X decides") names a row that exists in `docs/roadmap.md`, and that row's text names the point, in the same PR (`.cursor/rules/defer.mdc`).
