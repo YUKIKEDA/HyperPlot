@@ -17,7 +17,7 @@ Closes #N
 <!-- Commands that ran and their result. -->
 
 - [ ] `./build.ps1`
-- [ ] NativeAOT publish (warnings / executable size): <!-- N/A unless the Issue names it -->
+- [ ] NativeAOT publish (warnings / executable size): <!-- required when the PR changes a src/ project's public surface, a dependency, or interop, whatever the Issue's Acceptance says (.cursor/rules/aot.mdc); N/A otherwise -->
 - [ ] Searches behind any "every X does Y" claim: <!-- N/A -->
 
 ## Measurements

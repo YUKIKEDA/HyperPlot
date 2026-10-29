@@ -16,6 +16,7 @@ A check or a test that stands for a statement in `docs/design.ja.md` implements 
 - When the design fixes a state machine (a data source's load states, a worker job's states, a device's lost and restored states), test every transition it lists and one transition it does not allow.
 - A test seam replaces every source of the values the contract reports, not only the call that fails. A seam that returns a device-lost HRESULT leaves the device alive, so `GetDeviceRemovedReason` gives `S_OK`, and a test of `RemovedReason` checks nothing unless the seam replaces the reason too (PR #35).
 - A test of an invariant (§11) includes the input that would break it: a stale handle, a chunk read after its file is unmapped, a version read from a worker that has moved on, a call from the wrong thread.
+- A statement about what a spec draws ("a plot of no layers draws nothing") is tested through the render, not only on the spec the builder makes. PR #82 checked that `Build` gave no layers, and the review asked for the render.
 - A fixed-size buffer on a path every frame takes has a test above its capacity.
 - A comparison removed from a key as the same as another is shown to have no input where the two differ, or it stays.
 - When a statement lists the values a mechanism covers (column types, mark kinds, scale kinds), each value has a test on an input where the other values' paths do not run.
