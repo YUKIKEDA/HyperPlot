@@ -150,7 +150,48 @@ public sealed class Column<T> : Column, IDisposable where T : unmanaged, INumber
 - 要素ごとの仮想呼び出しを避けるため、読み出しの単位はチャンク（`ReadOnlySpan<T>`）である。ストレージの違い（§3.2）はチャンクを取り出すところで一度だけ分岐する
 - **暗黙の列**: 等間隔の X（`UniformColumn`: 開始値と刻み、要件 D-5）は値を持たない。i 番目の値は `start + i * step` を倍精度で計算する。時系列で最も多い形で、索引も二分探索も要らない
 - **欠損**: `float` / `double` は NaN を欠損とする。整数の列は任意の有効ビット列（1 ビット/要素）を持つ
-- **表**: `DataTable` は長さの等しい名前付きの列の集合である。API は型付きの参照 `ColumnRef<T>`（表と列の位置）で列を指す。文字列の列名は `table.Col<float>("y")` で参照に解決し、その時点で型を確かめる
+- **表**（行 G1）: `DataTable` は長さの等しい名前付きの列の集合である。API は型付きの参照 `ColumnRef<T>`（表と列の位置）で列を指す。文字列の列名は `table.Col<float>("y")` で参照に解決し、その時点で型を確かめる
+
+```csharp
+public sealed class DataTable
+{
+    public static DataTableBuilder Create();
+    public long Length { get; }                         // すべての列の長さ。列がなければ 0
+    public int ColumnCount { get; }
+    public string GetName(int index);
+    public Column GetColumn(int index);
+    public ColumnRef<T> Col<T>(string name) where T : unmanaged, INumber<T>;
+}
+
+public sealed class DataTableBuilder
+{
+    public DataTableBuilder Add(string name, Column column);
+    public DataTable Build();
+}
+
+public readonly struct ColumnRef : IEquatable<ColumnRef>          // 型を忘れた参照（仕様の型が持つ）
+{
+    public DataTable Table { get; }
+    public int Index { get; }
+    public Column Column { get; }                                 // Table.GetColumn(Index)
+    // Equals・GetHashCode・== と != を持つ
+}
+
+public readonly struct ColumnRef<T> : IEquatable<ColumnRef<T>> where T : unmanaged, INumber<T>
+{
+    public DataTable Table { get; }
+    public int Index { get; }
+    public Column Column { get; }
+    public static implicit operator ColumnRef(ColumnRef<T> reference);
+    public ColumnRef ToColumnRef();                               // 暗黙の変換の名前つきの代わり（CA2225）
+    // Equals・GetHashCode・== と != を持つ
+}
+```
+
+  - `Col<T>` は、列が `Column<T>` なら、または列が `UniformColumn` で `T` が `double` なら参照を返す（`UniformColumn` の値は倍精度、§3.1 の暗黙の列）。名前がなければ、型が合わなければ、どちらも名前と実際の型を書いた `ArgumentException`。名前は大文字と小文字を区別する（序数の比較）
+  - `Add` は、名前が null なら `ArgumentNullException`、空か、すでにある名前なら `ArgumentException`。`column` が null なら `ArgumentNullException`。`Build` は、列の長さがそろっていなければ、名前と長さを書いた `ArgumentException`。`Build` の後のビルダは使えない（`InvalidOperationException`）
+  - 表は列を持つだけで、列の持ち主ではない。`DataTable` は `IDisposable` ではなく、列の寿命は利用者が持つ
+  - `ColumnRef` と `ColumnRef<T>` の等しさは、表の同一性（参照）と位置の組である。`default` の参照は表を持たず、仕様に渡すと `ArgumentException`
 - **ゼロコピー**: 利用者の `T[]`・`Memory<T>`・ポインタ（`Column.Wrap<T>(T* pointer, long length)`）を写さずに包める（要件 D-3）。ポインタは `Memory<T>` の `int` の上限を超える長さを包め、メモリの寿命は利用者が持つ。包んだ領域を利用者が書き換えたら `column.Invalidate(start, length)` を呼ぶ契約とする。写す API は名前に `Copy` を含める
 
 ### 3.2 チャンクとストレージ
@@ -290,11 +331,80 @@ X が単調でない列（散布図）では、点を空間の順に並べ直し
 
 - 仕様の各ノードは同一性（`SpecId`）を持つ。仕様を差し替えたら、新旧を比べて何が変わったか（データ・Stat・スケール・配置・見た目）を求め、変わった段だけを計算し直す（要件 G-13）
 - Geom・Stat・スケールは公開のインターフェース（`IGeom`・`IStat`・`IScale`）で足せる（要件 N-6）。プロットの種類は随時足していく（要件 G-14）。新しい種類はまず既存の Geom・Stat・Position・座標系の組み合わせで表せるかを確かめ（例: 箱ひげ図は summary の Stat と rect・rule・point の Geom）、表せないときだけ新しい Geom・Stat・座標系を作る。組み込みのものは `sealed` のクラスにする。インターフェースの呼び出しはレイヤーごと・フレームごとに起き、点ごとには起きない
+**行 G1 の仕様の型**: G1 は、上の表のうち、データ・線のレイヤー・x と y の位置のスケール（linear）だけを持つ（Issue #76）。ほかのメンバー（座標系・ファセット・ガイド・テーマ・インタラクション、ほかの Geom とスケール）は、それを作る行で足す（`.cursor/rules/scope.mdc`）。後から足しても既存の利用者のコードが壊れないよう、仕様の型は位置引数の record にせず、init のプロパティにする。
+
+```csharp
+public readonly record struct SpecId(long Value);       // プロセスで一意。0 は使わない
+
+public abstract record SpecNode                          // 仕様のノードの基底。持つのは Id だけ
+{
+    public SpecId Id { get; }                           // 作るとき、と `with` で写すたびに新しく振る
+    private protected SpecNode();                       // 利用者は派生できない
+    protected SpecNode(SpecNode original);              // 写しのコンストラクタ: 中身は派生の record が写し、Id は新しく振る
+}
+
+public sealed record PlotSpec : SpecNode
+{
+    public required DataTable Data { get; init; }
+    public required IReadOnlyList<LayerSpec> Layers { get; init; }
+    public ScaleSpec ScaleX { get; init; }              // 既定は Scale.Linear()（domain は学習）
+    public ScaleSpec ScaleY { get; init; }
+}
+
+public abstract record LayerSpec : SpecNode             // コンストラクタは private protected（利用者は派生できない）。Geom を足す口（IGeom）は行 G4
+
+public sealed record LineLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // UniformColumn か、単調非減少で NaN のない Column<T>
+    public required ColumnRef Y { get; init; }
+    public LineStyle Style { get; init; }               // 既定は黒（0, 0, 0, 255）、太さ 1、破線なし
+}
+
+public abstract record ScaleSpec : SpecNode             // コンストラクタは private protected。スケールを足す口（IScale）は行 G2
+
+public sealed record LinearScaleSpec : ScaleSpec
+{
+    public (double Min, double Max)? Domain { get; init; }      // null なら学習する（§4.2）
+    public LinearScaleSpec WithDomain(double min, double max);  // 有限で min < max。外れれば ArgumentException
+}
+
+public static class Scale
+{
+    public static LinearScaleSpec Linear();
+}
+
+public static class Plot
+{
+    public static PlotBuilder Create(DataTable data);
+}
+
+public sealed class PlotBuilder
+{
+    public PlotBuilder Line<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, Action<LineBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>;
+    public PlotBuilder ScaleX(ScaleSpec scale);
+    public PlotBuilder ScaleY(ScaleSpec scale);
+    public PlotSpec Build();
+}
+
+public sealed class LineBuilder
+{
+    public LineBuilder Color(Color color);
+    public LineBuilder Width(float width);
+    public LineBuilder Dash(LineDash? dash);
+}
+```
+
+- **同一性**: `SpecId` は、ノードを作るときと、`with` で写すとき（record の写しのコンストラクタ）に、プロセスで一意の値を新しく振る（`Interlocked.Increment`）。record の写しのコンストラクタは値をそのまま写すので、`Id` だけを持つ基底 `SpecNode` が自分の写しのコンストラクタで振り直し、派生の record の生成された写しのコンストラクタがそれを呼ぶ（派生の型が自分のメンバーを手で写さずに済む）。仕様は不変なので、同じ `Id` のノードは中身も同じである。`Id` は record の等しさに入る（中身が同じでも、別に作ったノードは等しくない）。中身を比べるのは、コンパイルの差分（§4.8）の役目である
+- **ビルダ**: `Line` は、`x` と `y` が `Create` に渡した表の列でなければ、`default` の参照なら `ArgumentException`。`configure` は `Line` の中で 1 回だけ呼び、`LineBuilder` の値は `LineStyle` の検査（§5.1）を通す。`Build` はレイヤーが 0 個でもよく（何も描かない）、`Build` の後のビルダは使えない（`InvalidOperationException`）。ビルダは不変の仕様を作るだけで、データに触れない
+- 仕様の型を直接作ってもよい（ビルダを通さない）。そのときの検査は、コンパイル（§4.8）が同じ例外で行う
 
 ### 4.2 エンコーディングとスケール
 
 - スケールは「学習」（データから domain を求める）と「写像」（値を range へ）に分かれる
 - 連続のスケールの学習は、チャンクの統計（§3.2）を読むので O(チャンク数) で済む。カテゴリのスケールは辞書を読む
+- **linear（行 G1）**: domain は明示（`WithDomain`）か学習である。学習は、そのスケールを使うすべてのレイヤーの列の値の範囲の和で、`Column<T>` はチャンクの統計（NaN を除く min / max）を、`UniformColumn` は最初と最後の値（`GetValue(0)` と `GetValue(Length − 1)`）を読む。統計がまだないチャンクは、ワーカーに計算させてから読む（§4.8）。長さ 0 の列は何も足さない。有限の値が 1 つもなければ [0, 1]、min と max が等しければ [v − 0.5, v + 0.5] にする。写像は、値 v を `(v − min) / (max − min)` で [0, 1] に写し、パネルの画素へは倍精度で写す（x は左から右、y は下から上、§3.6）。nice・zero・reverse・clamp は行 G2
 - **位置のスケール**は、データの値を「スケールの空間」（log なら log10 した値、日時ならティック）の `double` に写す。ズームとパンはスケールの空間でのビュー範囲（§6.2）を変えるだけで、データを写し直さない。画面の座標は、ビューから座標系の変換（§4.4）で求める
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
@@ -344,6 +454,14 @@ X が単調でない列（散布図）では、点を空間の順に並べ直し
 
 ワーカーの仕事が終わるまでの間は、終わったものから描く。索引ができるまで時系列は「チャンクの統計だけの粗い表示」で描き、それと分かる印をホストへ通知する（要件 P-2）。
 
+**行 G1 のコンパイル**: G1 は 1〜2 と 4 を行う（Stat は G5、配置は G3）。結果の `PlotPlan`（internal）は、レイヤーごとの X の列・Y のピラミッド・M4 の出力の場所・線の見た目と、x と y の domain を持つ。
+
+- **検査**: `Data` と `Layers` が null、レイヤーが null、列の参照が `default` か `Data` 以外の表を指す、X の列が `UniformColumn`（step が正）でも `Column<T>` でもない、Y の列が `Column<T>` でない（ピラミッドは `Column<T>` に作る）、ときは `ArgumentException`（null は `ArgumentNullException`）。X の単調性は M4 が確かめ（§5.5.1）、`InvalidOperationException` がそのまま出る
+- **索引**: Y の列ごとに `MinMaxPyramid` をプールで作る。同じ Y の列を指すレイヤーは、ピラミッドを 1 つ共有する。X が `Column<T>` なら `PlotWorkerPool.PrecomputeStats` で X の統計を先に計算させる（§5.5.1）。学習も、作られた統計を読む
+- **差分（要件 G-13）**: 前のコンパイルの結果があれば、新しい仕様とノードの `Id` で比べ、変わった段だけをやり直す。`Id` が同じノードは変わっていない。違うノードは中身で分ける。表かレイヤーの列の参照が変わったら「データ」で、新しく要る Y の列のピラミッドを作り、要らなくなったものを解放し、domain を学び直す。スケールの中身（`Domain`）が変わったら「スケール」で、domain を決め直して M4 を引き直す。線の見た目（`Style`）だけが変わったら「見た目」で、M4 の出力をそのまま使って記録し直す。レイヤーの数か並びが変わったら、残ったレイヤーの索引を使い回して、ほかの段をやり直す。差分は、作ったピラミッドの数・M4 を引いた数・記録した数を internal の数え口で数え、テストがそれを見る
+- **ヘッドレスの待ち方**: `HeadlessRenderer.Render(PlotSpec)`（§7.5）は、ピラミッドと X の統計ができるのを待ってから描く。ヘッドレスの出力は、いつ描いても同じでなければならないからである。ヘッドレスは UI のスレッドではないので、不変条件 7 に触れない。上の段落の暫定の表示とホストへの通知は、それを使うホストの行（W1）で作る
+- **描く**: プロットの領域は描画先の全体である（余白と配置は行 G3）。x の domain から画素列の境界（W + 1 個）を作って `M4Batch` で全レイヤーを引き、y の domain で画素に写して（倍精度）、レイヤーの順に `RenderList` の折れ線として記録する。同じ仕様を描き直すとき、温まった後は確保しない（不変条件 3）
+
 ### 4.9 C# API
 
 ```csharp
@@ -385,7 +503,7 @@ Core はフレームごとに、層（§5.4）ごとの `RenderList` を作る�
 
 | コマンド | 内容 |
 | --- | --- |
-| `SetClip` / `SetTransform` | パネルの矩形、スケールの空間からクリップ空間への 4×4 の変換（倍精度から作った float の行列と原点、§3.6）。2D では z を使わない。行 R2 は `SetClip` だけを持ち、座標は物理画素である。`SetTransform` は、スケールの空間の座標を最初に描く行 G1 で足す |
+| `SetClip` / `SetTransform` | パネルの矩形、スケールの空間からクリップ空間への 4×4 の変換（倍精度から作った float の行列と原点、§3.6）。2D では z を使わない。行 R2 は `SetClip` だけを持ち、座標は物理画素である。`SetTransform` は、スケールの空間の座標を GPU で写す最初の Geom の行（G4）で足す。行 G1 の線は M4 の経路で、CPU が倍精度で画素の座標まで計算するので（§3.6）使わない（Issue #76） |
 | `DrawPolyline` | 折れ線。線分のインスタンスに展開する（アンチエイリアス・太さ・破線・丸い結合、行 R2） |
 | `DrawMarkers` | 点のインスタンス（形・大きさ・色。SDF） |
 | `DrawRects` | 矩形のインスタンス（棒・タイル・背景・選択範囲） |
@@ -756,7 +874,7 @@ Core はテキストの契約 `ITextBackend` を持ち、バックエンドが�
 
 - 幅と高さは物理画素で、画面の大きさと別に決める。範囲は `RenderTargetDescription`（§5.2）と同じ
 - `Render(RenderList list)`（行 R2）は、フレームを開始し、`IGpuBackend.Draw` で描画先に描いて終える。`Clear` と組み合わせて、背景を塗ってから線を描く
-- `Dispose` は自分の描画先だけを解放する。`backend` は持ち主が解放する
+- `Render(PlotSpec plot)`（行 G1）は、仕様をコンパイルし（§4.8）、索引ができるのを待って、プロットを描画先の全体に描く。コンパイルの結果は最後に描いた仕様の分を持ち、次の仕様とは差分でやり直す（§4.8）。ピラミッドを作るプールは、コンストラクタの省略できる引数 `pool` で渡し、渡さなければ `PlotWorkerPool.Shared` を使う。`plot` が null なら `ArgumentNullException`、検査の例外は §4.8 のとおり
 - **PNG**: 自前で書く（§0 の表、`System.IO.Compression.ZLibStream`）。前乗算を戻した 8 ビットの RGBA（色の型 6）で、チャンクは `IHDR`・`sRGB`（rendering intent 0）・`gAMA`（45455）・`cHRM`（sRGB の白色点と原色）・`IDAT`・`IEND` の順。PNG の仕様（W3C の第 3 版 §11.3.2.5）は、`sRGB` を読まない読み手のために、`sRGB` を書く書き手に `gAMA` を（`cHRM` は任意で）併せて書くよう勧め、値を Table 17 に決めている（`gAMA` 45455、`cHRM` は白色点 31270 / 32900・赤 64000 / 33000・緑 30000 / 60000・青 15000 / 6000）。任意の `cHRM` も書くのは、§12.2 の勧め（`cHRM` を書くなら `gAMA` も）と合わせて、どの読み手にも同じ色を渡すためである。行のフィルタは 0（なし）。圧縮した出力は 64 KiB のバッファにため、埋まるごとに `IDAT` を 1 つ書く（PNG は `IDAT` をどこで切ってもよい）。確保は、画像 1 枚分の画素（幅 × 高さ × 4 バイト、最大 1 GiB）と、そのバッファと 1 行の分である。`IRenderTarget.ReadPixels` が画像全体を読む形なので、画素は 1 枚分を持つ（オーナーの判断、2026-10-28、`design-decisions.md`）。`stream` は巻き戻せなくてよい。CRC32 も自前で書く（`System.IO.Hashing.Crc32` は BCL ではなく NuGet のパッケージ）。`WritePng` はフレームの経路ではない。`stream` が null なら `ArgumentNullException`
 
 ## 8. スレッドとフレーム
@@ -826,6 +944,7 @@ Core はテキストの契約 `ITextBackend` を持ち、バックエンドが�
 | 系列ごとの並列（S1） | `PlotWorkerPool.Extract` の各系列の結果が、同じ系列の `M4.Extract` と点まで同じ（等間隔の X と保存された X、`Break` と `Connect`、系列 1・4・16）。温まった後の `Extract` が確保しない。全部のワーカーをチャンクの構築で止めても、呼び出し側だけで全系列が終わる。ワーカーがフレームの仕事をチャンクより先に取る（チャンクの仕事を積んだまま、フレームの仕事が先に終わる）。1 つの系列が投げると、ほかの系列の結果は残り、最も小さい番号の失敗の例外が投げ直され、`GetError` がその系列で非 null。ワーカーのスレッドからの `Extract` は `InvalidOperationException`。§5.5.1 の引数の例外（増加していない境界・有限でない境界・2 個より少ない境界は、系列の失敗でなく `Extract` の `ArgumentException`）。2 つのバッチを 2 つのスレッドから同時に `Extract` しても、それぞれの結果が `M4.Extract` と同じ。`Extract` の途中でプールを破棄しても全系列が終わり、次の `Extract` は `ObjectDisposedException`。サンプル（`HelloPlot`）は NativeAOT で発行して警告 0、実行して PNG を書く |
 | フレームと GPU 時間（S2） | WARP で: `FrameScope` を入れ子にすると、いちばん外だけがフレームを数え、中の `Clear`・`Draw` は外のフレームの一部になる。外のフレームなしの `Draw` は自分で 1 つのフレームになる。外のスコープを中より先に閉じると中も閉じる。閉じたトークン・`default` の `FrameScope`・2 度目の `Dispose` は何もしない（例外を投げない）。中で開いたフレームの途中の喪失（差し込み口）の後も入れ子が残らず、次の `BeginFrame` がいちばん外として番号を振る。外のフレームの途中で喪失し、中の `Clear` が作り直してから外を閉じても、`LastFrameTime` にそのフレームの番号は現れず、例外も起きない。`ReadPixels` を呼ばずに `Draw` だけを続けても、数フレームのうちに `LastFrameTime` が null でなくなり、番号は増え、閉じたフレームより先にならず、時間は 0 より大きい。閉じるときは GPU を待たない（クエリの輪が埋まっていれば、そのフレームを測らずに進み、輪が空いたら埋まっていた 4 フレームの時間が順に届く）。古いフレームのクエリが読めない間は、新しいフレームの時間も届かない（差し込み口で 1 フレームだけ止める）。GPU の時計が乱れた組は時間を持たず、輪を空ける（差し込み口で乱れたことにする。WARP は乱れない）。喪失の後もクエリが作り直されて時間が届く。温まった後のフレームが確保しない |
 | 画像の比較（S3） | `tests/HyperPlot.Testing.Tests`（両 OS、GPU なし）で、作った画像を使って: 差がちょうど `Channel` の画素は超えず、`Channel` + 1 で超える（R・G・B・A のそれぞれで）。超えた画素の数がちょうど `Pixels` なら合い、1 つ多いと合わない。`MaxDelta` と最初の位置（行の順）が正しく、`Tolerance` が渡したものである。`Exact` は 1 の差でも合わない。負の許容差・長さの合わない配列・1 未満の幅と高さ・null の引数が §10.1 の例外を投げる。基準のファイルがないと実際の画像だけを書いて投げ、基準は作られない。大きさの違う基準で両方の大きさを書いて投げる。合わないと `actual` と `diff` の PNG を書き、`diff` の超えた画素が赤、それ以外が基準の灰色である。`HYPERPLOT_UPDATE_GOLDEN=1` で基準が書き直されて合い、`0` や空では書き直さない。復号器が §7.5 の書き手の画像を画素まで読み戻し、ほかのカラータイプ・インターレース・フィルタ 0 以外・CRC の不一致・短いファイルを `InvalidDataException` にする。WARP で（D3D11 のテスト）: §10.1 の 2 場面が基準の PNG と合う |
+| 仕様とコンパイル（G1） | 表: `Col<T>` が `Column<T>` と、`T` が `double` の `UniformColumn` を返し、ほかの型と知らない名前と大文字小文字の違う名前を `ArgumentException` にする。`Add` の null・空・重なる名前、`Build` の長さの違い、`Build` の後のビルダ、`ColumnRef` の等しさ（同じ表と位置、別の表は違う）、`default` の参照。仕様: `Id` が作るときと `with` のたびに新しく振られ、すべて違う。ビルダ: 別の表と `default` の参照、`configure` が 1 回だけ呼ばれる、`Build` の後、レイヤー 0 個。linear: 学習した domain がすべてのレイヤーの和（`Column<T>` は NaN を除いた統計、`UniformColumn` は最初と最後）、長さ 0 の列、有限の値なし（[0, 1]）、すべて同じ値（± 0.5）、明示の domain、`WithDomain` の NaN・無限大・min ≥ max。コンパイル: Y が `UniformColumn`、X の step ≤ 0、単調でない X（`InvalidOperationException`）、別の表の列。描く（WARP）: 2 つのレイヤー（`UniformColumn` の X と保存された X、NaN の切れ目、破線）のプロットの画素が、同じ境界と写し方で `M4Batch` と `RenderList` を手で組んで描いた画素と一致し、ゴールデン画像（§10.1）と合う。差分（数え口）: 同じ仕様の描き直しはピラミッド 0・M4 0・記録 0、見た目だけはピラミッド 0・M4 0・記録 1、domain だけはピラミッド 0・M4 1・記録 1、Y の列の差し替えはその列のピラミッドだけ 1 つで古いものが解放される、レイヤーを足すと新しい列の分だけ、同じ Y の列の 2 つのレイヤーはピラミッド 1 つ。待ち: ピラミッドの構築を止めたプールで `Render` が構築の終わりまで戻らず、戻った画像が止めないときと同じ。`Dispose` がピラミッドを解放する。温まった後、同じ仕様の `Render` が確保しない |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
 
@@ -916,7 +1035,8 @@ public sealed class ImageMismatchException : Exception
 | --- | --- |
 | C3（空間タイル索引） | 並べ直しの部品が次元の数を引数に取る（§3.4） |
 | R1・R2（D3D11・線分） | `IGpuBackend` の資源の種類が、描画先に深度のテクスチャを付けられる形である。コマンドの記録が深度のモードの欄を持つ（v1 は「なし」だけ、§5.1）。3 成分の記録は行 K1 で足す。シェーダは 2 成分・深度なしだけで、3D の値を持つコマンドは `NotSupportedException`（§5.2） |
-| G1（仕様モデル） | 座標系が 4×4 の変換の契約を持つ（§4.4）。エンコーディングのチャネルに `z` を足せる |
+| G1（仕様モデル） | 仕様の型を init のプロパティで持ち、エンコーディングのチャネル（`z` を含む）を後から足しても既存のコードが壊れない（§4.1） |
+| G4（Geom 一式） | 座標系が 4×4 の変換の契約を持つ（§4.4）。`SetTransform` と一緒に、スケールの空間の座標を GPU で写す最初の行で作る（Issue #76） |
 | I1・I2（ビューとヒットテスト） | ビューが `PanelView` の抽象で、ヒットテストが画面の位置とビューを受け取る（§6.2・§6.3） |
 
 ### 13.2 座標系とカメラ
