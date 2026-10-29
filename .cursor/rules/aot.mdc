@@ -32,6 +32,11 @@ Under `dotnet run`, a project with `PublishAot` reports `RuntimeFeature.IsDynami
 
 The PR's `## Verification` states the warning count (zero) and the size of the executable.
 
+- An Issue whose Acceptance names only `IsAotCompatible` does not replace this check. PR #82 marked the publish N/A for that reason, and the review asked for it.
+- When the sample exists but does not use the row's new public types, publish both: the sample on `main` and on the head, for the size it grew, and a scratch program that uses the types (the design's example of the row), for their warnings and size.
+- The build of `main` for the size before is a worktree under `.dev/` (`.cursor/rules/bench.mdc`). In the scratchpad, `git worktree remove` fails with `Filename too long`.
+- To split a size, publish both builds with `-p:IlcGenerateMapFile=true`. Then sum the `Length` of the nodes of each `*.map.xml` (under `obj/`) by `Name`, and compare the two sums name by name.
+
 A size that grew is split by what added it before the PR says so: publish with `-p:IlcGenerateMapFile=true` and compare the map files. Source-generated COM can link the reflection runtime and its metadata (about 0.4 MB); a `Process` or LINQ added only to print figures can be most of a sample's growth. A sample whose size is reported gets the feature it shows and nothing else; figures that need more code are measured in `benchmarks/`.
 
 ```text
