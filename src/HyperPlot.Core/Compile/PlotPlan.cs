@@ -87,6 +87,13 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
+        // The versions are read before the wait and the extraction. An Invalidate that comes after this read leaves the
+        // recorded versions behind the column's, so the next Render extracts again.
+        foreach (var layer in _layers)
+        {
+            (layer.XSeen, layer.YSeen) = (layer.X.Version, layer.Y.Column.Version);
+        }
+
         WaitForIndexes();
         var extract = data || scales || ValuesChanged();
         if (extract)
@@ -102,7 +109,7 @@ internal sealed class PlotPlan : IDisposable
             Extractions++;
             foreach (var layer in _layers)
             {
-                (layer.XVersion, layer.YVersion) = (layer.X.Version, layer.Y.Column.Version);
+                (layer.XVersion, layer.YVersion) = (layer.XSeen, layer.YSeen);
             }
         }
 
@@ -343,12 +350,12 @@ internal sealed class PlotPlan : IDisposable
         }
     }
 
-    /// <summary>Returns whether a column's values changed since the last extraction (an Invalidate).</summary>
+    /// <summary>Returns whether a column's values changed between the last extraction and this Render's read of the versions (an Invalidate).</summary>
     private bool ValuesChanged()
     {
         foreach (var layer in _layers)
         {
-            if (layer.X.Version != layer.XVersion || layer.Y.Column.Version != layer.YVersion)
+            if (layer.XSeen != layer.XVersion || layer.YSeen != layer.YVersion)
             {
                 return true;
             }
@@ -381,7 +388,10 @@ internal sealed class PlotPlan : IDisposable
         }
     }
 
-    /// <summary>One layer of the plan: its node, its columns, its M4 series, and the column versions it was extracted at.</summary>
+    /// <summary>
+    /// One layer of the plan: its node, its columns, its M4 series, the column versions it was extracted at, and the versions
+    /// this Render read before its wait.
+    /// </summary>
     private sealed class LayerPlan(LineLayerSpec spec, Column x, PlotPyramid y, M4Point[] output, int series)
     {
         public LineLayerSpec Spec { get; set; } = spec;
@@ -397,5 +407,9 @@ internal sealed class PlotPlan : IDisposable
         public long XVersion { get; set; } = -1;
 
         public long YVersion { get; set; } = -1;
+
+        public long XSeen { get; set; }
+
+        public long YSeen { get; set; }
     }
 }

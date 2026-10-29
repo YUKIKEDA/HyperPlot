@@ -165,12 +165,12 @@ public sealed class PlotPlanTests
     /// Steps:
     /// - Render, in order: the spec; it again; a stroke changed; the x domain given; layer 2's X swapped for "t" (and layer 1
     ///   copied unchanged); layer 2's Y swapped for "c"; a third layer over "d"; the third layer taken off again; two layers
-    ///   over "a"; the same layers in a new table over the same columns.
+    ///   over "a"; the same layers in a new table over the same columns; a plot of no layers over that table.
     ///
     /// Expected:
     /// - Pyramids, extractions, recordings added: 2/1/1, 0/0/0, 0/0/1, 0/1/1, 0/1/1, 1/1/1 with "b"'s pyramid disposed,
-    ///   1/1/1, 0/1/1 with two pyramids left, 0/1/1 with one pyramid left (that of "a"), and 0/1/1. Every list equals a new
-    ///   plan's for the spec.
+    ///   1/1/1, 0/1/1 with two pyramids left, 0/1/1 with one pyramid left (that of "a"), 0/1/1, and 0/1/1 with no polyline
+    ///   and no pyramid left ("a"'s disposed). Every list equals a new plan's for the spec.
     /// </remarks>
     [Fact]
     public void Render_ChangedSpecs_RedoOnlyTheChangedStages()
@@ -182,6 +182,7 @@ public sealed class PlotPlanTests
         var first = (LineLayerSpec)spec.Layers[0];
         var second = (LineLayerSpec)spec.Layers[1];
         var t = scene.Table;
+        RenderList? last = null;
 
         Step(spec, (2, 1, 1));
         Step(spec, (0, 0, 0));
@@ -211,6 +212,10 @@ public sealed class PlotPlanTests
         var retabled = shared with { Data = moved, Layers = [first with { X = moved.Col<double>("t"), Y = moved.Col<float>("a") }] };
         Step(retabled, (0, 1, 1));
         Assert.Single(plan.Pyramids);
+        var a = plan.Pyramids.Single();
+        Step(Plot.Create(moved).Build(), (0, 1, 1));
+        Assert.Equal((0, 0), (last!.Polylines.Length, plan.Pyramids.Count));
+        Assert.True(a.IsDisposed);
 
         void Step(PlotSpec next, (int Pyramids, int Extractions, int Recordings) expected)
         {
@@ -222,6 +227,7 @@ public sealed class PlotPlanTests
             );
             using var fresh = new PlotPlan(pool, Width, Height);
             AssertSameLines(fresh.Render(next), list);
+            last = list;
         }
     }
 
@@ -331,6 +337,56 @@ public sealed class PlotPlanTests
         x.Invalidate(Column.ChunkLength, Length - Column.ChunkLength);
         AssertSameLines(Fresh(pool, xs, ys), plan.Render(spec));
         Assert.Equal(extractions + 2, plan.Extractions);
+    }
+
+    /// <summary>
+    /// An Invalidate that comes while M4 reads the pyramid, which the column allows beside reads (design §3.2), makes the
+    /// next Render extract again and draw the new values (design §4.8).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A plan that rendered an evenly spaced X and a float Y over three chunks; a call on the Y pyramid's first read of a
+    ///   built chunk that rewrites Y in chunk 1 and Invalidates it, once.
+    ///
+    /// Steps:
+    /// - Render the spec with an x domain given, so that it extracts and the call comes during the extraction; take the call
+    ///   off; Render the same spec again.
+    ///
+    /// Expected:
+    /// - The call came; the second Render extracted once more and equals what a new plan records over new columns of the
+    ///   changed values.
+    /// </remarks>
+    [Fact]
+    public void Render_InvalidateDuringExtraction_ExtractsAgainNextTime()
+    {
+        var ys = Values(4);
+        using var pool = new PlotWorkerPool(2);
+        using var y = Column.Wrap(ys);
+        using var plan = new PlotPlan(pool, Width, Height);
+        var spec = Line(Column.Uniform(0, 1, Length), y);
+        _ = plan.Render(spec);
+        var pyramid = ((PlotPyramid<float>)plan.Pyramids.Single()).Pyramid;
+        var calls = 0;
+        pyramid.TestBeforeSequenceRead = () =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                ys.AsSpan(Column.ChunkLength, 1000).Fill(50);
+                y.Invalidate(Column.ChunkLength, 1000);
+            }
+        };
+        var zoomed = spec with { ScaleX = Scale.Linear().WithDomain(0, Length - 1) };
+
+        _ = plan.Render(zoomed);
+        pyramid.TestBeforeSequenceRead = null;
+        var extractions = plan.Extractions;
+        var list = plan.Render(zoomed);
+
+        Assert.True(calls > 0);
+        Assert.Equal(extractions + 1, plan.Extractions);
+        using var plain = Column.Wrap((float[])ys.Clone());
+        using var reference = new PlotPlan(pool, Width, Height);
+        AssertSameLines(reference.Render(Line(Column.Uniform(0, 1, Length), plain) with { ScaleX = zoomed.ScaleX }), list);
     }
 
     /// <summary>A chunk that fails to read makes Render throw that exception as it was, and nothing is drawn (design §4.8, §7.5).</summary>

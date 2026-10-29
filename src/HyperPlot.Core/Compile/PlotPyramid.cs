@@ -38,6 +38,9 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
     /// <inheritdoc />
     public override Column Column => pyramid.Column;
 
+    /// <summary>Gets the pyramid. Tests only.</summary>
+    public MinMaxPyramid<T> Pyramid => pyramid;
+
     /// <inheritdoc />
     public override bool IsDisposed => pyramid.Work.IsDisposed;
 
