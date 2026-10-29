@@ -423,3 +423,5 @@ Rejected:
   - `IDWriteTextAnalyzer` と `IDWriteFontFallback::MapCharacters` で自前に整形する: コールバックのオブジェクトが 2 つ要り、文字の種類の分割・フォールバックの区切り・改行・位置の計算も自前になる
   - `IDWriteFactory2`（Windows 8.1）でラスタライズする: 要件の対応範囲（Windows 10 1809 以降）より古い OS のための道で、得るものがない
   - グリッドフィットを有効にする: 小さい字はくっきりするが、1/4 画素の段が効かないおそれがある
+  - `IGpuBackend.Text` を `ITextBackend` そのものにし、`HeadlessRenderer` が自分の整形のキャッシュを持つ: 計測と描画で同じ文字列を 2 度整形し、フェイスの番号がバックエンドごとなのに、キャッシュの持ち主が描画の側と分かれる。Core の `TextEngine` がバックエンドごとにキャッシュとアトラスを持つ形にした（PR #105 のレビュー、オーナーの決定 2026-10-30）
+  - 整形のロケールを "ja-jp" か "en-us" に固定する: DirectWrite のフォールバックは漢字に当てるフォントをロケールで選ぶので、どちらに固定しても、日本語か中国語のどちらかで別の言語のフォントが当たる。OS のカルチャは `InvariantGlobalization` で読めないので、`TextStyle.Locale` で利用者が渡す（PR #105 のレビュー、オーナーの決定 2026-10-30）
