@@ -4,11 +4,12 @@ namespace HyperPlot;
 
 /// <summary>
 /// Series registered once for M4 extraction across a <see cref="PlotWorkerPool"/>, one job a series (design §5.5.1, §8.1).
-/// Each frame, <see cref="PlotWorkerPool.Extract(M4Batch, double[])"/> extracts every series between the same boundaries.
+/// Each frame, <see cref="PlotWorkerPool.Extract(M4Batch, ScaleOrigin, double[])"/> extracts every series between the same boundaries,
+/// in the same origins.
 /// </summary>
 /// <remarks>
 /// One thread at a time calls <see cref="Add{TX, TY}"/>, <see cref="Add{TY}"/>, <see cref="Clear"/>,
-/// <see cref="PlotWorkerPool.Extract(M4Batch, double[])"/>, <see cref="GetResult"/>, and <see cref="GetError"/> on one batch.
+/// <see cref="PlotWorkerPool.Extract(M4Batch, ScaleOrigin, double[])"/>, <see cref="GetResult"/>, and <see cref="GetError"/> on one batch.
 /// </remarks>
 public sealed class M4Batch
 {
@@ -17,6 +18,7 @@ public sealed class M4Batch
     // A plain object, not a Lock: the wait for the last job uses Monitor.Wait and PulseAll on it.
     private readonly object _sync = new();
     private double[] _boundaries = [];
+    private ScaleOrigin _origin;
     private int _next;
     private int _remaining;
 
@@ -83,9 +85,9 @@ public sealed class M4Batch
     public Exception? GetError(int series) => JobAt(series).Error;
 
     /// <summary>Starts an extraction: every job is left to take, and the end event is reset.</summary>
-    internal void Begin(double[] boundaries)
+    internal void Begin(ScaleOrigin origin, double[] boundaries)
     {
-        _boundaries = boundaries;
+        (_origin, _boundaries) = (origin, boundaries);
         foreach (var job in _jobs)
         {
             job.Reset();
@@ -104,7 +106,7 @@ public sealed class M4Batch
             return false;
         }
 
-        _jobs[index].Run(_boundaries);
+        _jobs[index].Run(_origin, _boundaries);
         if (Interlocked.Decrement(ref _remaining) == 0)
         {
             lock (_sync)
@@ -161,11 +163,11 @@ public sealed class M4Batch
 
         public void Reset() => (Result, Error) = (default, null);
 
-        public void Run(double[] boundaries)
+        public void Run(ScaleOrigin origin, double[] boundaries)
         {
             try
             {
-                Result = Extract(boundaries);
+                Result = Extract(origin, boundaries);
             }
             catch (Exception exception)
             {
@@ -174,19 +176,19 @@ public sealed class M4Batch
             }
         }
 
-        protected abstract M4Result Extract(double[] boundaries);
+        protected abstract M4Result Extract(ScaleOrigin origin, double[] boundaries);
     }
 
     private sealed class ColumnJob<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options) : Job
         where TX : unmanaged, INumber<TX>
         where TY : unmanaged, INumber<TY>
     {
-        protected override M4Result Extract(double[] boundaries) => M4.Extract(x, y, boundaries, destination, options);
+        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) => M4.Extract(x, y, origin, boundaries, destination, options);
     }
 
     private sealed class UniformJob<TY>(UniformColumn x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options) : Job
         where TY : unmanaged, INumber<TY>
     {
-        protected override M4Result Extract(double[] boundaries) => M4.Extract(x, y, boundaries, destination, options);
+        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) => M4.Extract(x, y, origin, boundaries, destination, options);
     }
 }

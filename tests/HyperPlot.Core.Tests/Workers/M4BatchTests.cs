@@ -43,14 +43,14 @@ public sealed class M4BatchTests
                             : batch.Add(fixture.UniformX, fixture.Pyramids[s], outputs[s], new M4Options(gaps));
                     }
 
-                    pool.Extract(batch, fixture.Boundaries);
+                    pool.Extract(batch, default, fixture.Boundaries);
 
                     for (var s = 0; s < count; s++)
                     {
                         var alone = new M4Point[M4.MaxPointCount(Columns)];
                         var expected = stored
-                            ? M4.Extract(fixture.StoredX, fixture.Pyramids[s], fixture.Boundaries, alone, new M4Options(gaps))
-                            : M4.Extract(fixture.UniformX, fixture.Pyramids[s], fixture.Boundaries, alone, new M4Options(gaps));
+                            ? M4.Extract(fixture.StoredX, fixture.Pyramids[s], default, fixture.Boundaries, alone, new M4Options(gaps))
+                            : M4.Extract(fixture.UniformX, fixture.Pyramids[s], default, fixture.Boundaries, alone, new M4Options(gaps));
                         var actual = batch.GetResult(s);
                         Assert.Null(batch.GetError(s));
                         Assert.Equal((expected.Count, expected.IsProvisional), (actual.Count, actual.IsProvisional));
@@ -80,12 +80,12 @@ public sealed class M4BatchTests
         using var pool = new PlotWorkerPool(3);
         using var fixture = new Fixture(pool, 16);
         var batch = fixture.Batch(16);
-        pool.Extract(batch, fixture.Boundaries);
+        pool.Extract(batch, default, fixture.Boundaries);
 
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 20; i++)
         {
-            pool.Extract(batch, fixture.Boundaries);
+            pool.Extract(batch, default, fixture.Boundaries);
         }
 
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
@@ -121,7 +121,7 @@ public sealed class M4BatchTests
             secondStorage.WaitForWorker(0);
             var batch = fixture.Batch(8);
 
-            pool.Extract(batch, fixture.Boundaries);
+            pool.Extract(batch, default, fixture.Boundaries);
 
             Assert.Equal((Building, Building), (held1.GetState(0), held2.GetState(0)));
             fixture.AssertEqualsAlone(batch);
@@ -166,7 +166,7 @@ public sealed class M4BatchTests
             }
         };
         var batch = fixture.Batch(4);
-        var extraction = Task.Run(() => pool.Extract(batch, fixture.Boundaries), TestContext.Current.CancellationToken);
+        var extraction = Task.Run(() => pool.Extract(batch, default, fixture.Boundaries), TestContext.Current.CancellationToken);
         Eventually.True(() => pool.IsQueued(batch), "the batch to be in the workers' list");
 
         storage.Release(0);
@@ -223,7 +223,7 @@ public sealed class M4BatchTests
         _ = batch.Add(fixture.UniformX, fixture.Pyramids[3], new M4Point[M4.MaxPointCount(Columns)]);
         var boundaries = Enumerable.Range(0, Columns + 1).Select(k => k * (999.0 / Columns)).ToArray();
 
-        Assert.Throws<ObjectDisposedException>(() => pool.Extract(batch, boundaries));
+        Assert.Throws<ObjectDisposedException>(() => pool.Extract(batch, default, boundaries));
 
         Assert.IsType<ObjectDisposedException>(batch.GetError(0));
         Assert.IsType<ArgumentException>(batch.GetError(2));
@@ -263,18 +263,18 @@ public sealed class M4BatchTests
         x.Invalidate(5, 1);
         Eventually.Completes(pool.PrecomputeStats(x));
 
-        Assert.Throws<InvalidOperationException>(() => pool.Extract(batch, fixture.Boundaries));
+        Assert.Throws<InvalidOperationException>(() => pool.Extract(batch, default, fixture.Boundaries));
         Assert.NotNull(batch.GetError(0));
         Assert.Equal(0, batch.GetResult(0).Count);
 
         values[5] = 5;
         x.Invalidate(5, 1);
         Eventually.Completes(pool.PrecomputeStats(x));
-        pool.Extract(batch, fixture.Boundaries);
+        pool.Extract(batch, default, fixture.Boundaries);
 
         Assert.Null(batch.GetError(0));
         var alone = new M4Point[M4.MaxPointCount(Columns)];
-        var expected = M4.Extract(x, fixture.Pyramids[0], fixture.Boundaries, alone);
+        var expected = M4.Extract(x, fixture.Pyramids[0], default, fixture.Boundaries, alone);
         Assert.Equal(expected.Count, batch.GetResult(0).Count);
         Assert.Equal(alone.AsSpan(0, expected.Count).ToArray(), output.AsSpan(0, expected.Count).ToArray());
     }
@@ -302,7 +302,7 @@ public sealed class M4BatchTests
         using var pyramid = pool.BuildPyramid(column);
         storage.WaitForWorker(0);
         var batch = fixture.Batch(1);
-        var extraction = Task.Run(() => pool.Extract(batch, fixture.Boundaries), TestContext.Current.CancellationToken);
+        var extraction = Task.Run(() => pool.Extract(batch, default, fixture.Boundaries), TestContext.Current.CancellationToken);
         try
         {
             Eventually.True(() => pool.IsQueued(batch), "the batch to be in the workers' list");
@@ -340,11 +340,11 @@ public sealed class M4BatchTests
         using var pool = new PlotWorkerPool(2);
         using var fixture = new Fixture(pool, 8);
         var batch = fixture.Batch(4);
-        Assert.Throws<ArgumentNullException>(() => pool.Extract(null!, fixture.Boundaries));
-        Assert.Throws<ArgumentNullException>(() => pool.Extract(batch, null!));
+        Assert.Throws<ArgumentNullException>(() => pool.Extract(null!, default, fixture.Boundaries));
+        Assert.Throws<ArgumentNullException>(() => pool.Extract(batch, default, null!));
         foreach (var bad in new[] { new[] { 0.0 }, new[] { 0.0, double.NaN }, new[] { 5.0, 1.0 } })
         {
-            Assert.Throws<ArgumentException>(() => pool.Extract(batch, bad));
+            Assert.Throws<ArgumentException>(() => pool.Extract(batch, default, bad));
         }
 
         Assert.Equal(default, batch.GetResult(0).Count);
@@ -355,7 +355,7 @@ public sealed class M4BatchTests
 
         Exception? onWorker = null;
         using var column = TestStorage<float>.MakeColumn(new float[10], out var storage);
-        storage.OnWorkerRead = () => onWorker = Record.Exception(() => pool.Extract(batch, fixture.Boundaries));
+        storage.OnWorkerRead = () => onWorker = Record.Exception(() => pool.Extract(batch, default, fixture.Boundaries));
         using (var pyramid = pool.BuildPyramid(column))
         {
             Eventually.Completes(pyramid.Completion);
@@ -366,8 +366,8 @@ public sealed class M4BatchTests
         var other = fixture.Batch(4, offset: 4);
         for (var round = 0; round < 50; round++)
         {
-            var one = Task.Run(() => pool.Extract(batch, fixture.Boundaries), TestContext.Current.CancellationToken);
-            var two = Task.Run(() => pool.Extract(other, fixture.Boundaries), TestContext.Current.CancellationToken);
+            var one = Task.Run(() => pool.Extract(batch, default, fixture.Boundaries), TestContext.Current.CancellationToken);
+            var two = Task.Run(() => pool.Extract(other, default, fixture.Boundaries), TestContext.Current.CancellationToken);
             Eventually.Completes(one);
             Eventually.Completes(two);
         }
@@ -398,7 +398,7 @@ public sealed class M4BatchTests
             var pool = new PlotWorkerPool(2);
             using var fixture = new Fixture(pool, 16);
             var batch = fixture.Batch(16);
-            var extraction = Task.Run(() => pool.Extract(batch, fixture.Boundaries), TestContext.Current.CancellationToken);
+            var extraction = Task.Run(() => pool.Extract(batch, default, fixture.Boundaries), TestContext.Current.CancellationToken);
             var dispose = Task.Run(pool.Dispose, TestContext.Current.CancellationToken);
             Eventually.Completes(dispose);
 
@@ -414,7 +414,7 @@ public sealed class M4BatchTests
                 fixture.AssertEqualsAlone(batch);
             }
 
-            Assert.Throws<ObjectDisposedException>(() => pool.Extract(batch, fixture.Boundaries));
+            Assert.Throws<ObjectDisposedException>(() => pool.Extract(batch, default, fixture.Boundaries));
         }
     }
 
@@ -468,7 +468,7 @@ public sealed class M4BatchTests
             {
                 Assert.Null(batch.GetError(s));
                 var alone = new M4Point[M4.MaxPointCount(Columns)];
-                var expected = M4.Extract(UniformX, Pyramids[offset + s], Boundaries, alone);
+                var expected = M4.Extract(UniformX, Pyramids[offset + s], default, Boundaries, alone);
                 var actual = batch.GetResult(s);
                 Assert.Equal((expected.Count, expected.IsProvisional), (actual.Count, actual.IsProvisional));
                 Assert.Equal(alone.AsSpan(0, expected.Count).ToArray(), outputs[s].AsSpan(0, actual.Count).ToArray());

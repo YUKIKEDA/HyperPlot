@@ -103,7 +103,7 @@ void Draw(string name, double from, double to)
 {
     var boundaries = area.Boundaries(from, to);
     var extract = Stopwatch.StartNew();
-    pool.Extract(batch, boundaries);
+    pool.Extract(batch, default, boundaries);
     var extractMs = extract.Elapsed.TotalMilliseconds;
 
     // Each series over its own Y range of the visible elements, from its pyramid (design §3.3): the random walks drift

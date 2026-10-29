@@ -6,7 +6,7 @@ namespace HyperPlot;
 /// A typed reference to a column of a <see cref="DataTable"/>, made by <see cref="DataTable.Col{T}(string)"/> (design §3.1).
 /// Two references are equal when they name the same position of the same table.
 /// </summary>
-/// <typeparam name="T">The element type: that of a <see cref="Column{T}"/>, or <see cref="double"/> for a <see cref="UniformColumn"/>.</typeparam>
+/// <typeparam name="T">The element type: that of a <see cref="Column{T}"/>, or <see cref="double"/> for a <see cref="UniformColumn"/> (<see cref="long"/> for an integer one).</typeparam>
 public readonly struct ColumnRef<T> : IEquatable<ColumnRef<T>>
     where T : unmanaged, INumber<T>
 {

@@ -281,8 +281,8 @@ public sealed class MinMaxPyramidTests
         void Run()
         {
             _ = pyramid.GetMinMax(Column.ChunkLength - 1000, 5000).Count;
-            _ = M4.Extract(uniform, pyramid, boundaries, points).Count;
-            _ = M4.Extract(stored, pyramid, boundaries, points, new M4Options(M4Gaps.Connect)).Count;
+            _ = M4.Extract(uniform, pyramid, default, boundaries, points).Count;
+            _ = M4.Extract(stored, pyramid, default, boundaries, points, new M4Options(M4Gaps.Connect)).Count;
         }
     }
 

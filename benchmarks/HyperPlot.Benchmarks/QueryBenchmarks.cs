@@ -60,6 +60,7 @@ public class M4Benchmarks : IDisposable
 
     private BuiltSeries? _series;
     private double[] _boundaries = [];
+    private double[] _tickBoundaries = [];
     private M4Point[] _points = [];
 
     /// <summary>Builds the pyramid and the boundaries.</summary>
@@ -68,24 +69,34 @@ public class M4Benchmarks : IDisposable
     {
         _series = new BuiltSeries();
         _boundaries = [.. Enumerable.Range(0, Columns + 1).Select(k => k * ((double)BuiltSeries.Length / Columns))];
+        _tickBoundaries = [.. _boundaries.Select(b => b * 10)];
         _points = new M4Point[M4.MaxPointCount(Columns)];
     }
 
     /// <summary>X evenly spaced; NaN breaks the line.</summary>
     [Benchmark]
-    public int UniformBreak() => M4.Extract(_series!.UniformX, _series.Pyramid, _boundaries, _points).Count;
+    public int UniformBreak() => M4.Extract(_series!.UniformX, _series.Pyramid, default, _boundaries, _points).Count;
 
     /// <summary>X evenly spaced; NaN skipped.</summary>
     [Benchmark]
-    public int UniformConnect() => M4.Extract(_series!.UniformX, _series.Pyramid, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
+    public int UniformConnect() => M4.Extract(_series!.UniformX, _series.Pyramid, default, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
 
     /// <summary>A stored X column, whose boundaries are found by search; NaN breaks the line.</summary>
     [Benchmark]
-    public int StoredBreak() => M4.Extract(_series!.StoredX, _series.Pyramid, _boundaries, _points).Count;
+    public int StoredBreak() => M4.Extract(_series!.StoredX, _series.Pyramid, default, _boundaries, _points).Count;
+
+    /// <summary>A stored X column of longs from 0, in the origin 0: the cost of the integer difference (design §3.6).</summary>
+    [Benchmark]
+    public int StoredLongBreak() => M4.Extract(_series!.StoredLongX, _series.Pyramid, default, _boundaries, _points).Count;
+
+    /// <summary>A stored X column of 2026's .NET ticks 10 apart, in an origin at its start (row D2).</summary>
+    [Benchmark]
+    public int TicksBreak() =>
+        M4.Extract(_series!.TicksX, _series.Pyramid, new ScaleOrigin(BuiltSeries.Ticks2026, 0), _tickBoundaries, _points).Count;
 
     /// <summary>A stored X column; NaN skipped.</summary>
     [Benchmark]
-    public int StoredConnect() => M4.Extract(_series!.StoredX, _series.Pyramid, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
+    public int StoredConnect() => M4.Extract(_series!.StoredX, _series.Pyramid, default, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
 
     /// <summary>Releases the series.</summary>
     [GlobalCleanup]
@@ -100,6 +111,7 @@ public class M4Benchmarks : IDisposable
 internal sealed class BuiltSeries : IDisposable
 {
     internal const int Length = 10_000_000;
+    internal const long Ticks2026 = 639_288_288_000_000_000;
 
     private readonly PlotWorkerPool _pool;
     private readonly Column<float> _y;
@@ -114,6 +126,10 @@ internal sealed class BuiltSeries : IDisposable
         UniformX = Column.Uniform(0, 1, Length);
         StoredX = Column.Wrap(Enumerable.Range(0, Length).Select(i => (double)i).ToArray());
         _pool.PrecomputeStats(StoredX).Wait();
+        StoredLongX = Column.Wrap(Enumerable.Range(0, Length).Select(i => (long)i).ToArray());
+        _pool.PrecomputeStats(StoredLongX).Wait();
+        TicksX = Column.Wrap(Enumerable.Range(0, Length).Select(i => Ticks2026 + (10L * i)).ToArray());
+        _pool.PrecomputeStats(TicksX).Wait();
     }
 
     internal MinMaxPyramid<float> Pyramid { get; }
@@ -122,11 +138,17 @@ internal sealed class BuiltSeries : IDisposable
 
     internal Column<double> StoredX { get; }
 
+    internal Column<long> StoredLongX { get; }
+
+    internal Column<long> TicksX { get; }
+
     public void Dispose()
     {
         Pyramid.Dispose();
         _y.Dispose();
         StoredX.Dispose();
+        StoredLongX.Dispose();
+        TicksX.Dispose();
         _pool.Dispose();
     }
 }

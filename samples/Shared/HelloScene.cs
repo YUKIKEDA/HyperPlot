@@ -62,7 +62,7 @@ internal static class HelloScene
                 _ = batch.Add(x, pyramids[s], outputs[s]);
             }
 
-            pool.Extract(batch, area.Boundaries(0, points - 1));
+            pool.Extract(batch, default, area.Boundaries(0, points - 1));
 
             // The Y range of every series, from the pyramids (design §3.3).
             var low = double.PositiveInfinity;
