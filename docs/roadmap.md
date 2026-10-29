@@ -19,8 +19,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 
 - **フェーズ:** B（GoG）
 - **作業中:** G2（D2 は #85 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **ブランチ:** `docs/94-g2-position-scales`
+- **Issue:** [#94](https://github.com/YUKIKEDA/HyperPlot/issues/94)
 
 ## ツールチェーン
 
@@ -48,10 +48,11 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | **B: GoG** | | | |
 | G1 | 仕様モデルとビルダ（`DataTable`、Plot / Layer / Encoding / コンパイル、`SpecId` と差分の再計算）、linear の位置のスケール、線のプロットをヘッドレスで描く（`HeadlessRenderer.Render(PlotSpec)`） | done | [#76](https://github.com/YUKIKEDA/HyperPlot/issues/76)（設計）、[#81](https://github.com/YUKIKEDA/HyperPlot/issues/81) |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計と実装（`ScaleOrigin`、M4 と `PlotWorkerPool.Extract` の原点、整数の等間隔の列 `Column.UniformInteger`、コンパイルの中の domain、R-6 のテスト、M4 の前後の計測） | done | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11)（設計）、[#85](https://github.com/YUKIKEDA/HyperPlot/issues/85) |
-| G2 | スケール（log / time / band / 色、linear の nice・zero・reverse・clamp）と目盛り、time のスケールの単位と起点（既定は .NET のティック、ns・µs の Unix 起点、日時の domain を `long` で正確に指定する口、§3.1・§4.2）、スケールを足す口（`IScale`）、名前つきの色とパレット、列で色を分けるチャネル | not-started | |
+| G2 | 位置のスケール（linear の zero・reverse・clamp、log・symlog・sqrt・power、time の単位と起点（既定は .NET のティック、ns・µs の Unix 起点、日時の domain を `long` で正確に指定する口、§3.1・§4.2）、変換を足す口 `IScale`、log と linear の描き直しの計測） | in-progress | [#94](https://github.com/YUKIKEDA/HyperPlot/issues/94)（設計）、[#95](https://github.com/YUKIKEDA/HyperPlot/issues/95) |
 | T1 | テキスト（契約、DirectWrite、アトラス、グリフのパイプライン） | not-started | |
-| G3 | ガイドと配置（軸・凡例・タイトル・テーマ） | not-started | |
+| G3 | ガイドと配置（軸・凡例・タイトル・テーマ）、目盛り（線形・log の 10 の冪・日時の暦の粒度、§4.6）と nice（要件 G-6） | not-started | |
 | G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image）、Geom を足す口（`IGeom`）、`RenderList.SetTransform`（§3.6）と座標系の 4×4 の変換の契約（§4.4）、線のマイターと面取りの結合・平らと四角の端・3 つ以上の区間の破線 | not-started | |
+| G7 | 色とカテゴリのスケール（band・point・ordinal・sequential・diverging）、名前つきの色（`Colors`）とパレット、列で色を分けるチャネル、カテゴリの列 `CategoricalColumn`（§3.1・§4.2・§5.2） | not-started | |
 | G5 | Stat と Position | not-started | |
 | G6 | ファセットと複数のプロット | not-started | |
 | **C: インタラクションと WPF** | | | |

@@ -394,17 +394,77 @@ public sealed record LineLayerSpec : LayerSpec
     public LineStyle Style { get; init; }               // 既定は黒（0, 0, 0, 255）、太さ 1、破線なし
 }
 
-public abstract record ScaleSpec : SpecNode             // 新しく作るコンストラクタは private protected。スケールを足す口（IScale）は行 G2
+public abstract record ScaleSpec : SpecNode             // 新しく作るコンストラクタは private protected
 
-public sealed record LinearScaleSpec : ScaleSpec
+// 行 G2: 連続の位置のスケール。reverse と clamp はすべてが持つ（Issue #94）
+public abstract record ContinuousScaleSpec : ScaleSpec  // 新しく作るコンストラクタは private protected
+{
+    public bool Reverse { get; init; }                  // 写像の向きを反対にする（x は右から左、y は上から下）
+    public bool Clamp { get; init; }                    // domain の外の値を domain の端に寄せて描く
+}
+
+public sealed record LinearScaleSpec : ContinuousScaleSpec
 {
     public (double Min, double Max)? Domain { get; init; }      // null なら学習する（§4.2）
+    public bool Zero { get; init; }                             // 学習した domain を 0 を含むまで広げる
     public LinearScaleSpec WithDomain(double min, double max);  // 有限で min < max。外れれば ArgumentException
+}
+
+public sealed record LogScaleSpec : ContinuousScaleSpec          // log10（行 G2）
+{
+    public (double Min, double Max)? Domain { get; init; }
+    public LogScaleSpec WithDomain(double min, double max);     // 有限で 0 < min < max。外れれば ArgumentException
+}
+
+public sealed record SymlogScaleSpec : ContinuousScaleSpec       // sign(v) · log10(1 + |v| / C)（行 G2）
+{
+    public double Constant { get; }                             // C。有限で正（Scale.Symlog が確かめる）
+    public (double Min, double Max)? Domain { get; init; }
+    public bool Zero { get; init; }
+    public SymlogScaleSpec WithDomain(double min, double max);
+}
+
+public sealed record PowScaleSpec : ContinuousScaleSpec          // sign(v) · |v|^k（行 G2）
+{
+    public double Exponent { get; }                             // k。有限で正（Scale.Pow が確かめる）
+    public (double Min, double Max)? Domain { get; init; }
+    public bool Zero { get; init; }
+    public PowScaleSpec WithDomain(double min, double max);
+}
+
+public enum TimeUnit { Ticks, Nanoseconds, Microseconds, Milliseconds, Seconds }   // Ticks は 100 ns（行 G2）
+
+public sealed record TimeScaleSpec : ContinuousScaleSpec         // long の日時の列（行 G2、§3.1）
+{
+    public TimeUnit Unit { get; }
+    public DateTime Epoch { get; }                              // 値 0 の日時。既定は Ticks なら 0001 年、ほかは Unix 起点
+    public (long Min, long Max)? Domain { get; init; }          // 列の単位
+    public TimeScaleSpec WithDomain(long min, long max);        // min < max。外れれば ArgumentException
+    public TimeScaleSpec WithDomain(DateTime min, DateTime max);// 単位に直して外向きに丸める。直せなければ ArgumentOutOfRangeException
+}
+
+public sealed record TransformScaleSpec : ContinuousScaleSpec    // 利用者の変換（行 G2）
+{
+    public IScale Transform { get; }
+    public (double Min, double Max)? Domain { get; init; }
+    public TransformScaleSpec WithDomain(double min, double max);
+}
+
+public interface IScale                                 // 位置のスケールの変換を足す口（行 G2、要件 N-6）
+{
+    void Forward(ReadOnlySpan<double> values, Span<double> destination);   // データ → スケールの空間。狭義に単調増加
+    void Inverse(ReadOnlySpan<double> values, Span<double> destination);   // スケールの空間 → データ
 }
 
 public static class Scale
 {
     public static LinearScaleSpec Linear();
+    public static LogScaleSpec Log();
+    public static SymlogScaleSpec Symlog(double constant = 1);
+    public static PowScaleSpec Pow(double exponent);
+    public static PowScaleSpec Sqrt();                                                   // Pow(0.5)
+    public static TimeScaleSpec Time(TimeUnit unit = TimeUnit.Ticks, DateTime? epoch = null);
+    public static TransformScaleSpec Transform(IScale transform);
 }
 
 public static class Plot
@@ -438,10 +498,21 @@ public sealed class LineBuilder
 
 - スケールは「学習」（データから domain を求める）と「写像」（値を range へ）に分かれる
 - 連続のスケールの学習は、チャンクの統計（§3.2）を読むので O(チャンク数) で済む。カテゴリのスケールは辞書を読む
-- **linear（行 G1）**: domain は明示（`WithDomain`）か学習である。学習は、そのスケールを使うすべてのレイヤーの列の値の範囲の和で、`Column<T>` はチャンクの統計（NaN を除く min / max）を、`UniformColumn` は最初と最後の値（`GetValue(0)` と `GetValue(Length − 1)`）を読む。統計がまだないチャンクは、ワーカーに計算させてから読む（§4.8）。長さ 0 の列は何も足さない。NaN でない値の数（統計の `Count`）がすべて 0 なら [0, 1]、min と max が等しければ [v − 0.5, v + 0.5] にする。チャンクの統計は NaN だけを除き ±∞ を含むので、学んだ min か max が有限でなければ、学習を失敗にし、列の名前と値を書いた `InvalidOperationException` を投げる（端が無限大の domain は、どの有限の値も同じ画素に写して何も描かない。黙って空の画像を出さず、`WithDomain` で明示する道を残す）。写像は、値 v を `(v − min) / (max − min)` で [0, 1] に写し、パネルの画素へは倍精度で写す（x は左から右、y は下から上、§3.6）。nice・zero・reverse・clamp は行 G2
+- **linear（行 G1）**: domain は明示（`WithDomain`）か学習である。学習は、そのスケールを使うすべてのレイヤーの列の値の範囲の和で、`Column<T>` はチャンクの統計（NaN を除く min / max）を、`UniformColumn` は最初と最後の値（`GetValue(0)` と `GetValue(Length − 1)`）を読む。統計がまだないチャンクは、ワーカーに計算させてから読む（§4.8）。長さ 0 の列は何も足さない。NaN でない値の数（統計の `Count`）がすべて 0 なら [0, 1]、min と max が等しければ [v − 0.5, v + 0.5] にする。チャンクの統計は NaN だけを除き ±∞ を含むので、学んだ min か max が有限でなければ、学習を失敗にし、列の名前と値を書いた `InvalidOperationException` を投げる（端が無限大の domain は、どの有限の値も同じ画素に写して何も描かない。黙って空の画像を出さず、`WithDomain` で明示する道を残す）。写像は、値 v を `(v − min) / (max − min)` で [0, 1] に写し、パネルの画素へは倍精度で写す（x は左から右、y は下から上、§3.6）。zero・reverse・clamp は下の「行 G2 の位置のスケール」、nice は目盛りと一緒に行 G3（§4.6）
   - **domain の中の表し方**（行 D2、Issue #11）: コンパイルの中の domain は、§3.6 の原点と差の組（原点 `long`、下端の差、上端の差）で持つ。学習は端を列の型のまま比べる。`long`・`int`・`byte` の列の統計の min / max と、整数の `UniformColumn` の最初と最後の値は `long` で正確に読み、どれも整数の列なら `long` で比べる。`float` か `double` の列が混ざれば `double` で比べる（そのとき `long` の端は `double` に丸まる）。原点は §3.6 のとおり ⌊下端⌋ で、`long` の列だけなら原点は min そのもので、差は 0 と `max − min` の正確な差になる。値が 1 つ（v）なら下端の差と上端の差は v ± 0.5 から原点を引いた値（原点は ⌊v − 0.5⌋）。明示の domain（公開の `LinearScaleSpec.Domain` は `(double, double)` のまま）も、原点 = ⌊min⌋ として差に直す。日時の domain を `long` で正確に指定する口は、行 G2 の time のスケールが持つ
   - 写像は差で計算する: 値 v の画素は `(d(v) − 下端の差) / (上端の差 − 下端の差)` に幅を掛けた値で、d(v) は §3.6 の差である。点と domain は同じ原点で引く
 - **位置のスケール**は、データの値を「スケールの空間」（log なら log10 した値、日時なら time のスケールの単位の値）に写す。スケールの空間の値は §3.6 の原点と差の組で持つ。ズームとパンはスケールの空間でのビュー範囲（§6.2）を変えるだけで、データを写し直さない。画面の座標は、ビューから座標系の変換（§4.4）で求める
+- **行 G2 の位置のスケール**（Issue #94）: 連続の位置のスケールは、linear・log・symlog・pow（sqrt を含む）・time と、`IScale` で足した変換である。色とカテゴリのスケール（band・point・ordinal・sequential・diverging）は行 G7、目盛りと nice は行 G3
+  - **変換**: log は log10(v)、symlog は sign(v) · log10(1 + |v| / C)（C は有限で正、既定 1）、pow は sign(v) · |v|^k（k は有限で正、sqrt は k = 0.5）。逆変換は 10^s、sign(s) · C · (10^|s| − 1)、sign(s) · |s|^(1/k)。どれも狭義に単調増加で、symlog と pow は 0 をまたいで連続である。log の 0 は −∞、負の値は NaN になる
+  - **`IScale`**: 利用者の変換は `IScale` の `Forward`（データ → スケールの空間）と `Inverse` で足す。組み込みの log・symlog・pow も同じ形の internal の変換で、コンパイルは種類によらず 1 つの経路で扱う。契約は「狭義に単調増加」と「`destination` の長さは `values` と同じ」で、`Forward` と `Inverse` は互いの逆である。呼び出しは、M4 の出力（1 系列あたり最大 4W + 2 点）と境界（W + 1 個）と domain の端の単位で、点ごとには呼ばない（§4.1）。呼ぶのは `Render` のスレッドだけで、`IScale` が投げた例外は `Render` からそのまま出る。単調でない変換は検査しない（読み出しの経路に O(N) の検査を入れないため）。そのときの線は保証しない
+  - **time**: `Scale.Time(unit, epoch)` は、`long` の日時の列（`Column<long>` か整数の `UniformColumn`）を、単位と起点つきで読む linear である（§3.1）。写像と学習は linear と同じで、原点と差（§3.6）で正確に扱う。単位と起点は、`WithDomain(DateTime, DateTime)` を列の単位へ直すとき（と、行 G3 の目盛り）に使う。直し方は (日時 − 起点) のティックを単位へ換算し、下端は ⌊⌋（−∞ へ）、上端は ⌈⌉（+∞ へ）に丸める（範囲を外向きに丸める）。起点より前の日時は負になるので、0 へ向かう切り捨て（`long` の割り算）ではない。`DateTime` の `Kind` は見ない。結果が `long` に入らなければ（ns で 1678〜2262 年の外など）`ArgumentOutOfRangeException`。time のスケールを `long` の日時でない列に使うと、コンパイルが列の名前と種類を書いた `ArgumentException` を投げる
+  - **原点**: linear と time は、データの単位で原点と差を取る（§3.6、行 D2）。log・symlog・pow と `IScale` は、データを原点 0 で読み（変換には値そのものが要る）、変換した後のスケールの空間の値で原点と差を取る。そのため 2^53 を超える整数の列（日時のティックなど）は、変換の前に `double` に丸まり、行 D2 の正確さ（要件 R-6）を持つのは linear と time だけである（PR #96 のレビュー）。domain はスケールの空間の両端（`Forward(min)`、`Forward(max)`）を `ScaleRange` にしたものである。学習の特別な場合（値がない、値が 1 つ）は、linear の規則をスケールの空間で当てる: 値がなければスケールの空間の [0, 1]（log なら 1〜10）、値が 1 つ（v）なら [f(v) − 0.5, f(v) + 0.5]。データの単位で ±0.5 すると、log の 0.3 の下端が負になり、変換が有限でなくなるからである
+  - **境界と点**: 非線形のスケールの x では、画素列の境界をスケールの空間で等間隔に作り（下端の差 + 幅 × k / W）、原点を足して `Inverse` でデータの単位へ戻し、M4 に原点 0 で渡す（§5.5.1）。戻した境界が狭義に増加しなければ（極端なズームで逆変換が丸まる）、§4.8 の狭い domain と同じ `ArgumentException` にする。M4 の出力の X と Y は `Forward` でスケールの空間へ写し、原点を引いて画素にする。変換は計画が持つ 1 つの `double` の作業領域で行い、確保しない（不変条件 3）。境界は `Inverse` でデータの単位へ戻し、点は `Forward` で画素にするので、`Forward(Inverse(s))` と s の往復の誤差（数 ulp）の分だけ、M4 が点を入れた画素列と、点の画素の写像が食い違い、境界のすぐそばの点が隣の画素列に写ることがある。§5.5.1 の「区切りは描画側が画素へ写すのと同じ変換で作る」は、非線形ではこの往復の誤差の分だけ緩む。§10 の往復のテストは、この誤差が数 ulp に収まることを守る（PR #96 のレビュー）
+  - **有限でない変換の結果**: どのスケールでも同じ規則である。描画では、写した値が有限でない点を落として線を切る（§5.1 の折れ線の切れ目）。NaN と違い、M4 の 4 点はデータの単位で選んだ後に落ちる。NaN はピラミッドが min / max から除くので M4 は NaN を避けて選ぶが、log の 0 以下の値は選ばれた後に変換で落ちる。そのため、そういう値を含む画素列では、有限に写る値の中の min / max は保証せず（1 列に −5 と正の値があると、M4 の min は −5 で、落ちた後にその列の正の値の min は描かれない）、`M4Gaps.Connect` の「NaN を飛ばしてつなぐ」も効かない。欠損として扱いたい値は、列の側で NaN にする（PR #96 のレビュー）。学習では、domain の端の変換が有限でなければ、列の名前と値を書いた `InvalidOperationException` にする（log の学習した端が 0 以下のとき）。明示の domain は、`WithDomain` が端を変換して確かめ、有限でなければ `ArgumentException` を投げる（`TransformScaleSpec.WithDomain` は `IScale.Forward` を呼ぶ）
+  - **作り方の口**: `Scale.Symlog(constant)` と `Scale.Pow(exponent)` は、値が有限で正でなければ `ArgumentOutOfRangeException`。`Scale.Time(unit, epoch)` は、`unit` が `TimeUnit` の名前のついた値でなければ `ArgumentOutOfRangeException`（`epoch` はどの `DateTime` でもよい）。`Scale.Transform(transform)` は null なら `ArgumentNullException`。これらの値は init を持たないので、作った後に変わらない。オプションは `with { Reverse = true }` のように変える
+  - **zero**: 既定は偽で、linear・symlog・pow が持つ（log は 0 を表せず、time の 0 は起点で意味を持たないので持たない）。真なら、学習した domain を 0 を含むまで広げる（min を min(min, 0)、max を max(max, 0) に。整数の列だけなら `long` で）。明示の domain は変えない。値が 1 つ（v）のときは、先に 0 を含め、それでも幅がなければ（v = 0）スケールの空間で ±0.5 する。v = 5 なら [0, 5]、v = 0 なら [−0.5, 0.5]（linear）になる
+  - **reverse**: 既定は偽で、連続の位置のスケールすべてが持つ。真なら、画素への写像の向きを反対にする（x は右から左、y は上から下）。境界と M4 は変えない
+  - **clamp**: 既定は偽で、すべてが持つ。真なら、写した値を domain の両端に寄せてから画素にする。M4 の範囲の外の点（`Before`・`After`、§5.5.1）も端に寄るので、線は画面の端に沿う。偽なら今のとおり、端の外の点へ線を延ばし、描画先で切る。y の clamp も同じで、domain の外の min / max は上端か下端に寄る
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
   - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない
@@ -469,6 +540,7 @@ public sealed class LineBuilder
 
 ### 4.6 ガイドと配置
 
+- **行**: 目盛りと、それに合わせて domain を広げる nice（要件 G-6）は、軸と一緒に行 G3 で作る。選び方が文字の幅（テキストの計測、行 T1）を使うからである（Issue #94）。nice の刻みは目盛りの刻みと同じものにし、domain の端が目盛りに乗るようにする
 - **目盛り**: 線形は Wilkinson の拡張アルゴリズム（Talbot ら 2010）で候補から選ぶ。log は 10 の冪とその間、日時は暦の粒度の段（年・月・日・時・分・秒・ms・µs・ns）から、目盛りの間隔が文字の幅に収まるものを選ぶ
 - **書式**: 既定は不変のカルチャで書く。利用者は `Func<double, string>` か、アロケーションのない `TryFormat` 形のデリゲートを渡せる
 - **配置**: 図全体の矩形から、タイトル → 凡例 → 軸（目盛りのラベルの寸法はテキストの計測で求める）→ パネルの順に場所を決める。結果は版付きで持ち、大きさ・DPI・目盛りのラベル・凡例が変わったときだけ計算し直す
@@ -492,9 +564,9 @@ public sealed class LineBuilder
 
 **行 G1 のコンパイル**: G1 は 1〜2 と 4 を行う（Stat は G5、配置は G3）。結果の `PlotPlan`（internal）は、レイヤーごとの X の列・Y のピラミッド・M4 の出力の場所・線の見た目と、x と y の domain（§4.2 の原点と差の組、行 D2）を持つ。domain は internal の値の型 `ScaleRange`（§3.6）で持ち、原点の選び方と付け直しはその 1 つの関数で行う。行 I1 のビューも同じ関数を使う。
 
-- **検査**: 次のときは `ArgumentException`（null は `ArgumentNullException`）。`Data`・`Layers`・`ScaleX`・`ScaleY` が null、レイヤーが null。列の参照が `default` か `Data` 以外の表を指す。Y の列が `Column<T>` でない（ピラミッドは `Column<T>` に作る）。レイヤーが `LineLayerSpec` でない、スケールが `LinearScaleSpec` でない（写しのコンストラクタを通した利用者の派生を含む。メッセージに型の名前を書く。Geom を足す口は G4、スケールは G2）。直接作った仕様の `Domain` が `WithDomain` の条件（有限で min < max）を外れる。`Style` が §5.1 の `LineStyle` の検査を外れるときは、記録の `RenderList.DrawPolyline` が `ArgumentOutOfRangeException`（`ArgumentException` の派生）を投げる。コンパイルが同じ検査を重ねても結果は変わらないので、重ねない（Issue #81）。X の単調性は M4 が確かめ（§5.5.1）、`InvalidOperationException` がそのまま出る。X の列の種類と step は検査しない。`Column` のコンストラクタは `private protected` なので列は `UniformColumn` か `Column<T>` だけで、`UniformColumn` の step は作るときに正と決まっている（§3.1）。落ちようのない検査は書かない（Issue #81）
+- **検査**: 次のときは `ArgumentException`（null は `ArgumentNullException`）。`Data`・`Layers`・`ScaleX`・`ScaleY` が null、レイヤーが null。列の参照が `default` か `Data` 以外の表を指す。Y の列が `Column<T>` でない（ピラミッドは `Column<T>` に作る）。レイヤーが `LineLayerSpec` でない、スケールが行 G2 の 6 種（`LinearScaleSpec`・`LogScaleSpec`・`SymlogScaleSpec`・`PowScaleSpec`・`TimeScaleSpec`・`TransformScaleSpec`）でない（写しのコンストラクタを通した利用者の派生を含む。メッセージに型の名前を書く。Geom を足す口は G4。利用者の変換は派生でなく `IScale` で足す、§4.2）。`with` で入れた `Domain` が、その種類の `WithDomain` の条件（linear・symlog・pow は有限で min < max、log はそれに加えて 0 < min、time は min < max、transform は両端の `Forward` が有限）を外れる。time のスケールの列が `long` の日時（`Column<long>` か整数の `UniformColumn`）でない。symlog の C・pow の k・time の単位と起点・transform の `IScale` は init を持たず、`Scale` の作り方の口だけが検査して入れるので、コンパイルは検査しない（落ちようがない）。`Style` が §5.1 の `LineStyle` の検査を外れるときは、記録の `RenderList.DrawPolyline` が `ArgumentOutOfRangeException`（`ArgumentException` の派生）を投げる。コンパイルが同じ検査を重ねても結果は変わらないので、重ねない（Issue #81）。X の単調性は M4 が確かめ（§5.5.1）、`InvalidOperationException` がそのまま出る。X の列の種類と step は検査しない。`Column` のコンストラクタは `private protected` なので列は `UniformColumn` か `Column<T>` だけで、`UniformColumn` の step は作るときに正と決まっている（§3.1）。落ちようのない検査は書かない（Issue #81）
 - **索引**: Y の列ごとに `MinMaxPyramid` をプールで作る。同じ Y の列を指すレイヤーは、ピラミッドを 1 つ共有する。X が `Column<T>` なら `PlotWorkerPool.PrecomputeStats` で X の統計を先に計算させる（§5.5.1）。学習も、作られた統計を読む
-- **差分（要件 G-13）**: 前のコンパイルの結果があれば、新しい仕様とノードの `Id` で比べ、変わった段だけをやり直す。`Id` が同じノードは変わっていない。違うノードは中身で分ける。表かレイヤーの列の参照が変わったら「データ」で、新しく要る Y の列のピラミッドを作り、要らなくなったものを解放し、domain を学び直す。スケールの中身（`Domain`）が変わったら「スケール」で、domain を決め直して M4 を引き直す。線の見た目（`Style`）だけが変わったら「見た目」で、M4 の出力をそのまま使って記録し直す。レイヤーの数か並びが変わったら、残ったレイヤーの索引を使い回して、ほかの段をやり直す。差分は、作ったピラミッドの数・M4 を引いた数・記録した数を internal の数え口で数え、テストがそれを見る
+- **差分（要件 G-13）**: 前のコンパイルの結果があれば、新しい仕様とノードの `Id` で比べ、変わった段だけをやり直す。`Id` が同じノードは変わっていない。違うノードは中身で分ける。表かレイヤーの列の参照が変わったら「データ」で、新しく要る Y の列のピラミッドを作り、要らなくなったものを解放し、domain を学び直す。スケールの種類か中身（`Domain`・`Zero`・symlog の C・pow の k・time の単位と起点・transform の `IScale` の参照）が変わったら「スケール」で、domain を決め直して M4 を引き直す。線の見た目（`Style`）か、スケールの `Reverse`・`Clamp` だけが変わったら「見た目」で、M4 の出力をそのまま使って記録し直す（reverse と clamp は画素への写像だけを変え、境界を変えない、§4.2）。レイヤーの数か並びが変わったら、残ったレイヤーの索引を使い回して、ほかの段をやり直す。差分は、作ったピラミッドの数・M4 を引いた数・記録した数を internal の数え口で数え、テストがそれを見る
 - **ヘッドレスの待ち方**: `HeadlessRenderer.Render(PlotSpec)`（§7.5）は、描くたびに、使うピラミッドと X の統計が列の今の世代でそろうのを待ってから描く。ヘッドレスの出力は、いつ描いても同じでなければならないからである。ヘッドレスは UI のスレッドではないので、不変条件 7 に触れない。上の段落の暫定の表示とホストへの通知は、それを使うホストの行（W1）で作る
   - ピラミッドは internal の `MinMaxPyramid<T>.WhenComplete()`（§3.3）で待つ。`Completion` は最初の構築だけを表し、`Invalidate` の後の作り直しを知らせないからである。`WhenComplete` は、`IsComplete` が真ならすでに終わった `Task` を返し、偽なら世代の古いチャンクをすべて要求して、それらができて `IsComplete` が真になったときに終わる `Task` を返す
   - X が `Column<T>` なら、統計のないチャンク（`Invalidate` で捨てられたものを含む）があるときだけ `PlotWorkerPool.PrecomputeStats` を出して待つ
@@ -534,8 +606,9 @@ var scatter = Plot.Create(points)
 - 拡張メソッドの形で Geom を足せる（`IGeom` の実装と組で配る）
 - データ層の核（列の型、`PlotWorkerPool`・`MinMaxPyramid<T>`・`MinMax<T>`・`M4`・`M4Batch`、§3.3・§5.5.1）も公開する。行 S1（1e9 点の時系列をヘッドレスで描くサンプル）が G1 の `DataTable` より前に来るので、利用者とサンプルが列・ピラミッド・M4 を直接つなげる必要がある（オーナーの決定、2026-10-28）。ジェネリックの公開の型が NativeAOT のサンプルの大きさに与える分（`.cursor/rules/aot.mdc`）は、サンプルのできる S1 で最初に測る
 - 色の型 `Color`（§5.2）は利用者の書く型なので公開する（`HyperPlot` 名前空間）。GPU の契約（`IGpuBackend`・`IRenderTarget`・`RenderTargetDescription`・`DepthFormat`・`GpuDeviceLostException`・`GpuFrameTime`・`FrameScope`、`HyperPlot.Rendering`）は「バックエンドが実装する契約」として、`HeadlessRenderer`（`HyperPlot.Rendering`、§7.5）は画像の出力とテストに使う型として、`GoldenImage`・`ImageTolerance`・`ImageDifference`・`ImageMismatchException`（`HyperPlot.Testing`、§10.1、行 S3）は利用者のテストが描いた画像を比べる型として、`RenderList`・`LineStyle`・`LineDash`（§5.1、行 R2）は S1 のサンプルが GoG の層より前に線を描く型として、`D3D11Backend`（`HyperPlot.Rendering.D3D11`、§5.3）は D3D11 のバックエンドとして公開する（行 R1）
+- 行 G2 は、位置のスケールの型（`ContinuousScaleSpec`・`LogScaleSpec`・`SymlogScaleSpec`・`PowScaleSpec`・`TimeScaleSpec`・`TimeUnit`・`TransformScaleSpec`、§4.1）と、変換を足す口 `IScale`（§4.2、要件 N-6）を公開する（Issue #94）。`LinearScaleSpec` は基底が `ContinuousScaleSpec` に変わり、`Zero`・`Reverse`・`Clamp` を持つ
 - 行 D2 は、M4 の原点の型 `ScaleOrigin`（§5.5.1）と、整数の等間隔の列の口 `Column.UniformInteger`・`UniformColumn.IsInteger`・`UniformColumn.TryGetInteger`（§3.1）を公開する（Issue #11）。`M4.Extract`・`M4Batch`・`PlotWorkerPool.Extract` はもともと公開で、引数に `ScaleOrigin` が加わる
-- 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色）と `.Title`（G2・G3）、`.Interact`（I1）、`.Point` と `.ScaleColor`（G4・G2）、`.FacetWrap`（G6）、`view.Plot`（W1）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
+- 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色、G7）と `.Title`（G3）、`.Interact`（I1）、`.Point` と `.ScaleColor`（G4・G7）、`.FacetWrap`（G6）、`view.Plot`（W1）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
 
 ```csharp
 // 行 G1: 表から線のプロットを宣言し、ヘッドレスで描く
@@ -672,7 +745,7 @@ public sealed class HeadlessRenderer : IDisposable   // §7.5
 }
 ```
 
-- `Color` は GoG（行 G2 の色のスケール）も使う型である。名前つきの色（`Colors`）とパレットは行 G2 で足す
+- `Color` は GoG（行 G7 の色のスケール）も使う型である。名前つきの色（`Colors`）とパレットは行 G7 で足す
 - `RenderTargetDescription` の幅と高さは 1 以上 16,384 以下（D3D11 のテクスチャの一辺の上限）で、外れれば `ArgumentOutOfRangeException`。`Depth` が `None` でなければ、v1 のバックエンドは `NotSupportedException`（§13.1）
 - **フレームと GPU 時間（行 S2）**: `BeginFrame` は `FrameScope` を返し、その `Dispose` がフレームを閉じる（`using var frame = backend.BeginFrame();`）。例外で抜けるときも `using` が閉じるので、呼び出し側が `try` / `finally` を書く必要はない。フレームは入れ子にできる。いちばん外の `BeginFrame` がフレームを開いて番号（0 から 1 ずつ増える）を振り、それを閉じたときにフレームが終わる。`CreateRenderTarget`・`Clear`・`ReadPixels`・`Draw` は中で `BeginFrame` を開いて `using` で閉じるので、外のフレームが開いていればその一部になり、開いていなければそれだけで 1 つのフレームになる（例外で抜けるときも閉じる）。`BeginFrame` は開くたびに新しいトークンを振り、`EndFrame(token)` は、そのトークンが開いているフレームなら、それとその中でまだ開いているフレームを閉じ、閉じたものや `default` のトークンなら何もしない。`EndFrame` は公開の契約だが、呼ぶのは `FrameScope` で、対応がなくても例外を投げない（`csharp.mdc`: 段階の違いで投げない。オーナーの判断、PR #59 のレビュー）。GPU 時間は、いちばん外のフレームの開始から終わりまでを、タイムスタンプのクエリで測る。結果は数フレーム後にしか読めないので、`LastFrameTime` は、GPU 時間の分かった最も新しいフレームの番号と時間を返す。まだ分かったフレームがなければ null。読むのは閉じるときで、待たずに読める分だけ読む（同じフレームの中で待つと、GPU がフレームの間に空になってクロックを下げる。`docs/benchmarks/r2-lines.md`）。GPU の時計が乱れた（disjoint）フレームは飛ばす。喪失を見たフレームは、その後に中で作り直されても時間を持たない（喪失でクエリを捨て、作り直したクエリには測りかけのフレームがない。印は持たない）。喪失の状態でフレームを閉じるのは、入れ子を戻すだけである（§5.3）
 - `Clear` と `ReadPixels` はフレームの外でも呼べる。バックエンドがその中でフレームを開いて閉じる（上の「フレームと GPU 時間」）。`Clear` は、各色を前乗算した整数 `k = (c · a + 127) / 255`（整数の除算）を CPU で求め、`k / 255f` を描画先に書く。GPU の float から UNORM への変換は最も近い整数に丸め、`k / 255f · 255` の誤差は 1e-5 程度なので、書かれる値はちょうど `k` になる
@@ -781,7 +854,7 @@ public readonly struct M4Result
 ```
 
 - **原点**（行 D2、Issue #11）: `origin` は X と Y の原点で、`boundaries` と出力の `M4Point.X` / `.Y` はすべて原点からの差 d（§3.6）である。原点は必須の引数で、既定値を持たない。日時の列を原点なしで渡すと黙って精度を落とすので、呼ぶ側が原点を選ぶことを型で見せる。原点が 0 なら、`double` の値は差を取らない値と同じになる
-- **境界**: `boundaries` は W + 1 個（W ≥ 1）の、有限で狭義に増加する `double` で、X のデータの単位の、X の原点からの差で書く。画素列 k は半開区間 [b_k, b_{k+1}) で、b_W ちょうどの要素は範囲の外である。区切りは描画側が画素へ写すのと同じ変換で作る（Jugel ら §4.1）。スケールの変換（log・時刻、§4.2）は、画素の境界を逆変換して渡す。論文の式 (2) の round は鍵が w + 1 個になるので採らない。条件を満たさない `boundaries` は `ArgumentException`
+- **境界**: `boundaries` は W + 1 個（W ≥ 1）の、有限で狭義に増加する `double` で、X のデータの単位の、X の原点からの差で書く。画素列 k は半開区間 [b_k, b_{k+1}) で、b_W ちょうどの要素は範囲の外である。区切りは描画側が画素へ写すのと同じ変換で作る（Jugel ら §4.1）。非線形のスケール（log・symlog・pow と `IScale`、§4.2）は、スケールの空間で等間隔の境界を `Inverse` でデータの単位へ戻し、原点 0 で渡す（行 G2）。time は linear と同じく、原点と差で渡す。論文の式 (2) の round は鍵が w + 1 個になるので採らない。条件を満たさない `boundaries` は `ArgumentException`
 - **X**: 境界 b の要素の位置は、d(x(i)) ≥ b を満たす最小の i である。d は §3.6 の差で、v について単調非減少なので、`Column<TX>` の単調性はそのまま差の単調性になる。x(i) は、`double` の `UniformColumn` なら `GetValue(i)`（FMA の 1 回の丸め）の値で、d(x(i)) = `GetValue(i) − (double)origin.X`。整数の `UniformColumn` なら d(x(i)) = `(double)((Int128)start + i · step − origin.X)` で、正確な差を 1 回だけ丸める。総当たりのテストも同じ値で判定する。`UniformColumn` では ⌈(b − d(start)) / step⌉ で求めた i から、d(x(i)) を確かめながら正しい位置まで前後へ歩いて直す。割り算と FMA は丸めが違い、ふつうは 1 つずれるだけだが、刻みが開始値の ulp より小さい列（値が同じまま続く）では推定が 1 より大きくずれうるので、1 回の修正に限らない（PR #89 のレビュー）。`Column<TX>` では、チャンクの統計の `Last`（単調）の上の二分探索でチャンクを決め、その中を二分探索する（境界ごとに O(log N)）。`Column<TX>` は単調非減少で NaN がないこと。抽出は、すでに計算された X のチャンクの統計だけを読み（O(チャンク数)）、自分では計算しない。初回に計算すると X の全体を走査し、フレームの経路が O(N) になるからである（不変条件 2）。すべてのチャンクの統計がそろっていれば単調性を確かめ、そうでなければ `InvalidOperationException`。そろっていなければ、境界の位置を要素の上の二分探索（O(log N) の読み出し）で求め、単調性はまだ確かめず、結果を暫定にする。X の統計は `PlotWorkerPool.PrecomputeStats` で先に計算させる（オーナーの決定、2026-10-28、PR #19）。X と Y の長さが違えば `ArgumentException`
 - **出力**: 列ごとに first・min・max・last を位置の順に書く。同じ要素が複数の役割を持つときは 1 点にまとめ、役割を `Roles` に重ねる（重複した位置を返さない）。要素のない列には何も書かない。暫定の結果だけは例外で、暫定の min / max を範囲の端の要素の位置に置くので、`First` / `Last` と同じ `Index` で Y の違う点が並ぶことがある。X と Y は原点からの差 d にして書く（行 D2。`long` の Y も、Y の原点の近くでは 2^53 を超えても正確で、正確な差を 1 回だけ丸める）。±∞ の Y はそのまま書き（d(±∞) = ±∞）、描く側が扱う
 - **範囲の外の点**: b_0 より前の最後の要素（`Before`）と、b_W 以上の最初の要素（`After`）を 1 つずつ足す。線を画面の端まで届かせるためで、Jugel らの問い合わせ（範囲の内側だけ）にはない。該当する要素がなければ足さない
@@ -1013,6 +1086,7 @@ Core はテキストの契約 `ITextBackend` を持ち、バックエンドが�
 | 画像の比較（S3） | `tests/HyperPlot.Testing.Tests`（両 OS、GPU なし）で、作った画像を使って: 差がちょうど `Channel` の画素は超えず、`Channel` + 1 で超える（R・G・B・A のそれぞれで）。超えた画素の数がちょうど `Pixels` なら合い、1 つ多いと合わない。`MaxDelta` と最初の位置（行の順）が正しく、`Tolerance` が渡したものである。`Exact` は 1 の差でも合わない。負の許容差・長さの合わない配列・1 未満の幅と高さ・null の引数が §10.1 の例外を投げる。基準のファイルがないと実際の画像だけを書いて投げ、基準は作られない。大きさの違う基準で両方の大きさを書いて投げる。合わないと `actual` と `diff` の PNG を書き、`diff` の超えた画素が赤、それ以外が基準の灰色である。`HYPERPLOT_UPDATE_GOLDEN=1` で基準が書き直されて合い、`0` や空では書き直さない。復号器が §7.5 の書き手の画像を画素まで読み戻し、ほかのカラータイプ・インターレース・フィルタ 0 以外・CRC の不一致・短いファイルを `InvalidDataException` にする。WARP で（D3D11 のテスト）: §10.1 の 2 場面が基準の PNG と合う |
 | 仕様とコンパイル（G1） | 表: `Col<T>` が `Column<T>` と、`T` が `double` の `UniformColumn` を返し、ほかの型と知らない名前と大文字小文字の違う名前を `ArgumentException` にする。`Add` の null・空・重なる名前、`Build` の長さの違い、`Build` の後のビルダ、`ColumnRef` の等しさ（同じ表と位置、別の表は違う）、`default` の参照。仕様: `Id` が作るときと `with` のたびに新しく振られ、すべて違う。ビルダ: 別の表と `default` の参照、Y が `UniformColumn`、`configure` が 1 回だけ呼ばれる、`Build` の後、レイヤー 0 個。linear: 学習した domain がすべてのレイヤーの和（`Column<T>` は NaN を除いた統計、`UniformColumn` は最初と最後）、長さ 0 の列、NaN でない値なし（[0, 1]）、すべて同じ値（± 0.5）、+∞ か −∞ を含む列（列の名前を書いた `InvalidOperationException`。明示の domain なら描ける）、明示の domain、`WithDomain` の NaN・無限大・min ≥ max。コンパイル（仕様を直接作って）: Y が `UniformColumn`、単調でない X（`InvalidOperationException`）、別の表の列、`ScaleX` か `ScaleY` が null、写しのコンストラクタで派生した知らない `LayerSpec` と `ScaleSpec`（型の名前を書いた `ArgumentException`）、外れた `Domain` と `Style`、x の domain が狭すぎて境界が増加しない（`WithDomain(0.5, 0.5 + 1e-14)` を幅 1,000 で。原点は 0 で、0.5 の ulp は 2^−53（約 1.1e-16）なので、境界の間隔 1e-17 では隣り合う境界が同じ値になる。行 D2 の前の値 `WithDomain(1e15, 1e15 + 0.25)` は、原点 1e15 と差 0〜0.25 になって描ける）。描く（WARP）: 2 つのレイヤー（`UniformColumn` の X と保存された X、NaN の切れ目、破線）のプロットの画素が、同じ境界と写し方で `M4Batch` と `RenderList` を手で組んで描いた画素と一致し、ゴールデン画像（§10.1）と合う。差分（数え口）: 同じ仕様の描き直しはピラミッド 0・M4 0・記録 0、見た目だけはピラミッド 0・M4 0・記録 1、domain だけはピラミッド 0・M4 1・記録 1、Y の列の差し替えはその列のピラミッドだけ 1 つで古いものが解放される、レイヤーを足すと新しい列の分だけ、同じ Y の列の 2 つのレイヤーはピラミッド 1 つ、レイヤー 0 個はピラミッド 0・M4 1・記録 1 で折れ線を記録せず、前の仕様のピラミッドを解放する。待ち: ピラミッドの構築を止めたプールで `Render` が構築の終わりまで戻らず、戻った画像が止めないときと同じ。描いた後に Y の列を書き換えて `Invalidate` すると、次の `Render` が作り直しを待ち、書き換えた値で描く（止めずに描いた画像と同じ）。X の `Column<T>` を `Invalidate` しても同じ。M4 がピラミッドを読む途中で Y の列を書き換えて `Invalidate` すると、次の同じ仕様の `Render` が引き直し、書き換えた値で描く。チャンクの読み出しを失敗させると、`Render` がその例外をそのまま投げ、暫定の画像を描かない。`WhenComplete`（Core）: 完全なピラミッドで終わった `Task`、`Invalidate` の後に古いチャンクだけが作り直されて終わる、呼ぶ前に `Fault` があるときその例外で終わった `Task`、待つ間の失敗でその例外、`Dispose` で `ObjectDisposedException`、2 回の呼び出しが同じ `Task`。`Dispose` がピラミッドを解放する。温まった後、同じ仕様の `Render` が確保しない |
 | スケールの空間の精度（D2） | R-6: 2026 年の .NET のティックの `Column<long>` の X と、ns・Unix 起点の `Column<long>` の X、整数の `UniformColumn`（2026 年のティックの開始値、刻み 10）で、全体の表示から、表示範囲がデータの 1 単位を幅 1,920 いっぱいに広げるところまでの各段で、境界の差が狭義に増加し、M4 の点が総当たり（`Int128` の正確な差を 1 回丸めた値で判定）と位置・値・役割まで一致し、画素の位置が理想の値（正確な差から倍精度で計算した値）と一致する。差 d: `long.MaxValue` と `long.MinValue` の値を反対の端の原点で引いて例外にならず、単調非減少のまま。`float`・`double`・`double` の `UniformColumn` で、原点 0 の結果が D2 の前と点まで同じ。Y: 2026 年のティックの近くで 1 ずつ変わる `long` の Y の M4 の Y が、Y の原点からの正確な差。原点の付け直し（`ScaleRange` の関数）: 下端の差が (−0.5, 0)・[−1, −0.5]・−1 より小さい値・[0, 1)・大きい正の値で、付け直した後の下端の差が [0, 1) にあり、付け直す前と後の位置（原点 + 差を `Int128` と分数で正確に比べた値）の違いが §3.6 の上限の中にある。d ∈ (−0.5, 0) の −0.3 で丸まること、ほかの範囲で下端がビットまで同じこと、上端の差が結果の 1 ulp の半分以下だけ動き、原点が上がるときは動かず、原点が下がる 0.5 + 2^−53 と 2^53 以上の 2^60 + 1024 で動くこと。`long` の範囲に収める端（`long.MinValue` の近くと、`double` の −1e300）。整数の列: `Column.UniformInteger` の `step` が 0 以下と、最後の値が `long` に入らない長さで `ArgumentOutOfRangeException`、`IsInteger`、`Col<long>` が参照を返し `Col<double>` が `ArgumentException`、`double` の `UniformColumn` は逆。`TryGetInteger` が整数の列で真と正確な開始値と刻み（2^53 を超える開始値で、`start + i * step` が `long` の値と一致）を返し、`double` の列で偽と 0 と 0 を返す。`double` の列の d: 原点が 2^53 を超えるとき、点のずれが ulp(o)/2 以下で、総当たりが同じ式の値と一致する。学習（コンパイル）: `long` の列の domain の原点が min そのもので、上端の差が `max − min` の正確な値。整数の列だけの和は `long` で、`double` の列が混ざると `double` で比べる。値が 1 つの `long` の列で原点が v − 1、差が 0.5 と 1.5。`PlotWorkerPool.Extract` の各系列の結果が、同じ原点の `M4.Extract` と点まで同じ。温まった後、原点の違う x の domain の切り替えでも確保しない |
+| 位置のスケール（G2） | 変換: log・symlog（C = 1 と 0.5）・pow（k = 2 と 0.5）の `Forward` と `Inverse` が式の値で、互いの逆（往復が元の値の数 ulp 以内）。並べた乱数の値（負・0・正、0 の近くの ±1e-9 を含む）で狭義に単調増加。symlog と pow は 0 で連続。log の 0 は −∞、負は NaN。作り方の口: `Symlog` と `Pow` の 0・負・NaN・∞、`Time` の名前のない単位、`Transform(null)`。`WithDomain`: log の min ≤ 0、transform の端の `Forward` が有限でない、time の min ≥ max。time の `DateTime` の domain が外向きに丸まる（ms の単位で 5 ティック余る端の下端は ⌊⌋、上端は ⌈⌉。1969 年の日時でも下端が −∞ へ丸まる）、ns で 2300 年が `ArgumentOutOfRangeException`、`Kind` が違っても同じ値。コンパイル: 写しのコンストラクタで派生した知らない `ScaleSpec`（型の名前）、`with` で入れた範囲の外の `Domain`（種類ごと）、time のスケールの列が `double`（列の名前と種類）。学習: log の学習した端が 0 以下で列の名前と値を書いた `InvalidOperationException`、値が 1 つ（log の 0.3 で [log10 0.3 ± 0.5]）と値なし（log で 1〜10）をスケールの空間で、zero（linear・symlog・pow で学習した domain が 0 を含み、明示の domain は変わらない。整数の列は `long` で。値が 1 つの v = 5 で [0, 5]、v = 0 で [−0.5, 0.5]）。描く（記録が、同じ変換で手で組んだ M4 と `RenderList` と一致）: log の y、0 をまたぐ symlog の y、sqrt と pow 2 の y、ns と ticks の time の x（同じ `long` の列を linear で描いた画素と同じ）、利用者の `IScale`（log2）の x、log の 0 以下の値と利用者の変換が NaN を返す値で線が切れる（1 画素列に −5 と正の値が混ざる場面で、M4 がデータの単位で選んだ min の −5 が落ち、その列の正の値の min が描かれないことを固定する）、reverse の x と y、clamp の x と y（domain の外の点と `Before`・`After` が端に寄る）。非線形の境界: `Scale.Log().WithDomain(1, 1 + 1e-13)` を幅 1,000 で（log の空間の境界は増加するが、10^s に戻すと重なる）`ArgumentException`。差分: `Reverse` か `Clamp` だけでピラミッド 0・M4 0・記録 1、スケールの種類・`Zero`・`IScale` の参照の変化で 0・1・1。`IScale` が投げた例外が `Render` からそのまま出る。描く（WARP）: log の y と time の x の線のプロットのゴールデン画像。温まった後、log の x の domain の切り替えが確保しない |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
 
