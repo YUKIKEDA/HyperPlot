@@ -29,81 +29,16 @@ for (var i = 0; i < args.Length; i++)
     }
 }
 
-const int Points = 1_000_000;
-const int SeriesCount = 4;
+// The scene is shared with the golden image test, which draws it with 1e5 points (design §10.1).
 var clock = Stopwatch.StartNew();
-var pool = PlotWorkerPool.Shared;
-var columns = new Column<float>[SeriesCount];
-var pyramids = new MinMaxPyramid<float>[SeriesCount];
-for (var s = 0; s < SeriesCount; s++)
-{
-    // A sine of its own frequency with seeded noise and a gap of NaN, so that the line breaks once.
-    var random = new Random(s);
-    var values = new float[Points];
-    for (var i = 0; i < Points; i++)
-    {
-        values[i] = (float)(Math.Sin(i * (s + 1) * 2e-5) + (s * 2.5) + ((random.NextDouble() - 0.5) * 0.6));
-    }
-
-    values.AsSpan(400_000 + (s * 50_000), 20_000).Fill(float.NaN);
-    columns[s] = Column.Wrap(values);
-    pyramids[s] = pool.BuildPyramid(columns[s]);
-}
-
-foreach (var pyramid in pyramids)
-{
-    pyramid.Completion.Wait();
-}
-
-var area = new PlotArea(left: 40, top: 30, width: 1200, height: 660);
-var x = Column.Uniform(0, 1, Points);
-var batch = new M4Batch();
-var outputs = new M4Point[SeriesCount][];
-for (var s = 0; s < SeriesCount; s++)
-{
-    outputs[s] = new M4Point[M4.MaxPointCount(area.Width)];
-    _ = batch.Add(x, pyramids[s], outputs[s]);
-}
-
-var boundaries = area.Boundaries(0, Points - 1);
-pool.Extract(batch, boundaries);
-
-// The Y range of every series, from the pyramids (design §3.3).
-var low = double.PositiveInfinity;
-var high = double.NegativeInfinity;
-foreach (var pyramid in pyramids)
-{
-    var range = pyramid.GetMinMax(0, Points);
-    low = Math.Min(low, range.Min);
-    high = Math.Max(high, range.Max);
-}
-
-Color[] colors = [new(31, 119, 180, 255), new(255, 127, 14, 255), new(44, 160, 44, 255), new(214, 39, 40, 255)];
-var list = new RenderList();
-area.DrawGrid(list, step: 60);
-for (var s = 0; s < SeriesCount; s++)
-{
-    var points = outputs[s].AsSpan(0, batch.GetResult(s).Count);
-    area.DrawSeries(list, points, 0, Points - 1, low, high, new LineStyle(colors[s], 1.5f));
-}
-
+var list = HelloScene.Record(points: 1_000_000, PlotWorkerPool.Shared);
 using var backend = D3D11Backend.Create(useWarp);
-using var renderer = new HeadlessRenderer(backend, 1280, 720);
+using var renderer = new HeadlessRenderer(backend, HelloScene.Width, HelloScene.Height);
 renderer.Clear(new Color(255, 255, 255, 255));
 renderer.Render(list);
 using (var file = File.Create(output))
 {
     renderer.WritePng(file);
-}
-
-foreach (var pyramid in pyramids)
-{
-    pyramid.Dispose();
-}
-
-foreach (var column in columns)
-{
-    column.Dispose();
 }
 
 Console.WriteLine($"Wrote {output} ({(backend.IsWarp ? "WARP" : "hardware")}) in {clock.Elapsed.TotalMilliseconds:F0} ms.");

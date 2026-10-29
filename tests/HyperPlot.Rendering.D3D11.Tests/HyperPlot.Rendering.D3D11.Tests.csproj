@@ -8,10 +8,12 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\HyperPlot.Rendering.D3D11\HyperPlot.Rendering.D3D11.csproj" />
+    <ProjectReference Include="..\..\src\HyperPlot.Testing\HyperPlot.Testing.csproj" />
   </ItemGroup>
   <ItemGroup>
-    <!-- The PNG decoder written apart from the writer, shared with Core's tests. -->
-    <Compile Include="..\HyperPlot.Core.Tests\Rendering\PngDecoder.cs" Link="PngDecoder.cs" />
+    <!-- The scene of HelloPlot, drawn for its golden image with 1e5 points (design §10.1). -->
+    <Compile Include="..\..\samples\Shared\PlotArea.cs" Link="Golden\PlotArea.cs" />
+    <Compile Include="..\..\samples\Shared\HelloScene.cs" Link="Golden\HelloScene.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" />

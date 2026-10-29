@@ -12,6 +12,8 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\HyperPlot.Core\HyperPlot.Core.csproj" />
+    <!-- The PNG decoder, written apart from Core's writer (design §10.1). -->
+    <ProjectReference Include="..\..\src\HyperPlot.Testing\HyperPlot.Testing.csproj" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" />
