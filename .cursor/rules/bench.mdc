@@ -90,6 +90,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 - A second run of a path that keeps the last item it made puts another item between the two runs, or it reads the cache.
 - A gain inside the spread is reverted, not shipped with other changes. A change tried for speed and not kept is reported with its measurement, so that it is not tried again.
 - A design that names a technique for its speed is measured before the design PR says so. A prototype in a scratch project is enough.
+- An Issue that plans a comparison with a recorded figure names the scene as the record has it (data size, tool, viewport), read from the record. Issue #85 named 1e9 points for B1's M4 figure, which is BenchmarkDotNet's 1e7-point scene.
 - A measurement that a design or an Issue plans states what it expects before it runs, the worst case and the practical range, so that the result can be judged.
 - Named baselines: one per milestone, recorded with the commit, the command, and the data generator's seed. A measurement quoted in an ADR, a comment, or a PR is recorded once and quoted from there.
 - Do not add SIMD, caching, pooling, or unsafe code for speed unless a measurement shows the path is the bottleneck.
