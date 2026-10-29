@@ -10,6 +10,7 @@ Grill (when the design branches) → Issue → branch → work → PR → human 
 ```
 
 1. Grill when the API, the meaning, or a roadmap boundary branches. Skill: `.agents/skills/grilling/SKILL.md`. Skip it when the Issue already has acceptance text and `docs/design.ja.md` settles the question.
+   - A question or a recommendation that describes existing code (a sample's data, its size, a scene) is written after reading that code, in the same turn. PR #67's Q7 called `HelloPlot` a random walk at 1,920 × 1,080 from memory; it draws sines with noise and a gap of NaN at 1,280 × 720, and the owner had to answer again.
 2. One Issue is one PR. Create the Issue from a template in `.github/ISSUE_TEMPLATE/`. Blank issues are off.
 3. A change to the meaning of the design is a `design` Issue that updates `docs/design.ja.md` before any implementation Issue (`.cursor/rules/design-docs.mdc`). A change to a requirement updates `docs/requirements.ja.md` in the same way, first.
    - A design PR lists, in its body, each item of the Issue's Decision next to the file and section that now says it. PR #35 left Decision 7 (the scratch NativeAOT publish) in no file, and the review found it.
