@@ -133,6 +133,41 @@ public sealed class M4OriginTests
         Assert.Equal(Reference.M4(farDifferences, floatValues, view, M4Gaps.Break), Points(points, result));
     }
 
+    /// <summary>
+    /// Before a stored X column's statistics are computed, M4 finds the boundaries by a search over the elements in the same
+    /// differences, so its points are those of the exact brute force, marked provisional (design §5.5.1).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A Column&lt;long&gt; X of 2026's ticks 10 apart with no statistics computed, over a built pyramid of float Y.
+    ///
+    /// Steps:
+    /// - Extract a view of 3,000 ticks, 1,920 pixel columns, in an origin inside it.
+    ///
+    /// Expected:
+    /// - The result is provisional; its points equal the brute force over the exact differences.
+    /// </remarks>
+    [Fact]
+    public void Extract_NoXStatistics_SearchesInDifferences()
+    {
+        var random = new Random(73);
+        using var pool = new PlotWorkerPool(2);
+        using var y = Column.Wrap(Enumerable.Range(0, Length).Select(_ => (float)random.NextDouble()).ToArray());
+        using var pyramid = MinMaxPyramidTests.Build(pool, y);
+        var ticks = Enumerable.Range(0, Length).Select(i => Ticks2026 + (10L * i)).ToArray();
+        using var x = Column.Wrap(ticks);
+        const long origin = Ticks2026 + 7_000_001;
+        var boundaries = Enumerable.Range(0, Width + 1).Select(k => k * (3000.0 / Width)).ToArray();
+        var points = new M4Point[M4.MaxPointCount(Width)];
+
+        var result = M4.Extract(x, pyramid, new ScaleOrigin(origin, 0), boundaries, points);
+
+        Assert.True(result.IsProvisional);
+        var differences = ticks.Select(v => (double)(v - origin)).ToArray();
+        var values = Enumerable.Range(0, Length).Select(i => (double)y.GetValue(i)).ToArray();
+        Assert.Equal(Reference.M4(differences, values, boundaries, M4Gaps.Break), Points(points, result));
+    }
+
     /// <summary>The pool extracts each series in the batch's origins as M4.Extract does alone (design §5.5.1).</summary>
     /// <remarks>
     /// Preconditions:

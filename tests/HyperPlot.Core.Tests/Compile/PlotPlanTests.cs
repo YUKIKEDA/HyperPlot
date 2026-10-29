@@ -460,7 +460,8 @@ public sealed class PlotPlanTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A plan that rendered the scene's spec and two specs of other x domains, twice each.
+    /// - A plan that rendered the scene's spec and two specs of other x domains, twice each. The two domains have other
+    ///   origins (100 and 50, design §3.6), so the switch moves the origin too.
     ///
     /// Steps:
     /// - Count the bytes this thread allocates over 20 more Render calls of the same spec, then over 20 that alternate the

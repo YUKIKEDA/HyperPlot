@@ -57,18 +57,32 @@ public sealed class ScaleSpaceTests
     /// - The origin 2026's .NET ticks + 1, which a double cannot hold.
     ///
     /// Steps:
-    /// - Take the differences of int and byte values, and of float and double values near the origin.
+    /// - Take the differences of 1,000 random int and byte values from random origins in [2^58, 2^62), and of float and
+    ///   double values near the origin.
     ///
     /// Expected:
-    /// - The int and byte ones equal the long ones; the floating-point ones equal (double)v − (double)o; (double)o is at most
+    /// - The int and byte ones equal the long ones, and (double)v − (double)o differs from them for some bytes; the
+    ///   floating-point ones equal (double)v − (double)o; (double)o is at most
     ///   64 (half of its ulp, 128) from o, and is not o.
     /// </remarks>
     [Fact]
     public void Difference_OtherTypes_FollowTheirFormulas()
     {
         const long origin = Ticks2026 + 1;
-        Assert.Equal(ScaleSpace.Difference(int.MinValue, origin), ScaleSpace.Difference<int>(int.MinValue, origin));
-        Assert.Equal(ScaleSpace.Difference(200L, -3), ScaleSpace.Difference<byte>(200, -3));
+        var random = new Random(59);
+        var differs = 0;
+        for (var i = 0; i < 1000; i++)
+        {
+            var far = random.NextInt64(1L << 58, 1L << 62);
+            var integer = random.Next(int.MinValue, int.MaxValue);
+            var small = (byte)random.Next(256);
+            Assert.Equal(ScaleSpace.Difference((long)integer, far), ScaleSpace.Difference<int>(integer, far));
+            Assert.Equal(ScaleSpace.Difference((long)small, far), ScaleSpace.Difference<byte>(small, far));
+            differs += (double)small - (double)far != ScaleSpace.Difference((long)small, far) ? 1 : 0;
+        }
+
+        // The floating-point formula would give other values for some of them, so the integer one is the one in use.
+        Assert.True(differs > 0, "No byte value told the two formulas apart.");
         Assert.Equal(6.39288288e17 - (double)origin, ScaleSpace.Difference(6.39288288e17, origin));
         Assert.Equal(6.39e17f - (double)origin, ScaleSpace.Difference(6.39e17f, origin));
         var rounding = BigInteger.Abs(new BigInteger((double)origin) - origin);
@@ -148,20 +162,28 @@ public sealed class ScaleSpaceTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A range at long.MinValue + 5 with lower -10.5; the doubles -1e300 and 0; the longs 2026's .NET ticks and that + 10^12 + 1.
+    /// - A range at long.MinValue + 5 with lower -10.5; the doubles -1e300 and 0, 1e300 and 2e300, 2^64 and 2^65, and 2^63
+    ///   and 2^64; the longs 2026's .NET ticks and that + 10^12 + 1.
     ///
     /// Steps:
     /// - Anchor the first; make a range of the doubles and of the longs.
     ///
     /// Expected:
     /// - The first's origin is long.MinValue with lower -5.5 and upper 6; the doubles' origin is long.MinValue with lower
-    ///   -1e300 - (double)long.MinValue; the longs' origin is the first long, its lower 0, and its upper exactly 10^12 + 1.
+    ///   -1e300 - (double)long.MinValue; the positive ones' origin is long.MaxValue (2^64 is the first shift that skips the
+    ///   Int128 sum, and 2^63 still takes it); the longs' origin is the first long, its lower 0, and its upper exactly 10^12 + 1.
     /// </remarks>
     [Fact]
     public void Ranges_PastLongAndOfIntegers_StartWhereTheDesignSays()
     {
         Assert.Equal(new ScaleRange(long.MinValue, -5.5, 6), new ScaleRange(long.MinValue + 5, -10.5, 1).Anchor());
         Assert.Equal(new ScaleRange(long.MinValue, -1e300 - (double)long.MinValue, -(double)long.MinValue), ScaleRange.FromDouble(-1e300, 0));
+        Assert.Equal(
+            new ScaleRange(long.MaxValue, 1e300 - (double)long.MaxValue, 2e300 - (double)long.MaxValue),
+            ScaleRange.FromDouble(1e300, 2e300)
+        );
+        Assert.Equal(long.MaxValue, ScaleRange.FromDouble(Math.ScaleB(1, 64), Math.ScaleB(1, 65)).Origin);
+        Assert.Equal(long.MaxValue, ScaleRange.FromDouble(Math.ScaleB(1, 63), Math.ScaleB(1, 64)).Origin);
         Assert.Equal(new ScaleRange(Ticks2026, 0, 1e12 + 1), ScaleRange.FromInteger(Ticks2026, Ticks2026 + 1_000_000_000_001));
         Assert.Equal(new ScaleRange(100, 0, 1900), ScaleRange.FromDouble(100, 2000));
         Assert.Equal(new ScaleRange(-1, 0.75, 1.5), ScaleRange.FromDouble(-0.25, 0.5));

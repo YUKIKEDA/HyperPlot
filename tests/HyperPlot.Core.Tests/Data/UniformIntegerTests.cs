@@ -11,7 +11,8 @@ public sealed class UniformIntegerTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A column from 2026's .NET ticks + 1 (odd, which a double cannot hold), step 10, length 1,000; a column of doubles.
+    /// - A column from 2026's .NET ticks + 1 (odd, which a double cannot hold), step 10, length 1,000; a column from the
+    ///   ticks + 61 with step 10; a column of doubles.
     ///
     /// Steps:
     /// - Read IsInteger, TryGetInteger, Start, Step, Last, and GetValue of the integer column; read IsInteger and TryGetInteger
@@ -19,8 +20,9 @@ public sealed class UniformIntegerTests
     ///
     /// Expected:
     /// - The integer column: IsInteger; TryGetInteger true with the exact start and step, whose start + 999 * step is the
-    ///   exact last value; Start, Last, and GetValue(i) equal the exact values converted to double. The column of doubles: not
-    ///   IsInteger; TryGetInteger false with 0 and 0.
+    ///   exact last value; Start, Last, and GetValue(i) equal the exact values converted to double. The + 61 column's
+    ///   GetValue(1) is + 71 rounded once (+ 128), which a fused multiply-add from the rounded start does not give. The column
+    ///   of doubles: not IsInteger; TryGetInteger false with 0 and 0.
     /// </remarks>
     [Fact]
     public void UniformInteger_Values_AreExactAndRoundOnceAsDoubles()
@@ -36,6 +38,12 @@ public sealed class UniformIntegerTests
         Assert.Equal((double)(Ticks2026 + 50), column.GetValue(5));
         Assert.NotEqual(Ticks2026, (long)column.Start);
 
+        // From 2026's ticks + 61 (a double rounds it down to the ticks), element 1 is + 71, which rounds up to + 128; a fused
+        // multiply-add from the rounded start would give + 10, which rounds down.
+        var crossing = Column.UniformInteger(Ticks2026 + 61, 10, 2);
+        Assert.Equal((double)(Ticks2026 + 71), crossing.GetValue(1));
+        Assert.NotEqual(Math.FusedMultiplyAdd(1, crossing.Step, crossing.Start), crossing.GetValue(1));
+
         var doubles = Column.Uniform(0.5, 0.25, 4);
         Assert.False(doubles.IsInteger);
         Assert.False(doubles.TryGetInteger(out start, out step));
@@ -49,11 +57,12 @@ public sealed class UniformIntegerTests
     ///
     /// Steps:
     /// - Make columns with step 0 and -1; length -1; start long.MaxValue - 5 and step 2 with length 4 (last value past
-    ///   long.MaxValue) and with length 3 (last value long.MaxValue - 1); length 0 at long.MaxValue.
+    ///   long.MaxValue), with length 3 (last value long.MaxValue - 1), and from long.MaxValue - 4 with length 3 (last value
+    ///   long.MaxValue); length 0 at long.MaxValue.
     ///
     /// Expected:
-    /// - ArgumentOutOfRangeException naming step, length, and length; the length 3 and the empty column are made, with the
-    ///   exact last value.
+    /// - ArgumentOutOfRangeException naming step, length, and length; the columns of length 3, the one ending at long.MaxValue
+    ///   included, and the empty column are made, with the exact last value.
     /// </remarks>
     [Fact]
     public void UniformInteger_OutOfRange_Throws()
@@ -64,6 +73,7 @@ public sealed class UniformIntegerTests
         Assert.Equal("length", Assert.Throws<ArgumentOutOfRangeException>(() => Column.UniformInteger(long.MaxValue - 5, 2, 4)).ParamName);
         var fits = Column.UniformInteger(long.MaxValue - 5, 2, 3);
         Assert.Equal(long.MaxValue - 1, fits.IntegerAt(2));
+        Assert.Equal(long.MaxValue, Column.UniformInteger(long.MaxValue - 4, 2, 3).IntegerAt(2));
         Assert.Equal(0, Column.UniformInteger(long.MaxValue, 1, 0).Length);
     }
 

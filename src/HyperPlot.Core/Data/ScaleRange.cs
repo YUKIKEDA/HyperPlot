@@ -33,11 +33,8 @@ internal readonly record struct ScaleRange(long Origin, double Lower, double Upp
     /// <returns>The range with its origin moved.</returns>
     public ScaleRange Anchor()
     {
+        // The ends are finite: a learned domain with an infinite end throws, and WithDomain checks its ends (design §4.2).
         var shift = Math.Floor(Lower);
-        if (!double.IsFinite(shift) || shift == 0)
-        {
-            return this;
-        }
 
         // A shift of 2^64 or more moves any origin past the range of long; a smaller one is exact in Int128.
         var target =
