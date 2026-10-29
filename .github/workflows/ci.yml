@@ -45,5 +45,19 @@ jobs:
           key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj', '.config/dotnet-tools.json') }}
           restore-keys: nuget-${{ runner.os }}-
 
+      # The WARP that draws the golden images; a baseline written on another version may differ (design §10.1).
+      - name: WARP version
+        if: runner.os == 'Windows'
+        run: (Get-Item "$env:SystemRoot\System32\d3d10warp.dll").VersionInfo.FileVersion
+
       - name: Gate
         run: ./build.ps1
+
+      # A golden image test that fails leaves the image drawn and the difference beside its binary (design §10.1).
+      - name: Upload golden image output
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: golden-output
+          path: tests/HyperPlot.Rendering.D3D11.Tests/bin/*/*/golden-output/
+          if-no-files-found: ignore

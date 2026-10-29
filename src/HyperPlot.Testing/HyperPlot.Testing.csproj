@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>HyperPlot.Testing</RootNamespace>
+    <Description>Test helpers for HyperPlot: comparing drawn images with baseline PNGs within a tolerance.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\HyperPlot.Core\HyperPlot.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HyperPlot.Testing.Tests" />
+    <!-- The PNG decoder, written apart from Core's writer, reads back what the PNG tests of Core and D3D11 write. -->
+    <InternalsVisibleTo Include="HyperPlot.Core.Tests" />
+    <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
+  </ItemGroup>
+</Project>

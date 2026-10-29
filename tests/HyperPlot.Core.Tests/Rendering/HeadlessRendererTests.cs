@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 

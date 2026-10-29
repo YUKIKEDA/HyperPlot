@@ -362,7 +362,7 @@ public sealed class D3D11BackendTests
 
         renderer.WritePng(stream);
 
-        var decoded = HyperPlot.Tests.PngDecoder.Decode(stream.ToArray());
+        var decoded = HyperPlot.Testing.PngDecoder.Decode(stream.ToArray());
         Assert.Equal((5, 3), (decoded.Width, decoded.Height));
         Assert.Equal(pixels, decoded.Pixels);
     }
