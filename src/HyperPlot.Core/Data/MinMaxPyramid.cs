@@ -117,6 +117,8 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     private readonly long[] _failedGenerations;
     private readonly int[] _passed;
     private readonly TaskCompletionSource _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Lock _waiterGate = new();
+    private TaskCompletionSource? _waiter;
     private int _firstPassRemaining;
     private long _rawReads;
     private long _version;
@@ -241,6 +243,44 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         _pool.Unregister(Work);
         FreeBlocks();
         _completion.TrySetException(new ObjectDisposedException(nameof(MinMaxPyramid<T>)));
+        EndWaitIfDone();
+    }
+
+    /// <summary>
+    /// Returns a task that ends when every chunk is built for the column's current values (design §3.3): at once when
+    /// <see cref="IsComplete"/> is true. Otherwise it requests every chunk built for an older generation,
+    /// and ends when <see cref="IsComplete"/> turns true. It ends with <see cref="Fault"/> when one is set, before the call or
+    /// during the wait, and with <see cref="ObjectDisposedException"/> when the pyramid is disposed. Calls during one wait
+    /// get the same task.
+    /// </summary>
+    internal Task WhenComplete()
+    {
+        if (Work.IsDisposed)
+        {
+            return Task.FromException(new ObjectDisposedException(nameof(MinMaxPyramid<T>)));
+        }
+
+        // A failed chunk is not queued again until its generation moves (rule 3), so a wait would not end.
+        if (Fault is { } fault)
+        {
+            return Task.FromException(fault);
+        }
+
+        if (IsComplete)
+        {
+            return Task.CompletedTask;
+        }
+
+        Task task;
+        lock (_waiterGate)
+        {
+            _waiter ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            task = _waiter.Task;
+        }
+
+        // A chunk may have been built between the check above and the waiter's start: look again once it is there.
+        EndWaitIfDone();
+        return task;
     }
 
     /// <summary>Gets a chunk's state, for tests: 0 unbuilt, 1 requested, 2 building, 3 done, 4 failed.</summary>
@@ -356,6 +396,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         var disposed = new ObjectDisposedException(nameof(PlotWorkerPool));
         Interlocked.CompareExchange(ref _fault, disposed, null);
         _completion.TrySetException(disposed);
+        EndWaitIfDone();
     }
 
     private int TryTake(bool requestedOnly)
@@ -421,6 +462,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             Interlocked.CompareExchange(ref _fault, exception, null);
             Volatile.Write(ref _states[chunk], Failed);
             CountFirstPass(chunk);
+            EndWaitIfDone();
             return;
         }
 
@@ -430,6 +472,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             Volatile.Write(ref _states[chunk], Done);
             Interlocked.Increment(ref _version);
             CountFirstPass(chunk);
+            EndWaitIfDone();
         }
         else
         {
@@ -592,6 +635,56 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         // The reads of the block happen before the second read of the sequence.
         Interlocked.MemoryBarrier();
         return Volatile.Read(ref _sequences[chunk]) == sequence;
+    }
+
+    /// <summary>
+    /// Ends the wait of <see cref="WhenComplete"/>, if one is open and the pyramid is disposed, faulted, or complete;
+    /// otherwise requests every chunk the wait needs, so that a chunk invalidated during the wait is built too.
+    /// </summary>
+    private void EndWaitIfDone()
+    {
+        if (Volatile.Read(ref _waiter) is null)
+        {
+            return;
+        }
+
+        Exception? error = Work.IsDisposed ? new ObjectDisposedException(nameof(MinMaxPyramid<T>)) : Fault;
+        if (error is null && !IsComplete)
+        {
+            RequestStale();
+            return;
+        }
+
+        TaskCompletionSource? waiter;
+        lock (_waiterGate)
+        {
+            waiter = _waiter;
+            _waiter = null;
+        }
+
+        if (error is null)
+        {
+            waiter?.TrySetResult();
+        }
+        else
+        {
+            waiter?.TrySetException(error);
+        }
+    }
+
+    /// <summary>
+    /// Requests every built chunk whose generation moved, as a read of it would. An unbuilt chunk needs no request: the workers
+    /// build it in order anyway. A failed chunk ends the wait through <see cref="Fault"/>.
+    /// </summary>
+    private void RequestStale()
+    {
+        for (var chunk = 0; chunk < _states.Length; chunk++)
+        {
+            if (Volatile.Read(ref _states[chunk]) == Done && Volatile.Read(ref _builtGenerations[chunk]) != Column.GetGeneration(chunk))
+            {
+                Request(chunk, Done);
+            }
+        }
     }
 
     private void Request(int chunk, int from)

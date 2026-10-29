@@ -55,7 +55,7 @@ public sealed class RenderList
     /// <exception cref="ArgumentOutOfRangeException">The width or the dash pattern is out of its range (design §5.1).</exception>
     public void DrawPolyline(ReadOnlySpan<Vector2> points, in LineStyle style)
     {
-        Validate(style);
+        ValidateStyle(style);
         if (style.Width == 0)
         {
             return;
@@ -111,7 +111,8 @@ public sealed class RenderList
         _polylines[_polylineCount++] = new PolylineRecord(style, first, _segmentCount - first, _clip, min.X, min.Y, max.X, max.Y);
     }
 
-    private static void Validate(in LineStyle style)
+    /// <summary>Throws unless a stroke is in range (design §5.1): what <see cref="DrawPolyline"/> and the spec's line layers check.</summary>
+    internal static void ValidateStyle(in LineStyle style)
     {
         if (!float.IsFinite(style.Width) || style.Width < 0)
         {

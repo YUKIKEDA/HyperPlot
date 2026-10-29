@@ -44,4 +44,20 @@ public sealed class UniformColumn : Column
 
         return Math.FusedMultiplyAdd(index, Step, Start);
     }
+
+    /// <inheritdoc />
+    internal override string KindName => nameof(UniformColumn);
+
+    /// <inheritdoc />
+    internal override bool TryGetRange(out double min, out double max)
+    {
+        (min, max) = (Start, Last);
+        return Length > 0;
+    }
+
+    /// <inheritdoc />
+    internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => null;
+
+    /// <inheritdoc />
+    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
 }
