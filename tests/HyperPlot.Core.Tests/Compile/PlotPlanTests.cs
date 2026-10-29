@@ -39,8 +39,8 @@ public sealed class PlotPlanTests
 
         var x = (Math.Min(10, scene.Xs[0]), Math.Max(10 + (0.5 * (Length - 1)), scene.Xs[^1]));
         var y = (Math.Min(Min(scene.A), Min(scene.B)), Math.Max(Max(scene.A), Max(scene.B)));
-        Assert.Equal(x, plan.XDomain);
-        Assert.Equal(y, plan.YDomain);
+        Assert.Equal(x, Ends(plan.XDomain));
+        Assert.Equal(y, Ends(plan.YDomain));
         Assert.Equal(2, list.Polylines.Length);
         AssertSameLines(scene.ByHand(pool, x, y), list);
     }
@@ -91,11 +91,13 @@ public sealed class PlotPlanTests
     /// Steps:
     /// - Render specs with a null Data, Layers, ScaleX, ScaleY, or layer; a default X; a Y of the other table; "t" as Y; the
     ///   derived layer and scale; an x domain of (1, 1) and a y domain of (2, 1); a width of -1; "down" as X; another
-    ///   decreasing column as X with the x domain given; a domain too narrow for 1,000 pixels.
+    ///   decreasing column as X with the x domain given; a domain too narrow for 1,000 pixels, [0.5, 0.5 + 1e-14], whose
+    ///   boundaries 1e-17 apart fall within one ulp of 0.5 (2^-53); and [1e15, 1e15 + 0.25], too narrow before row D2.
     ///
     /// Expected:
     /// - ArgumentNullException for the nulls; ArgumentException for the references, the kinds (naming the type), the domains
-    ///   (with the domain check's message), and the narrow domain (naming the domain and the width);
+    ///   (with the domain check's message), and the narrow domain (naming the domain as origin and differences, and the
+    ///   width); the domain far from 0 draws, with origin 1e15 and differences 0 and 0.25 (design §3.6);
     ///   ArgumentOutOfRangeException for the width; InvalidOperationException for the decreasing X, with the x domain learned
     ///   and with it given (no learning reads X, so only the wait for the X statistics lets M4 check it).
     /// </remarks>
@@ -148,10 +150,13 @@ public sealed class PlotPlanTests
         Throws<InvalidOperationException>(given, "non-decreasing");
 
         using var wide = new PlotPlan(pool, 1000, Height);
-        var narrow = good with { ScaleX = Scale.Linear().WithDomain(1e15, 1e15 + 0.25) };
+        var narrow = good with { ScaleX = Scale.Linear().WithDomain(0.5, 0.5 + 1e-14) };
         var exception = Assert.Throws<ArgumentException>(() => wide.Render(narrow));
-        Assert.Contains("[1000000000000000, 1000000000000000.2]", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"[0 + 0.5, 0 + {0.5 + 1e-14}]", exception.Message, StringComparison.Ordinal);
         Assert.Contains("1000 pixel columns", exception.Message, StringComparison.Ordinal);
+        var far = good with { ScaleX = Scale.Linear().WithDomain(1e15, 1e15 + 0.25) };
+        _ = wide.Render(far);
+        Assert.Equal(new ScaleRange(1_000_000_000_000_000, 0, 0.25), wide.XDomain);
     }
 
     /// <summary>
@@ -256,7 +261,7 @@ public sealed class PlotPlanTests
         using var wild = Column.Wrap(new[] { 1f, 2f, float.PositiveInfinity });
         var infinite = Line(Column.Uniform(0, 1, 3), wild);
 
-        Assert.Throws<ArgumentException>(() => plan.Render(spec with { ScaleX = Scale.Linear().WithDomain(1e15, 1e15 + 0.25) }));
+        Assert.Throws<ArgumentException>(() => plan.Render(spec with { ScaleX = Scale.Linear().WithDomain(0.5, 0.5 + 1e-14) }));
         AssertSameLines(fresh.Render(spec), plan.Render(spec));
         Assert.Throws<InvalidOperationException>(() => plan.Render(infinite));
         AssertSameLines(fresh.Render(spec), plan.Render(spec));
@@ -496,6 +501,58 @@ public sealed class PlotPlanTests
         Assert.Equal(extractions + 20, plan.Extractions);
     }
 
+    /// <summary>
+    /// The compile learns the domains of integer columns exactly, as an origin and differences: long ends compare as long, and
+    /// as double once a floating-point column comes in (design §4.2, row D2).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - X columns: a Column&lt;long&gt; of 2026's ticks + 1, + 11, + 21 (odd, which a double cannot hold); an integer uniform
+    ///   column from 2026's ticks + 3 with step 10^12 + 1; a Column&lt;double&gt; of 6.4e17 and 6.5e17. Y columns: a
+    ///   Column&lt;long&gt; of one value, 2026's ticks + 1, three times, and floats.
+    ///
+    /// Steps:
+    /// - Render the long X over the one-value Y; the uniform X; the two integer X in one plot; the long and the double X in one
+    ///   plot.
+    ///
+    /// Expected:
+    /// - The long X: origin at its minimum, differences 0 and exactly 20. The one-value Y: origin v - 1, differences 0.5 and
+    ///   1.5. The uniform X: origin at its start, differences 0 and exactly 2 * (10^12 + 1). The two integer X: origin at the
+    ///   long X's minimum, upper difference exactly the uniform X's last minus it. The long and the double X: the domain of
+    ///   the doubles 6.39288288e17 rounded from the long and 6.5e17, as FromDouble makes it.
+    /// </remarks>
+    [Fact]
+    public void Render_IntegerColumns_LearnExactDomains()
+    {
+        var ticks = 639_288_288_000_000_000L;
+        using var pool = new PlotWorkerPool(1);
+        using var longs = Column.Wrap(new[] { ticks + 1, ticks + 11, ticks + 21 });
+        using var level = Column.Wrap(new[] { ticks + 1, ticks + 1, ticks + 1 });
+        using var floats = Column.Wrap(new float[] { 1, 2, 3 });
+        double[] farValues = [6.4e17, 6.5e17, 6.5e17];
+        using var doubles = Column.Wrap(farValues);
+        var uniform = Column.UniformInteger(ticks + 3, 1_000_000_000_001, 3);
+        var table = DataTable.Create().Add("x", longs).Add("v", level).Add("u", uniform).Add("f", floats).Add("d", doubles).Build();
+        using var plan = new PlotPlan(pool, Width, Height);
+
+        _ = plan.Render(Plot.Create(table).Line(table.Col<long>("x"), table.Col<long>("v")).Build());
+        Assert.Equal(new ScaleRange(ticks + 1, 0, 20), plan.XDomain);
+        Assert.Equal(new ScaleRange(ticks, 0.5, 1.5), plan.YDomain);
+
+        _ = plan.Render(Plot.Create(table).Line(table.Col<long>("u"), table.Col<float>("f")).Build());
+        Assert.Equal(new ScaleRange(ticks + 3, 0, 2_000_000_000_002), plan.XDomain);
+
+        _ = plan.Render(
+            Plot.Create(table).Line(table.Col<long>("x"), table.Col<float>("f")).Line(table.Col<long>("u"), table.Col<float>("f")).Build()
+        );
+        Assert.Equal(new ScaleRange(ticks + 1, 0, 2_000_000_000_004), plan.XDomain);
+
+        _ = plan.Render(
+            Plot.Create(table).Line(table.Col<long>("x"), table.Col<float>("f")).Line(table.Col<double>("d"), table.Col<float>("f")).Build()
+        );
+        Assert.Equal(ScaleRange.FromDouble(ticks + 1, 6.5e17), plan.XDomain);
+    }
+
     internal static void AssertSameLines(RenderList expected, RenderList actual)
     {
         Assert.Equal(expected.Polylines.ToArray(), actual.Polylines.ToArray());
@@ -507,8 +564,11 @@ public sealed class PlotPlanTests
         using var y = Column.Wrap(values);
         using var plan = new PlotPlan(pool, Width, Height);
         _ = plan.Render(Line(x, y));
-        return (plan.XDomain, plan.YDomain);
+        return (Ends(plan.XDomain), Ends(plan.YDomain));
     }
+
+    /// <summary>Returns a domain's ends as doubles: origin plus difference, exact for the small values of these tests.</summary>
+    private static (double Min, double Max) Ends(ScaleRange domain) => (domain.Origin + domain.Lower, domain.Origin + domain.Upper);
 
     private static PlotSpec Line(Column x, Column y)
     {
@@ -519,6 +579,7 @@ public sealed class PlotPlanTests
     private static ColumnRef Ref(DataTable table, int index) =>
         table.GetColumn(index) switch
         {
+            UniformColumn { IsInteger: true } or Column<long> => table.Col<long>(table.GetName(index)),
             UniformColumn => table.Col<double>(table.GetName(index)),
             Column<double> => table.Col<double>(table.GetName(index)),
             _ => table.Col<float>(table.GetName(index)),
@@ -647,13 +708,18 @@ public sealed class PlotPlanTests
             M4Point[][] outputs = [new M4Point[M4.MaxPointCount(Width)], new M4Point[M4.MaxPointCount(Width)]];
             _ = batch.Add(T, a, outputs[0]);
             _ = batch.Add(XsColumn, b, outputs[1]);
+
+            // The plan's origins are the floors of the lower ends, and its domains the differences from them (design §3.6).
+            var origin = new ScaleOrigin((long)Math.Floor(x.Min), (long)Math.Floor(y.Min));
+            var (xLower, xUpper) = (x.Min - origin.X, x.Max - origin.X);
+            var (yLower, yUpper) = (y.Min - origin.Y, y.Max - origin.Y);
             var boundaries = new double[Width + 1];
             for (var k = 0; k <= Width; k++)
             {
-                boundaries[k] = x.Min + ((x.Max - x.Min) * k / Width);
+                boundaries[k] = xLower + ((xUpper - xLower) * k / Width);
             }
 
-            pool.Extract(batch, boundaries);
+            pool.Extract(batch, origin, boundaries);
             var list = new RenderList();
             var styles = Spec().Layers.Cast<LineLayerSpec>().Select(l => l.Style).ToArray();
             for (var s = 0; s < 2; s++)
@@ -668,8 +734,8 @@ public sealed class PlotPlanTests
 
                     points.Add(
                         new Vector2(
-                            (float)((point.X - x.Min) / (x.Max - x.Min) * Width),
-                            (float)(Height - ((point.Y - y.Min) / (y.Max - y.Min) * Height))
+                            (float)((point.X - xLower) / (xUpper - xLower) * Width),
+                            (float)(Height - ((point.Y - yLower) / (yUpper - yLower) * Height))
                         )
                     );
                 }

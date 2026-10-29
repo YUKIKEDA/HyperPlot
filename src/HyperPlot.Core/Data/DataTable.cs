@@ -50,7 +50,8 @@ public sealed class DataTable
 
     /// <summary>
     /// Returns a typed reference to a column by its name, compared ordinally (case matters). A <see cref="Column{T}"/> is
-    /// referred to with its own <typeparamref name="T"/>, and a <see cref="UniformColumn"/> with <see cref="double"/>.
+    /// referred to with its own <typeparamref name="T"/>, and a <see cref="UniformColumn"/> with <see cref="double"/>, or with
+    /// <see cref="long"/> when it is <see cref="UniformColumn.IsInteger"/>.
     /// </summary>
     /// <typeparam name="T">The element type of the column.</typeparam>
     /// <param name="name">The column's name.</param>
@@ -68,7 +69,8 @@ public sealed class DataTable
         }
 
         var column = _columns[index];
-        if (column is not Column<T> && !(column is UniformColumn && typeof(T) == typeof(double)))
+        var uniform = column is UniformColumn { IsInteger: var integer } && typeof(T) == (integer ? typeof(long) : typeof(double));
+        if (column is not Column<T> && !uniform)
         {
             throw new ArgumentException($"The column \"{name}\" is a {column.KindName}, not a column of {typeof(T).Name}.", nameof(name));
         }

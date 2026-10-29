@@ -89,7 +89,7 @@ public sealed class M4Tests
         var x = Column.Uniform(0, 1, y.Length);
         var points = new M4Point[M4.MaxPointCount(4)];
 
-        var result = M4.Extract(x, pyramid, [1, 5, 11, 16, 19], points);
+        var result = M4.Extract(x, pyramid, default, [1, 5, 11, 16, 19], points);
 
         Assert.False(result.IsProvisional);
         Assert.Equal(
@@ -111,7 +111,7 @@ public sealed class M4Tests
             points[..result.Count].Select(p => (p.Index, p.Roles, p.BreakBefore))
         );
 
-        var connected = M4.Extract(x, pyramid, [1, 11], points, new M4Options(M4Gaps.Connect));
+        var connected = M4.Extract(x, pyramid, default, [1, 11], points, new M4Options(M4Gaps.Connect));
         Assert.Equal(
             [(0L, M4Roles.Before), (1L, M4Roles.First), (2L, M4Roles.Max), (9L, M4Roles.Min), (10L, M4Roles.Last), (11L, M4Roles.After)],
             points[..connected.Count].Select(p => (p.Index, p.Roles))
@@ -144,17 +144,17 @@ public sealed class M4Tests
         using var decreasing = Column.Wrap(new double[] { 0, 1, 2, 3, 4, 5, 7, 6 });
         var points = new M4Point[M4.MaxPointCount(2)];
 
-        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [1], points));
-        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [0, double.NaN, 4], points));
-        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [0, double.PositiveInfinity], points));
-        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [0, 2, 2], points));
-        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, [0, 2, 4], points.AsSpan(0, points.Length - 1)));
-        Assert.Throws<ArgumentException>(() => M4.Extract(Column.Uniform(0, 1, 7), pyramid, [0, 2, 4], points));
-        Assert.True(M4.Extract(decreasing, pyramid, [0, 2, 4], points).IsProvisional);
+        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, default, [1], points));
+        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, default, [0, double.NaN, 4], points));
+        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, default, [0, double.PositiveInfinity], points));
+        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, default, [0, 2, 2], points));
+        Assert.Throws<ArgumentException>(() => M4.Extract(x, pyramid, default, [0, 2, 4], points.AsSpan(0, points.Length - 1)));
+        Assert.Throws<ArgumentException>(() => M4.Extract(Column.Uniform(0, 1, 7), pyramid, default, [0, 2, 4], points));
+        Assert.True(M4.Extract(decreasing, pyramid, default, [0, 2, 4], points).IsProvisional);
         Eventually.Completes(pool.PrecomputeStats(decreasing));
-        Assert.Throws<InvalidOperationException>(() => M4.Extract(decreasing, pyramid, [0, 2, 4], points));
+        Assert.Throws<InvalidOperationException>(() => M4.Extract(decreasing, pyramid, default, [0, 2, 4], points));
         pyramid.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => M4.Extract(x, pyramid, [0, 2, 4], points));
+        Assert.Throws<ObjectDisposedException>(() => M4.Extract(x, pyramid, default, [0, 2, 4], points));
     }
 
     private static void CheckViews<T>(string pattern, M4Gaps gaps)
@@ -189,10 +189,10 @@ public sealed class M4Tests
                 var points = new M4Point[M4.MaxPointCount(boundaries.Length - 1)];
                 var result = x switch
                 {
-                    UniformColumn uniform => M4.Extract(uniform, pyramid, boundaries, points, new M4Options(gaps)),
-                    Column<double> doubles => M4.Extract(doubles, pyramid, boundaries, points, new M4Options(gaps)),
-                    Column<long> longs => M4.Extract(longs, pyramid, boundaries, points, new M4Options(gaps)),
-                    Column<float> floats => M4.Extract(floats, pyramid, boundaries, points, new M4Options(gaps)),
+                    UniformColumn uniform => M4.Extract(uniform, pyramid, default, boundaries, points, new M4Options(gaps)),
+                    Column<double> doubles => M4.Extract(doubles, pyramid, default, boundaries, points, new M4Options(gaps)),
+                    Column<long> longs => M4.Extract(longs, pyramid, default, boundaries, points, new M4Options(gaps)),
+                    Column<float> floats => M4.Extract(floats, pyramid, default, boundaries, points, new M4Options(gaps)),
                     _ => throw new InvalidOperationException(),
                 };
 

@@ -22,9 +22,9 @@ internal sealed class PlotPlan : IDisposable
     private LayerPlan[] _layers = [];
     private PlotSpec? _spec;
 
-    // NaN until boundaries are made for a domain: no domain equals it.
-    private (double Min, double Max) _x = (double.NaN, double.NaN);
-    private (double Min, double Max) _y;
+    // ScaleRange.None until boundaries are made for a domain: no domain equals it.
+    private ScaleRange _x = ScaleRange.None;
+    private ScaleRange _y;
 
     /// <summary>Initializes a new instance of the <see cref="PlotPlan"/> class for a target of a size, in physical pixels.</summary>
     internal PlotPlan(PlotWorkerPool pool, int width, int height)
@@ -50,11 +50,11 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Gets the pyramids the plan holds, one a Y column. Tests only.</summary>
     internal IReadOnlyCollection<PlotPyramid> Pyramids => _pyramids.Values;
 
-    /// <summary>Gets the x domain of the last extraction. Tests only.</summary>
-    internal (double Min, double Max) XDomain => _x;
+    /// <summary>Gets the x domain of the last extraction, as an origin and differences (design §3.6). Tests only.</summary>
+    internal ScaleRange XDomain => _x;
 
     /// <summary>Gets the y domain of the last extraction. Tests only.</summary>
-    internal (double Min, double Max) YDomain => _y;
+    internal ScaleRange YDomain => _y;
 
     /// <summary>
     /// Compiles a spec against the last one drawn, waits until its pyramids and X statistics are built for the columns'
@@ -105,7 +105,7 @@ internal sealed class PlotPlan : IDisposable
                 MakeBoundaries(x);
             }
 
-            _pool.Extract(_batch, _boundaries);
+            _pool.Extract(_batch, new ScaleOrigin(_x.Origin, _y.Origin), _boundaries);
             Extractions++;
             foreach (var layer in _layers)
             {
@@ -243,19 +243,21 @@ internal sealed class PlotPlan : IDisposable
         before.Id == after.Id || ((LinearScaleSpec)before).Domain == ((LinearScaleSpec)after).Domain;
 
     /// <summary>
-    /// Learns a linear domain (design §4.2): the one given, or the union of the ranges of every layer's column, from statistics
-    /// that the wait for the indexes had the workers compute.
+    /// Learns a linear domain (design §4.2) as an origin and differences (§3.6): the one given, or the union of the ranges of
+    /// every layer's column, from statistics that the wait for the indexes had the workers compute. Integer ends are compared
+    /// as <see cref="long"/> while every column is an integer column, and as <see cref="double"/> once a floating-point one
+    /// comes in.
     /// </summary>
-    private static (double Min, double Max) Learn(PlotSpec spec, ScaleSpec scale, bool ofX)
+    private static ScaleRange Learn(PlotSpec spec, ScaleSpec scale, bool ofX)
     {
         if (((LinearScaleSpec)scale).Domain is { } domain)
         {
-            return domain;
+            return ScaleRange.FromDouble(domain.Min, domain.Max);
         }
 
-        var min = double.PositiveInfinity;
-        var max = double.NegativeInfinity;
-        var found = false;
+        var (integerMin, integerMax) = (long.MaxValue, long.MinValue);
+        var (min, max) = (double.PositiveInfinity, double.NegativeInfinity);
+        var (found, integer) = (false, true);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
             var line = (LineLayerSpec)spec.Layers[i];
@@ -265,39 +267,52 @@ internal sealed class PlotPlan : IDisposable
                 continue;
             }
 
-            if (!double.IsFinite(low) || !double.IsFinite(high))
+            if (!double.IsFinite(low.Value) || !double.IsFinite(high.Value))
             {
                 throw new InvalidOperationException(
-                    $"The column \"{spec.Data.GetName(reference.Index)}\" holds {(double.IsFinite(low) ? high : low)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
+                    $"The column \"{spec.Data.GetName(reference.Index)}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
                 );
             }
 
-            (min, max, found) = (Math.Min(min, low), Math.Max(max, high), true);
+            integer &= low.IsInteger;
+            if (low.IsInteger)
+            {
+                (integerMin, integerMax) = (Math.Min(integerMin, low.Integer), Math.Max(integerMax, high.Integer));
+            }
+
+            (min, max, found) = (Math.Min(min, low.Value), Math.Max(max, high.Value), true);
         }
 
         if (!found)
         {
-            return (0, 1);
+            return ScaleRange.FromDouble(0, 1);
         }
 
-        return min == max ? (min - 0.5, max + 0.5) : (min, max);
+        if (!integer)
+        {
+            return min == max ? ScaleRange.FromDouble(min - 0.5, max + 0.5) : ScaleRange.FromDouble(min, max);
+        }
+
+        // One value v gives [v - 0.5, v + 0.5], taken as differences from v so that a v past 2^53 stays exact.
+        return integerMin == integerMax ? new ScaleRange(integerMin, -0.5, 0.5).Anchor() : ScaleRange.FromInteger(integerMin, integerMax);
     }
 
     /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over an x domain into the plan's buffer, or throws when they do not
-    /// increase in double (design §4.8). Allocates nothing, so that a new x domain costs no garbage.
+    /// Writes the W + 1 boundaries of the pixel columns over an x domain into the plan's buffer, as differences from its
+    /// origin, or throws when they do not increase in double (design §4.8). Allocates nothing, so that a new x domain costs no
+    /// garbage.
     /// </summary>
-    private void MakeBoundaries((double Min, double Max) domain)
+    private void MakeBoundaries(ScaleRange domain)
     {
         // Until the buffer holds this domain's boundaries, it holds no domain's.
-        _x = (double.NaN, double.NaN);
+        _x = ScaleRange.None;
         for (var k = 0; k <= _width; k++)
         {
-            _boundaries[k] = domain.Min + ((domain.Max - domain.Min) * k / _width);
+            _boundaries[k] = domain.Lower + ((domain.Upper - domain.Lower) * k / _width);
             if (k > 0 && !(_boundaries[k - 1] < _boundaries[k]))
             {
                 throw new ArgumentException(
-                    $"The x domain [{domain.Min}, {domain.Max}] is too narrow for {_width} pixel columns: their boundaries do not increase in double."
+                    $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] is too narrow for {_width} pixel columns: their boundaries do not increase in double."
                 );
             }
         }
@@ -378,9 +393,10 @@ internal sealed class PlotPlan : IDisposable
                     _points[count++] = new Vector2(float.NaN);
                 }
 
-                // (v − min) / (max − min) maps to [0, 1]; x runs left to right and y bottom to top (design §4.2).
-                var x = (point.X - _x.Min) / (_x.Max - _x.Min) * _width;
-                var y = _height - ((point.Y - _y.Min) / (_y.Max - _y.Min) * _height);
+                // (d(v) − lower) / (upper − lower) maps to [0, 1], in differences from the domain's origin; x runs left to right and y
+                // bottom to top (design §3.6, §4.2).
+                var x = (point.X - _x.Lower) / (_x.Upper - _x.Lower) * _width;
+                var y = _height - ((point.Y - _y.Lower) / (_y.Upper - _y.Lower) * _height);
                 _points[count++] = new Vector2((float)x, (float)y);
             }
 

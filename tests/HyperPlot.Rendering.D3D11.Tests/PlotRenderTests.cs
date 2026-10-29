@@ -164,13 +164,17 @@ public sealed class PlotRenderTests
                 };
             }
 
+            // The plan's origins are the floors of the lower ends, and its domains the differences from them (design §3.6).
+            var origin = new ScaleOrigin((long)Math.Floor(x.Min), (long)Math.Floor(y.Min));
+            var (xLower, xUpper) = (x.Min - origin.X, x.Max - origin.X);
+            var (yLower, yUpper) = (y.Min - origin.Y, y.Max - origin.Y);
             var boundaries = new double[Width + 1];
             for (var k = 0; k <= Width; k++)
             {
-                boundaries[k] = x.Min + ((x.Max - x.Min) * k / Width);
+                boundaries[k] = xLower + ((xUpper - xLower) * k / Width);
             }
 
-            pool.Extract(batch, boundaries);
+            pool.Extract(batch, origin, boundaries);
             var list = new RenderList();
             for (var s = 0; s < layers.Length; s++)
             {
@@ -184,8 +188,8 @@ public sealed class PlotRenderTests
 
                     points.Add(
                         new Vector2(
-                            (float)((point.X - x.Min) / (x.Max - x.Min) * Width),
-                            (float)(Height - ((point.Y - y.Min) / (y.Max - y.Min) * Height))
+                            (float)((point.X - xLower) / (xUpper - xLower) * Width),
+                            (float)(Height - ((point.Y - yLower) / (yUpper - yLower) * Height))
                         )
                     );
                 }

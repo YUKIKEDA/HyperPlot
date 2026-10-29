@@ -176,14 +176,29 @@ public abstract class Column
     /// <returns>The column.</returns>
     public static UniformColumn Uniform(double start, double step, long length) => new(start, step, length);
 
+    /// <summary>
+    /// Makes an evenly spaced column of integers that holds no values: element <c>i</c> is <c>start + i * step</c>, exact in
+    /// <see cref="long"/> (design §3.1). For date-time ticks or nanoseconds, whose values pass 2^53, where a
+    /// <see cref="double"/> start would round. Referenced as <c>Col&lt;long&gt;</c>.
+    /// </summary>
+    /// <param name="start">The first value.</param>
+    /// <param name="step">The difference between neighbors. Greater than 0.</param>
+    /// <param name="length">The number of elements. The last value must fit in a <see cref="long"/>.</param>
+    /// <returns>The column.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="step"/> is not greater than 0, <paramref name="length"/> is negative, or the last value does not fit
+    /// in a <see cref="long"/>.
+    /// </exception>
+    public static UniformColumn UniformInteger(long start, long step, long length) => new(start, step, length);
+
     /// <summary>Gets what kind of column this is, for messages: <c>UniformColumn</c> or <c>Column&lt;Single&gt;</c>.</summary>
     internal abstract string KindName { get; }
 
     /// <summary>
     /// Returns the range of the values that are not NaN, from statistics a worker computed (design §4.2): false when there is
-    /// none. Computes the statistics of a chunk that has none yet.
+    /// none. Computes the statistics of a chunk that has none yet. An integer column's ends are exact.
     /// </summary>
-    internal abstract bool TryGetRange(out double min, out double max);
+    internal abstract bool TryGetRange(out ScaleEnd min, out ScaleEnd max);
 
     /// <summary>
     /// Starts computing the chunk statistics that M4 needs of this column as X (design §5.5.1), or returns null when they are

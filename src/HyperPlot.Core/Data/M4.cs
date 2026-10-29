@@ -2,7 +2,7 @@ using System.Numerics;
 
 namespace HyperPlot;
 
-/// <summary>How <see cref="M4.Extract{TX, TY}(Column{TX}, MinMaxPyramid{TY}, ReadOnlySpan{double}, Span{M4Point}, M4Options)"/> treats NaN (design §5.5.1).</summary>
+/// <summary>How <see cref="M4.Extract{TX, TY}(Column{TX}, MinMaxPyramid{TY}, ScaleOrigin, ReadOnlySpan{double}, Span{M4Point}, M4Options)"/> treats NaN (design §5.5.1).</summary>
 public enum M4Gaps
 {
     /// <summary>A NaN breaks the line: the point after it does not connect to the point before it (requirement D-7).</summary>
@@ -60,10 +60,13 @@ public readonly struct M4Point
     /// <summary>Gets the position of the element in the Y column.</summary>
     public long Index { get; }
 
-    /// <summary>Gets the X of the element, in the units of the X column.</summary>
+    /// <summary>Gets the X of the element: its difference from <see cref="ScaleOrigin.X"/>, in the units of the X column (design §3.6).</summary>
     public double X { get; }
 
-    /// <summary>Gets the Y. In a provisional result, the Y of a minimum or a maximum may not be the value at <see cref="Index"/>.</summary>
+    /// <summary>
+    /// Gets the Y: its difference from <see cref="ScaleOrigin.Y"/> (design §3.6). In a provisional result, the Y of a minimum
+    /// or a maximum may not be the value at <see cref="Index"/>.
+    /// </summary>
     public double Y { get; }
 
     /// <summary>Gets the roles of the point.</summary>
@@ -121,8 +124,13 @@ public static class M4
     /// the column is not checked.
     /// </param>
     /// <param name="y">The pyramid over the Y column.</param>
+    /// <param name="origin">
+    /// The origins that the boundaries are given in and the points are written in (design §3.6). With 0, a floating-point
+    /// value is its own difference.
+    /// </param>
     /// <param name="boundaries">
-    /// The W + 1 pixel-column boundaries in X units: finite and strictly increasing. Pixel column k is [b_k, b_k+1).
+    /// The W + 1 pixel-column boundaries in X units, as differences from <see cref="ScaleOrigin.X"/>: finite and strictly
+    /// increasing. Pixel column k is [b_k, b_k+1).
     /// </param>
     /// <param name="destination">Where the points go: at least <see cref="MaxPointCount(int)"/> of W.</param>
     /// <param name="options">How NaN is treated.</param>
@@ -130,6 +138,7 @@ public static class M4
     public static M4Result Extract<TX, TY>(
         Column<TX> x,
         MinMaxPyramid<TY> y,
+        ScaleOrigin origin,
         ReadOnlySpan<double> boundaries,
         Span<M4Point> destination,
         M4Options options = default
@@ -149,8 +158,8 @@ public static class M4
             throw new InvalidOperationException("The X column must be non-decreasing and hold no NaN.");
         }
 
-        var source = new ColumnX<TX>(x);
-        var result = Run(ref source, y, boundaries, destination, options.Gaps);
+        var source = new ColumnX<TX>(x, origin.X);
+        var result = Run(ref source, y, origin.Y, boundaries, destination, options.Gaps);
         return statsReady ? result : new M4Result(result.Count, isProvisional: true);
     }
 
@@ -158,8 +167,13 @@ public static class M4
     /// <typeparam name="TY">The element type of the Y column.</typeparam>
     /// <param name="x">The X column, as long as the Y column.</param>
     /// <param name="y">The pyramid over the Y column.</param>
+    /// <param name="origin">
+    /// The origins that the boundaries are given in and the points are written in (design §3.6). With 0, a floating-point
+    /// value is its own difference.
+    /// </param>
     /// <param name="boundaries">
-    /// The W + 1 pixel-column boundaries in X units: finite and strictly increasing. Pixel column k is [b_k, b_k+1).
+    /// The W + 1 pixel-column boundaries in X units, as differences from <see cref="ScaleOrigin.X"/>: finite and strictly
+    /// increasing. Pixel column k is [b_k, b_k+1).
     /// </param>
     /// <param name="destination">Where the points go: at least <see cref="MaxPointCount(int)"/> of W.</param>
     /// <param name="options">How NaN is treated.</param>
@@ -167,6 +181,7 @@ public static class M4
     public static M4Result Extract<TY>(
         UniformColumn x,
         MinMaxPyramid<TY> y,
+        ScaleOrigin origin,
         ReadOnlySpan<double> boundaries,
         Span<M4Point> destination,
         M4Options options = default
@@ -176,8 +191,8 @@ public static class M4
         ArgumentNullException.ThrowIfNull(x);
         ArgumentNullException.ThrowIfNull(y);
         Validate(x, y, boundaries, destination);
-        var source = new UniformX(x);
-        return Run(ref source, y, boundaries, destination, options.Gaps);
+        var source = new UniformX(x, origin.X);
+        return Run(ref source, y, origin.Y, boundaries, destination, options.Gaps);
     }
 
     /// <summary>Throws unless there are at least 2 boundaries, finite and strictly increasing (design §5.5.1).</summary>
@@ -216,6 +231,7 @@ public static class M4
     private static M4Result Run<TSource, TY>(
         ref TSource x,
         MinMaxPyramid<TY> y,
+        long yOrigin,
         ReadOnlySpan<double> boundaries,
         Span<M4Point> destination,
         M4Gaps gaps
@@ -233,7 +249,7 @@ public static class M4
             var before = gaps == M4Gaps.Break ? start - 1 : Known(y.FindNumber(0, start, fromEnd: true, ref provisional), start - 1);
             if (before >= 0)
             {
-                writer.Emit(before, x.ValueAt(before), double.CreateTruncating(column.GetValue(before)), M4Roles.Before);
+                writer.Emit(before, x.ValueAt(before), ScaleSpace.Difference(column.GetValue(before), yOrigin), M4Roles.Before);
             }
         }
 
@@ -246,7 +262,7 @@ public static class M4
             {
                 for (var i = start; i < end; i++)
                 {
-                    writer.Emit(i, x.ValueAt(i), double.CreateTruncating(column.GetValue(i)), M4Roles.Raw);
+                    writer.Emit(i, x.ValueAt(i), ScaleSpace.Difference(column.GetValue(i), yOrigin), M4Roles.Raw);
                 }
             }
             else if (count > 4)
@@ -268,12 +284,12 @@ public static class M4
                     // Only chunks with no statistics yet: the minimum and maximum are unknown, and first and last stand alone.
                     if (first >= 0)
                     {
-                        writer.Emit(first, x.ValueAt(first), double.CreateTruncating(column.GetValue(first)), M4Roles.First);
+                        writer.Emit(first, x.ValueAt(first), ScaleSpace.Difference(column.GetValue(first), yOrigin), M4Roles.First);
                     }
 
                     if (last >= 0)
                     {
-                        writer.Emit(last, x.ValueAt(last), double.CreateTruncating(column.GetValue(last)), M4Roles.Last);
+                        writer.Emit(last, x.ValueAt(last), ScaleSpace.Difference(column.GetValue(last), yOrigin), M4Roles.Last);
                     }
                 }
                 else
@@ -281,10 +297,10 @@ public static class M4
                     // A provisional range may hold a value that the column's elements do not; the provisional points stand in.
                     first = first < 0 ? range.MinIndex : first;
                     last = last < 0 ? range.MaxIndex : last;
-                    candidates[0] = new Candidate(first, double.CreateTruncating(column.GetValue(first)), M4Roles.First);
-                    candidates[1] = new Candidate(range.MinIndex, double.CreateTruncating(range.Min), M4Roles.Min);
-                    candidates[2] = new Candidate(range.MaxIndex, double.CreateTruncating(range.Max), M4Roles.Max);
-                    candidates[3] = new Candidate(last, double.CreateTruncating(column.GetValue(last)), M4Roles.Last);
+                    candidates[0] = new Candidate(first, ScaleSpace.Difference(column.GetValue(first), yOrigin), M4Roles.First);
+                    candidates[1] = new Candidate(range.MinIndex, ScaleSpace.Difference(range.Min, yOrigin), M4Roles.Min);
+                    candidates[2] = new Candidate(range.MaxIndex, ScaleSpace.Difference(range.Max, yOrigin), M4Roles.Max);
+                    candidates[3] = new Candidate(last, ScaleSpace.Difference(column.GetValue(last), yOrigin), M4Roles.Last);
                     SortByIndex(candidates);
                     foreach (var candidate in candidates)
                     {
@@ -301,7 +317,7 @@ public static class M4
             var after = gaps == M4Gaps.Break ? start : Known(y.FindNumber(start, length, fromEnd: false, ref provisional), start);
             if (after >= 0)
             {
-                writer.Emit(after, x.ValueAt(after), double.CreateTruncating(column.GetValue(after)), M4Roles.After);
+                writer.Emit(after, x.ValueAt(after), ScaleSpace.Difference(column.GetValue(after), yOrigin), M4Roles.After);
             }
         }
 
@@ -330,22 +346,23 @@ public static class M4
     /// <summary>The X of a series: its value at an element, and the position of a boundary (design §5.5.1).</summary>
     private interface IXSource
     {
-        /// <summary>Returns x(i) as a <see cref="double"/>.</summary>
+        /// <summary>Returns d(x(i)), the difference of x(i) from the X origin (design §3.6).</summary>
         /// <param name="index">The element.</param>
         /// <returns>The X of the element.</returns>
         double ValueAt(long index);
 
-        /// <summary>Returns the least i with x(i) ≥ <paramref name="boundary"/>, or the length when there is none.</summary>
-        /// <param name="boundary">The boundary, in X units.</param>
+        /// <summary>Returns the least i with d(x(i)) ≥ <paramref name="boundary"/>, or the length when there is none.</summary>
+        /// <param name="boundary">The boundary, as a difference from the X origin.</param>
         /// <returns>The position of the boundary.</returns>
         long LowerBound(double boundary);
     }
 
     private readonly record struct Candidate(long Index, double Y, M4Roles Roles);
 
-    private readonly struct UniformX(UniformColumn column) : IXSource
+    private readonly struct UniformX(UniformColumn column, long origin) : IXSource
     {
-        public double ValueAt(long index) => column.GetValue(index);
+        public double ValueAt(long index) =>
+            column.IsInteger ? ScaleSpace.Difference(column.IntegerAt(index), origin) : column.GetValue(index) - origin;
 
         public long LowerBound(double boundary)
         {
@@ -355,18 +372,18 @@ public static class M4
                 return 0;
             }
 
-            // The division and GetValue's fused multiply-add round differently; the guess is corrected against GetValue.
-            var guess = Math.Ceiling((boundary - column.Start) / column.Step);
+            // The division and the differences round differently; the guess is corrected against ValueAt.
+            var guess = Math.Ceiling((boundary - ValueAt(0)) / column.Step);
             var index =
                 guess <= 0 ? 0
                 : guess >= length ? length
                 : (long)guess;
-            while (index > 0 && column.GetValue(index - 1) >= boundary)
+            while (index > 0 && ValueAt(index - 1) >= boundary)
             {
                 index--;
             }
 
-            while (index < length && column.GetValue(index) < boundary)
+            while (index < length && ValueAt(index) < boundary)
             {
                 index++;
             }
@@ -375,10 +392,10 @@ public static class M4
         }
     }
 
-    private readonly struct ColumnX<TX>(Column<TX> column) : IXSource
+    private readonly struct ColumnX<TX>(Column<TX> column, long origin) : IXSource
         where TX : unmanaged, INumber<TX>
     {
-        public double ValueAt(long index) => double.CreateTruncating(column.GetValue(index));
+        public double ValueAt(long index) => ScaleSpace.Difference(column.GetValue(index), origin);
 
         public long LowerBound(double boundary)
         {
@@ -393,7 +410,7 @@ public static class M4
                     return SearchElements(boundary);
                 }
 
-                if (double.CreateTruncating(stats.Last) >= boundary)
+                if (ScaleSpace.Difference(stats.Last, origin) >= boundary)
                 {
                     high = middle;
                 }
@@ -414,7 +431,7 @@ public static class M4
             while (first < last)
             {
                 var middle = (first + last) >>> 1;
-                if (double.CreateTruncating(values[middle]) >= boundary)
+                if (ScaleSpace.Difference(values[middle], origin) >= boundary)
                 {
                     last = middle;
                 }
@@ -435,7 +452,7 @@ public static class M4
             while (first < last)
             {
                 var middle = first + ((last - first) >>> 1);
-                if (double.CreateTruncating(column.GetValue(middle)) >= boundary)
+                if (ScaleSpace.Difference(column.GetValue(middle), origin) >= boundary)
                 {
                     last = middle;
                 }

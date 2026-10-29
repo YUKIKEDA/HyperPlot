@@ -145,7 +145,11 @@ public sealed class PlotWorkerPool : IDisposable
     /// chunks, and the caller takes jobs too, so the wait is at most one chunk a worker is building. Allocates nothing.
     /// </summary>
     /// <param name="batch">The series. One thread at a time extracts a batch; other batches may be extracted at once.</param>
-    /// <param name="boundaries">The W + 1 boundaries of the pixel columns, finite and strictly increasing, read by every series.</param>
+    /// <param name="origin">The origins of x and y that every series answers in (design §3.6).</param>
+    /// <param name="boundaries">
+    /// The W + 1 boundaries of the pixel columns, as differences from the x origin: finite and strictly increasing, read by
+    /// every series.
+    /// </param>
     /// <exception cref="ArgumentNullException"><paramref name="batch"/> or <paramref name="boundaries"/> is null.</exception>
     /// <exception cref="ArgumentException">The boundaries are fewer than 2, not finite, or not strictly increasing; checked once, before any series.</exception>
     /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
@@ -155,7 +159,7 @@ public sealed class PlotWorkerPool : IDisposable
     /// of the failed series with the smallest number is thrown again as it was; <see cref="M4Batch.GetError(int)"/> tells
     /// each series' failure. If the pool is disposed during the call, the caller ends the jobs left.
     /// </remarks>
-    public void Extract(M4Batch batch, double[] boundaries)
+    public void Extract(M4Batch batch, ScaleOrigin origin, double[] boundaries)
     {
         ArgumentNullException.ThrowIfNull(batch);
         ArgumentNullException.ThrowIfNull(boundaries);
@@ -172,7 +176,7 @@ public sealed class PlotWorkerPool : IDisposable
             return;
         }
 
-        batch.Begin(boundaries);
+        batch.Begin(origin, boundaries);
         lock (_gate)
         {
             batch.Next = _batches;

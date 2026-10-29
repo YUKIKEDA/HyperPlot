@@ -48,9 +48,9 @@ public sealed class PlotWorkerPoolTests
         var points = new M4Point[M4.MaxPointCount(10)];
         var x = Column.Uniform(0, 1, values.Length);
         var boundaries = Enumerable.Range(0, 11).Select(k => (double)(start + (k * 100))).ToArray();
-        var provisional = M4.Extract(x, pyramid, boundaries, points);
+        var provisional = M4.Extract(x, pyramid, default, boundaries, points);
         var roles = points[..provisional.Count].Aggregate(M4Roles.None, (all, p) => all | p.Roles);
-        var connected = M4.Extract(x, pyramid, boundaries, points, new M4Options(M4Gaps.Connect));
+        var connected = M4.Extract(x, pyramid, default, boundaries, points, new M4Options(M4Gaps.Connect));
         var connectedPoints = points[..connected.Count].Select(p => (p.Index, p.Roles)).ToArray();
         var rawRead = pyramid.RawElementsRead - rawBefore;
 
@@ -73,7 +73,7 @@ public sealed class PlotWorkerPoolTests
         Assert.False(after.IsProvisional);
         Assert.Equal((expected.Min, expected.Max), ((double)after.Min, (double)after.Max));
         Assert.True(pyramid.IsComplete);
-        Assert.False(M4.Extract(x, pyramid, boundaries, points).IsProvisional);
+        Assert.False(M4.Extract(x, pyramid, default, boundaries, points).IsProvisional);
     }
 
     /// <summary>
@@ -393,12 +393,12 @@ public sealed class PlotWorkerPoolTests
         var points = new M4Point[M4.MaxPointCount(500)];
         var expected = Reference.M4(xValues, PyramidData.AsStored(values), boundaries, M4Gaps.Break);
 
-        var early = M4.Extract(x, pyramid, boundaries, points);
+        var early = M4.Extract(x, pyramid, default, boundaries, points);
         var earlyPoints = points[..early.Count].Select(p => new Reference.Point(p.Index, p.X, p.Y, p.Roles, p.BreakBefore)).ToArray();
         var missing = !x.TryGetStoredStats(1, out _);
         storage.Release(1);
         Eventually.Completes(stats);
-        var late = M4.Extract(x, pyramid, boundaries, points);
+        var late = M4.Extract(x, pyramid, default, boundaries, points);
 
         Assert.True(early.IsProvisional);
         Assert.True(missing);
@@ -406,7 +406,7 @@ public sealed class PlotWorkerPoolTests
         Assert.False(late.IsProvisional);
         Assert.Equal(expected, points[..late.Count].Select(p => new Reference.Point(p.Index, p.X, p.Y, p.Roles, p.BreakBefore)));
         x.Invalidate(5, 1);
-        Assert.True(M4.Extract(x, pyramid, boundaries, points).IsProvisional);
+        Assert.True(M4.Extract(x, pyramid, default, boundaries, points).IsProvisional);
     }
 
     /// <summary>

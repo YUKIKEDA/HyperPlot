@@ -117,7 +117,7 @@ for (var f = 0; f < frames; f++)
         boundaries[k] = from + ((to - from) * k / area.Width);
     }
 
-    pool.Extract(batch, boundaries);
+    pool.Extract(batch, default, boundaries);
     var t1 = Stopwatch.GetTimestamp();
 
     // Each series over its own Y range of the visible elements, as BillionSeries draws it (design §3.3).

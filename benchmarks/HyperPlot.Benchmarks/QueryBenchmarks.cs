@@ -73,19 +73,19 @@ public class M4Benchmarks : IDisposable
 
     /// <summary>X evenly spaced; NaN breaks the line.</summary>
     [Benchmark]
-    public int UniformBreak() => M4.Extract(_series!.UniformX, _series.Pyramid, _boundaries, _points).Count;
+    public int UniformBreak() => M4.Extract(_series!.UniformX, _series.Pyramid, default, _boundaries, _points).Count;
 
     /// <summary>X evenly spaced; NaN skipped.</summary>
     [Benchmark]
-    public int UniformConnect() => M4.Extract(_series!.UniformX, _series.Pyramid, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
+    public int UniformConnect() => M4.Extract(_series!.UniformX, _series.Pyramid, default, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
 
     /// <summary>A stored X column, whose boundaries are found by search; NaN breaks the line.</summary>
     [Benchmark]
-    public int StoredBreak() => M4.Extract(_series!.StoredX, _series.Pyramid, _boundaries, _points).Count;
+    public int StoredBreak() => M4.Extract(_series!.StoredX, _series.Pyramid, default, _boundaries, _points).Count;
 
     /// <summary>A stored X column; NaN skipped.</summary>
     [Benchmark]
-    public int StoredConnect() => M4.Extract(_series!.StoredX, _series.Pyramid, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
+    public int StoredConnect() => M4.Extract(_series!.StoredX, _series.Pyramid, default, _boundaries, _points, new M4Options(M4Gaps.Connect)).Count;
 
     /// <summary>Releases the series.</summary>
     [GlobalCleanup]

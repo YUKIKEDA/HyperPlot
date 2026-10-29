@@ -4,7 +4,7 @@ namespace HyperPlot.Benchmarks;
 
 /// <summary>
 /// Series of 1e7 floats at 1,920 pixel columns (design §5.5.1, §8.1): one after the other with <see cref="M4.Extract{TY}(UniformColumn, MinMaxPyramid{TY}, ReadOnlySpan{double}, Span{M4Point}, M4Options)"/>,
-/// and across the shared pool with <see cref="PlotWorkerPool.Extract(M4Batch, double[])"/>. Not pinned: the workers run on
+/// and across the shared pool with <see cref="PlotWorkerPool.Extract(M4Batch, ScaleOrigin, double[])"/>. Not pinned: the workers run on
 /// the cores the OS gives them (.cursor/rules/bench.mdc).
 /// </summary>
 [MemoryDiagnoser]
@@ -55,7 +55,7 @@ public class M4BatchBenchmarks : IDisposable
         var sink = 0;
         for (var s = 0; s < Series; s++)
         {
-            sink += M4.Extract(_x, _pyramids[s], _boundaries, _outputs[s]).Count;
+            sink += M4.Extract(_x, _pyramids[s], default, _boundaries, _outputs[s]).Count;
         }
 
         Sink = sink;
@@ -65,7 +65,7 @@ public class M4BatchBenchmarks : IDisposable
     [Benchmark]
     public void AcrossThePool()
     {
-        PlotWorkerPool.Shared.Extract(_batch, _boundaries);
+        PlotWorkerPool.Shared.Extract(_batch, default, _boundaries);
         Sink = _batch.GetResult(0).Count;
     }
 

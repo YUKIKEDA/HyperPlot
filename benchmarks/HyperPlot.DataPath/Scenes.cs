@@ -70,7 +70,7 @@ internal static class Scenes
             while (true)
             {
                 var frameStart = clock.Elapsed;
-                var result = M4.Extract(x, pyramid, boundaries, points);
+                var result = M4.Extract(x, pyramid, default, boundaries, points);
                 var extract = (clock.Elapsed - frameStart).TotalMilliseconds;
                 frames++;
                 longest = Math.Max(longest, extract);
@@ -126,7 +126,7 @@ internal static class Scenes
             for (var run = 1; run <= 2; run++)
             {
                 var clock = Stopwatch.StartNew();
-                var count = pyramid is null ? ReadBoundaries(column, boundaries) : M4.Extract(x, pyramid, boundaries, points).Count;
+                var count = pyramid is null ? ReadBoundaries(column, boundaries) : M4.Extract(x, pyramid, default, boundaries, points).Count;
                 Report(options, run, ("mode", pyramid is null ? "reads" : "m4"), ("ms", clock.Elapsed.TotalMilliseconds), ("values", count));
             }
 

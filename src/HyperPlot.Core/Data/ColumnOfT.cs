@@ -180,10 +180,12 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     internal override string KindName => $"Column<{typeof(T).Name}>";
 
     /// <inheritdoc />
-    internal override bool TryGetRange(out double min, out double max)
+    internal override bool TryGetRange(out ScaleEnd min, out ScaleEnd max)
     {
         var total = GetTotalStats();
-        (min, max) = (double.CreateTruncating(total.Min), double.CreateTruncating(total.Max));
+        (min, max) = ScaleSpace.IsInteger<T>()
+            ? (ScaleEnd.Of(long.CreateTruncating(total.Min)), ScaleEnd.Of(long.CreateTruncating(total.Max)))
+            : (ScaleEnd.Of(double.CreateTruncating(total.Min)), ScaleEnd.Of(double.CreateTruncating(total.Max)));
         return total.Count > 0;
     }
 
