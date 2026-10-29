@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** A（データとヘッドレス描画の土台）
-- **作業中:** S3（S2 は #62 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** S3（設計: ゴールデン画像の比較と `HyperPlot.Testing`）
+- **ブランチ:** `docs/66-s3-golden-images`
+- **Issue:** [#66](https://github.com/YUKIKEDA/HyperPlot/issues/66)
 
 ## ツールチェーン
 
@@ -44,7 +44,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | R2 | シェーダの生成器と線分のパイプライン（アンチエイリアス、丸い結合、破線、喪失の後のパイプラインの作り直し、CPU（記録と書き込み）と GPU（参照機、1,920 列の M4 の線 1 本と 16 本）の計測） | done | [#42](https://github.com/YUKIKEDA/HyperPlot/issues/42)（設計）、[#46](https://github.com/YUKIKEDA/HyperPlot/issues/46) |
 | S1 | 最初の貫通: 1e9 点の時系列をヘッドレスで描くサンプル（`HelloPlot`・`BillionSeries`、NativeAOT の検査と P-10 の確定、系列ごとの M4 の並列 `M4Batch`） | done | [#50](https://github.com/YUKIKEDA/HyperPlot/issues/50)（設計）、[#54](https://github.com/YUKIKEDA/HyperPlot/issues/54) |
 | S2 | End-to-end の計測（`benchmarks/HyperPlot.E2E`）、公開の GPU 時間の計測、P-1 の計測（1e9 点の全体の表示の M4 の内訳を含む。S1 の `BillionSeries` で 2 系列 4.9〜6.9 ms）、系列が少ないときの画素列の範囲での分け方の要否 | done | [#58](https://github.com/YUKIKEDA/HyperPlot/issues/58)（設計）、[#62](https://github.com/YUKIKEDA/HyperPlot/issues/62) |
-| S3 | ゴールデン画像の比較（`HyperPlot.Testing`） | not-started | |
+| S3 | ゴールデン画像の比較（`HyperPlot.Testing` の `GoldenImage`、`HelloPlot` の場面と線の種類の 2 場面、基準の更新の手順、許容差は手元と CI の WARP の差を測って決める） | in-progress | [#66](https://github.com/YUKIKEDA/HyperPlot/issues/66)（設計） |
 | **B: GoG** | | | |
 | G1 | 仕様モデルとビルダ（Plot / Layer / Encoding / コンパイル）、`RenderList.SetTransform`（§3.6） | not-started | |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計 | not-started | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11) |
