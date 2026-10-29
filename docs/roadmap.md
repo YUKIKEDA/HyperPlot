@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** G1（S3 は #70 の PR で済み、フェーズ A はここまで）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** G1（設計: 仕様モデル・ビルダ・コンパイル）
+- **ブランチ:** `docs/76-g1-spec-model`
+- **Issue:** [#76](https://github.com/YUKIKEDA/HyperPlot/issues/76)
 
 ## ツールチェーン
 
@@ -46,17 +46,17 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | S2 | End-to-end の計測（`benchmarks/HyperPlot.E2E`）、公開の GPU 時間の計測、P-1 の計測（1e9 点の全体の表示の M4 の内訳を含む。S1 の `BillionSeries` で 2 系列 4.9〜6.9 ms）、系列が少ないときの画素列の範囲での分け方の要否 | done | [#58](https://github.com/YUKIKEDA/HyperPlot/issues/58)（設計）、[#62](https://github.com/YUKIKEDA/HyperPlot/issues/62) |
 | S3 | ゴールデン画像の比較（`HyperPlot.Testing` の `GoldenImage`、`HelloPlot` の場面と線の種類の 2 場面、基準の更新の手順、許容差は手元と CI の WARP の差を測って決める） | done | [#66](https://github.com/YUKIKEDA/HyperPlot/issues/66)（設計）、[#70](https://github.com/YUKIKEDA/HyperPlot/issues/70) |
 | **B: GoG** | | | |
-| G1 | 仕様モデルとビルダ（Plot / Layer / Encoding / コンパイル）、`RenderList.SetTransform`（§3.6） | not-started | |
+| G1 | 仕様モデルとビルダ（`DataTable`、Plot / Layer / Encoding / コンパイル、`SpecId` と差分の再計算）、linear の位置のスケール、線のプロットをヘッドレスで描く（`HeadlessRenderer.Render(PlotSpec)`） | in-progress | [#76](https://github.com/YUKIKEDA/HyperPlot/issues/76)（設計） |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計 | not-started | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11) |
-| G2 | スケール（linear / log / time / band / 色）と目盛り、名前つきの色とパレット | not-started | |
+| G2 | スケール（log / time / band / 色、linear の nice・zero・reverse・clamp）と目盛り、スケールを足す口（`IScale`）、名前つきの色とパレット、列で色を分けるチャネル | not-started | |
 | T1 | テキスト（契約、DirectWrite、アトラス、グリフのパイプライン） | not-started | |
 | G3 | ガイドと配置（軸・凡例・タイトル・テーマ） | not-started | |
-| G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image）、線のマイターと面取りの結合・平らと四角の端・3 つ以上の区間の破線 | not-started | |
+| G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image）、Geom を足す口（`IGeom`）、`RenderList.SetTransform`（§3.6）と座標系の 4×4 の変換の契約（§4.4）、線のマイターと面取りの結合・平らと四角の端・3 つ以上の区間の破線 | not-started | |
 | G5 | Stat と Position | not-started | |
 | G6 | ファセットと複数のプロット | not-started | |
 | **C: インタラクションと WPF** | | | |
 | I1 | 入力のモデル、ツールの状態機械、ビューの操作、ズームの履歴 | not-started | |
-| W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI、入力） | not-started | |
+| W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2） | not-started | |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6） | not-started | |
 | I3 | 選択とリンク | not-started | |
 | I4 | 注釈と計測 | not-started | |
