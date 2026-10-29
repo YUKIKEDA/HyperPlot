@@ -35,12 +35,21 @@ internal sealed unsafe class D3D11FrameTimer
         var device = _backend.Device;
         for (var i = 0; i < Sets; i++)
         {
-            _sets[i] = new QuerySet
+            ref var set = ref _sets[i];
+            set = new QuerySet
             {
                 Disjoint = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP_DISJOINT),
                 Start = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP),
                 End = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP),
             };
+
+            // A set with any query missing is not used: Begin looks only at Disjoint, so all three go.
+            if (set.Disjoint == null || set.Start == null || set.End == null)
+            {
+                Release(ref set.Disjoint);
+                Release(ref set.Start);
+                Release(ref set.End);
+            }
         }
 
         _next = 0;
