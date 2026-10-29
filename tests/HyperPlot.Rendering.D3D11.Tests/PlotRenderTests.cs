@@ -76,6 +76,50 @@ public sealed class PlotRenderTests
         GoldenImage.AssertMatches(renderer, GoldenImageTests.Baseline("plot-lines.png"), GoldenImageTests.Tolerance, GoldenImageTests.Output);
     }
 
+    /// <summary>A line plot with a time x and a log y matches its baseline (row G2, design §4.2, §10.1).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend; a pool of its own; 1e5 points: a Column&lt;long&gt; X of 1970-based nanoseconds of 2026, 1 µs apart,
+    ///   and float Y from 0.1 to about 1,000, with a gap of NaN.
+    ///
+    /// Steps:
+    /// - Clear to white and render the spec with Scale.Time(Nanoseconds) for x and Scale.Log() for y at 640 × 360; compare
+    ///   with <c>Golden/plot-scales.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void Render_TimeAndLog_MatchesBaseline()
+    {
+        var random = new Random(13);
+        var x = new long[Points];
+        var y = new float[Points];
+        for (var i = 0; i < Points; i++)
+        {
+            x[i] = 1_793_232_000_000_000_000L + (1_000L * i);
+            y[i] = (float)Math.Pow(10, (Math.Sin(i * 1e-4) * 2) + 1 + (random.NextDouble() * 0.2));
+        }
+
+        y.AsSpan(60_000, 3_000).Fill(float.NaN);
+        using var pool = new PlotWorkerPool(2);
+        using var xColumn = Column.Wrap(x);
+        using var yColumn = Column.Wrap(y);
+        var table = DataTable.Create().Add("t", xColumn).Add("v", yColumn).Build();
+        var spec = Plot.Create(table)
+            .Line(table.Col<long>("t"), table.Col<float>("v"), l => l.Color(new Color(31, 119, 180, 255)).Width(1.5f))
+            .ScaleX(Scale.Time(TimeUnit.Nanoseconds))
+            .ScaleY(Scale.Log())
+            .Build();
+
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var renderer = new HeadlessRenderer(backend, Width, Height, pool);
+        renderer.Clear(White);
+        renderer.Render(spec);
+
+        GoldenImage.AssertMatches(renderer, GoldenImageTests.Baseline("plot-scales.png"), GoldenImageTests.Tolerance, GoldenImageTests.Output);
+    }
+
     /// <summary>
     /// The example of row G1 in design §4.9 runs as written: a mapped file and an evenly spaced X, drawn, then drawn again
     /// with a thicker stroke.

@@ -1,10 +1,19 @@
 namespace HyperPlot;
 
 /// <summary>A linear position scale (design §4.2): its domain is given, or learned from every layer's column.</summary>
-public sealed record LinearScaleSpec : ScaleSpec
+public sealed record LinearScaleSpec : ContinuousScaleSpec
 {
     /// <summary>Gets the domain, or null to learn it from the data. A domain is finite, with Min below Max.</summary>
     public (double Min, double Max)? Domain { get; init; }
+
+    /// <summary>Gets a value indicating whether a learned domain is widened to hold 0. A given domain is kept as it is.</summary>
+    public bool Zero { get; init; }
+
+    /// <inheritdoc />
+    internal override bool ZeroOption => Zero;
+
+    /// <inheritdoc />
+    internal override (double Min, double Max)? GivenDomain => Domain;
 
     /// <summary>Returns a copy with a domain given.</summary>
     /// <param name="min">The value at the start of the axis: finite.</param>
@@ -13,16 +22,19 @@ public sealed record LinearScaleSpec : ScaleSpec
     /// <exception cref="ArgumentException">A value is not finite, or <paramref name="min"/> is not below <paramref name="max"/>.</exception>
     public LinearScaleSpec WithDomain(double min, double max)
     {
-        CheckDomain(min, max);
+        CheckRange(min, max);
         return this with { Domain = (min, max) };
     }
 
-    /// <summary>Throws unless a domain is finite with its min below its max.</summary>
-    internal static void CheckDomain(double min, double max)
+    /// <inheritdoc />
+    internal override IScale? CreateTransform() => null;
+
+    /// <inheritdoc />
+    internal override void CheckGivenDomain()
     {
-        if (!double.IsFinite(min) || !double.IsFinite(max) || !(min < max))
+        if (Domain is { } domain)
         {
-            throw new ArgumentException($"A domain is finite with its min below its max; [{min}, {max}] is not.");
+            CheckRange(domain.Min, domain.Max);
         }
     }
 }

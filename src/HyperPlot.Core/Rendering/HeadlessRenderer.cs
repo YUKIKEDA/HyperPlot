@@ -75,12 +75,15 @@ public sealed class HeadlessRenderer : IDisposable
     /// <exception cref="ArgumentNullException"><paramref name="plot"/>, one of its members, or a layer is null.</exception>
     /// <exception cref="ArgumentException">
     /// The plot does not check (design §4.8): a reference that is default or names another table, a Y column that is not a
-    /// <see cref="Column{T}"/>, a layer or a scale of a kind row G1 does not compile, a domain or a stroke out of range, or
-    /// an x domain too narrow for the width.
+    /// <see cref="Column{T}"/>, a layer that is not a line, a scale that is not one of the position scales of
+    /// <see cref="Scale"/>, a domain or a stroke out of range, a time scale over a column that is not a long date-time
+    /// column, or an x domain too narrow for the width (in the scale space, or once mapped back to data units).
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// A learned domain has an infinite end (design §4.2), or an X column decreases or holds NaN. A failure to read a column
-    /// while building its indexes is thrown again as it was, and nothing is drawn.
+    /// A learned domain has an end that is not finite, in data units or once the scale maps it (a log scale over a value at
+    /// or below 0, design §4.2), or an X column decreases or holds NaN. A failure to read a column while building its
+    /// indexes is thrown again as it was, and nothing is drawn. An exception that a user's <see cref="IScale"/> throws
+    /// comes out as it is.
     /// </exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
