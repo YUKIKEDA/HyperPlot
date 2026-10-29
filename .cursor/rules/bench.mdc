@@ -66,6 +66,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 - A child process that waits for an event (the first frame on the display, a marker) has a deadline and ends with a non-zero exit code past it.
 - Another heavy process on the machine does not stop a comparison: run both sides in the same time window, alternating, and say in the PR that it ran. Startup is the exception: it is compared in at least 6 alternating runs a side, with no other heavy process on the machine (check before and after).
 - A host's startup compared with another shows its window at the same point (before or after the renderer is made), or measures the difference first.
+- A test's time from repeated runs is read from one TRX report a run, each with its own name (`dotnet test ... -- --report-xunit-trx --report-xunit-trx-filename run1.trx`). Runs into the same `--results-directory` with the default name overwrite one file: PR #71 ran three times and kept one run's times.
 - A run without a result is counted and reported, not dropped. Dropping the runs that time out makes the median faster than the code is.
 - A harness that launches a process ends it on every path, a throw included. A leftover app from one run changes the next.
 - PresentMon without elevation misses the first presents of a process it learns of late, so it does not measure startup. Started before the app, it records nothing of the app; start the app first and pass `--process_id`. It writes stderr in UTF-16.
