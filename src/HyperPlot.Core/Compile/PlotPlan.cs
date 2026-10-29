@@ -160,8 +160,6 @@ internal sealed class PlotPlan : IDisposable
                     nameof(plot)
                 );
             }
-
-            RenderList.ValidateStyle(line.Style);
         }
 
         CheckScale(plot.ScaleX, "ScaleX");

@@ -90,12 +90,14 @@ public sealed class PlotPlanTests
     ///
     /// Steps:
     /// - Render specs with a null Data, Layers, ScaleX, ScaleY, or layer; a default X; a Y of the other table; "t" as Y; the
-    ///   derived layer and scale; a domain of (1, 1); a width of -1; "down" as X; a domain too narrow for 1,000 pixels.
+    ///   derived layer and scale; an x domain of (1, 1) and a y domain of (2, 1); a width of -1; "down" as X; another
+    ///   decreasing column as X with the x domain given; a domain too narrow for 1,000 pixels.
     ///
     /// Expected:
-    /// - ArgumentNullException for the nulls; ArgumentException for the references, the kinds (naming the type), the domain,
-    ///   and the narrow domain (naming the domain and the width); ArgumentOutOfRangeException for the width;
-    ///   InvalidOperationException for the decreasing X, with the x domain learned and with it given (no learning reads X).
+    /// - ArgumentNullException for the nulls; ArgumentException for the references, the kinds (naming the type), the domains
+    ///   (with the domain check's message), and the narrow domain (naming the domain and the width);
+    ///   ArgumentOutOfRangeException for the width; InvalidOperationException for the decreasing X, with the x domain learned
+    ///   and with it given (no learning reads X, so only the wait for the X statistics lets M4 check it).
     /// </remarks>
     [Fact]
     public void Render_SpecOutOfContract_Throws()
@@ -129,17 +131,21 @@ public sealed class PlotPlanTests
         Throws<ArgumentException>(good with { Layers = [line with { Y = table.Col<double>("t") }] }, "\"t\" of layer 0 is a UniformColumn");
         Throws<ArgumentException>(good with { Layers = [new OtherLayer(line)] }, "OtherLayer");
         Throws<ArgumentException>(good with { ScaleY = new OtherScale(good.ScaleY) }, "OtherScale");
-        Throws<ArgumentException>(good with { ScaleX = new LinearScaleSpec { Domain = (1, 1) } }, "domain");
+        Throws<ArgumentException>(good with { ScaleX = new LinearScaleSpec { Domain = (1, 1) } }, "min below its max");
+        Throws<ArgumentException>(good with { ScaleY = new LinearScaleSpec { Domain = (2, 1) } }, "min below its max");
         Throws<ArgumentOutOfRangeException>(good with { Layers = [line with { Style = line.Style with { Width = -1 } }] });
         Throws<InvalidOperationException>(good with { Layers = [line with { X = table.Col<double>("down") }] }, "non-decreasing");
-        Throws<InvalidOperationException>(
-            good with
-            {
-                Layers = [line with { X = table.Col<double>("down") }],
-                ScaleX = Scale.Linear().WithDomain(0, 3),
-            },
-            "non-decreasing"
-        );
+
+        // A column of its own: the case above computed the statistics of "down" while learning its range.
+        using var fall = Column.Wrap(new double[] { 3, 2, 1 });
+        var fallTable = DataTable.Create().Add("fall", fall).Add("a", a).Build();
+        var given = new PlotSpec
+        {
+            Data = fallTable,
+            Layers = [line with { X = fallTable.Col<double>("fall"), Y = fallTable.Col<float>("a") }],
+            ScaleX = Scale.Linear().WithDomain(0, 3),
+        };
+        Throws<InvalidOperationException>(given, "non-decreasing");
 
         using var wide = new PlotPlan(pool, 1000, Height);
         var narrow = good with { ScaleX = Scale.Linear().WithDomain(1e15, 1e15 + 0.25) };
@@ -183,9 +189,15 @@ public sealed class PlotPlanTests
         Step(restyled, (0, 0, 1));
         var domained = restyled with { ScaleX = Scale.Linear().WithDomain(100, 200) };
         Step(domained, (0, 1, 1));
-        Step(domained with { Layers = [domained.Layers[0] with { }, second with { X = t.Col<double>("t") }] }, (0, 1, 1));
+        var xOnly = second with { X = t.Col<double>("t") };
+        Step(domained with { Layers = [domained.Layers[0] with { }, xOnly] }, (0, 1, 1));
         var b = plan.Pyramids.Single(p => ReferenceEquals(p.Column, scene.BColumn));
-        var swapped = domained with { Layers = [domained.Layers[0], second with { Y = t.Col<float>("c") }] };
+
+        // Only the Y changes: the layer before it already had "t" as X.
+        var swapped = domained with
+        {
+            Layers = [domained.Layers[0], xOnly with { Y = t.Col<float>("c") }],
+        };
         Step(swapped, (1, 1, 1));
         Assert.True(b.IsDisposed);
         var added = swapped with { Layers = [.. swapped.Layers, second with { Y = t.Col<float>("d") }] };
