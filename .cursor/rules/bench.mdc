@@ -29,6 +29,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 - A commit names as the cause only what was measured, and only after the figure stopped in reruns (10 runs in a row). A cause named earlier and then undone costs a second investigation.
 - A hypothesis written off is written with the conditions of the experiment that ruled it out, so that a later one under other conditions can take it up again.
 - Before measuring what a cache saves, count its hits: a cache whose slot two callers overwrite in turn never hits, and every mutant of its key survives.
+- A Zero-Alloc test runs each kind that takes the path (each scale, each column type), not one kind for the mechanism. PR #100 measured linear and log; symlog and pow made a transform on every render of the same spec, and the review found it.
 - A Zero-Alloc failure is an allocation to find, and blocks the merge. It is not run again until it passes.
 
 ## Rules
