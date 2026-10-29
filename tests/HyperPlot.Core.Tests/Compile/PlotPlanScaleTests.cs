@@ -180,11 +180,11 @@ public sealed class PlotPlanScaleTests
     ///   ("longs"), one value 5 ("five"), one value 0 ("nil").
     ///
     /// Steps:
-    /// - Render y with: log over "neg"; log over "one" and "empty"; linear, symlog, and pow with zero over "mid"; linear with
+    /// - Render y with: log over "neg"; pow 2 over "small" and "huge" (1e200, which maps to ∞) as two layers; log over "one" and "empty"; linear, symlog, and pow with zero over "mid"; linear with
     ///   zero and a domain given; linear with zero over "longs", "five", and "nil".
     ///
     /// Expected:
-    /// - InvalidOperationException naming "neg" and -1; log10(0.3) ± 0.5; [0, 1] of the log space; [0, 5] mapped by each;
+    /// - InvalidOperationException naming "neg" and -1, and one naming "huge" (the column of the max end); log10(0.3) ± 0.5; [0, 1] of the log space; [0, 5] mapped by each;
     ///   the given domain kept; [0, 20] exactly as longs; [0, 5]; [-0.5, 0.5].
     /// </remarks>
     [Fact]
@@ -194,6 +194,19 @@ public sealed class PlotPlanScaleTests
         var exception = Assert.Throws<InvalidOperationException>(() => YDomain(pool, "neg", Scale.Log(), 2, -1, 3));
         Assert.Contains("\"neg\"", exception.Message, StringComparison.Ordinal);
         Assert.Contains("-1", exception.Message, StringComparison.Ordinal);
+        using (var small = Column.Wrap(new float[] { 1, 2 }))
+        using (var huge = Column.Wrap(new double[] { 1, 1e200 }))
+        {
+            var table = DataTable.Create().Add("x", Column.Uniform(1, 1, 2)).Add("small", small).Add("huge", huge).Build();
+            var two = Plot.Create(table)
+                .Line(table.Col<double>("x"), table.Col<float>("small"))
+                .Line(table.Col<double>("x"), table.Col<double>("huge"))
+                .ScaleY(Scale.Pow(2))
+                .Build();
+            using var plan = new PlotPlan(pool, Width, Height);
+            Assert.Contains("\"huge\"", Assert.Throws<InvalidOperationException>(() => plan.Render(two)).Message, StringComparison.Ordinal);
+        }
+
         Assert.Equal(ScaleRange.FromDouble(Math.Log10(0.3f) - 0.5, Math.Log10(0.3f) + 0.5), YDomain(pool, "one", Scale.Log(), 0.3f));
         Assert.Equal(ScaleRange.FromDouble(0, 1), YDomain(pool, "empty", Scale.Log()));
         Assert.Equal(ScaleRange.FromDouble(0, 5), YDomain(pool, "mid", Scale.Linear() with { Zero = true }, 2, 5));
@@ -212,7 +225,7 @@ public sealed class PlotPlanScaleTests
     ///
     /// Steps:
     /// - Render with the derived scale; with domains put in by `with` that WithDomain would refuse (log (0, 1), time (5, 5),
-    ///   the transform's (-1, 1)); with a time scale over a double column.
+    ///   the transform's (-1, 1)); with a time scale over an evenly spaced column of doubles and over a stored double column.
     ///
     /// Expected:
     /// - ArgumentException naming the derived type; ArgumentException for each domain; ArgumentException naming the column
@@ -237,6 +250,7 @@ public sealed class PlotPlanScaleTests
         Assert.Throws<ArgumentException>(() =>
             plan.Render(spec with { ScaleY = Scale.Transform(new ScaleSpecTests.Log2()) with { Domain = (-1, 1) } })
         );
+        Assert.Throws<ArgumentException>(() => plan.Render(spec with { ScaleX = Scale.Time() }));
         var time = Spec(doubles, y) with { ScaleX = Scale.Time() };
         var message = Assert.Throws<ArgumentException>(() => plan.Render(time)).Message;
         Assert.Contains("\"x\"", message, StringComparison.Ordinal);
@@ -280,9 +294,9 @@ public sealed class PlotPlanScaleTests
     /// - A plan that rendered a linear x and y; two log2 transforms.
     ///
     /// Steps:
-    /// - Render, in order: y with reverse; y plain; y with clamp; y as log; y as linear with zero; x as the first log2; x as
-    ///   the second log2; then, one member at a time, a log domain, a symlog C and domain and zero, a pow k and domain and
-    ///   zero, the second log2 with a domain.
+    /// - Render, in order: y with reverse; y plain; y with clamp; y as log; y as linear; y as linear with zero; x as the first
+    ///   log2; x as the second log2; x as the second log2 with a domain; then, one member at a time from the step before of
+    ///   the same kind, a log domain, a symlog C, zero, and domain, and a pow k, zero, and domain.
     ///
     /// Expected:
     /// - Pyramids, extractions, recordings added: 0/0/1 for each of the first three, then 0/1/1 for every other step.
@@ -300,21 +314,22 @@ public sealed class PlotPlanScaleTests
         Step(spec with { ScaleY = Scale.Linear() }, (0, 0, 1));
         Step(spec with { ScaleY = Scale.Linear() with { Clamp = true } }, (0, 0, 1));
         Step(spec with { ScaleY = Scale.Log() }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Linear() }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Linear() with { Zero = true } }, (0, 1, 1));
         Step(spec with { ScaleX = Scale.Transform(new ScaleSpecTests.Log2()) }, (0, 1, 1));
         var log2 = new ScaleSpecTests.Log2();
         Step(spec with { ScaleX = Scale.Transform(log2) }, (0, 1, 1));
+        Step(spec with { ScaleX = Scale.Transform(log2).WithDomain(1, 50) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Log().WithDomain(1, 50) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Log().WithDomain(1, 60) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Symlog(1) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Symlog(2) }, (0, 1, 1));
-        Step(spec with { ScaleY = Scale.Symlog(2).WithDomain(0, 50) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Symlog(2) with { Zero = true } }, (0, 1, 1));
+        Step(spec with { ScaleY = (Scale.Symlog(2) with { Zero = true }).WithDomain(0, 50) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Pow(2) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Pow(3) }, (0, 1, 1));
-        Step(spec with { ScaleY = Scale.Pow(3).WithDomain(0, 50) }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Pow(3) with { Zero = true } }, (0, 1, 1));
-        Step(spec with { ScaleX = Scale.Transform(log2).WithDomain(1, 50) }, (0, 1, 1));
+        Step(spec with { ScaleY = (Scale.Pow(3) with { Zero = true }).WithDomain(0, 50) }, (0, 1, 1));
 
         void Step(PlotSpec next, (int Pyramids, int Extractions, int Recordings) expected)
         {
@@ -336,7 +351,7 @@ public sealed class PlotPlanScaleTests
     /// - A plan that rendered an integer uniform X of 2026's ticks + 1 with a time scale in ticks.
     ///
     /// Steps:
-    /// - Render, in order: the unit nanoseconds; another epoch; a domain of the ticks + 11 to + 501.
+    /// - Render, in order (from ticks with the Unix epoch): the unit nanoseconds; another epoch; a domain of the ticks + 11 to + 501.
     ///
     /// Expected:
     /// - 0/1/1 each; the last x domain has the origin of the ticks + 11, and differences 0 and 490.
@@ -348,10 +363,10 @@ public sealed class PlotPlanScaleTests
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Enumerable.Range(1, 100).Select(i => (float)i).ToArray());
         using var plan = new PlotPlan(pool, Width, Height);
-        var spec = Spec(Column.UniformInteger(ticks, 10, 100), y) with { ScaleX = Scale.Time() };
+        var spec = Spec(Column.UniformInteger(ticks, 10, 100), y) with { ScaleX = Scale.Time(TimeUnit.Ticks, DateTime.UnixEpoch) };
         _ = plan.Render(spec);
 
-        Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds) });
+        Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds, DateTime.UnixEpoch) });
         Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds, new DateTime(2000, 1, 1)) });
         Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds, new DateTime(2000, 1, 1)).WithDomain(ticks + 10, ticks + 500) });
 

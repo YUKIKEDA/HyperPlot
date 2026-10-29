@@ -98,7 +98,7 @@ public sealed class ScaleSpecTests
     ///
     /// Steps:
     /// - Give log domains with min 0 and -1; pow 2 a domain up to 1e200; the transform a domain from -1; linear, symlog, and
-    ///   pow domains with min = max and NaN; time domains with min = max as longs and as date-times.
+    ///   pow domains with min = max and NaN; time domains with min = max as longs, and as date-times 5 ticks past a millisecond in a millisecond scale (rounding outward would give them a width of 1).
     ///
     /// Expected:
     /// - ArgumentException for each; a log domain of (1e-300, 1) and a symlog domain of (-1e300, 1e300) are taken.
@@ -114,7 +114,8 @@ public sealed class ScaleSpecTests
         Assert.Throws<ArgumentException>(() => Scale.Symlog().WithDomain(double.NaN, 1));
         Assert.Throws<ArgumentException>(() => Scale.Pow(2).WithDomain(2, 1));
         Assert.Throws<ArgumentException>(() => Scale.Time().WithDomain(5, 5));
-        Assert.Throws<ArgumentException>(() => Scale.Time().WithDomain(new DateTime(2026, 1, 1), new DateTime(2026, 1, 1)));
+        var instant = new DateTime(2026, 1, 1).AddTicks(5);
+        Assert.Throws<ArgumentException>(() => Scale.Time(TimeUnit.Milliseconds).WithDomain(instant, instant));
         Assert.Equal((1e-300, 1), Scale.Log().WithDomain(1e-300, 1).Domain);
         Assert.Equal((-1e300, 1e300), Scale.Symlog().WithDomain(-1e300, 1e300).Domain);
     }
