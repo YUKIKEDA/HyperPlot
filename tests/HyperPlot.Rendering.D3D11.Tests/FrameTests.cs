@@ -190,7 +190,8 @@ public sealed class FrameTests
     /// - A WARP backend and a target; the timer reads the queries of frame 2 as not ready.
     ///
     /// Steps:
-    /// - Draw 20 frames; let frame 2 be read; draw until a time of a frame above 2 arrives.
+    /// - Draw until the time of frame 1 arrives (the times before the held frame come, whatever the runner's speed); draw
+    ///   20 frames more; let frame 2 be read; draw until a time of a frame above 2 arrives.
     ///
     /// Expected:
     /// - While frame 2 is held, no time of a frame above 2 arrives; afterwards the times go on from frame 2, in order.
@@ -205,6 +206,13 @@ public sealed class FrameTests
         backend.Timer.TestHold = frame => frame == 2;
         var list = Line();
 
+        // Wait for an arrival, not for a number of frames: WARP on a shared runner may not have finished frame 1 after 20.
+        for (var i = 0; i < MaxFrames && !times.Exists(t => t.Frame == 1); i++)
+        {
+            backend.Draw(target, list);
+        }
+
+        Assert.Contains(times, t => t.Frame == 1);
         for (var i = 0; i < 20; i++)
         {
             backend.Draw(target, list);
