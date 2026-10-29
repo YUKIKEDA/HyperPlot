@@ -158,12 +158,13 @@ public sealed class PlotPlanTests
     ///
     /// Steps:
     /// - Render, in order: the spec; it again; a stroke changed; the x domain given; layer 2's X swapped for "t" (and layer 1
-    ///   copied unchanged); layer 2's Y swapped for "c"; a third layer over "d"; two layers over "a"; the same layers in a new
-    ///   table over the same columns.
+    ///   copied unchanged); layer 2's Y swapped for "c"; a third layer over "d"; the third layer taken off again; two layers
+    ///   over "a"; the same layers in a new table over the same columns.
     ///
     /// Expected:
     /// - Pyramids, extractions, recordings added: 2/1/1, 0/0/0, 0/0/1, 0/1/1, 0/1/1, 1/1/1 with "b"'s pyramid disposed,
-    ///   1/1/1, 0/1/1 with one pyramid left (that of "a"), and 0/1/1. Every list equals a new plan's for the spec.
+    ///   1/1/1, 0/1/1 with two pyramids left, 0/1/1 with one pyramid left (that of "a"), and 0/1/1. Every list equals a new
+    ///   plan's for the spec.
     /// </remarks>
     [Fact]
     public void Render_ChangedSpecs_RedoOnlyTheChangedStages()
@@ -189,6 +190,8 @@ public sealed class PlotPlanTests
         Assert.True(b.IsDisposed);
         var added = swapped with { Layers = [.. swapped.Layers, second with { Y = t.Col<float>("d") }] };
         Step(added, (1, 1, 1));
+        Step(added with { Layers = [added.Layers[0], added.Layers[1]] }, (0, 1, 1));
+        Assert.Equal(2, plan.Pyramids.Count);
         var shared = added with { Layers = [first, first with { Style = first.Style with { Width = 2 } }] };
         Step(shared, (0, 1, 1));
         Assert.Single(plan.Pyramids);
