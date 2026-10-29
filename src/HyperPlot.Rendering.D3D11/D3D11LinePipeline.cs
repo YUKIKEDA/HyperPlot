@@ -99,23 +99,23 @@ internal sealed unsafe class D3D11LinePipeline
         _segmentCapacity = 0;
     }
 
-    /// <summary>Draws every polyline of the list into the target, three passes each (design §5.3).</summary>
-    internal void Draw(D3D11RenderTarget target, RenderList list)
+    /// <summary>Sends the list's segments, once for every polyline step of a <c>Draw</c>.</summary>
+    internal void Upload(RenderList list)
     {
-        var polylines = list.Polylines;
-        if (polylines.IsEmpty)
+        if (!list.Polylines.IsEmpty)
         {
-            return;
+            Upload(list.Segments);
         }
+    }
 
+    /// <summary>Sets what every polyline shares: before the first polyline, and after a glyph step, which binds its own.</summary>
+    internal void Bind(D3D11RenderTarget target)
+    {
         var context = _backend.Context;
-        Upload(list.Segments);
-        var width = target.Description.Width;
-        var height = target.Description.Height;
         var viewport = new D3D11_VIEWPORT
         {
-            Width = width,
-            Height = height,
+            Width = target.Description.Width,
+            Height = target.Description.Height,
             MaxDepth = 1,
         };
         context->RSSetViewports(1, &viewport);
@@ -127,58 +127,68 @@ internal sealed unsafe class D3D11LinePipeline
         context->PSSetConstantBuffers(0, 1, &constants);
         var segmentView = _segmentView;
         context->VSSetShaderResources(0, 1, &segmentView);
+    }
+
+    /// <summary>Draws one polyline into the target in three passes (design §5.3).</summary>
+    internal void Draw(D3D11RenderTarget target, in PolylineRecord polyline)
+    {
+        var context = _backend.Context;
+        var width = target.Description.Width;
+        var height = target.Description.Height;
         ID3D11ShaderResourceView* noView = null;
         var coverageTarget = target.CoverageView;
         var colorTarget = target.View;
         var coverageView = target.CoverageResourceView;
 
-        foreach (ref readonly var polyline in polylines)
+        // The clip, inside the target; the passes 2 and 3 cover the finite points' box widened by half the width and 1
+        // pixel, where pass 1 can write coverage (design §5.3).
+        var clipLeft = (int)Math.Clamp(polyline.Clip.Left, 0, width);
+        var clipTop = (int)Math.Clamp(polyline.Clip.Top, 0, height);
+        var clipRight = (int)Math.Clamp(polyline.Clip.Right, 0, width);
+        var clipBottom = (int)Math.Clamp(polyline.Clip.Bottom, 0, height);
+        var reach = (polyline.Style.Width * 0.5f) + 1;
+        var left = MathF.Max(polyline.MinX - reach, clipLeft);
+        var top = MathF.Max(polyline.MinY - reach, clipTop);
+        var right = MathF.Min(polyline.MaxX + reach, clipRight);
+        var bottom = MathF.Min(polyline.MaxY + reach, clipBottom);
+        if (left >= right || top >= bottom)
         {
-            // The clip, inside the target; the passes 2 and 3 cover the finite points' box widened by half the width and
-            // 1 pixel, where pass 1 can write coverage (design §5.3).
-            var clipLeft = (int)Math.Clamp(polyline.Clip.Left, 0, width);
-            var clipTop = (int)Math.Clamp(polyline.Clip.Top, 0, height);
-            var clipRight = (int)Math.Clamp(polyline.Clip.Right, 0, width);
-            var clipBottom = (int)Math.Clamp(polyline.Clip.Bottom, 0, height);
-            var reach = (polyline.Style.Width * 0.5f) + 1;
-            var left = MathF.Max(polyline.MinX - reach, clipLeft);
-            var top = MathF.Max(polyline.MinY - reach, clipTop);
-            var right = MathF.Min(polyline.MaxX + reach, clipRight);
-            var bottom = MathF.Min(polyline.MaxY + reach, clipBottom);
-            if (left >= right || top >= bottom)
-            {
-                continue;
-            }
-
-            WriteConstants(polyline, width, height, left, top, right, bottom);
-            var scissor = new RECT(clipLeft, clipTop, clipRight, clipBottom);
-            context->RSSetScissorRects(1, &scissor);
-
-            // 1. Coverage of every segment into R8, combined with MAX.
-            context->OMSetRenderTargets(1, &coverageTarget, null);
-            context->OMSetBlendState(_maxBlend, null, 0xFFFFFFFF);
-            context->VSSetShader(_segmentVs, null, 0);
-            context->PSSetShader(_coveragePs, null, 0);
-            context->DrawInstanced(4, (uint)polyline.SegmentCount, 0, 0);
-
-            // 2. The color once, over the target. The coverage texture leaves the output first: D3D11 cannot bind one
-            // texture as a target and a shader resource at once.
-            context->OMSetRenderTargets(1, &colorTarget, null);
-            context->OMSetBlendState(_overBlend, null, 0xFFFFFFFF);
-            context->VSSetShader(_boundsVs, null, 0);
-            context->PSSetShader(_colorPs, null, 0);
-            context->PSSetShaderResources(0, 1, &coverageView);
-            context->Draw(4, 0);
-
-            // 3. Zero back over the same box, for the next polyline; the shader resource leaves first.
-            context->PSSetShaderResources(0, 1, &noView);
-            context->OMSetRenderTargets(1, &coverageTarget, null);
-            context->OMSetBlendState(_writeBlend, null, 0xFFFFFFFF);
-            context->PSSetShader(_zeroPs, null, 0);
-            context->Draw(4, 0);
+            return;
         }
 
-        // Nothing stays bound, so that a readback or a clear of either texture finds it free.
+        WriteConstants(polyline, width, height, left, top, right, bottom);
+        var scissor = new RECT(clipLeft, clipTop, clipRight, clipBottom);
+        context->RSSetScissorRects(1, &scissor);
+
+        // 1. Coverage of every segment into R8, combined with MAX.
+        context->OMSetRenderTargets(1, &coverageTarget, null);
+        context->OMSetBlendState(_maxBlend, null, 0xFFFFFFFF);
+        context->VSSetShader(_segmentVs, null, 0);
+        context->PSSetShader(_coveragePs, null, 0);
+        context->DrawInstanced(4, (uint)polyline.SegmentCount, 0, 0);
+
+        // 2. The color once, over the target. The coverage texture leaves the output first: D3D11 cannot bind one texture
+        // as a target and a shader resource at once.
+        context->OMSetRenderTargets(1, &colorTarget, null);
+        context->OMSetBlendState(_overBlend, null, 0xFFFFFFFF);
+        context->VSSetShader(_boundsVs, null, 0);
+        context->PSSetShader(_colorPs, null, 0);
+        context->PSSetShaderResources(0, 1, &coverageView);
+        context->Draw(4, 0);
+
+        // 3. Zero back over the same box, for the next polyline; the shader resource leaves first.
+        context->PSSetShaderResources(0, 1, &noView);
+        context->OMSetRenderTargets(1, &coverageTarget, null);
+        context->OMSetBlendState(_writeBlend, null, 0xFFFFFFFF);
+        context->PSSetShader(_zeroPs, null, 0);
+        context->Draw(4, 0);
+    }
+
+    /// <summary>Leaves nothing bound, so that a readback or a clear of either texture finds it free.</summary>
+    internal void Unbind()
+    {
+        var context = _backend.Context;
+        ID3D11ShaderResourceView* noView = null;
         context->OMSetRenderTargets(0, null, null);
         context->VSSetShaderResources(0, 1, &noView);
     }

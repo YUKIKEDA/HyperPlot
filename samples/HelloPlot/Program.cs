@@ -4,7 +4,8 @@ using HyperPlot.Rendering;
 using HyperPlot.Rendering.D3D11;
 using HyperPlot.Samples;
 
-// HelloPlot: 4 series of 1e6 points in memory, M4 across the worker pool, drawn headless into a PNG (design §7.5, row S1).
+// HelloPlot: 4 series of 1e6 points in memory, M4 across the worker pool, drawn headless into a PNG (design §7.5, row S1),
+// under a heading drawn with DirectWrite (row T1).
 // Its NativeAOT publish is the engine's AOT check (.cursor/rules/aot.mdc):
 //   dotnet publish samples/HelloPlot -c Release -r win-x64 -o <dir>
 //   <dir>/HelloPlot.exe --auto [--out hello.png] [--warp]
@@ -31,7 +32,15 @@ for (var i = 0; i < args.Length; i++)
 
 // The scene is shared with the golden image test, which draws it with 1e5 points (design §10.1).
 var clock = Stopwatch.StartNew();
-var list = HelloScene.Record(points: 1_000_000, PlotWorkerPool.Shared);
+const int Points = 1_000_000;
+var list = HelloScene.Record(Points, PlotWorkerPool.Shared);
+
+// The heading goes after the scene, so that the golden image of the scene does not hold DirectWrite's pixels (design §7.5).
+list.DrawText(
+    $"HelloPlot: {HelloScene.SeriesCount} series of {Points:N0} points",
+    new System.Numerics.Vector2(HelloScene.Width / 2f, 6),
+    new TextStyle(new Color(40, 40, 40, 255), 16, Horizontal: TextAlign.Center, Vertical: TextBaseline.Top)
+);
 using var backend = D3D11Backend.Create(useWarp);
 using var renderer = new HeadlessRenderer(backend, HelloScene.Width, HelloScene.Height);
 renderer.Clear(new Color(255, 255, 255, 255));

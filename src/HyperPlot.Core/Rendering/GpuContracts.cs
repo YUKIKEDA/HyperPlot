@@ -22,7 +22,7 @@ public readonly record struct RenderTargetDescription(int Width, int Height, Dep
 
 /// <summary>
 /// The fixed set of GPU operations a backend implements (design §5.2). A row adds what it implements and tests: row R1 has
-/// render targets, clearing, and readback.
+/// render targets, clearing, and readback; R2 drawing; S2 frames; T1 text.
 /// </summary>
 /// <remarks>One thread at a time uses a backend and its render targets.</remarks>
 public interface IGpuBackend : IDisposable
@@ -52,15 +52,19 @@ public interface IGpuBackend : IDisposable
     FrameScope BeginFrame();
 
     /// <summary>
-    /// Draws a list's commands into a render target, in a frame of its own if none is open (design §5.3). Allocates
-    /// nothing once the backend's buffers have grown to the list's size.
+    /// Draws a list's commands into a render target in the order they were recorded, in a frame of its own if none is open
+    /// (design §5.3, §5.6). Allocates nothing once the backend's buffers have grown to the list's size and its texts are
+    /// in <see cref="Text"/>.
     /// </summary>
     /// <param name="target">A render target of this backend.</param>
     /// <param name="list">The commands.</param>
     /// <exception cref="ArgumentNullException"><paramref name="target"/> or <paramref name="list"/> is null.</exception>
     /// <exception cref="ArgumentException"><paramref name="target"/> belongs to another backend.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
-    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame
+    /// tries again. Or the texts' glyphs need more than 8 atlas pages, or shaping or rasterizing failed; nothing is drawn.
+    /// </exception>
     /// <exception cref="ObjectDisposedException">The backend or the target was disposed.</exception>
     void Draw(IRenderTarget target, RenderList list);
 
@@ -80,6 +84,12 @@ public interface IGpuBackend : IDisposable
     /// none.
     /// </summary>
     GpuFrameTime? LastFrameTime { get; }
+
+    /// <summary>
+    /// Gets the backend's text: the cache of shaped texts and the glyph atlas that <see cref="Draw"/> and measuring share
+    /// (design §5.6). One for the backend's life.
+    /// </summary>
+    TextEngine Text { get; }
 }
 
 /// <summary>A texture a backend draws into (design §5.2).</summary>

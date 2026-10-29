@@ -16,7 +16,9 @@ internal static class HelloScene
     /// <summary>The height of the image, in pixels.</summary>
     public const int Height = 720;
 
-    private const int SeriesCount = 4;
+    /// <summary>The number of series.</summary>
+    public const int SeriesCount = 4;
+
     private const double Million = 1_000_000;
 
     /// <summary>Builds the series of <paramref name="points"/> points each and records the scene.</summary>

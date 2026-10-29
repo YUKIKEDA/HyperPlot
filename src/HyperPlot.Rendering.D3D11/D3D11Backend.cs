@@ -15,7 +15,7 @@ namespace HyperPlot.Rendering.D3D11;
 public sealed unsafe class D3D11Backend : IGpuBackend
 {
     private static readonly Lazy<D3D11Backend> _shared = new(
-        () => new D3D11Backend(useWarp: false, isShared: true, createDevice: null),
+        () => new D3D11Backend(useWarp: false, isShared: true, createDevice: null, text: null),
         LazyThreadSafetyMode.ExecutionAndPublication
     );
 
@@ -23,6 +23,8 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly bool _isShared;
     private readonly List<D3D11RenderTarget> _targets = [];
     private readonly D3D11LinePipeline _lines;
+    private readonly D3D11GlyphPipeline _glyphs;
+    private readonly DWriteTextBackend? _directWrite;
     private readonly D3D11FrameTimer _timer;
     private long[] _open = new long[8];
     private int _depth;
@@ -32,14 +34,30 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private ID3D11DeviceContext* _context;
     private State _state;
 
-    private D3D11Backend(bool useWarp, bool isShared, Func<D3D_DRIVER_TYPE, int>? createDevice)
+    private D3D11Backend(bool useWarp, bool isShared, Func<D3D_DRIVER_TYPE, int>? createDevice, TextEngine? text)
     {
         _useWarp = useWarp;
         _isShared = isShared;
         CreateDevice = createDevice;
         _lines = new D3D11LinePipeline(this);
+        _glyphs = new D3D11GlyphPipeline(this);
         _timer = new D3D11FrameTimer(this);
-        MakeDevice();
+        if (text is null)
+        {
+            _directWrite = new DWriteTextBackend();
+            text = new TextEngine(_directWrite);
+        }
+
+        Text = text;
+        try
+        {
+            MakeDevice();
+        }
+        catch
+        {
+            _directWrite?.Dispose();
+            throw;
+        }
     }
 
     private enum State
@@ -62,6 +80,10 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     /// <inheritdoc />
     public GpuFrameTime? LastFrameTime => _timer.Last;
 
+    /// <inheritdoc />
+    /// <remarks>Shapes and rasterizes with DirectWrite (design §5.6).</remarks>
+    public TextEngine Text { get; }
+
     /// <summary>Gets or sets a test hook that replaces the HRESULT of a checked call; the name of the call comes first.</summary>
     internal Func<string, int, int>? CheckResult { get; set; }
 
@@ -77,6 +99,11 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     internal D3D11LinePipeline Lines => _lines;
 
+    internal D3D11GlyphPipeline Glyphs => _glyphs;
+
+    /// <summary>Gets the DirectWrite text backend, or null when a test gave the backend a text engine of its own.</summary>
+    internal DWriteTextBackend? DirectWrite => _directWrite;
+
     internal D3D11FrameTimer Timer => _timer;
 
     /// <summary>Gets the number of frames open, for the tests of nesting.</summary>
@@ -86,7 +113,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     /// <param name="useWarp">Use WARP even when there is hardware: for tests, which need the same pixels on every machine.</param>
     /// <returns>The backend. Dispose it after its render targets.</returns>
     /// <exception cref="InvalidOperationException">No device could be made.</exception>
-    public static D3D11Backend Create(bool useWarp = false) => new(useWarp, isShared: false, createDevice: null);
+    public static D3D11Backend Create(bool useWarp = false) => new(useWarp, isShared: false, createDevice: null, text: null);
 
     /// <inheritdoc />
     public IRenderTarget CreateRenderTarget(in RenderTargetDescription description)
@@ -143,7 +170,55 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
         own.ThrowIfDisposed();
         using var frame = BeginFrame();
-        _lines.Draw(own, list);
+
+        // Shaping and the atlas come first, so that a text that fails draws nothing of the list (design §5.6).
+        var width = own.Description.Width;
+        var height = own.Description.Height;
+        Text.Prepare(list, width, height);
+        var steps = Text.Steps;
+        _glyphs.Upload(Text.Atlas, Text.Instances);
+        if (steps.IsEmpty)
+        {
+            return;
+        }
+
+        _lines.Upload(list);
+        var polylines = list.Polylines;
+        var bound = DrawStepKind.Polyline;
+        var any = false;
+        foreach (ref readonly var step in steps)
+        {
+            // The steps go in the list's order; each pipeline binds what it shares when the kind changes.
+            if (!any || step.Kind != bound)
+            {
+                if (step.Kind == DrawStepKind.Polyline)
+                {
+                    _glyphs.Unbind();
+                    _lines.Bind(own);
+                }
+                else
+                {
+                    _lines.Unbind();
+                    _glyphs.Bind(own);
+                }
+
+                bound = step.Kind;
+                any = true;
+            }
+
+            if (step.Kind == DrawStepKind.Polyline)
+            {
+                _lines.Draw(own, polylines[step.Index]);
+            }
+            else
+            {
+                _glyphs.Draw(own, step);
+            }
+        }
+
+        // Nothing stays bound, so that a readback, a clear, or a page update finds every texture free.
+        _lines.Unbind();
+        _glyphs.Unbind();
     }
 
     /// <inheritdoc />
@@ -198,6 +273,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
 
         ReleaseDevice();
+        _directWrite?.Dispose();
         _state = State.Disposed;
     }
 
@@ -293,6 +369,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         try
         {
             _lines.Make();
+            _glyphs.Make();
             _timer.Make();
         }
         catch (InvalidOperationException)
@@ -342,6 +419,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private void ReleaseDevice()
     {
         _timer.Release();
+        _glyphs.Release();
         _lines.Release();
         if (_context != null)
         {
@@ -357,5 +435,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
     }
 
-    internal static D3D11Backend CreateForTest(bool useWarp, Func<D3D_DRIVER_TYPE, int>? createDevice) => new(useWarp, isShared: false, createDevice);
+    /// <summary>Makes a backend for a test: a hook on making the device, and a text engine of the test's own (design §10).</summary>
+    internal static D3D11Backend CreateForTest(bool useWarp, Func<D3D_DRIVER_TYPE, int>? createDevice, TextEngine? text = null) =>
+        new(useWarp, isShared: false, createDevice, text);
 }

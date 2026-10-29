@@ -21,6 +21,8 @@ if (fxc is null)
 // Every entry point, in file and entry order; the generated properties follow this order.
 (string File, string Entry, string Profile)[] entries =
 [
+    ("Glyph.hlsl", "GlyphPS", "ps_5_0"),
+    ("Glyph.hlsl", "GlyphVS", "vs_5_0"),
     ("Line.hlsl", "BoundsVS", "vs_5_0"),
     ("Line.hlsl", "ColorPS", "ps_5_0"),
     ("Line.hlsl", "CoveragePS", "ps_5_0"),
