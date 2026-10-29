@@ -19,6 +19,14 @@ internal sealed class PlotPlan : IDisposable
     private readonly RenderList _list = new();
     private readonly Vector2[] _points;
     private readonly double[] _boundaries;
+
+    // Work areas of row G2, made once: the boundaries in the scale space, and one layer's coordinates before and after a
+    // transform (design §4.2).
+    private readonly double[] _scaleBoundaries;
+    private readonly double[] _values;
+    private readonly double[] _mapped;
+    private IScale? _xTransform;
+    private IScale? _yTransform;
     private LayerPlan[] _layers = [];
     private PlotSpec? _spec;
 
@@ -36,6 +44,9 @@ internal sealed class PlotPlan : IDisposable
         // Each M4 point may bring a break before it, which is a point of NaN (design §5.1).
         _points = new Vector2[2 * M4.MaxPointCount(width)];
         _boundaries = new double[width + 1];
+        _scaleBoundaries = new double[width + 1];
+        _values = new double[M4.MaxPointCount(width)];
+        _mapped = new double[M4.MaxPointCount(width)];
     }
 
     /// <summary>Gets the number of pyramids built, for the tests of the diff (design §4.8).</summary>
@@ -72,8 +83,19 @@ internal sealed class PlotPlan : IDisposable
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
         _spec = null;
         var data = previous is null || DataChanged(previous, spec);
-        var scales = previous is null || !SameScale(previous.ScaleX, spec.ScaleX) || !SameScale(previous.ScaleY, spec.ScaleY);
-        var looks = data || StyleChanged(previous!, spec);
+        var scales = previous is null || !SameMapping(previous.ScaleX, spec.ScaleX) || !SameMapping(previous.ScaleY, spec.ScaleY);
+        var looks =
+            data || StyleChanged(previous!, spec) || OptionsChanged(previous!.ScaleX, spec.ScaleX) || OptionsChanged(previous!.ScaleY, spec.ScaleY);
+        if (scales)
+        {
+            // A new transform makes new boundaries even over the same range of the scale space.
+            (_xTransform, _yTransform, _x) = (
+                ((ContinuousScaleSpec)spec.ScaleX).CreateTransform(),
+                ((ContinuousScaleSpec)spec.ScaleY).CreateTransform(),
+                ScaleRange.None
+            );
+        }
+
         if (data)
         {
             BuildLayers(spec);
@@ -98,14 +120,15 @@ internal sealed class PlotPlan : IDisposable
         var extract = data || scales || ValuesChanged();
         if (extract)
         {
-            var x = Learn(spec, spec.ScaleX, ofX: true);
-            _y = Learn(spec, spec.ScaleY, ofX: false);
+            var x = Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true);
+            _y = Learn(spec, (ContinuousScaleSpec)spec.ScaleY, _yTransform, ofX: false);
             if (x != _x)
             {
                 MakeBoundaries(x);
             }
 
-            _pool.Extract(_batch, new ScaleOrigin(_x.Origin, _y.Origin), _boundaries);
+            // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2).
+            _pool.Extract(_batch, new ScaleOrigin(_xTransform is null ? _x.Origin : 0, _yTransform is null ? _y.Origin : 0), _boundaries);
             Extractions++;
             foreach (var layer in _layers)
             {
@@ -115,7 +138,7 @@ internal sealed class PlotPlan : IDisposable
 
         if (extract || looks)
         {
-            Record();
+            Record((ContinuousScaleSpec)spec.ScaleX, (ContinuousScaleSpec)spec.ScaleY);
             Recordings++;
         }
 
@@ -169,8 +192,8 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
-        CheckScale(plot.ScaleX, "ScaleX");
-        CheckScale(plot.ScaleY, "ScaleY");
+        CheckScale(plot, plot.ScaleX, "ScaleX", ofX: true);
+        CheckScale(plot, plot.ScaleY, "ScaleY", ofX: false);
     }
 
     private static void CheckReference(DataTable data, ColumnRef reference, int layer, string channel)
@@ -186,16 +209,33 @@ internal sealed class PlotPlan : IDisposable
         }
     }
 
-    private static void CheckScale(ScaleSpec scale, string name)
+    /// <summary>
+    /// Throws unless a scale is one of row G2's (design §4.8), its domain set with <c>with</c> meets its kind's conditions,
+    /// and a time scale reads long date-time columns. A user cannot derive a new continuous kind: its base has internal
+    /// abstract members.
+    /// </summary>
+    private static void CheckScale(PlotSpec plot, ScaleSpec scale, string name, bool ofX)
     {
-        if (scale is not LinearScaleSpec linear)
+        if (scale is not ContinuousScaleSpec continuous)
         {
-            throw new ArgumentException($"The {name} is a {scale.GetType().Name}; row G1 compiles linear scales only.");
+            throw new ArgumentException($"The {name} is a {scale.GetType().Name}; row G2 compiles its position scales only.");
         }
 
-        if (linear.Domain is { } domain)
+        continuous.CheckGivenDomain();
+        if (continuous is not TimeScaleSpec)
         {
-            LinearScaleSpec.CheckDomain(domain.Min, domain.Max);
+            return;
+        }
+
+        foreach (var layer in plot.Layers)
+        {
+            var reference = ofX ? ((LineLayerSpec)layer).X : ((LineLayerSpec)layer).Y;
+            if (reference.Column is not (Column<long> or UniformColumn { IsInteger: true }))
+            {
+                throw new ArgumentException(
+                    $"The {name} is a time scale, and the column \"{plot.Data.GetName(reference.Index)}\" is a {reference.Column.KindName}, not a long date-time column."
+                );
+            }
         }
     }
 
@@ -239,24 +279,54 @@ internal sealed class PlotPlan : IDisposable
         return false;
     }
 
-    private static bool SameScale(ScaleSpec before, ScaleSpec after) =>
-        before.Id == after.Id || ((LinearScaleSpec)before).Domain == ((LinearScaleSpec)after).Domain;
+    /// <summary>
+    /// Returns whether two scales map data the same way (design §4.8): the same node, or the same kind with the same domain,
+    /// zero, and constants. Reverse and clamp are left out: they change the recording only. Allocates nothing.
+    /// </summary>
+    private static bool SameMapping(ScaleSpec before, ScaleSpec after) =>
+        before.Id == after.Id
+        || (before, after) switch
+        {
+            (LinearScaleSpec b, LinearScaleSpec a) => b.Domain == a.Domain && b.Zero == a.Zero,
+            (LogScaleSpec b, LogScaleSpec a) => b.Domain == a.Domain,
+            (SymlogScaleSpec b, SymlogScaleSpec a) => b.Domain == a.Domain && b.Zero == a.Zero && b.Constant.Equals(a.Constant),
+            (PowScaleSpec b, PowScaleSpec a) => b.Domain == a.Domain && b.Zero == a.Zero && b.Exponent.Equals(a.Exponent),
+            (TimeScaleSpec b, TimeScaleSpec a) => b.Domain == a.Domain && b.Unit == a.Unit && b.Epoch == a.Epoch,
+            (TransformScaleSpec b, TransformScaleSpec a) => b.Domain == a.Domain && ReferenceEquals(b.Transform, a.Transform),
+            _ => false,
+        };
+
+    /// <summary>Returns whether a scale's reverse or clamp changed, which only records the lines again (design §4.8).</summary>
+    private static bool OptionsChanged(ScaleSpec before, ScaleSpec after)
+    {
+        var (b, a) = ((ContinuousScaleSpec)before, (ContinuousScaleSpec)after);
+        return b.Reverse != a.Reverse || b.Clamp != a.Clamp;
+    }
 
     /// <summary>
-    /// Learns a linear domain (design §4.2) as an origin and differences (§3.6): the one given, or the union of the ranges of
-    /// every layer's column, from statistics that the wait for the indexes had the workers compute. Integer ends are compared
-    /// as <see cref="long"/> while every column is an integer column, and as <see cref="double"/> once a floating-point one
-    /// comes in.
+    /// Learns a domain (design §4.2) as an origin and differences (§3.6): the one given, or the union of the ranges of every
+    /// layer's column, from statistics that the wait for the indexes had the workers compute. Without a transform (linear,
+    /// time) the domain is in data units; integer ends are compared as <see cref="long"/> while every column is an integer
+    /// column, and as <see cref="double"/> once a floating-point one comes in. With a transform it is in the scale space: the
+    /// ends are mapped, and the cases of no value and one value are taken there.
     /// </summary>
-    private static ScaleRange Learn(PlotSpec spec, ScaleSpec scale, bool ofX)
+    private static ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX)
     {
-        if (((LinearScaleSpec)scale).Domain is { } domain)
+        if (scale is TimeScaleSpec { Domain: { } time })
         {
-            return ScaleRange.FromDouble(domain.Min, domain.Max);
+            return ScaleRange.FromInteger(time.Min, time.Max);
+        }
+
+        if (scale.GivenDomain is { } domain)
+        {
+            return transform is null
+                ? ScaleRange.FromDouble(domain.Min, domain.Max)
+                : Mapped(transform, domain.Min, domain.Max, string.Empty, string.Empty);
         }
 
         var (integerMin, integerMax) = (long.MaxValue, long.MinValue);
         var (min, max) = (double.PositiveInfinity, double.NegativeInfinity);
+        var (minName, maxName) = (string.Empty, string.Empty);
         var (found, integer) = (false, true);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
@@ -267,10 +337,11 @@ internal sealed class PlotPlan : IDisposable
                 continue;
             }
 
+            var name = spec.Data.GetName(reference.Index);
             if (!double.IsFinite(low.Value) || !double.IsFinite(high.Value))
             {
                 throw new InvalidOperationException(
-                    $"The column \"{spec.Data.GetName(reference.Index)}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
+                    $"The column \"{name}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
                 );
             }
 
@@ -280,12 +351,26 @@ internal sealed class PlotPlan : IDisposable
                 (integerMin, integerMax) = (Math.Min(integerMin, low.Integer), Math.Max(integerMax, high.Integer));
             }
 
+            (minName, maxName) = (low.Value < min ? name : minName, high.Value > max ? name : maxName);
             (min, max, found) = (Math.Min(min, low.Value), Math.Max(max, high.Value), true);
         }
 
         if (!found)
         {
+            // No value: [0, 1], in the scale space when there is a transform (log: 1 to 10).
             return ScaleRange.FromDouble(0, 1);
+        }
+
+        if (scale.ZeroOption)
+        {
+            // 0 first; one value that is not 0 then has a width (design §4.2).
+            (integerMin, integerMax) = (Math.Min(integerMin, 0), Math.Max(integerMax, 0));
+            (min, max) = (Math.Min(min, 0), Math.Max(max, 0));
+        }
+
+        if (transform is not null)
+        {
+            return min == max ? Single(transform, min, minName) : Mapped(transform, min, max, minName, maxName);
         }
 
         if (!integer)
@@ -297,23 +382,75 @@ internal sealed class PlotPlan : IDisposable
         return integerMin == integerMax ? new ScaleRange(integerMin, -0.5, 0.5).Anchor() : ScaleRange.FromInteger(integerMin, integerMax);
     }
 
+    /// <summary>Returns the range of the scale space between the mapped ends, or throws when an end does not map to a finite value.</summary>
+    private static ScaleRange Mapped(IScale transform, double min, double max, string minName, string maxName)
+    {
+        Span<double> ends = [min, max];
+        Span<double> mapped = stackalloc double[2];
+        transform.Forward(ends, mapped);
+        CheckMapped(min, mapped[0], minName);
+        CheckMapped(max, mapped[1], maxName);
+        return ScaleRange.FromDouble(mapped[0], mapped[1]);
+    }
+
+    /// <summary>Returns [f(v) − 0.5, f(v) + 0.5] in the scale space, for a learned domain of one value (design §4.2).</summary>
+    private static ScaleRange Single(IScale transform, double value, string name)
+    {
+        Span<double> end = [value];
+        Span<double> mapped = stackalloc double[1];
+        transform.Forward(end, mapped);
+        CheckMapped(value, mapped[0], name);
+        return ScaleRange.FromDouble(mapped[0] - 0.5, mapped[0] + 0.5);
+    }
+
+    private static void CheckMapped(double value, double mapped, string name)
+    {
+        if (!double.IsFinite(mapped))
+        {
+            throw new InvalidOperationException(
+                $"The column \"{name}\" holds {value}, which the scale maps to {mapped}, so a learned domain would have an end that is not finite; give the scale a domain with WithDomain."
+            );
+        }
+    }
+
     /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over an x domain into the plan's buffer, as differences from its
-    /// origin, or throws when they do not increase in double (design §4.8). Allocates nothing, so that a new x domain costs no
-    /// garbage.
+    /// Writes the W + 1 boundaries of the pixel columns over an x domain into the plan's buffer, or throws when they do not
+    /// increase in double (design §4.8). Without a transform they are differences from the domain's origin; with one they are
+    /// made in the scale space and mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase
+    /// (design §4.2). Allocates nothing, so that a new x domain costs no garbage.
     /// </summary>
     private void MakeBoundaries(ScaleRange domain)
     {
         // Until the buffer holds this domain's boundaries, it holds no domain's.
         _x = ScaleRange.None;
+        var target = _xTransform is null ? _boundaries : _scaleBoundaries;
         for (var k = 0; k <= _width; k++)
         {
-            _boundaries[k] = domain.Lower + ((domain.Upper - domain.Lower) * k / _width);
-            if (k > 0 && !(_boundaries[k - 1] < _boundaries[k]))
+            target[k] = domain.Lower + ((domain.Upper - domain.Lower) * k / _width);
+            if (k > 0 && !(target[k - 1] < target[k]))
             {
                 throw new ArgumentException(
                     $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] is too narrow for {_width} pixel columns: their boundaries do not increase in double."
                 );
+            }
+        }
+
+        if (_xTransform is not null)
+        {
+            for (var k = 0; k <= _width; k++)
+            {
+                _scaleBoundaries[k] += domain.Origin;
+            }
+
+            _xTransform.Inverse(_scaleBoundaries, _boundaries);
+            for (var k = 0; k <= _width; k++)
+            {
+                if (!double.IsFinite(_boundaries[k]) || (k > 0 && !(_boundaries[k - 1] < _boundaries[k])))
+                {
+                    throw new ArgumentException(
+                        $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] of the scale space is too narrow for {_width} pixel columns: its boundaries, mapped back to data units, do not increase in double."
+                    );
+                }
             }
         }
 
@@ -379,28 +516,77 @@ internal sealed class PlotPlan : IDisposable
         return false;
     }
 
-    /// <summary>Maps each layer's M4 points to pixels in double and records them as a polyline, in layer order (design §4.8).</summary>
-    private void Record()
+    /// <summary>
+    /// Maps each layer's M4 points to pixels in double and records them as a polyline, in layer order (design §4.2, §4.8). A
+    /// transformed axis maps the points' coordinates to the scale space first, a span at a time; a point that maps to a value
+    /// that is not finite is dropped and breaks the line.
+    /// </summary>
+    private void Record(ContinuousScaleSpec xScale, ContinuousScaleSpec yScale)
     {
         _list.Clear();
         foreach (var layer in _layers)
         {
+            var points = layer.Output.AsSpan(0, _batch.GetResult(layer.Series).Count);
             var count = 0;
-            foreach (var point in layer.Output.AsSpan(0, _batch.GetResult(layer.Series).Count))
+            foreach (var point in points)
             {
                 if (point.BreakBefore)
                 {
-                    _points[count++] = new Vector2(float.NaN);
+                    _points[count] = new Vector2(float.NaN);
                 }
 
-                // (d(v) − lower) / (upper − lower) maps to [0, 1], in differences from the domain's origin; x runs left to right and y
-                // bottom to top (design §3.6, §4.2).
-                var x = (point.X - _x.Lower) / (_x.Upper - _x.Lower) * _width;
-                var y = _height - ((point.Y - _y.Lower) / (_y.Upper - _y.Lower) * _height);
-                _points[count++] = new Vector2((float)x, (float)y);
+                count += point.BreakBefore ? 1 : 0;
+                _points[count++] = default;
             }
 
+            Map(points, ofX: true, _xTransform, _x, xScale, _width);
+            Map(points, ofX: false, _yTransform, _y, yScale, _height);
             _list.DrawPolyline(_points.AsSpan(0, count), layer.Spec.Style);
+        }
+    }
+
+    /// <summary>
+    /// Writes one coordinate of each point's pixel into the slots <see cref="Record"/> left for them: (d − lower) / (upper −
+    /// lower) maps to [0, 1] in differences from the domain's origin; x runs left to right and y bottom to top, or the other
+    /// way with reverse; clamp keeps d inside the domain (design §3.6, §4.2).
+    /// </summary>
+    private void Map(ReadOnlySpan<M4Point> points, bool ofX, IScale? transform, ScaleRange domain, ContinuousScaleSpec scale, int size)
+    {
+        var values = _values.AsSpan(0, points.Length);
+        for (var i = 0; i < points.Length; i++)
+        {
+            values[i] = ofX ? points[i].X : points[i].Y;
+        }
+
+        if (transform is not null)
+        {
+            var mapped = _mapped.AsSpan(0, points.Length);
+            transform.Forward(values, mapped);
+            for (var i = 0; i < points.Length; i++)
+            {
+                values[i] = mapped[i] - domain.Origin;
+            }
+        }
+
+        var slot = 0;
+        for (var i = 0; i < points.Length; i++)
+        {
+            slot += points[i].BreakBefore ? 1 : 0;
+            var d = values[i];
+            float pixel;
+            if (!double.IsFinite(d))
+            {
+                pixel = float.NaN;
+            }
+            else
+            {
+                d = scale.Clamp ? Math.Clamp(d, domain.Lower, domain.Upper) : d;
+                var t = (d - domain.Lower) / (domain.Upper - domain.Lower) * size;
+                pixel = (float)(ofX == scale.Reverse ? size - t : t);
+            }
+
+            _points[slot] = ofX ? _points[slot] with { X = pixel } : _points[slot] with { Y = pixel };
+            slot++;
         }
     }
 
