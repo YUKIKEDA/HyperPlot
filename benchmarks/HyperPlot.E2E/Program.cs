@@ -10,10 +10,11 @@ using HyperPlot.Samples;
 // each stage, the GPU time (IGpuBackend.LastFrameTime), the managed allocations a frame, and the memory.
 //   dotnet publish benchmarks/HyperPlot.E2E -c Release -r win-x64 -o <dir>
 //   <dir>/HyperPlot.E2E.exe --dir <folder for the data files> [--series 1] [--files 4] [--rounds 2] [--points 1000000000]
-//     [--csv <file for one row a frame>]
+//     [--csv <file for one row a frame>] [--min-span <points: keep only the views at least this wide, for a profile>]
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
 string? directory = null;
 string? csv = null;
+var minSpan = 0.0;
 long points = 1_000_000_000;
 var seriesCount = 1;
 var fileCount = 4;
@@ -33,6 +34,9 @@ for (var i = 0; i < args.Length; i++)
             break;
         case "--files":
             fileCount = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
+        case "--min-span":
+            minSpan = double.Parse(args[++i], CultureInfo.InvariantCulture);
             break;
         case "--csv":
             csv = args[++i];
@@ -88,7 +92,7 @@ using var target = backend.CreateRenderTarget(new RenderTargetDescription(1920, 
 var list = new RenderList();
 var boundaries = new double[area.Width + 1];
 var ranges = new MinMax<float>[seriesCount];
-var views = Script(points);
+var views = Array.FindAll(Script(points), v => v.To - v.From >= minSpan);
 var frames = views.Length * rounds;
 var extract = new double[frames];
 var range = new double[frames];
