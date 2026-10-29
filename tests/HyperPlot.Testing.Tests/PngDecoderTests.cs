@@ -85,6 +85,58 @@ public sealed class PngDecoderTests
         Assert.Contains("signature", Assert.Throws<InvalidDataException>(() => PngDecoder.Decode([])).Message, StringComparison.Ordinal);
     }
 
+    /// <summary>A file with no IDAT chunk is rejected with the reason.</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A 3 × 3 PNG made by hand with its IDAT chunk left out (IHDR and IEND only, CRCs right).
+    ///
+    /// Steps:
+    /// - Decode it.
+    ///
+    /// Expected:
+    /// - InvalidDataException naming the missing IDAT chunk.
+    /// </remarks>
+    [Fact]
+    public void Decode_NoImageData_Throws()
+    {
+        var png = Images.Png(3, 3, 8, 6, 0, Images.Rows(Images.Gradient(3, 3), 3, 3, filter: 0), idat: _ => null);
+
+        var exception = Assert.Throws<InvalidDataException>(() => PngDecoder.Decode(png));
+
+        Assert.Contains("no IDAT", exception.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>Image data that is not a valid zlib stream is rejected with the reason, not a bare exception of the inflater.</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A 3 × 3 PNG made by hand whose IDAT holds the zlib header and then a deflate block of the reserved type
+    ///   (0xFF: final, type 3), with its CRC right.
+    ///
+    /// Steps:
+    /// - Decode it.
+    ///
+    /// Expected:
+    /// - InvalidDataException saying the data does not inflate, with the inflater's exception as its inner exception.
+    /// </remarks>
+    [Fact]
+    public void Decode_DataNotInflating_Throws()
+    {
+        var png = Images.Png(
+            3,
+            3,
+            8,
+            6,
+            0,
+            Images.Rows(Images.Gradient(3, 3), 3, 3, filter: 0),
+            idat: data => [data[0], data[1], 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+
+        var exception = Assert.Throws<InvalidDataException>(() => PngDecoder.Decode(png));
+
+        Assert.Contains("does not inflate", exception.Message, StringComparison.Ordinal);
+        _ = Assert.IsType<InvalidDataException>(exception.InnerException);
+    }
+
     /// <summary>Image data that does not inflate to the size the header gives is rejected.</summary>
     /// <remarks>
     /// Preconditions:
