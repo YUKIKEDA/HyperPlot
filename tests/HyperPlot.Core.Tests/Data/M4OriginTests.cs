@@ -92,12 +92,14 @@ public sealed class M4OriginTests
     ///   6.39288288e17 + 256 i with a float Y.
     ///
     /// Steps:
-    /// - Extract the first with the Y origin 2026's ticks; extract the second with the X origin 2026's ticks + 1, over a view
+    /// - Extract the first with the Y origin 2026's ticks, over a view of 100 elements a pixel column and over one of 1
+    ///   element a pixel column; extract the second with the X origin 2026's ticks + 1, over a view
     ///   of 2,000 elements.
     ///
     /// Expected:
     /// - Each equals the brute force over the same formulas: Y as exact differences (-1, 0, 1), X as (double)x − (double)o;
-    ///   the first has points with Y of -1 and 1, which a double of the ticks themselves could not tell apart.
+    ///   the first has points with Y of -1 and 1, which a double of the ticks themselves could not tell apart, and its view
+    ///   of 1 element a column has raw points that are not 0.
     /// </remarks>
     [Fact]
     public void Extract_LongYAndDoubleXFarFromZero_FollowTheirFormulas()
@@ -118,6 +120,13 @@ public sealed class M4OriginTests
         Assert.Equal(Reference.M4(xValues, yDifferences, boundaries, M4Gaps.Break), extracted);
         Assert.Contains(extracted, p => p.Y == -1);
         Assert.Contains(extracted, p => p.Y == 1);
+
+        // One element a pixel column: the elements are written as they are (Raw), in the same differences.
+        var close = Enumerable.Range(0, Width + 1).Select(k => 5000.0 + k).ToArray();
+        result = M4.Extract(x, pyramid, new ScaleOrigin(0, Ticks2026), close, points);
+        extracted = Points(points, result);
+        Assert.Equal(Reference.M4(xValues, yDifferences, close, M4Gaps.Break), extracted);
+        Assert.Contains(extracted, p => p.Roles.HasFlag(M4Roles.Raw) && p.Y != 0);
 
         var far = Enumerable.Range(0, Length).Select(i => 6.39288288e17 + (256.0 * i)).ToArray();
         using var farColumn = Column.Wrap(far);
