@@ -19,7 +19,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 
 - **フェーズ:** B（GoG）
 - **作業中:** D2（G1 は #81 の PR で済み）
-- **ブランチ:** —
+- **ブランチ:** `docs/11-scale-origin`
 - **Issue:** [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11)
 
 ## ツールチェーン
@@ -47,15 +47,15 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | S3 | ゴールデン画像の比較（`HyperPlot.Testing` の `GoldenImage`、`HelloPlot` の場面と線の種類の 2 場面、基準の更新の手順、許容差は手元と CI の WARP の差を測って決める） | done | [#66](https://github.com/YUKIKEDA/HyperPlot/issues/66)（設計）、[#70](https://github.com/YUKIKEDA/HyperPlot/issues/70) |
 | **B: GoG** | | | |
 | G1 | 仕様モデルとビルダ（`DataTable`、Plot / Layer / Encoding / コンパイル、`SpecId` と差分の再計算）、linear の位置のスケール、線のプロットをヘッドレスで描く（`HeadlessRenderer.Render(PlotSpec)`） | done | [#76](https://github.com/YUKIKEDA/HyperPlot/issues/76)（設計）、[#81](https://github.com/YUKIKEDA/HyperPlot/issues/81) |
-| D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計 | not-started | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11) |
-| G2 | スケール（log / time / band / 色、linear の nice・zero・reverse・clamp）と目盛り、スケールを足す口（`IScale`）、名前つきの色とパレット、列で色を分けるチャネル | not-started | |
+| D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計と実装（`ScaleOrigin`、M4 と `PlotWorkerPool.Extract` の原点、整数の等間隔の列 `Column.UniformInteger`、コンパイルの中の domain、R-6 のテスト、M4 の前後の計測） | in-progress | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11)（設計）、[#85](https://github.com/YUKIKEDA/HyperPlot/issues/85) |
+| G2 | スケール（log / time / band / 色、linear の nice・zero・reverse・clamp）と目盛り、time のスケールの単位と起点（既定は .NET のティック、ns・µs の Unix 起点、日時の domain を `long` で正確に指定する口、§3.1・§4.2）、スケールを足す口（`IScale`）、名前つきの色とパレット、列で色を分けるチャネル | not-started | |
 | T1 | テキスト（契約、DirectWrite、アトラス、グリフのパイプライン） | not-started | |
 | G3 | ガイドと配置（軸・凡例・タイトル・テーマ） | not-started | |
 | G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image）、Geom を足す口（`IGeom`）、`RenderList.SetTransform`（§3.6）と座標系の 4×4 の変換の契約（§4.4）、線のマイターと面取りの結合・平らと四角の端・3 つ以上の区間の破線 | not-started | |
 | G5 | Stat と Position | not-started | |
 | G6 | ファセットと複数のプロット | not-started | |
 | **C: インタラクションと WPF** | | | |
-| I1 | 入力のモデル、ツールの状態機械、ビューの操作、ズームの履歴 | not-started | |
+| I1 | 入力のモデル、ツールの状態機械、ビューの操作（原点の付け直し、§6.2）、ズームの履歴 | not-started | |
 | W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2） | not-started | |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6） | not-started | |
 | I3 | 選択とリンク | not-started | |
