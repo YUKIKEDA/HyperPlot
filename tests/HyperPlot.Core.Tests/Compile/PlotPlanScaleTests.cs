@@ -23,7 +23,8 @@ public sealed class PlotPlanScaleTests
     /// Steps:
     /// - Render, each against a plan of its own and its hand-built list: log y; symlog y over "cross"; sqrt y and pow 2 y
     ///   over "cross"; log2 x; log y over "mixed" with a domain given; reverse x and y; clamp x and y with domains narrower
-    ///   than the data.
+    ///   than the data; log x of (100, 40,000), whose origin in the scale space is 2; clamped log y over "mixed", whose 0 maps
+    ///   to −∞ and is still dropped, not clamped.
     ///
     /// Expected:
     /// - Each recorded list equals the hand-built one, segment for segment; in the "mixed" one, -5 and 0 are dropped after M4
@@ -87,6 +88,16 @@ public sealed class PlotPlanScaleTests
                 Clamp = true,
             }
         );
+
+        Check(
+            posColumn,
+            Scale.Log().WithDomain(100, 40_000),
+            Scale.Linear(),
+            Axis.Mapped(LogTransform.Instance, (100, 40_000)),
+            Axis.Linear(posRange.Min, posRange.Max)
+        );
+        var clampedLog = Scale.Log().WithDomain(1, 30) with { Clamp = true };
+        Check(mixedColumn, Scale.Linear(), clampedLog, Axis.Linear(1, Length), Axis.Mapped(LogTransform.Instance, (1, 30)) with { Clamp = true });
 
         void Check(Column<float> y, ScaleSpec xScale, ScaleSpec yScale, Axis xAxis, Axis yAxis)
         {
@@ -269,11 +280,12 @@ public sealed class PlotPlanScaleTests
     /// - A plan that rendered a linear x and y; two log2 transforms.
     ///
     /// Steps:
-    /// - Render, in order: y with reverse; y with clamp; y as log; y as linear with zero; x as the first log2; x as the
-    ///   second log2.
+    /// - Render, in order: y with reverse; y plain; y with clamp; y as log; y as linear with zero; x as the first log2; x as
+    ///   the second log2; then, one member at a time, a log domain, a symlog C and domain and zero, a pow k and domain and
+    ///   zero, the second log2 with a domain.
     ///
     /// Expected:
-    /// - Pyramids, extractions, recordings added: 0/0/1, 0/0/1, 0/1/1, 0/1/1, 0/1/1, 0/1/1.
+    /// - Pyramids, extractions, recordings added: 0/0/1 for each of the first three, then 0/1/1 for every other step.
     /// </remarks>
     [Fact]
     public void Render_ChangedScales_RedoOnlyTheChangedStages()
@@ -285,11 +297,24 @@ public sealed class PlotPlanScaleTests
         _ = plan.Render(spec);
 
         Step(spec with { ScaleY = Scale.Linear() with { Reverse = true } }, (0, 0, 1));
+        Step(spec with { ScaleY = Scale.Linear() }, (0, 0, 1));
         Step(spec with { ScaleY = Scale.Linear() with { Clamp = true } }, (0, 0, 1));
         Step(spec with { ScaleY = Scale.Log() }, (0, 1, 1));
         Step(spec with { ScaleY = Scale.Linear() with { Zero = true } }, (0, 1, 1));
         Step(spec with { ScaleX = Scale.Transform(new ScaleSpecTests.Log2()) }, (0, 1, 1));
-        Step(spec with { ScaleX = Scale.Transform(new ScaleSpecTests.Log2()) }, (0, 1, 1));
+        var log2 = new ScaleSpecTests.Log2();
+        Step(spec with { ScaleX = Scale.Transform(log2) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Log().WithDomain(1, 50) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Log().WithDomain(1, 60) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Symlog(1) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Symlog(2) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Symlog(2).WithDomain(0, 50) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Symlog(2) with { Zero = true } }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Pow(2) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Pow(3) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Pow(3).WithDomain(0, 50) }, (0, 1, 1));
+        Step(spec with { ScaleY = Scale.Pow(3) with { Zero = true } }, (0, 1, 1));
+        Step(spec with { ScaleX = Scale.Transform(log2).WithDomain(1, 50) }, (0, 1, 1));
 
         void Step(PlotSpec next, (int Pyramids, int Extractions, int Recordings) expected)
         {
@@ -300,6 +325,76 @@ public sealed class PlotPlanScaleTests
                 (plan.PyramidsBuilt - before.PyramidsBuilt, plan.Extractions - before.Extractions, plan.Recordings - before.Recordings)
             );
         }
+    }
+
+    /// <summary>
+    /// A time scale extracts again when its unit, epoch, or domain changes, and a given time domain is taken exactly in the
+    /// column's unit (design §4.2, §4.8).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A plan that rendered an integer uniform X of 2026's ticks + 1 with a time scale in ticks.
+    ///
+    /// Steps:
+    /// - Render, in order: the unit nanoseconds; another epoch; a domain of the ticks + 11 to + 501.
+    ///
+    /// Expected:
+    /// - 0/1/1 each; the last x domain has the origin of the ticks + 11, and differences 0 and 490.
+    /// </remarks>
+    [Fact]
+    public void Render_ChangedTimeMembers_ExtractAgain()
+    {
+        const long ticks = 639_288_288_000_000_001;
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(Enumerable.Range(1, 100).Select(i => (float)i).ToArray());
+        using var plan = new PlotPlan(pool, Width, Height);
+        var spec = Spec(Column.UniformInteger(ticks, 10, 100), y) with { ScaleX = Scale.Time() };
+        _ = plan.Render(spec);
+
+        Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds) });
+        Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds, new DateTime(2000, 1, 1)) });
+        Step(spec with { ScaleX = Scale.Time(TimeUnit.Nanoseconds, new DateTime(2000, 1, 1)).WithDomain(ticks + 10, ticks + 500) });
+
+        Assert.Equal(new ScaleRange(ticks + 10, 0, 490), plan.XDomain);
+
+        void Step(PlotSpec next)
+        {
+            var before = (plan.PyramidsBuilt, plan.Extractions, plan.Recordings);
+            _ = plan.Render(next);
+            Assert.Equal(
+                (0, 1, 1),
+                (plan.PyramidsBuilt - before.PyramidsBuilt, plan.Extractions - before.Extractions, plan.Recordings - before.Recordings)
+            );
+        }
+    }
+
+    /// <summary>
+    /// A new scale makes new boundaries even when its range of the scale space equals the last one's: a linear x of (0, 2)
+    /// and a log x of (1, 100) both span 0 to 2 (design §4.2).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A plan that rendered a linear x with the domain (0, 2) over an X of 1 to 100.
+    ///
+    /// Steps:
+    /// - Render the log x of (1, 100).
+    ///
+    /// Expected:
+    /// - The lines equal those a new plan records for the log spec.
+    /// </remarks>
+    [Fact]
+    public void Render_SameRangeNewScale_MakesNewBoundaries()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(Enumerable.Range(1, 100).Select(i => (float)Math.Sin(i * 0.1)).ToArray());
+        using var plan = new PlotPlan(pool, Width, Height);
+        using var fresh = new PlotPlan(pool, Width, Height);
+        var spec = Spec(Column.Uniform(1, 1, 100), y);
+        _ = plan.Render(spec with { ScaleX = Scale.Linear().WithDomain(0, 2) });
+
+        var log = spec with { ScaleX = Scale.Log().WithDomain(1, 100) };
+
+        PlotPlanTests.AssertSameLines(fresh.Render(log), plan.Render(log));
     }
 
     /// <summary>An exception that a user's transform throws comes out of Render as it is (design §4.2).</summary>
@@ -404,8 +499,7 @@ public sealed class PlotPlanScaleTests
         var table = DataTable.Create().Add("x", x).Add("y", y).Build();
         ColumnRef xRef = x switch
         {
-            UniformColumn => table.Col<double>("x"),
-            Column<long> => table.Col<long>("x"),
+            UniformColumn { IsInteger: true } or Column<long> => table.Col<long>("x"),
             _ => table.Col<double>("x"),
         };
         return new PlotSpec { Data = table, Layers = [new LineLayerSpec { X = xRef, Y = table.Col<float>("y") }] };
