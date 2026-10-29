@@ -157,11 +157,12 @@ public sealed class FrameTests
     [Fact]
     public void Close_RingFull_GoesOnWithoutWaiting()
     {
+        // The hooks come before CreateRenderTarget, whose frame 0 may be read as it closes on a fast runner.
         using var backend = D3D11Backend.Create(useWarp: true);
-        using var target = backend.CreateRenderTarget(new RenderTargetDescription(8, 8));
         var times = new List<GpuFrameTime>();
         backend.Timer.TestTimed = times.Add;
         backend.Timer.TestHold = _ => true;
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(8, 8));
         var list = Line();
 
         for (var i = 0; i < 20; i++)
@@ -200,10 +201,10 @@ public sealed class FrameTests
     public void Poll_OlderFrameNotReady_NewerTimesWait()
     {
         using var backend = D3D11Backend.Create(useWarp: true);
-        using var target = backend.CreateRenderTarget(new RenderTargetDescription(8, 8));
         var times = new List<GpuFrameTime>();
         backend.Timer.TestTimed = times.Add;
         backend.Timer.TestHold = frame => frame == 2;
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(8, 8));
         var list = Line();
 
         // Wait for an arrival, not for a number of frames: WARP on a shared runner may not have finished frame 1 after 20.
@@ -247,11 +248,12 @@ public sealed class FrameTests
     [Fact]
     public void Disjoint_Frames_GetNoTime()
     {
+        // The hooks come before CreateRenderTarget, whose frame 0 may be read as it closes on a fast runner.
         using var backend = D3D11Backend.Create(useWarp: true);
-        using var target = backend.CreateRenderTarget(new RenderTargetDescription(8, 8));
         var times = new List<GpuFrameTime>();
         backend.Timer.TestTimed = times.Add;
         backend.Timer.TestDisjoint = true;
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(8, 8));
         var list = Line();
 
         for (var i = 0; i < 100; i++)
