@@ -24,6 +24,7 @@ Follow `.github/pull_request_template.md` with the same headings in the same ord
 - Empty sections say `N/A`; do not delete them.
 - `## Related` has `Closes #N` alone on a line when the PR finishes the Issue, `Part of #N` when it does not (`.cursor/rules/github-closing.mdc`).
 - `## Verification` names the commands that ran and their result: `./build.ps1`, the NativeAOT publish when the Issue names it, any search a "every X does Y" claim rests on (`.cursor/rules/spec-checks.mdc`). A search is written with the terms that were searched, and only a search that ran is written: a PR that says it searched for one name when it searched for a neighbouring one leaves the first name behind in the design.
+- A section the body says the PR changed, or a sample it says was compiled, is one that `git diff main...HEAD` shows. PR #77's body listed design §4.9 as changed and its example as compiled; the diff had no change to §4.9.
 - A count the body gives ("the other 9 places") is the output of a command that selects exactly what the count names, not a reading of a broader search.
 - `## Measurements` carries the numbers for a frame-path or data-path change: time per stage before and after, allocations per frame, bytes uploaded per frame, at the named data and viewport sizes, against a named baseline (`.cursor/rules/bench.mdc`). `N/A` only when nothing on those paths changed.
 - Pass the body to `gh pr create` through a temporary UTF-8 file (`--body-file`), deleted after the call (`.cursor/rules/scratch.mdc`).
