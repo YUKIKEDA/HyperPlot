@@ -127,12 +127,13 @@ public sealed class D3D11BackendTests
     ///   removed reason DEVICE_HUNG.
     ///
     /// Steps:
-    /// - Read; then the same with a removed reason of S_OK; after each loss, remove the seam, end a frame, and read again;
+    /// - Open an outer frame and read; then the same with a removed reason of S_OK; after each loss, remove the seam, close
+    ///   the outer frame, and read again;
     ///   then clear blue and read.
     ///
     /// Expected:
     /// - The read throws GpuDeviceLostException with HResult the injected result and RemovedReason DEVICE_HUNG, or the
-    ///   injected result when the reason is S_OK; EndFrame while lost does nothing; the read after the loss is all 0; the
+    ///   injected result when the reason is S_OK; closing an outer frame opened before the loss, while lost, does nothing; the read after the loss is all 0; the
     ///   blue clear reads back blue.
     /// </remarks>
     [Theory]
@@ -148,12 +149,13 @@ public sealed class D3D11BackendTests
             backend.CheckResult = (call, result) => call == "Map" ? lost : result;
             backend.RemovedReason = () => reason;
 
+            var outer = backend.BeginFrame();
             var exception = Assert.Throws<GpuDeviceLostException>(() => target.ReadPixels(pixels));
 
             Assert.Equal((lost, reason == S.S_OK ? lost : reason), (exception.HResult, exception.RemovedReason));
             backend.CheckResult = null;
             backend.RemovedReason = null;
-            backend.EndFrame();
+            outer.Dispose();
             target.ReadPixels(pixels);
             Assert.All(pixels, p => Assert.Equal(0, p));
             target.Clear(new Color(0, 0, 255, 255));
@@ -221,7 +223,7 @@ public sealed class D3D11BackendTests
         backend.CheckResult = null;
         backend.CreateDevice = _ => E.E_OUTOFMEMORY;
 
-        var failure = Assert.Throws<InvalidOperationException>(backend.BeginFrame);
+        var failure = Assert.Throws<InvalidOperationException>(() => backend.BeginFrame());
 
         Assert.Equal(E.E_OUTOFMEMORY, failure.HResult);
         backend.CreateDevice = null;
@@ -260,8 +262,8 @@ public sealed class D3D11BackendTests
         _ = Assert.Throws<GpuDeviceLostException>(() => first.ReadPixels(new byte[16]));
         backend.CheckResult = (call, result) => call == "CreateTexture2D" ? E.E_OUTOFMEMORY : result;
 
-        var failure = Assert.Throws<InvalidOperationException>(backend.BeginFrame);
-        var again = Assert.Throws<InvalidOperationException>(backend.BeginFrame);
+        var failure = Assert.Throws<InvalidOperationException>(() => backend.BeginFrame());
+        var again = Assert.Throws<InvalidOperationException>(() => backend.BeginFrame());
 
         Assert.Equal((E.E_OUTOFMEMORY, E.E_OUTOFMEMORY), (failure.HResult, again.HResult));
         backend.CheckResult = null;
@@ -327,7 +329,7 @@ public sealed class D3D11BackendTests
         backend.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() => target.Clear(default));
-        Assert.Throws<ObjectDisposedException>(backend.BeginFrame);
+        Assert.Throws<ObjectDisposedException>(() => backend.BeginFrame());
         Assert.Throws<ObjectDisposedException>(() => backend.CreateRenderTarget(new RenderTargetDescription(1, 1)));
         Assert.Throws<ObjectDisposedException>(() => renderer.Clear(default));
         D3D11Backend.Shared.Dispose();

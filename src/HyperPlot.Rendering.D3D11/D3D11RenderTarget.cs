@@ -49,7 +49,7 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     public void Clear(Color color)
     {
         ThrowIfDisposed();
-        _backend.BeginFrame();
+        using var frame = _backend.BeginFrame();
 
         // The integer premultiplied value k, written as k / 255: the GPU's float-to-UNORM rounding gives back k exactly.
         var a = color.A;
@@ -61,7 +61,6 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
             a / 255f,
         };
         _backend.Context->ClearRenderTargetView(_view, rgba);
-        _backend.EndFrame();
     }
 
     /// <inheritdoc />
@@ -78,7 +77,7 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
             );
         }
 
-        _backend.BeginFrame();
+        using var frame = _backend.BeginFrame();
         var context = _backend.Context;
         context->CopyResource((ID3D11Resource*)_staging, (ID3D11Resource*)_texture);
 
@@ -107,8 +106,6 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
         {
             context->Unmap((ID3D11Resource*)_staging, 0);
         }
-
-        _backend.EndFrame();
     }
 
     /// <summary>Releases the textures and removes the target from its backend.</summary>

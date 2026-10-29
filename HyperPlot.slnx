@@ -2,6 +2,7 @@
   <Folder Name="/benchmarks/">
     <Project Path="benchmarks/HyperPlot.Benchmarks/HyperPlot.Benchmarks.csproj" />
     <Project Path="benchmarks/HyperPlot.DataPath/HyperPlot.DataPath.csproj" />
+    <Project Path="benchmarks/HyperPlot.E2E/HyperPlot.E2E.csproj" />
   </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/BillionSeries/BillionSeries.csproj" />
