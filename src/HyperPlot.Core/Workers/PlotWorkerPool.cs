@@ -253,7 +253,10 @@ public sealed class PlotWorkerPool : IDisposable
     /// <summary>Gets or sets a value indicating whether the caller of Extract takes jobs; tests turn it off to see the workers' order.</summary>
     internal bool CallerTakesJobs { get; set; } = true;
 
-    /// <summary>Gets or sets a test hook called on a worker as it takes a job: true for a frame job, false for a chunk.</summary>
+    /// <summary>
+    /// Gets or sets a test hook called on a worker after it ran a job it took: true for a frame job, false for a chunk. A
+    /// chunk's call comes after the chunk is built, so after a completion that chunk ends.
+    /// </summary>
     internal Action<bool>? TestTook { get; set; }
 
     /// <summary>Wakes the threads to look for work. Neither allocates nor waits (design §3.3).</summary>
