@@ -73,8 +73,14 @@ internal sealed class PlotPlan : IDisposable
     /// drawn last once warm.
     /// </summary>
     /// <exception cref="ArgumentNullException">The spec has a null member or layer.</exception>
-    /// <exception cref="ArgumentException">The spec does not check (design §4.8), or the x domain is too narrow for the width.</exception>
-    /// <exception cref="InvalidOperationException">A learned domain has an infinite end (design §4.2), or an X column decreases.</exception>
+    /// <exception cref="ArgumentException">
+    /// The spec does not check (design §4.8), or the x domain is too narrow for the width, in the scale space or once mapped
+    /// back to data units.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// A learned domain has an end that is not finite, in data units or once the scale maps it (design §4.2), or an X column
+    /// decreases. An exception that a user's <see cref="IScale"/> throws comes out as it is.
+    /// </exception>
     internal RenderList Render(PlotSpec spec)
     {
         Validate(spec, _spec);
