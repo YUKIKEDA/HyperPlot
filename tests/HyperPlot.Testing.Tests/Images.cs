@@ -43,9 +43,10 @@ internal static class Images
 
     /// <summary>
     /// Builds a PNG from its header fields and raw rows (each row with its filter byte), with its own CRC, so that a test
-    /// can make the forms the decoder must reject.
+    /// can make the forms the decoder must reject. <paramref name="idat"/>, when given, turns the compressed data into what
+    /// the IDAT chunk holds, or into null to leave the chunk out.
     /// </summary>
-    internal static byte[] Png(int width, int height, byte bitDepth, byte colorType, byte interlace, byte[] rows)
+    internal static byte[] Png(int width, int height, byte bitDepth, byte colorType, byte interlace, byte[] rows, Func<byte[], byte[]?>? idat = null)
     {
         using var stream = new MemoryStream();
         stream.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
@@ -63,7 +64,11 @@ internal static class Images
                 zlib.Write(rows);
             }
 
-            Chunk(stream, "IDAT", compressed.ToArray());
+            var data = idat is null ? compressed.ToArray() : idat(compressed.ToArray());
+            if (data is not null)
+            {
+                Chunk(stream, "IDAT", data);
+            }
         }
 
         Chunk(stream, "IEND", []);
