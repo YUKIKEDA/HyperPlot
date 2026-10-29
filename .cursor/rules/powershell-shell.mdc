@@ -27,6 +27,7 @@ body
 
   `git commit -F -` with a here-string does not work: PowerShell passes the text as an argument and git reads it as a pathspec. Use `-m` as above, or commit from Bash with a heredoc.
 - Long text for `gh`: write a temporary UTF-8 file and pass `--body-file`, then delete it (`.cursor/rules/scratch.mdc`).
+- The output of a native command is an array of lines in PowerShell. Join it before editing text read back from `gh` (``(gh pr view 63 --json body --jq .body) -join "`n"``): `.Replace` on the array and `WriteAllText` of it join the lines with spaces, and PR #63's body lost its line breaks that way.
 - Do not put `Remove-Item` in the same command as `$env:PATH += ';C:\Program Files ...'`: the agent's PowerShell tool reads `C:\Program` as the item to remove and refuses the whole command. Remove files in a separate call, or from Bash.
 - A command that holds `C:\Program Files (x86)\...` (the `vswhere` path a NativeAOT publish adds to `PATH`) and calls `Remove-Item` is refused by the same check as a removal of a system path, and none of it runs. Clean up in a command of its own.
 - `Remove-Item` with a wildcard under the scratchpad (`...\scratchpad\*`) is refused as a removal of a system path. Remove scratch files from Bash, naming each file.
