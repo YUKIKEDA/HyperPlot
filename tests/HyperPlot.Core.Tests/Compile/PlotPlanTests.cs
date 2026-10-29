@@ -554,6 +554,56 @@ public sealed class PlotPlanTests
         Assert.Equal(ScaleRange.FromDouble(ticks + 1, 6.5e17), plan.XDomain);
     }
 
+    /// <summary>
+    /// Requirement R-6 through the compile: a long X of 2026's ticks, one tick apart over 1,920 pixels, records each point at
+    /// the pixel its exact difference gives, where a double of the ticks would put 128 ticks on one pixel (design §3.6, §4.8).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A Column&lt;long&gt; X of 2026's ticks + 1 + i for i in 0 to 1,920 (odd, which a double cannot hold) and a float Y;
+    ///   a plan 1,920 pixels wide.
+    ///
+    /// Steps:
+    /// - Render with learned domains; compute each element's ideal pixel from its exact difference from the x origin, in
+    ///   double, and from the y domain.
+    ///
+    /// Expected:
+    /// - The x domain is the ticks + 1 with differences 0 and 1,920; the 1,920 segments run from element i to element i + 1,
+    ///   each end at the ideal pixel: x is i exactly, and y follows the y domain.
+    /// </remarks>
+    [Fact]
+    public void Render_TicksOneApart_RecordEachPointAtItsIdealPixel()
+    {
+        const int width = 1920;
+        var ticks = 639_288_288_000_000_001L;
+        var random = new Random(79);
+        var xs = Enumerable.Range(0, width + 1).Select(i => ticks + i).ToArray();
+        var ys = Enumerable.Range(0, width + 1).Select(_ => (float)random.NextDouble()).ToArray();
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.Wrap(xs);
+        using var y = Column.Wrap(ys);
+        using var plan = new PlotPlan(pool, width, Height);
+
+        var list = plan.Render(Line(x, y));
+
+        Assert.Equal(new ScaleRange(ticks, 0, width), plan.XDomain);
+        var (yDomain, segments) = (plan.YDomain, list.Segments.ToArray());
+        Assert.Equal(width, segments.Length);
+        for (var i = 0; i < width; i++)
+        {
+            Assert.Equal((float)i, segments[i].Start.X);
+            Assert.Equal(Ideal(i), segments[i].Start);
+            Assert.Equal(Ideal(i + 1), segments[i].End);
+        }
+
+        Vector2 Ideal(int i)
+        {
+            var pixelX = ((double)((Int128)xs[i] - ticks) - 0) / (width - 0) * width;
+            var pixelY = Height - ((((double)ys[i] - yDomain.Origin) - yDomain.Lower) / (yDomain.Upper - yDomain.Lower) * Height);
+            return new Vector2((float)pixelX, (float)pixelY);
+        }
+    }
+
     internal static void AssertSameLines(RenderList expected, RenderList actual)
     {
         Assert.Equal(expected.Polylines.ToArray(), actual.Polylines.ToArray());
