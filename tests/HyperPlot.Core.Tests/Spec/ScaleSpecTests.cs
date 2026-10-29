@@ -18,7 +18,8 @@ public sealed class ScaleSpecTests
     /// Expected:
     /// - log10(100) = 2, symlog(9) = 1 for C = 1 and log10(19) for C = 0.5, symlog(-9) = -1, pow 2 of -3 = -9, pow 0.5 of 4 =
     ///   2; log of 0 is −∞ and of -1 NaN. The mapped values strictly increase (symlog and pow through 0), and mapping back
-    ///   gives each value within 1e-9 of its size.
+    ///   gives each value within 2 + ln 10 · |f(v)| ulps of max(|v|, C) for log and symlog, and within 2 + 1/k ulps of |v| for
+    ///   pow (design §10; measured on these values: at most 9, 9, and 1).
     /// </remarks>
     [Fact]
     public void Transforms_FollowTheirFormulas()
@@ -32,14 +33,17 @@ public sealed class ScaleSpecTests
         var random = new Random(83);
         double[] values = [.. Enumerable.Range(0, 2000).Select(_ => (random.NextDouble() - 0.5) * 2e6).Concat([-1e-9, 0, 1e-9]).Order()];
         double[] positive = [.. values.Where(v => v > 0)];
+
+        // The bound of the round trip, in ulps of max(|v|, C) (design §10): 10^s multiplies the rounding of s by about
+        // ln 10 · |s|, and pow's inverse that of s by 1/k.
         foreach (
-            var (transform, inputs) in new (IScale, double[])[]
+            var (transform, inputs, floor, slope) in new (IScale, double[], double, Func<double, double>)[]
             {
-                (Scale.Log().CreateTransform(), positive),
-                (Scale.Symlog().CreateTransform(), values),
-                (Scale.Symlog(0.5).CreateTransform(), values),
-                (Scale.Pow(2).CreateTransform(), values),
-                (Scale.Sqrt().CreateTransform(), values),
+                (Scale.Log().CreateTransform(), positive, 0, s => Math.Log(10) * Math.Abs(s)),
+                (Scale.Symlog().CreateTransform(), values, 1, s => Math.Log(10) * Math.Abs(s)),
+                (Scale.Symlog(0.5).CreateTransform(), values, 0.5, s => Math.Log(10) * Math.Abs(s)),
+                (Scale.Pow(2).CreateTransform(), values, 0, _ => 1 / 2.0),
+                (Scale.Sqrt().CreateTransform(), values, 0, _ => 1 / 0.5),
             }
         )
         {
@@ -50,10 +54,9 @@ public sealed class ScaleSpecTests
             for (var i = 0; i < inputs.Length; i++)
             {
                 Assert.True(i == 0 || mapped[i - 1] < mapped[i], $"{transform.GetType().Name} does not increase at {inputs[i]}.");
-                Assert.True(
-                    Math.Abs(back[i] - inputs[i]) <= 1e-9 * Math.Max(1, Math.Abs(inputs[i])),
-                    $"{transform.GetType().Name} does not come back to {inputs[i]}: {back[i]}."
-                );
+                var scale = Math.Max(Math.Abs(inputs[i]), floor);
+                var ulps = Math.Abs(back[i] - inputs[i]) / (Math.BitIncrement(scale) - scale);
+                Assert.True(ulps <= 2 + slope(mapped[i]), $"{transform.GetType().Name} comes back to {inputs[i]} as {back[i]}, {ulps} ulps away.");
             }
         }
     }

@@ -77,7 +77,7 @@ internal sealed class PlotPlan : IDisposable
     /// <exception cref="InvalidOperationException">A learned domain has an infinite end (design §4.2), or an X column decreases.</exception>
     internal RenderList Render(PlotSpec spec)
     {
-        Validate(spec);
+        Validate(spec, _spec);
         var previous = _spec;
 
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
@@ -161,7 +161,7 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>Throws unless the spec is one that row G1 compiles (design §4.8). Reads no data.</summary>
-    private static void Validate(PlotSpec plot)
+    private static void Validate(PlotSpec plot, PlotSpec? previous)
     {
         if (plot.Data is null || plot.Layers is null || plot.ScaleX is null || plot.ScaleY is null)
         {
@@ -192,8 +192,8 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
-        CheckScale(plot, plot.ScaleX, "ScaleX", ofX: true);
-        CheckScale(plot, plot.ScaleY, "ScaleY", ofX: false);
+        CheckScale(plot, plot.ScaleX, previous?.ScaleX, "ScaleX", ofX: true);
+        CheckScale(plot, plot.ScaleY, previous?.ScaleY, "ScaleY", ofX: false);
     }
 
     private static void CheckReference(DataTable data, ColumnRef reference, int layer, string channel)
@@ -214,14 +214,19 @@ internal sealed class PlotPlan : IDisposable
     /// and a time scale reads long date-time columns. A user cannot derive a new continuous kind: its base has internal
     /// abstract members.
     /// </summary>
-    private static void CheckScale(PlotSpec plot, ScaleSpec scale, string name, bool ofX)
+    private static void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX)
     {
         if (scale is not ContinuousScaleSpec continuous)
         {
             throw new ArgumentException($"The {name} is a {scale.GetType().Name}; row G2 compiles its position scales only.");
         }
 
-        continuous.CheckGivenDomain();
+        // A node drawn last time was checked then: it is immutable, and a user's Forward runs once a node (design §4.2).
+        if (previous is null || previous.Id != scale.Id)
+        {
+            continuous.CheckGivenDomain();
+        }
+
         if (continuous is not TimeScaleSpec)
         {
             return;

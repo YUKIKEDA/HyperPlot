@@ -6,9 +6,11 @@ namespace HyperPlot;
 /// </summary>
 /// <remarks>
 /// The transform must be strictly increasing, and <see cref="Inverse"/> must undo <see cref="Forward"/>. The compile calls it
-/// for M4's output points, the pixel boundaries, and the domain's ends, never per data point, and only on the thread that
-/// renders; an exception it throws comes out of the render as it is. A transform that is not monotone is not checked, and
-/// its line is not promised. A value it maps to a number that is not finite is dropped and breaks the line.
+/// a span at a time, never per data point, and only on the thread that renders: for M4's output points and the pixel
+/// boundaries on each render that extracts or records again, for a learned domain's ends on each extraction, and for a given
+/// domain's ends once each new scale node (and in <see cref="TransformScaleSpec.WithDomain(double, double)"/>). Keep work
+/// that is done once out of it. An exception it throws comes out of the render as it is. A transform that is not monotone is
+/// not checked, and its line is not promised. A value it maps to a number that is not finite is dropped and breaks the line.
 /// </remarks>
 public interface IScale
 {

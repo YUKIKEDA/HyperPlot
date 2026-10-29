@@ -3,7 +3,11 @@ namespace HyperPlot;
 /// <summary>A power position scale, sign(v) · |v|^k; <see cref="Scale.Sqrt"/> is k = 0.5 (design §4.2).</summary>
 public sealed record PowScaleSpec : ContinuousScaleSpec
 {
-    internal PowScaleSpec(double exponent) => Exponent = exponent;
+    // One transform a scale: checking a domain and drawing do not make another (design §4.8, invariant 3). A copy by `with`
+    // keeps k and shares it.
+    private readonly PowTransform _transform;
+
+    internal PowScaleSpec(double exponent) => (Exponent, _transform) = (exponent, new PowTransform(exponent));
 
     /// <summary>Gets k: finite and greater than 0.</summary>
     public double Exponent { get; }
@@ -32,7 +36,7 @@ public sealed record PowScaleSpec : ContinuousScaleSpec
     }
 
     /// <inheritdoc />
-    internal override IScale CreateTransform() => new PowTransform(Exponent);
+    internal override IScale CreateTransform() => _transform;
 
     /// <inheritdoc />
     internal override void CheckGivenDomain()

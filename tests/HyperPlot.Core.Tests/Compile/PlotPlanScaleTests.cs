@@ -438,39 +438,88 @@ public sealed class PlotPlanScaleTests
         Assert.Same(failure, thrown);
     }
 
-    /// <summary>Once warm, switching a log x between two domains allocates nothing (design §4.2, invariant 3).</summary>
+    /// <summary>
+    /// Once warm, drawing the same spec again and switching a transformed x between two domains allocate nothing, for log,
+    /// symlog, and pow (design §4.2, §4.8, invariant 3).
+    /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A plan that rendered a log x over two domains, twice each.
+    /// - For each of log, symlog, and pow: a plan that rendered an x of the kind over two domains given, twice each.
     ///
     /// Steps:
-    /// - Count the bytes this thread allocates over 20 Render calls that alternate the domains.
+    /// - Count the bytes this thread allocates over 20 Render calls of one of the specs, then over 20 that alternate the two.
     ///
     /// Expected:
-    /// - 0 bytes; 20 extractions.
+    /// - 0 bytes both times for each kind; the second window extracted 20 times.
     /// </remarks>
     [Fact]
-    public void Render_LogDomainsWarm_AllocateNothing()
+    public void Render_TransformedDomainsWarm_AllocateNothing()
     {
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Enumerable.Range(1, Length).Select(i => (float)Math.Sin(i * 1e-3)).ToArray());
-        using var plan = new PlotPlan(pool, Width, Height);
         var spec = Spec(Column.Uniform(1, 1, Length), y);
-        PlotSpec[] zooms = [spec with { ScaleX = Scale.Log().WithDomain(10, 1000) }, spec with { ScaleX = Scale.Log().WithDomain(100, 40_000) }];
-        foreach (var warm in new[] { zooms[0], zooms[1], zooms[0], zooms[1] })
+        foreach (
+            var zooms in new PlotSpec[][]
+            {
+                [spec with { ScaleX = Scale.Log().WithDomain(10, 1000) }, spec with { ScaleX = Scale.Log().WithDomain(100, 40_000) }],
+                [spec with { ScaleX = Scale.Symlog(2).WithDomain(10, 1000) }, spec with { ScaleX = Scale.Symlog(2).WithDomain(100, 40_000) }],
+                [spec with { ScaleX = Scale.Pow(0.5).WithDomain(10, 1000) }, spec with { ScaleX = Scale.Pow(0.5).WithDomain(100, 40_000) }],
+            }
+        )
         {
-            _ = plan.Render(warm);
-        }
+            using var plan = new PlotPlan(pool, Width, Height);
+            foreach (var warm in new[] { zooms[0], zooms[1], zooms[0], zooms[1], zooms[0] })
+            {
+                _ = plan.Render(warm);
+            }
 
-        var extractions = plan.Extractions;
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 20; i++)
-        {
-            _ = plan.Render(zooms[i & 1]);
-        }
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 20; i++)
+            {
+                _ = plan.Render(zooms[0]);
+            }
 
-        Assert.Equal(0L, GC.GetAllocatedBytesForCurrentThread() - before);
-        Assert.Equal(extractions + 20, plan.Extractions);
+            var same = GC.GetAllocatedBytesForCurrentThread() - before;
+            var extractions = plan.Extractions;
+            before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 20; i++)
+            {
+                _ = plan.Render(zooms[(i + 1) & 1]);
+            }
+
+            Assert.Equal((0L, 0L), (same, GC.GetAllocatedBytesForCurrentThread() - before));
+            Assert.Equal(extractions + 20, plan.Extractions);
+        }
+    }
+
+    /// <summary>
+    /// A given domain of a user's transform is checked once a node: drawing the same spec again does not call Forward
+    /// (design §4.2).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A plan that rendered a y of a counting log2 transform with a domain given.
+    ///
+    /// Steps:
+    /// - Render the same spec again.
+    ///
+    /// Expected:
+    /// - Forward was not called.
+    /// </remarks>
+    [Fact]
+    public void Render_SameTransformNode_ChecksItsDomainOnce()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(new float[] { 1, 2, 3 });
+        using var plan = new PlotPlan(pool, Width, Height);
+        var counting = new Counting();
+        var spec = Spec(Column.Uniform(1, 1, 3), y) with { ScaleY = Scale.Transform(counting).WithDomain(1, 4) };
+        _ = plan.Render(spec);
+        var calls = counting.ForwardCalls;
+
+        _ = plan.Render(spec);
+
+        Assert.Equal(calls, counting.ForwardCalls);
     }
 
     private static ScaleRange YDomain(PlotWorkerPool pool, string name, ScaleSpec scale, params float[] values)
@@ -598,6 +647,28 @@ public sealed class PlotPlanScaleTests
     {
         public OtherScale(ScaleSpec original)
             : base(original) { }
+    }
+
+    private sealed class Counting : IScale
+    {
+        public int ForwardCalls { get; private set; }
+
+        public void Forward(ReadOnlySpan<double> values, Span<double> destination)
+        {
+            ForwardCalls++;
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = Math.Log2(values[i]);
+            }
+        }
+
+        public void Inverse(ReadOnlySpan<double> values, Span<double> destination)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = Math.Pow(2, values[i]);
+            }
+        }
     }
 
     private sealed class Throwing(Exception failure) : IScale

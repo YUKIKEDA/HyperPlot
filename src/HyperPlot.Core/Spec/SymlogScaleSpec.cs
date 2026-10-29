@@ -3,7 +3,11 @@ namespace HyperPlot;
 /// <summary>A symmetric log position scale, sign(v) · log10(1 + |v| / C), for data that crosses 0 (design §4.2).</summary>
 public sealed record SymlogScaleSpec : ContinuousScaleSpec
 {
-    internal SymlogScaleSpec(double constant) => Constant = constant;
+    // One transform a scale: checking a domain and drawing do not make another (design §4.8, invariant 3). A copy by `with`
+    // keeps C and shares it.
+    private readonly SymlogTransform _transform;
+
+    internal SymlogScaleSpec(double constant) => (Constant, _transform) = (constant, new SymlogTransform(constant));
 
     /// <summary>Gets C, the width near 0 where the scale is close to linear: finite and greater than 0.</summary>
     public double Constant { get; }
@@ -32,7 +36,7 @@ public sealed record SymlogScaleSpec : ContinuousScaleSpec
     }
 
     /// <inheritdoc />
-    internal override IScale CreateTransform() => new SymlogTransform(Constant);
+    internal override IScale CreateTransform() => _transform;
 
     /// <inheritdoc />
     internal override void CheckGivenDomain()
