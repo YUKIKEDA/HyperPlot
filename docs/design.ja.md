@@ -134,6 +134,18 @@ public abstract class Column                           // Column<T> と UniformC
     public long Length { get; }
     public int ChunkCount { get; }
     public long Version { get; }                       // 追記・変更で増える
+    public static UniformColumn Uniform(double start, double step, long length);
+    public static UniformColumn UniformInteger(long start, long step, long length);   // 行 D2
+}
+
+public sealed class UniformColumn : Column              // 値を持たない等間隔の列（下の「暗黙の列」）
+{
+    public double Start { get; }
+    public double Step { get; }
+    public double Last { get; }
+    public bool IsInteger { get; }                     // UniformInteger で作った列（行 D2）
+    public bool TryGetInteger(out long start, out long step);   // 整数の列の正確な開始値と刻み（行 D2）
+    public double GetValue(long index);
 }
 
 public sealed class Column<T> : Column, IDisposable where T : unmanaged, INumber<T>
@@ -146,9 +158,13 @@ public sealed class Column<T> : Column, IDisposable where T : unmanaged, INumber
 
 - `INumber<T>` の制約は、統計のカーネル（§3.2）と統計の結合が `T` の比較と NaN の判定を要るためである。値の型の一覧に入らない数値の型は、作るときに `NotSupportedException` になる
 
-- 値の型: `float`・`double`・`int`・`long`・`byte`。日時は `long`（ティック）の列にスケールで意味を与える。カテゴリは `int` の符号の列と辞書の組（`CategoricalColumn`）
+- 値の型: `float`・`double`・`int`・`long`・`byte`。日時は `long` の列に time のスケールで意味を与える。単位と起点はスケールが持ち、既定は .NET のティック（100 ns、0001 年起点）で、ns・µs の Unix 起点の列もそのまま描ける（Issue #11。単位と起点の API は行 G2）。値が 2^53 を超えても、スケールの空間の原点と差（§3.6）で精度を保つ。カテゴリは `int` の符号の列と辞書の組（`CategoricalColumn`）
 - 要素ごとの仮想呼び出しを避けるため、読み出しの単位はチャンク（`ReadOnlySpan<T>`）である。ストレージの違い（§3.2）はチャンクを取り出すところで一度だけ分岐する
-- **暗黙の列**: 等間隔の X（`UniformColumn`: 開始値と刻み、要件 D-5）は値を持たない。i 番目の値は `start + i * step` を倍精度で計算する。時系列で最も多い形で、索引も二分探索も要らない
+- **暗黙の列**: 等間隔の X（`UniformColumn`: 開始値と刻み、要件 D-5）は値を持たない。時系列で最も多い形で、索引も二分探索も要らない。作り方は 2 つある（行 D2、Issue #11）
+  - `Column.Uniform(double start, double step, long length)`: i 番目の値は `start + i * step` を倍精度で計算する（FMA の 1 回の丸め）
+  - `Column.UniformInteger(long start, long step, long length)`: 整数の等間隔の列（日時のティック、ns の時刻）。i 番目の値は `start + i * step` で、`long` で正確である。`step` は正、`length` は 0 以上で、最後の値 `start + (length − 1) * step` が `long` に入らなければ `ArgumentOutOfRangeException`。`UniformColumn.IsInteger` が真になる。`double` の `start` では 2^53 を超える開始値が丸まる（2026 年のティックで 128 ティック単位）ので、別の口にする。同じ名前 `Uniform` の多重定義にしないのは、`Column.Uniform(0, 1, n)` のような整数の引数が `long` 版に解決され、今の呼び出しの意味が変わるからである（スクラッチでコンパイルして確かめた）
+  - `Start`・`Step`・`Last`・`GetValue(long index)` は、どちらの列でも `double` を返す（整数の列で 2^53 を超える値は丸まる）。M4 と学習は、整数の列の値を `long` のまま読み、原点との差（§3.6）にする
+  - `TryGetInteger(out long start, out long step)`: 整数の列なら正確な開始値と刻みを返して真、`double` の列なら 0 と 0 を返して偽。公開の M4 を直接つなぐ呼び出し側（§4.9、`BillionSeries`）が `ScaleOrigin` と境界を正確に作るための口で、i 番目の値は `start + i * step`（`long` で正確）である。`double` の列で投げる口（`IsInteger` が偽なら `InvalidOperationException`）にしないのは、型の種類の取り違えで公開のメソッドが投げないためである（`.cursor/rules/csharp.mdc`、PR #86 のレビュー）
 - **欠損**: `float` / `double` は NaN を欠損とする。整数の列は任意の有効ビット列（1 ビット/要素）を持つ
 - **表**（行 G1）: `DataTable` は長さの等しい名前付きの列の集合である。API は型付きの参照 `ColumnRef<T>`（表と列の位置）で列を指す。文字列の列名は `table.Col<float>("y")` で参照に解決し、その時点で型を確かめる
 
@@ -188,7 +204,7 @@ public readonly struct ColumnRef<T> : IEquatable<ColumnRef<T>> where T : unmanag
 }
 ```
 
-  - `Col<T>` は、列が `Column<T>` なら、または列が `UniformColumn` で `T` が `double` なら参照を返す（`UniformColumn` の値は倍精度、§3.1 の暗黙の列）。名前がなければ、型が合わなければ、どちらも名前と実際の型を書いた `ArgumentException`。名前は大文字と小文字を区別する（序数の比較）
+  - `Col<T>` は、列が `Column<T>` なら、または列が `UniformColumn` で、`IsInteger` が偽で `T` が `double` か、`IsInteger` が真で `T` が `long` なら参照を返す（§3.1 の暗黙の列）。名前がなければ、型が合わなければ、どちらも名前と実際の型を書いた `ArgumentException`。名前は大文字と小文字を区別する（序数の比較）
   - `Add` は、名前が null なら `ArgumentNullException`、空か、すでにある名前なら `ArgumentException`。`column` が null なら `ArgumentNullException`。`Build` は、列の長さがそろっていなければ、名前と長さを書いた `ArgumentException`。`Build` の後のビルダは使えない（`InvalidOperationException`）
   - 表は列を持つだけで、列の持ち主ではない。`DataTable` は `IDisposable` ではなく、列の寿命は利用者が持つ
   - `ColumnRef` と `ColumnRef<T>` の等しさは、表の同一性（参照）と位置の組である。`default` の参照は表を持たず、仕様に渡すと `ArgumentException`。`default` の参照の `Table` と `Column` は `InvalidOperationException` を投げる
@@ -312,9 +328,22 @@ X が単調でない列（散布図）では、点を空間の順に並べ直し
 
 日時のティック（`long`）や遠い原点を持つ倍精度の値を float32 で GPU に送ると、深くズームしたときに点の位置が画素の単位で揃ってしまう（POC で起きた問題、要件 R-6）。
 
-- スケールの空間（§4.2）の値は CPU では常に `double` で扱う
-- GPU には「原点からの差」を float32 で送る。原点はチャンク（またはタイル）ごとに CPU が持ち、フレームごとに「チャンクの原点 − ビューの原点」を倍精度で計算し、定数として渡す
-- M4 の経路（§5.5.1）では、CPU が倍精度から画素の座標まで計算してから頂点を作るので、この問題は起きない
+CPU の `double` でも同じことが起きる。2026 年の .NET のティック（約 6.39e17）の `double` の 1 ulp は 128 ティック（12.8 µs）、Unix 起点の ns（約 1.79e18）では 256 ns で、幅 1,920 画素なら .NET のティックで表示範囲が約 24.6 ms（1,920 × 128 ティック）より狭いと、画素列の境界が増加しなくなる（PR #10 のレビュー、Issue #11）。
+
+- **原点と差**（行 D2、Issue #11）: スケールの空間（§4.2）の値は、CPU では `long` の原点と、原点からの `double` の差の組で扱う。軸ごとに原点を 1 つ持ち、ビュー範囲（§6.2）・M4 の境界と出力（§5.5.1）・画素への写像は、すべて差で計算する。差は小さく保たれるので、`double` の 53 ビットはビューの中の位置の細かさに使われる
+- **原点の選び方**: 原点は整数（列の単位）で、範囲の下端の整数部 ⌊下端⌋ とする。`long` に入らなければ `long` の範囲に収めた値にする。ビュー範囲が変わるたびに、原点 += ⌊下端の差⌋、差 −= ⌊下端の差⌋ と付け直すので、下端の差は [0, 1) にある。付け直しの丸めの上限は次のとおりで、どれも画素の位置では無視できる（PR #86 のレビュー）。パンを続けても差は大きくならない
+  - 下端の差 d: d ≥ 0 なら d − ⌊d⌋ は正確である。d ∈ [−1, −0.5] と d < −1 でも、結果の [0, 1) の刻みは d の刻み以下なので正確である。d ∈ (−0.5, 0) では d + 1 ∈ (0.5, 1) の刻み 2^−53 に乗らないことがあり、結果の 1 ulp の半分（2^−54）以下だけ丸まる（例: −0.3 + 1 は 5.6e-17 丸まる）
+  - 上端の差: 2^53 未満なら正確で、2^53 以上（データの幅が 2^53 単位を超える全体の表示）では、その 1 ulp の半分以下だけ丸まる
+  - 画素では、表示範囲の幅を s として、下端は (W / s) × 2^−54 以下、上端は W × 2^−53 以下である。s が 1 単位以上なら、幅 1,920 で約 1e-13 画素以下。s が §4.8 の狭い domain の限界（約 W × 2^−53）に近いと下端の分は半画素ほどになるが、それより狭い domain は境界が増加せず描かない
+  - 付け直しは internal の値の型 `ScaleRange`（原点・下端の差・上端の差）の 1 つの関数で行い、コンパイルの domain（§4.8）と行 I1 のビュー（§6.2）が同じ関数を使う
+  - 原点を domain の始まりに固定すると、データの幅が 2^53 単位（.NET のティックで約 28.5 年）を超えたとき、終わりのほうで差がまた丸まる。ビューごとに付け直せば、差は常に小さい
+- **差の計算** d(v): 列の値 v から原点 o を引いた `double`。列の型ごとに次のとおりで、どれも v について単調非減少である
+  - `long` の列と整数の `UniformColumn`: `(double)((Int128)v − o)`。正確な差を 1 回だけ丸める。`Int128` で引くので、`long` の差があふれる値（`long.MaxValue − long.MinValue`）でも正しい。差が 2^53 未満なら誤りがない
+  - `int`・`byte` の列: `long` と同じ式（`long` にして引く）
+  - `float`・`double` の列と、`double` の `UniformColumn`: `(double)v − (double)o`。v 自身の精度より細かくはならないが、原点の近くの値の差は正確である（Sterbenz の補題: y/2 ≤ x ≤ 2y なら x − y は丸めなしで表せる）。o が 2^53 を超えると `(double)o` 自体が ulp(o)/2 以下だけ丸まり（2026 年のティックで最大 64）、その列のすべての点が境界（原点からの正確な差）に対して同じ量だけずれる。ずれは原点の近くの v の 1 ulp の半分以下で、列自身の分解能の中にある。総当たりのテストも同じ式の値で判定する（PR #86 のレビュー）
+  - 原点 0 では、`double` の値は今の値と同じになる。0〜1 のような普通のデータでは原点は 0 か −1 で、原点 −1 でも画素の位置は丸めの最後のビットほどしか変わらない
+- GPU には「原点からの差」を float32 で送る。原点はチャンク（またはタイル）ごとに CPU が `long` で持ち、フレームごとに「チャンクの原点 − ビューの原点」を `Int128` で正確に引いて `double` にし、ビューの下端の差を引いた値を定数として渡す
+- M4 の経路（§5.5.1）では、CPU が原点からの差から画素の座標まで倍精度で計算してから頂点を作るので、float32 の問題は起きない
 
 ## 4. GoG 層
 
@@ -410,7 +439,9 @@ public sealed class LineBuilder
 - スケールは「学習」（データから domain を求める）と「写像」（値を range へ）に分かれる
 - 連続のスケールの学習は、チャンクの統計（§3.2）を読むので O(チャンク数) で済む。カテゴリのスケールは辞書を読む
 - **linear（行 G1）**: domain は明示（`WithDomain`）か学習である。学習は、そのスケールを使うすべてのレイヤーの列の値の範囲の和で、`Column<T>` はチャンクの統計（NaN を除く min / max）を、`UniformColumn` は最初と最後の値（`GetValue(0)` と `GetValue(Length − 1)`）を読む。統計がまだないチャンクは、ワーカーに計算させてから読む（§4.8）。長さ 0 の列は何も足さない。NaN でない値の数（統計の `Count`）がすべて 0 なら [0, 1]、min と max が等しければ [v − 0.5, v + 0.5] にする。チャンクの統計は NaN だけを除き ±∞ を含むので、学んだ min か max が有限でなければ、学習を失敗にし、列の名前と値を書いた `InvalidOperationException` を投げる（端が無限大の domain は、どの有限の値も同じ画素に写して何も描かない。黙って空の画像を出さず、`WithDomain` で明示する道を残す）。写像は、値 v を `(v − min) / (max − min)` で [0, 1] に写し、パネルの画素へは倍精度で写す（x は左から右、y は下から上、§3.6）。nice・zero・reverse・clamp は行 G2
-- **位置のスケール**は、データの値を「スケールの空間」（log なら log10 した値、日時ならティック）の `double` に写す。ズームとパンはスケールの空間でのビュー範囲（§6.2）を変えるだけで、データを写し直さない。画面の座標は、ビューから座標系の変換（§4.4）で求める
+  - **domain の中の表し方**（行 D2、Issue #11）: コンパイルの中の domain は、§3.6 の原点と差の組（原点 `long`、下端の差、上端の差）で持つ。学習は端を列の型のまま比べる。`long`・`int`・`byte` の列の統計の min / max と、整数の `UniformColumn` の最初と最後の値は `long` で正確に読み、どれも整数の列なら `long` で比べる。`float` か `double` の列が混ざれば `double` で比べる（そのとき `long` の端は `double` に丸まる）。原点は §3.6 のとおり ⌊下端⌋ で、`long` の列だけなら原点は min そのもので、差は 0 と `max − min` の正確な差になる。値が 1 つ（v）なら下端の差と上端の差は v ± 0.5 から原点を引いた値（原点は ⌊v − 0.5⌋）。明示の domain（公開の `LinearScaleSpec.Domain` は `(double, double)` のまま）も、原点 = ⌊min⌋ として差に直す。日時の domain を `long` で正確に指定する口は、行 G2 の time のスケールが持つ
+  - 写像は差で計算する: 値 v の画素は `(d(v) − 下端の差) / (上端の差 − 下端の差)` に幅を掛けた値で、d(v) は §3.6 の差である。点と domain は同じ原点で引く
+- **位置のスケール**は、データの値を「スケールの空間」（log なら log10 した値、日時なら time のスケールの単位の値）に写す。スケールの空間の値は §3.6 の原点と差の組で持つ。ズームとパンはスケールの空間でのビュー範囲（§6.2）を変えるだけで、データを写し直さない。画面の座標は、ビューから座標系の変換（§4.4）で求める
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
   - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない
@@ -459,7 +490,7 @@ public sealed class LineBuilder
 
 ワーカーの仕事が終わるまでの間は、終わったものから描く。索引ができるまで時系列は「チャンクの統計だけの粗い表示」で描き、それと分かる印をホストへ通知する（要件 P-2）。
 
-**行 G1 のコンパイル**: G1 は 1〜2 と 4 を行う（Stat は G5、配置は G3）。結果の `PlotPlan`（internal）は、レイヤーごとの X の列・Y のピラミッド・M4 の出力の場所・線の見た目と、x と y の domain を持つ。
+**行 G1 のコンパイル**: G1 は 1〜2 と 4 を行う（Stat は G5、配置は G3）。結果の `PlotPlan`（internal）は、レイヤーごとの X の列・Y のピラミッド・M4 の出力の場所・線の見た目と、x と y の domain（§4.2 の原点と差の組、行 D2）を持つ。domain は internal の値の型 `ScaleRange`（§3.6）で持ち、原点の選び方と付け直しはその 1 つの関数で行う。行 I1 のビューも同じ関数を使う。
 
 - **検査**: 次のときは `ArgumentException`（null は `ArgumentNullException`）。`Data`・`Layers`・`ScaleX`・`ScaleY` が null、レイヤーが null。列の参照が `default` か `Data` 以外の表を指す。Y の列が `Column<T>` でない（ピラミッドは `Column<T>` に作る）。レイヤーが `LineLayerSpec` でない、スケールが `LinearScaleSpec` でない（写しのコンストラクタを通した利用者の派生を含む。メッセージに型の名前を書く。Geom を足す口は G4、スケールは G2）。直接作った仕様の `Domain` が `WithDomain` の条件（有限で min < max）を外れる。`Style` が §5.1 の `LineStyle` の検査を外れるときは、記録の `RenderList.DrawPolyline` が `ArgumentOutOfRangeException`（`ArgumentException` の派生）を投げる。コンパイルが同じ検査を重ねても結果は変わらないので、重ねない（Issue #81）。X の単調性は M4 が確かめ（§5.5.1）、`InvalidOperationException` がそのまま出る。X の列の種類と step は検査しない。`Column` のコンストラクタは `private protected` なので列は `UniformColumn` か `Column<T>` だけで、`UniformColumn` の step は作るときに正と決まっている（§3.1）。落ちようのない検査は書かない（Issue #81）
 - **索引**: Y の列ごとに `MinMaxPyramid` をプールで作る。同じ Y の列を指すレイヤーは、ピラミッドを 1 つ共有する。X が `Column<T>` なら `PlotWorkerPool.PrecomputeStats` で X の統計を先に計算させる（§5.5.1）。学習も、作られた統計を読む
@@ -469,7 +500,7 @@ public sealed class LineBuilder
   - X が `Column<T>` なら、統計のないチャンク（`Invalidate` で捨てられたものを含む）があるときだけ `PlotWorkerPool.PrecomputeStats` を出して待つ
   - 版: 待つ前に、各レイヤーの X と Y の列の `Version` を読み、M4 を引いた後にその値を「引いたときの版」として持つ。次の `Render` は、読んだ版が引いたときの版と違えば引き直す。`Invalidate` は読み出しと並行してよい（`Column<T>` の XML ドキュメントの契約）ので、待ちや抽出の途中に来ることがある。そのとき持つ版は列の版より古いままなので、次の `Render` が引き直す。抽出の後に版を読むと、古い値で引いた結果に新しい版が付き、次の `Render` が引き直さない（PR #82 のレビュー）
   - 失敗: ピラミッドが `Fault` を持つか、`WhenComplete` か `PrecomputeStats` の `Task` が例外で終わったら、`Render` はその例外を包まずに投げ直す（`ExceptionDispatchInfo`）。失敗したチャンクは列の世代が進むまで作り直されない（§3.3 の規則 3）ので、`Render` は暫定の画像を描かない。`Fault` はピラミッドに残り、`WhenComplete` は呼ぶ前の `Fault` で終わる（§3.3）。そのため列を `Invalidate` しても、`HeadlessRenderer` がその列のピラミッドを持つ間（その列を描く仕様が続く間）は、その列を描けない。ホストで同じことが困るなら、行 W1 で、世代が進んだら `Fault` を捨てる形を Grill する（PR #82 のレビュー）
-- **描く**: プロットの領域は描画先の全体である（余白と配置は行 G3）。x の domain から画素列の境界（W + 1 個）を作って `M4Batch` で全レイヤーを引き（domain の幅が狭く、倍精度の W + 1 個の境界が狭義に増加しないときは、`M4Batch` に渡す前に、x の domain と描画先の幅を書いた `ArgumentException` にする）、y の domain で画素に写して（倍精度）、レイヤーの順に `RenderList` の折れ線として記録する。同じ仕様を描き直すとき、温まった後は確保しない（不変条件 3）
+- **描く**: プロットの領域は描画先の全体である（余白と配置は行 G3）。x の domain の差から画素列の境界（W + 1 個、x の原点からの差）を作り、x と y の domain の原点を `ScaleOrigin` にして `M4Batch` で全レイヤーを引き（domain の幅が狭く、倍精度の W + 1 個の境界の差が狭義に増加しないときは、`M4Batch` に渡す前に、x の domain と描画先の幅を書いた `ArgumentException` にする。差で計算し、下端の差は [0, 1) にあるので、値の大きさによらず、幅が約 W × 2^−53 より狭い domain だけが当たる。例は幅 1,000 の `[0.5, 0.5 + 1e-14]` で、0.5 の 1 ulp は 2^−53（約 1.1e-16）、境界の間隔は 1e-17 なので、隣り合う境界が同じ値になる）、y の domain の差で画素に写して（倍精度）、レイヤーの順に `RenderList` の折れ線として記録する。同じ仕様を描き直すとき、温まった後は確保しない（不変条件 3）
 
 ### 4.9 C# API
 
@@ -503,6 +534,7 @@ var scatter = Plot.Create(points)
 - 拡張メソッドの形で Geom を足せる（`IGeom` の実装と組で配る）
 - データ層の核（列の型、`PlotWorkerPool`・`MinMaxPyramid<T>`・`MinMax<T>`・`M4`・`M4Batch`、§3.3・§5.5.1）も公開する。行 S1（1e9 点の時系列をヘッドレスで描くサンプル）が G1 の `DataTable` より前に来るので、利用者とサンプルが列・ピラミッド・M4 を直接つなげる必要がある（オーナーの決定、2026-10-28）。ジェネリックの公開の型が NativeAOT のサンプルの大きさに与える分（`.cursor/rules/aot.mdc`）は、サンプルのできる S1 で最初に測る
 - 色の型 `Color`（§5.2）は利用者の書く型なので公開する（`HyperPlot` 名前空間）。GPU の契約（`IGpuBackend`・`IRenderTarget`・`RenderTargetDescription`・`DepthFormat`・`GpuDeviceLostException`・`GpuFrameTime`・`FrameScope`、`HyperPlot.Rendering`）は「バックエンドが実装する契約」として、`HeadlessRenderer`（`HyperPlot.Rendering`、§7.5）は画像の出力とテストに使う型として、`GoldenImage`・`ImageTolerance`・`ImageDifference`・`ImageMismatchException`（`HyperPlot.Testing`、§10.1、行 S3）は利用者のテストが描いた画像を比べる型として、`RenderList`・`LineStyle`・`LineDash`（§5.1、行 R2）は S1 のサンプルが GoG の層より前に線を描く型として、`D3D11Backend`（`HyperPlot.Rendering.D3D11`、§5.3）は D3D11 のバックエンドとして公開する（行 R1）
+- 行 D2 は、M4 の原点の型 `ScaleOrigin`（§5.5.1）と、整数の等間隔の列の口 `Column.UniformInteger`・`UniformColumn.IsInteger`・`UniformColumn.TryGetInteger`（§3.1）を公開する（Issue #11）。`M4.Extract`・`M4Batch`・`PlotWorkerPool.Extract` はもともと公開で、引数に `ScaleOrigin` が加わる
 - 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色）と `.Title`（G2・G3）、`.Interact`（I1）、`.Point` と `.ScaleColor`（G4・G2）、`.FacetWrap`（G6）、`view.Plot`（W1）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
 
 ```csharp
@@ -719,13 +751,15 @@ POC の層の構成を引き継ぐ（要件 R-5）。
 public static class M4
 {
     public static int MaxPointCount(int pixelColumns);  // 4W + 2
-    public static M4Result Extract<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, ReadOnlySpan<double> boundaries,
-        Span<M4Point> destination, M4Options options = default)
+    public static M4Result Extract<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, ScaleOrigin origin,
+        ReadOnlySpan<double> boundaries, Span<M4Point> destination, M4Options options = default)
         where TX : unmanaged, INumber<TX> where TY : unmanaged, INumber<TY>;
-    public static M4Result Extract<TY>(UniformColumn x, MinMaxPyramid<TY> y, ReadOnlySpan<double> boundaries,
-        Span<M4Point> destination, M4Options options = default) where TY : unmanaged, INumber<TY>;
+    public static M4Result Extract<TY>(UniformColumn x, MinMaxPyramid<TY> y, ScaleOrigin origin,
+        ReadOnlySpan<double> boundaries, Span<M4Point> destination, M4Options options = default)
+        where TY : unmanaged, INumber<TY>;
 }
 
+public readonly record struct ScaleOrigin(long X, long Y);   // 行 D2: X と Y の原点（列の単位、§3.6）
 public readonly record struct M4Options(M4Gaps Gaps);   // 既定は Break
 public enum M4Gaps { Break, Connect }
 [Flags] public enum M4Roles : byte { None = 0, First = 1, Min = 2, Max = 4, Last = 8, Raw = 16, Before = 32, After = 64 }
@@ -733,8 +767,8 @@ public enum M4Gaps { Break, Connect }
 public readonly struct M4Point
 {
     public long Index { get; }        // Y の列の要素の位置
-    public double X { get; }
-    public double Y { get; }
+    public double X { get; }          // X の原点からの差 d(x)（§3.6）
+    public double Y { get; }          // Y の原点からの差 d(y)
     public M4Roles Roles { get; }
     public bool BreakBefore { get; }  // 前の点とつながない（NaN の切れ目）
 }
@@ -746,13 +780,14 @@ public readonly struct M4Result
 }
 ```
 
-- **境界**: `boundaries` は W + 1 個（W ≥ 1）の、有限で狭義に増加する `double` で、X のデータの単位で書く。画素列 k は半開区間 [b_k, b_{k+1}) で、b_W ちょうどの要素は範囲の外である。区切りは描画側が画素へ写すのと同じ変換で作る（Jugel ら §4.1）。スケールの変換（log・時刻、§4.2）は、画素の境界を逆変換して渡す。論文の式 (2) の round は鍵が w + 1 個になるので採らない。条件を満たさない `boundaries` は `ArgumentException`
-- **X**: 境界 b の要素の位置は、x(i) ≥ b を満たす最小の i である。x(i) は `UniformColumn` なら `GetValue(i)`（FMA の 1 回の丸め）の値で、総当たりのテストも同じ値で判定する。`UniformColumn` では ⌈(b − start) / step⌉ で求めた i の前後を `GetValue` で 1 回ずつ確かめて直す（割り算と FMA は丸めが違い、1 つずれうる）。`Column<TX>` では、チャンクの統計の `Last`（単調）の上の二分探索でチャンクを決め、その中を二分探索する（境界ごとに O(log N)）。`Column<TX>` は単調非減少で NaN がないこと。抽出は、すでに計算された X のチャンクの統計だけを読み（O(チャンク数)）、自分では計算しない。初回に計算すると X の全体を走査し、フレームの経路が O(N) になるからである（不変条件 2）。すべてのチャンクの統計がそろっていれば単調性を確かめ、そうでなければ `InvalidOperationException`。そろっていなければ、境界の位置を要素の上の二分探索（O(log N) の読み出し）で求め、単調性はまだ確かめず、結果を暫定にする。X の統計は `PlotWorkerPool.PrecomputeStats` で先に計算させる（オーナーの決定、2026-10-28、PR #19）。X と Y の長さが違えば `ArgumentException`
-- **出力**: 列ごとに first・min・max・last を位置の順に書く。同じ要素が複数の役割を持つときは 1 点にまとめ、役割を `Roles` に重ねる（重複した位置を返さない）。要素のない列には何も書かない。暫定の結果だけは例外で、暫定の min / max を範囲の端の要素の位置に置くので、`First` / `Last` と同じ `Index` で Y の違う点が並ぶことがある。Y は `double` にして書く（`long` で 2^53 を超える値は丸まる）。±∞ の Y はそのまま書き、描く側が扱う
+- **原点**（行 D2、Issue #11）: `origin` は X と Y の原点で、`boundaries` と出力の `M4Point.X` / `.Y` はすべて原点からの差 d（§3.6）である。原点は必須の引数で、既定値を持たない。日時の列を原点なしで渡すと黙って精度を落とすので、呼ぶ側が原点を選ぶことを型で見せる。原点が 0 なら、`double` の値は差を取らない値と同じになる
+- **境界**: `boundaries` は W + 1 個（W ≥ 1）の、有限で狭義に増加する `double` で、X のデータの単位の、X の原点からの差で書く。画素列 k は半開区間 [b_k, b_{k+1}) で、b_W ちょうどの要素は範囲の外である。区切りは描画側が画素へ写すのと同じ変換で作る（Jugel ら §4.1）。スケールの変換（log・時刻、§4.2）は、画素の境界を逆変換して渡す。論文の式 (2) の round は鍵が w + 1 個になるので採らない。条件を満たさない `boundaries` は `ArgumentException`
+- **X**: 境界 b の要素の位置は、d(x(i)) ≥ b を満たす最小の i である。d は §3.6 の差で、v について単調非減少なので、`Column<TX>` の単調性はそのまま差の単調性になる。x(i) は、`double` の `UniformColumn` なら `GetValue(i)`（FMA の 1 回の丸め）の値で、d(x(i)) = `GetValue(i) − (double)origin.X`。整数の `UniformColumn` なら d(x(i)) = `(double)((Int128)start + i · step − origin.X)` で、正確な差を 1 回だけ丸める。総当たりのテストも同じ値で判定する。`UniformColumn` では ⌈(b − d(start)) / step⌉ で求めた i の前後を d(x(i)) で 1 回ずつ確かめて直す（割り算と FMA は丸めが違い、1 つずれうる）。`Column<TX>` では、チャンクの統計の `Last`（単調）の上の二分探索でチャンクを決め、その中を二分探索する（境界ごとに O(log N)）。`Column<TX>` は単調非減少で NaN がないこと。抽出は、すでに計算された X のチャンクの統計だけを読み（O(チャンク数)）、自分では計算しない。初回に計算すると X の全体を走査し、フレームの経路が O(N) になるからである（不変条件 2）。すべてのチャンクの統計がそろっていれば単調性を確かめ、そうでなければ `InvalidOperationException`。そろっていなければ、境界の位置を要素の上の二分探索（O(log N) の読み出し）で求め、単調性はまだ確かめず、結果を暫定にする。X の統計は `PlotWorkerPool.PrecomputeStats` で先に計算させる（オーナーの決定、2026-10-28、PR #19）。X と Y の長さが違えば `ArgumentException`
+- **出力**: 列ごとに first・min・max・last を位置の順に書く。同じ要素が複数の役割を持つときは 1 点にまとめ、役割を `Roles` に重ねる（重複した位置を返さない）。要素のない列には何も書かない。暫定の結果だけは例外で、暫定の min / max を範囲の端の要素の位置に置くので、`First` / `Last` と同じ `Index` で Y の違う点が並ぶことがある。X と Y は原点からの差 d にして書く（行 D2。`long` の Y も、Y の原点の近くでは 2^53 を超えても正確で、正確な差を 1 回だけ丸める）。±∞ の Y はそのまま書き（d(±∞) = ±∞）、描く側が扱う
 - **範囲の外の点**: b_0 より前の最後の要素（`Before`）と、b_W 以上の最初の要素（`After`）を 1 つずつ足す。線を画面の端まで届かせるためで、Jugel らの問い合わせ（範囲の内側だけ）にはない。該当する要素がなければ足さない
 - **NaN（`Break`、既定）**: 書こうとした要素が NaN なら書かず、次に書く点に `BreakBefore` を立てる。つまり、境界の要素が NaN なら隣の列とつながない。min / max は NaN を除いた値である。すべて NaN の列は何も書かず、次の点に `BreakBefore` を立てる。列の中の min と max は常につなぐ（1 画素の幅の中なので、切れ目は描いても見えない）
 - **NaN（`Connect`）**: NaN を無視してつなぐ（SciChart の `DrawNaNAs` の ClosedLines にあたる）。first / last は、列の中の最初と最後の NaN でない要素で、すべて NaN のバケットを NaN でない値の数で飛ばして探す。ピラミッドのできていないチャンクでは生データを走査せず、`Break` と同じく境界の要素を使って暫定にする
-- **暫定と要求**: ピラミッドのできていないチャンクに当たった列があれば、結果に `IsProvisional` を立て、そのチャンクの構築を要求する（§3.3）。統計もまだないチャンクだけに当たった列は、min / max を書かない（first / last の境界の要素は書く）。チャンクの統計は位置を持たないので、暫定の min は範囲の最初の要素、max は最後の要素の位置に置き、Y は統計の値にする（その位置の要素の値と限らない）
+- **暫定と要求**: ピラミッドのできていないチャンクに当たった列があれば、結果に `IsProvisional` を立て、そのチャンクの構築を要求する（§3.3）。統計もまだないチャンクだけに当たった列は、min / max を書かない（first / last の境界の要素は書く）。チャンクの統計は位置を持たないので、暫定の min は範囲の最初の要素、max は最後の要素の位置に置き、Y は統計の値の差 d にする（その位置の要素の値と限らない）
 - **min / max**: 各列の min / max と、その要素の位置は、§3.3 の誤差のない問い合わせで求める
 - **メモリマップの初回**: first / last は列ごとに境界の要素を生データから読む。1e9 点の `float` のファイルを全体表示すると、境界の要素は約 2 MB ごとに 1 つで、1 フレームに約 2W のページを別々に触る。ページキャッシュに載る前の 1 フレームの時間は、P-1 とは別に行 B1 で測る（§9 の「冷えた 1 フレーム」）。水準 1 のバケットに first / last も持つ案（メモリは約 6.7%、P-8 の内）は、行 B1 の計測で却下した（`design-decisions.md`）。ページキャッシュから追い出された後に M4 が生データを読む分は、参照機で 1 フレーム約 0.2 s（3,840 ページ、1 回だけで、その後はキャッシュに載る）で、追い出しはメモリが足りないときだけ起きるので、メモリを常に払う得がない。冷えたファイルを開いた直後の最初のフレームは、構築でディスクを読むワーカーと並んで約 0.6 s かかる（`docs/benchmarks/b1-data-layer.md`）。ファイルを開いて 1 回だけ起き、要件にこの場面の目標がないので、このままにする（オーナーの判断、2026-10-28）
 - `destination` が `MaxPointCount(W)` より短ければ `ArgumentException`。抽出は確保しない（不変条件 3）
@@ -776,11 +811,11 @@ public sealed class M4Batch
 
 public sealed class PlotWorkerPool
 {
-    public void Extract(M4Batch batch, double[] boundaries);   // 全系列が終わるまで待つ
+    public void Extract(M4Batch batch, ScaleOrigin origin, double[] boundaries);   // 全系列が終わるまで待つ
 }
 ```
 
-- 系列は 1 度登録し、フレームでは `Extract` だけを呼ぶ。系列ごとの仕事の構造は `Add` で作るので、`Extract` は確保しない（不変条件 3）。境界はすべての系列で同じ（1 つのパネルの画素列）で、ワーカーが読むので配列で渡す
+- 系列は 1 度登録し、フレームでは `Extract` だけを呼ぶ。系列ごとの仕事の構造は `Add` で作るので、`Extract` は確保しない（不変条件 3）。境界はすべての系列で同じ（1 つのパネルの画素列）で、ワーカーが読むので配列で渡す。原点（行 D2）もすべての系列で同じ（1 つのパネルの x と y の軸）で、値の型なので確保しない
 - 各系列の抽出は `M4.Extract` と同じ結果を出す。出力の配列は系列ごとで、`MaxPointCount(W)` より短ければ、その系列の失敗（`ArgumentException`）になる
 - 系列を 1 つの仕事にし、1 系列を画素列の範囲で分けない。系列が少なくてコアが余るときも分けない: 行 S2 の計測で、1 系列のフレームの CPU の p95 は 4.4〜5.8 ms で P-1 の内だった（`docs/benchmarks/s2-e2e.md`、オーナーの判断 2026-10-29）。P-1 を割る場面が出たら考え直す
 - 引数: `batch` と `boundaries` が null なら `ArgumentNullException`。境界は、系列に配る前に `Extract` が 1 回だけ、`M4.Extract` と同じ条件（2 個以上、有限、狭義に増加）で検査し、外れれば `ArgumentException` を投げる（W = 1,920 で 1,920 回の比較）。呼び出し側の誤りを、全系列の失敗としてでなく 1 つの例外として見せるためである。系列ごとの失敗は、出力の長さ・ピラミッドの破棄・X の単調性など、系列に固有のものだけになる。プールが破棄されていれば `ObjectDisposedException`。`Shared` は使える
@@ -835,11 +870,12 @@ Core はテキストの契約 `ITextBackend` を持ち、バックエンドが�
 
 ### 6.2 ビューの操作
 
-- 各パネルはビューを持つ。2D は x と y のビュー範囲（スケールの空間の `double`）、3D（v1.x、§13.8）はカメラ（注視点・距離・方位角・仰角・視野角または正射影の幅）と x・y・z の軸の範囲である。公開の型はビューの種類を 1 つの抽象（`PanelView`）で表し、2D の範囲だけを前提にしない（不変条件 12）
+- 各パネルはビューを持つ。2D は x と y のビュー範囲（スケールの空間の原点と差の組、§3.6。軸ごとに `long` の原点と、下端と上端の `double` の差）、3D（v1.x、§13.8）はカメラ（注視点・距離・方位角・仰角・視野角または正射影の幅）と x・y・z の軸の範囲である。公開の型はビューの種類を 1 つの抽象（`PanelView`）で表し、2D の範囲だけを前提にしない（不変条件 12）
 - **ツール**の状態機械: 待機 → パン / 矩形ズーム / 投げ縄 / 軸のドラッグ / 注釈のドラッグ / 計測。どの入力でどのツールに入るかは割り当ての表（`InputBindings`）で決め、利用者が変えられる（要件 I-7）
 - ホイールのズームはカーソルの位置を中心にする。ズームのアニメーションは `TimeProvider` の時刻で補間する
 - **Y の自動範囲**: X のビュー範囲が変わったら、見えている X の区間の Y の min / max をピラミッドの問い合わせ（§3.3）で求めて Y の範囲にする（オプション）。O(log N) で済む
 - ズームの履歴（戻る・進む）はビュー範囲のスタックで持つ（要件 I-1）
+- **原点の付け直し**（行 D2 の規則、使うのは行 I1）: パン・ズーム・履歴の移動・リンクの共有でビュー範囲が変わるたびに、§3.6 のとおり 原点 += ⌊下端の差⌋、差 −= ⌊下端の差⌋ と付け直す。ズームの中心（カーソルの位置）も同じ原点の差で計算する。リンクしたパネルは、原点と差の組をそのまま渡す。カーソルの位置をスケールの空間へ戻す（§6.3）ときも、原点と差の組で返す
 
 ### 6.3 ヒットテスト
 
@@ -975,7 +1011,8 @@ Core はテキストの契約 `ITextBackend` を持ち、バックエンドが�
 | 系列ごとの並列（S1） | `PlotWorkerPool.Extract` の各系列の結果が、同じ系列の `M4.Extract` と点まで同じ（等間隔の X と保存された X、`Break` と `Connect`、系列 1・4・16）。温まった後の `Extract` が確保しない。全部のワーカーをチャンクの構築で止めても、呼び出し側だけで全系列が終わる。ワーカーがフレームの仕事をチャンクより先に取る（チャンクの仕事を積んだまま、フレームの仕事が先に終わる）。1 つの系列が投げると、ほかの系列の結果は残り、最も小さい番号の失敗の例外が投げ直され、`GetError` がその系列で非 null。ワーカーのスレッドからの `Extract` は `InvalidOperationException`。§5.5.1 の引数の例外（増加していない境界・有限でない境界・2 個より少ない境界は、系列の失敗でなく `Extract` の `ArgumentException`）。2 つのバッチを 2 つのスレッドから同時に `Extract` しても、それぞれの結果が `M4.Extract` と同じ。`Extract` の途中でプールを破棄しても全系列が終わり、次の `Extract` は `ObjectDisposedException`。サンプル（`HelloPlot`）は NativeAOT で発行して警告 0、実行して PNG を書く |
 | フレームと GPU 時間（S2） | WARP で: `FrameScope` を入れ子にすると、いちばん外だけがフレームを数え、中の `Clear`・`Draw` は外のフレームの一部になる。外のフレームなしの `Draw` は自分で 1 つのフレームになる。外のスコープを中より先に閉じると中も閉じる。閉じたトークン・`default` の `FrameScope`・2 度目の `Dispose` は何もしない（例外を投げない）。中で開いたフレームの途中の喪失（差し込み口）の後も入れ子が残らず、次の `BeginFrame` がいちばん外として番号を振る。外のフレームの途中で喪失し、中の `Clear` が作り直してから外を閉じても、`LastFrameTime` にそのフレームの番号は現れず、例外も起きない。`ReadPixels` を呼ばずに `Draw` だけを続けても、数フレームのうちに `LastFrameTime` が null でなくなり、番号は増え、閉じたフレームより先にならず、時間は 0 より大きい。閉じるときは GPU を待たない（クエリの輪が埋まっていれば、そのフレームを測らずに進み、輪が空いたら埋まっていた 4 フレームの時間が順に届く）。古いフレームのクエリが読めない間は、新しいフレームの時間も届かない（差し込み口で 1 フレームだけ止める）。GPU の時計が乱れた組は時間を持たず、輪を空ける（差し込み口で乱れたことにする。WARP は乱れない）。喪失の後もクエリが作り直されて時間が届く。温まった後のフレームが確保しない |
 | 画像の比較（S3） | `tests/HyperPlot.Testing.Tests`（両 OS、GPU なし）で、作った画像を使って: 差がちょうど `Channel` の画素は超えず、`Channel` + 1 で超える（R・G・B・A のそれぞれで）。超えた画素の数がちょうど `Pixels` なら合い、1 つ多いと合わない。`MaxDelta` と最初の位置（行の順）が正しく、`Tolerance` が渡したものである。`Exact` は 1 の差でも合わない。負の許容差・長さの合わない配列・1 未満の幅と高さ・null の引数が §10.1 の例外を投げる。基準のファイルがないと実際の画像だけを書いて投げ、基準は作られない。大きさの違う基準で両方の大きさを書いて投げる。合わないと `actual` と `diff` の PNG を書き、`diff` の超えた画素が赤、それ以外が基準の灰色である。`HYPERPLOT_UPDATE_GOLDEN=1` で基準が書き直されて合い、`0` や空では書き直さない。復号器が §7.5 の書き手の画像を画素まで読み戻し、ほかのカラータイプ・インターレース・フィルタ 0 以外・CRC の不一致・短いファイルを `InvalidDataException` にする。WARP で（D3D11 のテスト）: §10.1 の 2 場面が基準の PNG と合う |
-| 仕様とコンパイル（G1） | 表: `Col<T>` が `Column<T>` と、`T` が `double` の `UniformColumn` を返し、ほかの型と知らない名前と大文字小文字の違う名前を `ArgumentException` にする。`Add` の null・空・重なる名前、`Build` の長さの違い、`Build` の後のビルダ、`ColumnRef` の等しさ（同じ表と位置、別の表は違う）、`default` の参照。仕様: `Id` が作るときと `with` のたびに新しく振られ、すべて違う。ビルダ: 別の表と `default` の参照、Y が `UniformColumn`、`configure` が 1 回だけ呼ばれる、`Build` の後、レイヤー 0 個。linear: 学習した domain がすべてのレイヤーの和（`Column<T>` は NaN を除いた統計、`UniformColumn` は最初と最後）、長さ 0 の列、NaN でない値なし（[0, 1]）、すべて同じ値（± 0.5）、+∞ か −∞ を含む列（列の名前を書いた `InvalidOperationException`。明示の domain なら描ける）、明示の domain、`WithDomain` の NaN・無限大・min ≥ max。コンパイル（仕様を直接作って）: Y が `UniformColumn`、単調でない X（`InvalidOperationException`）、別の表の列、`ScaleX` か `ScaleY` が null、写しのコンストラクタで派生した知らない `LayerSpec` と `ScaleSpec`（型の名前を書いた `ArgumentException`）、外れた `Domain` と `Style`、x の domain が狭すぎて境界が増加しない（`WithDomain(1e15, 1e15 + 0.25)` を幅 1,000 で。1e15 の ulp は 0.125 なので、境界の間隔 0.00025 では隣り合う境界が同じ値になる）。描く（WARP）: 2 つのレイヤー（`UniformColumn` の X と保存された X、NaN の切れ目、破線）のプロットの画素が、同じ境界と写し方で `M4Batch` と `RenderList` を手で組んで描いた画素と一致し、ゴールデン画像（§10.1）と合う。差分（数え口）: 同じ仕様の描き直しはピラミッド 0・M4 0・記録 0、見た目だけはピラミッド 0・M4 0・記録 1、domain だけはピラミッド 0・M4 1・記録 1、Y の列の差し替えはその列のピラミッドだけ 1 つで古いものが解放される、レイヤーを足すと新しい列の分だけ、同じ Y の列の 2 つのレイヤーはピラミッド 1 つ、レイヤー 0 個はピラミッド 0・M4 1・記録 1 で折れ線を記録せず、前の仕様のピラミッドを解放する。待ち: ピラミッドの構築を止めたプールで `Render` が構築の終わりまで戻らず、戻った画像が止めないときと同じ。描いた後に Y の列を書き換えて `Invalidate` すると、次の `Render` が作り直しを待ち、書き換えた値で描く（止めずに描いた画像と同じ）。X の `Column<T>` を `Invalidate` しても同じ。M4 がピラミッドを読む途中で Y の列を書き換えて `Invalidate` すると、次の同じ仕様の `Render` が引き直し、書き換えた値で描く。チャンクの読み出しを失敗させると、`Render` がその例外をそのまま投げ、暫定の画像を描かない。`WhenComplete`（Core）: 完全なピラミッドで終わった `Task`、`Invalidate` の後に古いチャンクだけが作り直されて終わる、呼ぶ前に `Fault` があるときその例外で終わった `Task`、待つ間の失敗でその例外、`Dispose` で `ObjectDisposedException`、2 回の呼び出しが同じ `Task`。`Dispose` がピラミッドを解放する。温まった後、同じ仕様の `Render` が確保しない |
+| 仕様とコンパイル（G1） | 表: `Col<T>` が `Column<T>` と、`T` が `double` の `UniformColumn` を返し、ほかの型と知らない名前と大文字小文字の違う名前を `ArgumentException` にする。`Add` の null・空・重なる名前、`Build` の長さの違い、`Build` の後のビルダ、`ColumnRef` の等しさ（同じ表と位置、別の表は違う）、`default` の参照。仕様: `Id` が作るときと `with` のたびに新しく振られ、すべて違う。ビルダ: 別の表と `default` の参照、Y が `UniformColumn`、`configure` が 1 回だけ呼ばれる、`Build` の後、レイヤー 0 個。linear: 学習した domain がすべてのレイヤーの和（`Column<T>` は NaN を除いた統計、`UniformColumn` は最初と最後）、長さ 0 の列、NaN でない値なし（[0, 1]）、すべて同じ値（± 0.5）、+∞ か −∞ を含む列（列の名前を書いた `InvalidOperationException`。明示の domain なら描ける）、明示の domain、`WithDomain` の NaN・無限大・min ≥ max。コンパイル（仕様を直接作って）: Y が `UniformColumn`、単調でない X（`InvalidOperationException`）、別の表の列、`ScaleX` か `ScaleY` が null、写しのコンストラクタで派生した知らない `LayerSpec` と `ScaleSpec`（型の名前を書いた `ArgumentException`）、外れた `Domain` と `Style`、x の domain が狭すぎて境界が増加しない（`WithDomain(0.5, 0.5 + 1e-14)` を幅 1,000 で。原点は 0 で、0.5 の ulp は 2^−53（約 1.1e-16）なので、境界の間隔 1e-17 では隣り合う境界が同じ値になる。行 D2 の前の値 `WithDomain(1e15, 1e15 + 0.25)` は、原点 1e15 と差 0〜0.25 になって描ける）。描く（WARP）: 2 つのレイヤー（`UniformColumn` の X と保存された X、NaN の切れ目、破線）のプロットの画素が、同じ境界と写し方で `M4Batch` と `RenderList` を手で組んで描いた画素と一致し、ゴールデン画像（§10.1）と合う。差分（数え口）: 同じ仕様の描き直しはピラミッド 0・M4 0・記録 0、見た目だけはピラミッド 0・M4 0・記録 1、domain だけはピラミッド 0・M4 1・記録 1、Y の列の差し替えはその列のピラミッドだけ 1 つで古いものが解放される、レイヤーを足すと新しい列の分だけ、同じ Y の列の 2 つのレイヤーはピラミッド 1 つ、レイヤー 0 個はピラミッド 0・M4 1・記録 1 で折れ線を記録せず、前の仕様のピラミッドを解放する。待ち: ピラミッドの構築を止めたプールで `Render` が構築の終わりまで戻らず、戻った画像が止めないときと同じ。描いた後に Y の列を書き換えて `Invalidate` すると、次の `Render` が作り直しを待ち、書き換えた値で描く（止めずに描いた画像と同じ）。X の `Column<T>` を `Invalidate` しても同じ。M4 がピラミッドを読む途中で Y の列を書き換えて `Invalidate` すると、次の同じ仕様の `Render` が引き直し、書き換えた値で描く。チャンクの読み出しを失敗させると、`Render` がその例外をそのまま投げ、暫定の画像を描かない。`WhenComplete`（Core）: 完全なピラミッドで終わった `Task`、`Invalidate` の後に古いチャンクだけが作り直されて終わる、呼ぶ前に `Fault` があるときその例外で終わった `Task`、待つ間の失敗でその例外、`Dispose` で `ObjectDisposedException`、2 回の呼び出しが同じ `Task`。`Dispose` がピラミッドを解放する。温まった後、同じ仕様の `Render` が確保しない |
+| スケールの空間の精度（D2） | R-6: 2026 年の .NET のティックの `Column<long>` の X と、ns・Unix 起点の `Column<long>` の X、整数の `UniformColumn`（2026 年のティックの開始値、刻み 10）で、全体の表示から、表示範囲がデータの 1 単位を幅 1,920 いっぱいに広げるところまでの各段で、境界の差が狭義に増加し、M4 の点が総当たり（`Int128` の正確な差を 1 回丸めた値で判定）と位置・値・役割まで一致し、画素の位置が理想の値（正確な差から倍精度で計算した値）と一致する。差 d: `long.MaxValue` と `long.MinValue` の値を反対の端の原点で引いて例外にならず、単調非減少のまま。`float`・`double`・`double` の `UniformColumn` で、原点 0 の結果が D2 の前と点まで同じ。Y: 2026 年のティックの近くで 1 ずつ変わる `long` の Y の M4 の Y が、Y の原点からの正確な差。原点の付け直し（`ScaleRange` の関数）: 下端の差が (−0.5, 0)・[−1, −0.5]・−1 より小さい値・[0, 1)・大きい正の値で、付け直した後の下端の差が [0, 1) にあり、付け直す前と後の位置（原点 + 差を `Int128` と分数で正確に比べた値）の違いが §3.6 の上限の中にある。d ∈ (−0.5, 0) の −0.3 で丸まること、ほかの範囲でビットまで同じこと、上端の差が 2^53 以上で 1 ulp の半分以下だけ丸まること。`long` の範囲に収める端（`long.MinValue` の近くと、`double` の −1e300）。整数の列: `Column.UniformInteger` の `step` が 0 以下と、最後の値が `long` に入らない長さで `ArgumentOutOfRangeException`、`IsInteger`、`Col<long>` が参照を返し `Col<double>` が `ArgumentException`、`double` の `UniformColumn` は逆。`TryGetInteger` が整数の列で真と正確な開始値と刻み（2^53 を超える開始値で、`start + i * step` が `long` の値と一致）を返し、`double` の列で偽と 0 と 0 を返す。`double` の列の d: 原点が 2^53 を超えるとき、点のずれが ulp(o)/2 以下で、総当たりが同じ式の値と一致する。学習（コンパイル）: `long` の列の domain の原点が min そのもので、上端の差が `max − min` の正確な値。整数の列だけの和は `long` で、`double` の列が混ざると `double` で比べる。値が 1 つの `long` の列で原点が v − 1、差が 0.5 と 1.5。`PlotWorkerPool.Extract` の各系列の結果が、同じ原点の `M4.Extract` と点まで同じ。温まった後、原点の違う x の domain の切り替えでも確保しない |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
 
@@ -1044,7 +1081,7 @@ public sealed class ImageMismatchException : Exception
 3. 定常状態のフレームの経路は、マネージドのアロケーションをしない。ランタイムがプロセスで 1 回だけ行う初期化の確保（NativeAOT で `Lock` を初めて待つときの 56 バイト）は除き、その出どころを記録に書く（要件 P-9、`.cursor/rules/bench.mdc`、オーナーの判断 PR #63）
 4. 派生のデータ（統計・LOD・タイル・Stat の結果）は元の列の版を持つ。古い版の結果を描くときは、それを「暫定」として扱い、ホストへ通知する
 5. M4 の間引きは、各画素列の first・min・max・last を誤差なしで保つ。点の位置と値は元の要素のものである
-6. スケールの空間の値は CPU では `double` で扱う。GPU には原点からの差の float32 だけを送る
+6. スケールの空間の値は CPU では `long` の原点と `double` の差の組で扱う（§3.6、行 D2）。GPU には原点からの差の float32 だけを送る
 7. UI のスレッドは、ワーカーと GPU の完了を待たない。例外は 3 つで、ヘッドレス描画の readback を明示的に求めた場合、ピラミッドとワーカーのプールの `Dispose` が処理中のチャンク 1 つ分の構築を待つ場合（§8.1）、フレームの中で画素数で抑えた仕事（系列ごとの M4）の fork-join を待つ場合（§8.1）
 8. 時刻は `TimeProvider` からだけ取る
 9. `src/` のコードはリフレクションと実行時のコード生成を使わない
