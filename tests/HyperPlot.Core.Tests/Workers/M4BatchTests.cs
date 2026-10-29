@@ -143,7 +143,7 @@ public sealed class M4BatchTests
     ///
     /// Steps:
     /// - Wait until the worker holds chunk 0; extract a batch of 4 series on another thread; release chunk 0; wait for the
-    ///   extraction and the pyramid.
+    ///   extraction, the pyramid, and the worker's record of the last chunk (recorded after the chunk is built).
     ///
     /// Expected:
     /// - After chunk 0, the worker took the 4 frame jobs, then the chunks left; the results equal each series alone.
@@ -173,6 +173,17 @@ public sealed class M4BatchTests
         Eventually.Completes(extraction);
         Eventually.Completes(pyramid.Completion);
 
+        // The worker records a job after it ran it, so the last chunk can complete the pyramid before its record is added.
+        Eventually.True(
+            () =>
+            {
+                lock (taken)
+                {
+                    return taken.Count >= 7;
+                }
+            },
+            "the worker to record the last chunk"
+        );
         pool.TestTook = null;
         lock (taken)
         {
