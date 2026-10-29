@@ -89,22 +89,26 @@ public sealed class AssertMatchesTests : IDisposable
     /// - A 4 × 3 baseline.
     ///
     /// Steps:
-    /// - Assert a 3 × 4 image.
+    /// - Assert an image that differs in width only (5 × 3), in height only (4 × 5), and in both with the same pixel count
+    ///   (6 × 2).
     ///
     /// Expected:
-    /// - ImageMismatchException with no difference, naming 3 × 4 and 4 × 3; <c>scene.actual.png</c> and no diff.
+    /// - ImageMismatchException with no difference, naming both sizes; <c>scene.actual.png</c> and no diff.
     /// </remarks>
-    [Fact]
-    public void AssertMatches_OtherSize_ThrowsWithBothSizes()
+    [Theory]
+    [InlineData(5, 3)]
+    [InlineData(4, 5)]
+    [InlineData(6, 2)]
+    public void AssertMatches_OtherSize_ThrowsWithBothSizes(int width, int height)
     {
         WriteBaseline(Images.Gradient(4, 3), 4, 3);
 
         var exception = Assert.Throws<ImageMismatchException>(() =>
-            GoldenImage.AssertMatches(Images.Gradient(3, 4), 3, 4, Baseline, ImageTolerance.Exact, Output)
+            GoldenImage.AssertMatches(Images.Gradient(width, height), width, height, Baseline, ImageTolerance.Exact, Output)
         );
 
         Assert.Null(exception.Difference);
-        Assert.Contains("3 × 4", exception.Message, StringComparison.Ordinal);
+        Assert.Contains($"{width} × {height}", exception.Message, StringComparison.Ordinal);
         Assert.Contains("4 × 3", exception.Message, StringComparison.Ordinal);
         Assert.True(File.Exists(Path.Combine(Output, "scene.actual.png")));
         Assert.False(File.Exists(Path.Combine(Output, "scene.diff.png")));
@@ -185,7 +189,7 @@ public sealed class AssertMatchesTests : IDisposable
     /// - A baseline that differs from the image.
     ///
     /// Steps:
-    /// - With the variable at "0", at "true", and at " 1", assert; then, with "0", assert against a missing baseline.
+    /// - With the variable at "0", at "true", at " 1", and at "" (which unsets it), assert; then, with "0", assert against a missing baseline.
     ///
     /// Expected:
     /// - ImageMismatchException each time; the baseline's bytes are unchanged; the missing one is not made.
@@ -194,6 +198,7 @@ public sealed class AssertMatchesTests : IDisposable
     [InlineData("0")]
     [InlineData("true")]
     [InlineData(" 1")]
+    [InlineData("")]
     public void AssertMatches_UpdateNotOne_Compares(string value)
     {
         WriteBaseline(Images.Solid(5, 5, 9, 9, 9, 9), 5, 5);
