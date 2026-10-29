@@ -176,6 +176,25 @@ public abstract class Column
     /// <returns>The column.</returns>
     public static UniformColumn Uniform(double start, double step, long length) => new(start, step, length);
 
+    /// <summary>Gets what kind of column this is, for messages: <c>UniformColumn</c> or <c>Column&lt;Single&gt;</c>.</summary>
+    internal abstract string KindName { get; }
+
+    /// <summary>
+    /// Returns the range of the values that are not NaN, from statistics a worker computed (design §4.2): false when there is
+    /// none. Computes the statistics of a chunk that has none yet.
+    /// </summary>
+    internal abstract bool TryGetRange(out double min, out double max);
+
+    /// <summary>
+    /// Starts computing the chunk statistics that M4 needs of this column as X (design §5.5.1), or returns null when they are
+    /// all there or the column needs none.
+    /// </summary>
+    internal abstract Task? PrecomputeStatsIfMissing(PlotWorkerPool pool);
+
+    /// <summary>Adds a series with this column as X to a batch (design §5.5.1).</summary>
+    internal abstract int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination)
+        where TY : unmanaged, INumber<TY>;
+
     private protected void IncrementVersion() => Interlocked.Increment(ref _version);
 
     private protected void CheckChunkIndex(int chunkIndex)

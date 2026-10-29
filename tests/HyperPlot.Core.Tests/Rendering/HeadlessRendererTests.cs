@@ -106,7 +106,7 @@ public sealed class HeadlessRendererTests
         var renderer = new HeadlessRenderer(backend, 1, 1);
         Assert.Throws<ArgumentNullException>(() => renderer.WritePng(null!));
 
-        Assert.Throws<ArgumentNullException>(() => renderer.Render(null!));
+        Assert.Throws<ArgumentNullException>(() => renderer.Render((RenderList)null!));
         var list = new RenderList();
         renderer.Render(list);
         Assert.Same(list, backend.Drawn);

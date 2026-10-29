@@ -12,7 +12,7 @@ namespace HyperPlot;
 /// Reads may run on any number of threads at once. <see cref="Invalidate(long, long)"/> may run beside them; a read that
 /// overlaps the change sees the old or the new values. <see cref="Dispose"/> must not run beside a read.
 /// </remarks>
-public sealed class Column<T> : Column, IDisposable
+public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     where T : unmanaged, INumber<T>
 {
     private readonly ColumnStorage<T> _storage;
@@ -175,6 +175,26 @@ public sealed class Column<T> : Column, IDisposable
         nonDecreasing = ChunkCount == 0 || total.IsNonDecreasing;
         return true;
     }
+
+    /// <inheritdoc />
+    internal override string KindName => $"Column<{typeof(T).Name}>";
+
+    /// <inheritdoc />
+    internal override bool TryGetRange(out double min, out double max)
+    {
+        var total = GetTotalStats();
+        (min, max) = (double.CreateTruncating(total.Min), double.CreateTruncating(total.Max));
+        return total.Count > 0;
+    }
+
+    /// <inheritdoc />
+    internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => TryIsNonDecreasing(out _) ? null : pool.PrecomputeStats(this);
+
+    /// <inheritdoc />
+    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
+
+    /// <inheritdoc />
+    PlotPyramid IPyramidColumn.BuildPlotPyramid(PlotWorkerPool pool) => new PlotPyramid<T>(pool.BuildPyramid(this));
 
     /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>
     internal long GetGeneration(int chunkIndex) => Volatile.Read(ref _generations[chunkIndex]);

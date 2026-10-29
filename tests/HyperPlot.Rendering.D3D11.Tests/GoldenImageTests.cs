@@ -12,9 +12,9 @@ namespace HyperPlot.Rendering.D3D11.Tests;
 public sealed class GoldenImageTests
 {
     // Measured between this machine's WARP and the CI runner's (docs/benchmarks/s3-golden.md).
-    private static readonly ImageTolerance Tolerance = ImageTolerance.Exact;
+    internal static readonly ImageTolerance Tolerance = ImageTolerance.Exact;
 
-    private static readonly string Output = Path.Combine(AppContext.BaseDirectory, "golden-output");
+    internal static readonly string Output = Path.Combine(AppContext.BaseDirectory, "golden-output");
 
     /// <summary>
     /// The scene of <c>HelloPlot</c>, drawn with 1e5 points, matches its baseline (design §10.1).
@@ -109,7 +109,7 @@ public sealed class GoldenImageTests
     }
 
     // The baselines are read from and written to the source tree, so that a rewrite lands in git.
-    private static string Baseline(string name)
+    internal static string Baseline(string name)
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "HyperPlot.slnx")))
