@@ -116,6 +116,53 @@ public sealed class TickTests
         Assert.Equal(500, nice.Pixels[^1], 9);
     }
 
+    /// <summary>
+    /// The coverage bound is the centered one, 1 − ¼ (r′ − r)² / (0.1 r)² (design §4.6): a nice labeling that overhangs the
+    /// range on both sides is found, not cut by a tighter bound.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The range [−0.9, 0.9] over 500 pixels, spacing 100, with nice.
+    ///
+    /// Steps:
+    /// - Choose; choose with the brute force.
+    ///
+    /// Expected:
+    /// - The same ticks, from −1 to 1.
+    /// </remarks>
+    [Fact]
+    public void Extended_CoverageBound_KeepsTheCenteredOverhang()
+    {
+        var axis = Axis(Scale.Linear(), null, ScaleRange.FromDouble(-0.9, 0.9), 500, 100);
+        axis.Choose(nice: true);
+        Assert.Equal(BruteForce(-0.9, 0.9, 500, 100, nice: true, (0.25, 0.2, 0.5, 0.05)).Labels, axis.TickLabels.ToArray());
+        Assert.Equal((-1.0, 1.0), (Values(axis)[0], Values(axis)[^1]));
+    }
+
+    /// <summary>
+    /// A log candidate fits when its count − 1 is at most the length over the spacing (design §4.6): at 8.5, the nine ticks
+    /// of {1, 2, 5} over [1, 900] fit.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A log domain [1, 900] (under three decades) over 510 pixels, spacing 60.
+    ///
+    /// Steps:
+    /// - Choose.
+    ///
+    /// Expected:
+    /// - Nine ticks, with mantissas 1, 2, and 5.
+    /// </remarks>
+    [Fact]
+    public void Log_CountLimit_IsCountMinusOne()
+    {
+        var log = Scale.Log();
+        var axis = Axis(log, log.CreateTransform(), Log(1, 900), 510, 60);
+        axis.Choose(nice: false);
+        Assert.Equal(9, axis.Count);
+        Assert.Contains(5, Mantissas(axis));
+    }
+
     /// <summary>An axis too short for two labels that do not overlap gets no ticks (Talbot et al. 2010 §5).</summary>
     /// <remarks>
     /// Preconditions:
@@ -144,10 +191,10 @@ public sealed class TickTests
     /// - Two labels "AB" (13.5 pixels wide at 12) placed by a format that writes them, at chosen distances.
     ///
     /// Steps:
-    /// - Measure at gaps of 1.5 em, 9 pixels, and 0.
+    /// - Measure at gaps of 1.5 em, 15 and 9 pixels (between 1 em and 1.5 em, and below 1 em), and 0.
     ///
     /// Expected:
-    /// - 1, 2 − 18 / 9 = 0, and −∞.
+    /// - 1, 2 − 18 / 15 = 0.8, 2 − 18 / 9 = 0, and −∞.
     /// </remarks>
     [Fact]
     public void Overlap_ThreeCases()
@@ -159,7 +206,7 @@ public sealed class TickTests
             return true;
         };
         var width = 2 * FakeTextBackend.Advance(12);
-        foreach (var (gap, expected) in new[] { (1.5 * Em, 1.0), (9, 0), (0, double.NegativeInfinity) })
+        foreach (var (gap, expected) in new[] { (1.5 * Em, 1.0), (15, 0.8), (9, 0), (0, double.NegativeInfinity) })
         {
             var axis = Axis(Scale.Linear() with { TickFormat = ab }, null, ScaleRange.FromDouble(0, 1), 100, 10);
             axis.AddNumber(new TickNumber(0, 0), 0);
@@ -234,13 +281,15 @@ public sealed class TickTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - Ticks 0, 0.5, 1 on a linear axis; 0.001, 0.01, 0.1, 1 on a log axis; 1e13, 2e13 and 0.25e-9, 0.5e-9 on linear axes.
+    /// - Ticks 0, 0.5, 1 on a linear axis; 0.001, 0.01, 0.1, 1 on a log axis; 1e13, 2e13; labels of exactly 12 characters;
+    ///   and 0.25e-9, 0.5e-9 on linear axes.
     ///
     /// Steps:
     /// - Label each set.
     ///
     /// Expected:
-    /// - "0.0", "0.5", "1.0"; "0.001", "0.01", "0.1", "1"; "1e13", "2e13"; "2.5e-10", "5e-10" ("0.00000000025" has 13).
+    /// - "0.0", "0.5", "1.0"; "0.001", "0.01", "0.1", "1"; "1e13", "2e13"; "123456789.25" kept fixed at 12; "2.5e-10",
+    ///   "5e-10" ("0.00000000025" has 13).
     /// </remarks>
     [Fact]
     public void Labels_DecimalsAndExponents()
@@ -248,6 +297,7 @@ public sealed class TickTests
         Assert.Equal(["0.0", "0.5", "1.0"], Label(true, (0, 0), (5, -1), (1, 0)));
         Assert.Equal(["0.001", "0.01", "0.1", "1"], Label(false, (1, -3), (1, -2), (1, -1), (1, 0)));
         Assert.Equal(["1e13", "2e13"], Label(true, (1, 13), (2, 13)));
+        Assert.Equal(["123456789.25", "123456789.50"], Label(true, (12345678925, -2), (1234567895, -1)));
         Assert.Equal(["2.5e-10", "5.0e-10"], Label(true, (25, -11), (5, -10)));
     }
 
@@ -812,7 +862,7 @@ public sealed class TickTests
         return buffer[..written].ToString();
     }
 
-    private static string[] Label(bool same, params (int M, int E)[] ticks)
+    private static string[] Label(bool same, params (long M, int E)[] ticks)
     {
         var axis = Axis(Scale.Linear(), null, ScaleRange.FromDouble(0, 1), 10_000, 10);
         for (var i = 0; i < ticks.Length; i++)

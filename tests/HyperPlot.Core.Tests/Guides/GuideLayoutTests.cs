@@ -270,6 +270,35 @@ public sealed class GuideLayoutTests : IDisposable
         Assert.Equal(16 * 1.5f, texts.Single(t => t.Text == "Title").Style.Size);
     }
 
+    /// <summary>A legend row is as tall as the larger of the line and the sample's width (design §4.6).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two labeled layers of width 20 (the legend's line is 15 tall), then of width 1.
+    ///
+    /// Steps:
+    /// - Render each; read the two labels' positions.
+    ///
+    /// Expected:
+    /// - The labels 20 apart, then 15 apart, the first a half row below the panel's top.
+    /// </remarks>
+    [Fact]
+    public void Record_LegendRows()
+    {
+        foreach (var (width, row) in new[] { (20f, 20f), (1f, FakeTextBackend.LineHeight(12)) })
+        {
+            using var plan = Plan(1);
+            var spec = Plot.Create(_table)
+                .Line(_table.Col<double>("t"), _table.Col<float>("a"), l => l.Width(width).Label("ch1"))
+                .Line(_table.Col<double>("t"), _table.Col<float>("b"), l => l.Width(width).Label("ch2"))
+                .Build();
+            var texts = plan.Render(spec).Texts.ToArray();
+            var first = texts.Single(t => t.Text == "ch1").Position.Y;
+            var second = texts.Single(t => t.Text == "ch2").Position.Y;
+            Assert.Equal(row, second - first);
+            Assert.Equal(plan.Guides.Top + (row / 2), first);
+        }
+    }
+
     /// <summary>
     /// At the scale 1.5 the data's widths and dashes are 1.5 times the spec's; at 1 they are the spec's (design §4.1).
     /// </summary>
