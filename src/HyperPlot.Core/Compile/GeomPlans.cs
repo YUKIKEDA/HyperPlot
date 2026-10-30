@@ -576,13 +576,13 @@ internal sealed class RectPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var rect = (RectLayerSpec)Spec;
-        var length = rect.XMin.Column.Length;
-        for (long i = 0; i < length; i++)
+        var xs0 = context.ElementPixels(rect.XMin.Column, ofX: true, 0);
+        var xs1 = context.ElementPixels(rect.XMax.Column, ofX: true, 1);
+        var ys0 = context.ElementPixels(rect.YMin.Column, ofX: false, 2);
+        var ys1 = context.ElementPixels(rect.YMax.Column, ofX: false, 3);
+        for (var i = 0; i < xs0.Length; i++)
         {
-            var x0 = context.ElementX(rect.XMin.Column, i);
-            var x1 = context.ElementX(rect.XMax.Column, i);
-            var y0 = context.ElementY(rect.YMin.Column, i);
-            var y1 = context.ElementY(rect.YMax.Column, i);
+            var (x0, x1, y0, y1) = (xs0[i], xs1[i], ys0[i], ys1[i]);
             if (!double.IsFinite(x0) || !double.IsFinite(x1) || !double.IsFinite(y0) || !double.IsFinite(y1))
             {
                 continue;
@@ -611,15 +611,15 @@ internal sealed class SegmentPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var segment = (SegmentLayerSpec)Spec;
-        var length = (int)segment.X.Column.Length;
-        var buffer = context.Points(3 * length);
+        var xs0 = context.ElementPixels(segment.X.Column, ofX: true, 0);
+        var ys0 = context.ElementPixels(segment.Y.Column, ofX: false, 1);
+        var xs1 = context.ElementPixels(segment.XEnd.Column, ofX: true, 2);
+        var ys1 = context.ElementPixels(segment.YEnd.Column, ofX: false, 3);
+        var buffer = context.Points(3 * xs0.Length);
         var count = 0;
-        for (var i = 0; i < length; i++)
+        for (var i = 0; i < xs0.Length; i++)
         {
-            var x0 = context.ElementX(segment.X.Column, i);
-            var y0 = context.ElementY(segment.Y.Column, i);
-            var x1 = context.ElementX(segment.XEnd.Column, i);
-            var y1 = context.ElementY(segment.YEnd.Column, i);
+            var (x0, y0, x1, y1) = (xs0[i], ys0[i], xs1[i], ys1[i]);
             if (!double.IsFinite(x0) || !double.IsFinite(y0) || !double.IsFinite(x1) || !double.IsFinite(y1))
             {
                 continue;

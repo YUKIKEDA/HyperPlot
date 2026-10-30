@@ -111,6 +111,26 @@ public sealed class UniformColumn : Column
     internal override double DifferenceAt(long index, long origin) => new M4.UniformX(this, origin).ValueAt(index);
 
     /// <inheritdoc />
+    internal override void ReadDifferences(Span<double> destination, long origin)
+    {
+        if (IsInteger)
+        {
+            for (var i = 0; i < destination.Length; i++)
+            {
+                destination[i] = ScaleSpace.Difference(IntegerAt(i), origin);
+            }
+
+            return;
+        }
+
+        // GetValue's floating-point branch, as M4's UniformX reads it.
+        for (var i = 0; i < destination.Length; i++)
+        {
+            destination[i] = Math.FusedMultiplyAdd(i, Step, Start) - origin;
+        }
+    }
+
+    /// <inheritdoc />
     internal override long LowerBound(double boundary, long origin) => new M4.UniformX(this, origin).LowerBound(boundary);
 
     /// <inheritdoc />

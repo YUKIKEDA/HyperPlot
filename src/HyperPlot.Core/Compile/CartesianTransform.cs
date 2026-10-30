@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace HyperPlot;
 
 /// <summary>
@@ -34,12 +36,30 @@ internal readonly struct CartesianTransform
     /// <summary>Returns the pixel y of a difference dy from <see cref="YOrigin"/>.</summary>
     public double MapY(double dy) => _y.Map(dy);
 
+    /// <summary>
+    /// Maps a span of values on one axis to pixels, the same as the frame maps one at a time: each less
+    /// <paramref name="shift"/> (the origin, for values a scale's transform mapped), NaN when not finite, clamped to the
+    /// axis's domain when it clamps. <paramref name="pixels"/> may be <paramref name="values"/>.
+    /// </summary>
+    public void Map(in GeomFrame.Axis axis, bool ofX, ReadOnlySpan<double> values, Span<double> pixels, double shift)
+    {
+        var factors = ofX ? _x : _y;
+        var (lower, upper, clamp) = (axis.Domain.Lower, axis.Domain.Upper, axis.Clamp);
+        for (var i = 0; i < values.Length; i++)
+        {
+            var d = values[i] - shift;
+            pixels[i] = !double.IsFinite(d) ? double.NaN : factors.Map(clamp ? Math.Clamp(d, lower, upper) : d);
+        }
+    }
+
     /// <summary>One axis's factors: t = (d − lower) / width · size, then offset + t, or offset + size − t when flipped.</summary>
     private readonly record struct Factors(double Lower, double Width, int Size, int Offset, bool Flip)
     {
         public static Factors Of(in GeomFrame.Axis axis, bool flip) =>
             new(axis.Domain.Lower, axis.Domain.Upper - axis.Domain.Lower, axis.Size, axis.Offset, flip);
 
+        // Inlined into the span loop: a call an element was a fifth of a segment layer's frame (docs/benchmarks/g4-geoms.md).
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public double Map(double d)
         {
             var t = (d - Lower) / Width * Size;

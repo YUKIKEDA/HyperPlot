@@ -209,6 +209,9 @@ public abstract class Column
     /// <summary>Returns d(v(i)), the difference of the element's value from an origin (design §3.6): exact for integer columns.</summary>
     internal abstract double DifferenceAt(long index, long origin);
 
+    /// <summary>Writes d(v(i)) of the first elements into <paramref name="destination"/>, at most a chunk of them.</summary>
+    internal abstract void ReadDifferences(Span<double> destination, long origin);
+
     /// <summary>
     /// Returns the least i whose difference from <paramref name="origin"/> reaches <paramref name="boundary"/>, or the length
     /// when there is none, for a non-decreasing column (the search of M4, design §5.5.1).

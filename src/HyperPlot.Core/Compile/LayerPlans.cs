@@ -406,13 +406,14 @@ internal sealed class RangeSink
     }
 
     /// <summary>
-    /// Adds a range of doubles: a baseline, a bar's widened ends. A whole value that a double holds exactly counts as an
-    /// integer, so that a baseline of 0 keeps a long column's domain exact.
+    /// Adds a range of doubles: a baseline, a bar's widened ends. A whole value inside the range of long counts as an
+    /// integer, which it converts to exactly, so that a whole baseline keeps a long column's domain exact.
     /// </summary>
     public void Add(double low, double high, string name) => Add(End(low), End(high), name);
 
+    // -2^63 is a long; 2^63 is not.
     private static ScaleEnd End(double value) =>
-        Math.Abs(value) <= 9_007_199_254_740_992 && value == Math.Floor(value) ? ScaleEnd.Of((long)value) : ScaleEnd.Of(value);
+        value >= long.MinValue && value < -(double)long.MinValue && value == Math.Floor(value) ? ScaleEnd.Of((long)value) : ScaleEnd.Of(value);
 }
 
 /// <summary>
@@ -423,6 +424,14 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 {
     private readonly double[] _one = new double[1];
     private readonly double[] _oneMapped = new double[1];
+    private readonly double[][] _elements =
+    [
+        [],
+        [],
+        [],
+        [],
+    ];
+
     private double[] _values = new double[64];
     private double[] _mapped = new double[64];
     private Vector2[] _points = new Vector2[64];
@@ -486,6 +495,22 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     /// <summary>Returns the pixel of a column's element on the y axis.</summary>
     public double ElementY(Column column, long index) => PixelY(column.DifferenceAt(index, YOrigin));
+
+    /// <summary>
+    /// Maps all the elements of a column to pixels on one axis into one of four buffers kept from frame to frame, a chunk
+    /// read at a time and the transform applied to a span (a segment's and a rect's columns, design §5.5.3).
+    /// </summary>
+    public ReadOnlySpan<double> ElementPixels(Column column, bool ofX, int slot)
+    {
+        var length = (int)column.Length;
+        Ensure(ref _elements[slot], length);
+        Ensure(ref _values, length);
+        var values = _values.AsSpan(0, length);
+        var pixels = _elements[slot].AsSpan(0, length);
+        column.ReadDifferences(values, ofX ? XOrigin : YOrigin);
+        MapAxis(Transform, ofX ? X : Y, values, pixels, ofX);
+        return pixels;
+    }
 
     /// <summary>
     /// Maps a series' M4 points to pixels, both coordinates at once through the transforms' spans (design §4.2), and returns
@@ -654,18 +679,11 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         if (axis.Transform is not null)
         {
             axis.Transform.Forward(values, pixels);
-            for (var i = 0; i < values.Length; i++)
-            {
-                pixels[i] = GeomFrame.Pixel(transform, axis, pixels[i] - axis.Domain.Origin, ofX);
-            }
-
+            transform.Map(axis, ofX, pixels, pixels, axis.Domain.Origin);
             return;
         }
 
-        for (var i = 0; i < values.Length; i++)
-        {
-            pixels[i] = GeomFrame.Pixel(transform, axis, values[i], ofX);
-        }
+        transform.Map(axis, ofX, values, pixels, 0);
     }
 }
 

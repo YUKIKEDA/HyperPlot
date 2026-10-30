@@ -220,6 +220,105 @@ public sealed class GeomBuilderTests
         );
     }
 
+    /// <summary>
+    /// The compile checks a spec made directly as the builders do (design §4.8): a Baseline that is not finite, a Width that
+    /// is not finite and above 0, a CapWidth that is not finite and at least 0, and a Mode that is not named.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A table of "t", "a", and "b"; specs made with object initializers.
+    ///
+    /// Steps:
+    /// - Render an area with Baseline NaN, a bar with Baseline ∞, bars with Width 0 and NaN, error bars with CapWidth −1 and
+    ///   NaN, and a step with Mode 3.
+    ///
+    /// Expected:
+    /// - ArgumentException each time, naming the member.
+    /// </remarks>
+    [Fact]
+    public void Compile_SpecsOutOfRange_Throw()
+    {
+        using var pool = new PlotWorkerPool(1);
+        var table = Table();
+        var (t, a, b) = (table.Col<double>("t"), table.Col<float>("a"), table.Col<float>("b"));
+        var plot = Plot.Create(table).Theme(TestPlans.Bare).Build();
+        var cases = new (LayerSpec Layer, string Member)[]
+        {
+            (
+                new AreaLayerSpec
+                {
+                    X = t,
+                    Y = a,
+                    Baseline = double.NaN,
+                },
+                "Baseline"
+            ),
+            (
+                new BarLayerSpec
+                {
+                    X = t,
+                    Y = a,
+                    Baseline = double.PositiveInfinity,
+                },
+                "Baseline"
+            ),
+            (
+                new BarLayerSpec
+                {
+                    X = t,
+                    Y = a,
+                    Width = 0,
+                },
+                "Width"
+            ),
+            (
+                new BarLayerSpec
+                {
+                    X = t,
+                    Y = a,
+                    Width = double.NaN,
+                },
+                "Width"
+            ),
+            (
+                new ErrorBarLayerSpec
+                {
+                    X = t,
+                    YMin = a,
+                    YMax = b,
+                    CapWidth = -1,
+                },
+                "CapWidth"
+            ),
+            (
+                new ErrorBarLayerSpec
+                {
+                    X = t,
+                    YMin = a,
+                    YMax = b,
+                    CapWidth = float.NaN,
+                },
+                "CapWidth"
+            ),
+            (
+                new StepLayerSpec
+                {
+                    X = t,
+                    Y = a,
+                    Mode = (StepMode)3,
+                },
+                "Mode"
+            ),
+        };
+
+        foreach (var (layer, member) in cases)
+        {
+            using var plan = TestPlans.Create(pool, 100, 100);
+            var message = Assert.Throws<ArgumentException>(() => plan.Render(plot with { Layers = [layer] })).Message;
+            Assert.Contains(member, message, StringComparison.Ordinal);
+        }
+    }
+
     /// <summary>The label set through LineBuilder and on a LineLayerSpec is the base LayerSpec's Label (design §4.1).</summary>
     /// <remarks>
     /// Preconditions:

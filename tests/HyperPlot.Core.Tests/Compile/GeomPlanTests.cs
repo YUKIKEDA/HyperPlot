@@ -11,6 +11,7 @@ public sealed class GeomPlanTests
     private static readonly Color Fill = new(0, 0, 0, 128);
     private static readonly double[] EdgeXs = [0.5, 3.5];
     private static readonly double[] RuleXs = [10.5, 30.25];
+    private static readonly double[] GapXs = [0.5, 1.5, 2.5, 3.5];
 
     /// <summary>
     /// Each geom's domains are the union of its channels' ranges (design §4.2): an area's and a bar's Baseline joins y, a
@@ -770,6 +771,7 @@ public sealed class GeomPlanTests
                 {
                     var lines = plan.Render(segment);
                     Assert.Equal((1, length), (lines.Polylines.Length, lines.Segments.Length));
+                    Assert.Equal(((length - 1) % 100) * size / 100f, lines.Segments[^1].Start.X, 3);
                     Assert.Equal(length + 1, plan.Render(rect).Rects.Length);
                     continue;
                 }
@@ -871,10 +873,12 @@ public sealed class GeomPlanTests
     /// - A table of a Column&lt;long&gt; "t", a Column&lt;double&gt; "d", and floats "a".
     ///
     /// Steps:
-    /// - Render a bar over "d" and a vertical rule over "d" with a time x scale; a bar over "t".
+    /// - Render a bar over "d", a vertical rule over "d", and a segment from "t" to "d" with a time x scale; a bar over
+    ///   "t".
     ///
     /// Expected:
-    /// - ArgumentException naming "d" and Column&lt;double&gt; for both; the bar over "t" draws.
+    /// - ArgumentException naming "d" and Column&lt;double&gt; for each, the segment's second x channel too; the bar over "t"
+    ///   draws.
     /// </remarks>
     [Fact]
     public void TimeScale_NewGeomChannelNotLong_Throws()
@@ -892,6 +896,13 @@ public sealed class GeomPlanTests
             {
                 new BarLayerSpec { X = table.Col<double>("d"), Y = table.Col<float>("a") },
                 new RuleLayerSpec { X = table.Col<double>("d") },
+                new SegmentLayerSpec
+                {
+                    X = table.Col<long>("t"),
+                    Y = table.Col<float>("a"),
+                    XEnd = table.Col<double>("d"),
+                    YEnd = table.Col<float>("a"),
+                },
             }
         )
         {
@@ -904,6 +915,220 @@ public sealed class GeomPlanTests
             3,
             DataRects(plan.Render(plot with { Layers = [new BarLayerSpec { X = table.Col<long>("t"), Y = table.Col<float>("a") }] })).Length
         );
+    }
+
+    /// <summary>
+    /// A finite Baseline outside the y domain is the panel's edge (design §5.5.3): below it, the bottom; above it, the top.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Points (10, 20), (50, 40), (90, 30); bars 4 wide.
+    ///
+    /// Steps:
+    /// - Render an area and bars with Baseline −1,000 and with Baseline 1,000.
+    ///
+    /// Expected:
+    /// - −1,000: every trapezoid has an edge at 100 and every bar reaches 100; 1,000: at 0 and from 0.
+    /// </remarks>
+    [Fact]
+    public void Baseline_OutsideTheDomain_IsThePanelEdge()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.Wrap(new double[] { 10, 50, 90 });
+        using var y = Column.Wrap(new double[] { 20, 40, 30 });
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        var (rx, ry) = (table.Col<double>("x"), table.Col<double>("y"));
+        foreach (var (baseline, edge) in new[] { (-1000.0, 100f), (1000.0, 0f) })
+        {
+            using var plan = TestPlans.Create(pool, Size, Size);
+            var area = new AreaLayerSpec
+            {
+                X = rx,
+                Y = ry,
+                Baseline = baseline,
+            };
+            var bar = new BarLayerSpec
+            {
+                X = rx,
+                Y = ry,
+                Baseline = baseline,
+                Width = 4,
+            };
+            var list = plan.Render(Spec(table, area, bar));
+
+            Assert.NotEmpty(Trapezoids(list));
+            Assert.All(Trapezoids(list), t => Assert.True((t.BottomLeft, t.BottomRight) == (edge, edge) || (t.TopLeft, t.TopRight) == (edge, edge)));
+            Assert.Equal(3, DataRects(list).Length);
+            Assert.All(DataRects(list), b => Assert.Equal(edge, edge == 0 ? b.Y : b.Y + b.Height));
+        }
+    }
+
+    /// <summary>
+    /// On a reversed x, the pixel columns of many bars run right to left: column c of the data is pixel column 99 − c
+    /// (design §5.5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 800 values at x = i / 8 rising from 1/8 to 100; Baseline 0; the x domain [0, 100] reversed.
+    ///
+    /// Steps:
+    /// - Render the bars.
+    ///
+    /// Expected:
+    /// - 100 rects; the rect at pixel 99 − c reaches the greatest value of column c, element 8c + 7.
+    /// </remarks>
+    [Fact]
+    public void Bar_ManyOnAReversedX_MirrorTheColumns()
+    {
+        using var pool = new PlotWorkerPool(1);
+        var values = Enumerable.Range(1, 800).Select(i => i / 8.0).ToArray();
+        using var y = Column.Wrap(values);
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 0.125, 800)).Add("y", y).Build();
+        var spec = Spec(table, new BarLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") }) with
+        {
+            ScaleX = Scale.Linear().WithDomain(0, Size) with { Reverse = true },
+        };
+        using var plan = TestPlans.Create(pool, Size, Size);
+
+        var rects = DataRects(plan.Render(spec));
+
+        Assert.Equal(Size, rects.Length);
+        foreach (var rect in rects)
+        {
+            var c = Size - 1 - (int)rect.X;
+            Close(100 - values[(8 * c) + 7], rect.Y);
+        }
+    }
+
+    /// <summary>An area does not fill across a gap of NaN: the line breaks there (design §4.2, §5.5.3).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Points (0.5, 20), (1.5, NaN), (2.5, 40), (3.5, 50).
+    ///
+    /// Steps:
+    /// - Render the area.
+    ///
+    /// Expected:
+    /// - Two trapezoids, columns 2 and 3: the segment from 2.5 to 3.5; the lone point at 0.5 covers no width.
+    /// </remarks>
+    [Fact]
+    public void Area_NanGap_FillsNothingAcrossIt()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.Wrap(GapXs);
+        using var y = Column.Wrap(new double[] { 20, double.NaN, 40, 50 });
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        using var plan = TestPlans.Create(pool, Size, Size);
+
+        var trapezoids = Trapezoids(plan.Render(Spec(table, new AreaLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") })));
+
+        Assert.Equal([(2.5f, 3f), (3f, 3.5f)], trapezoids.Select(t => (t.Left, t.Right)));
+    }
+
+    /// <summary>
+    /// The pixel rows of many horizontal rules follow the y scale's transform: a new transform over the same range of the
+    /// scale space makes the rows' boundaries again (design §5.5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 1,000 sorted values from 0 to 99.9; a sqrt y over [0, 100] and a pow 2 y over [0, √10], both [0, 10] in the scale
+    ///   space.
+    ///
+    /// Steps:
+    /// - Render the rule with the sqrt scale, then with the pow scale on the same plan; render the pow scale on a new plan.
+    ///
+    /// Expected:
+    /// - The second render equals the new plan's, and differs from the first.
+    /// </remarks>
+    [Fact]
+    public void HRule_Many_NewTransformMakesTheRowsAgain()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(Enumerable.Range(0, 1000).Select(i => i / 10.0).ToArray());
+        var table = DataTable.Create().Add("y", y).Build();
+        var rule = Spec(table, new RuleLayerSpec { Y = table.Col<double>("y") });
+        var sqrt = rule with { ScaleY = Scale.Sqrt().WithDomain(0, 100) };
+        var pow = rule with { ScaleY = Scale.Pow(2).WithDomain(0, Math.Sqrt(10)) };
+        using var plan = TestPlans.Create(pool, Size, Size);
+        using var fresh = TestPlans.Create(pool, Size, Size);
+
+        var first = SegmentsOf(plan.Render(sqrt), 0);
+        var second = SegmentsOf(plan.Render(pow), 0);
+
+        Assert.Equal(SegmentsOf(fresh.Render(pow), 0), second);
+        Assert.NotEqual(first, second);
+    }
+
+    /// <summary>
+    /// A segment of long values maps each end from its exact difference (design §3.6): 2026's nanoseconds one apart, which a
+    /// double cannot hold, from an evenly spaced long X and a stored long XEnd.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - X evenly spaced from 2026's ns + 1, step 1; XEnd stored X + 1; a vertical rule at 2026's ns and + 4, so that the
+    ///   learned time x domain is [2026's ns, + 4].
+    ///
+    /// Steps:
+    /// - Render the segments.
+    ///
+    /// Expected:
+    /// - The ends are at x 25, 50 and 50, 75.
+    /// </remarks>
+    [Fact]
+    public void Segment_LongValues_MapExactly()
+    {
+        const long Start = 1_767_225_600_000_000_000;
+        using var pool = new PlotWorkerPool(1);
+        using var end = Column.Wrap(new[] { Start + 2, Start + 3 });
+        using var y = Column.Wrap(new double[] { 10, 20 });
+        using var origin = Column.Wrap(new[] { Start, Start + 4 });
+        var table = DataTable.Create().Add("x", Column.UniformInteger(Start + 1, 1, 2)).Add("end", end).Add("y", y).Add("o", origin).Build();
+        var layer = new SegmentLayerSpec
+        {
+            X = table.Col<long>("x"),
+            Y = table.Col<double>("y"),
+            XEnd = table.Col<long>("end"),
+            YEnd = table.Col<double>("y"),
+        };
+        var spec = Spec(table, layer, new RuleLayerSpec { X = table.Col<long>("o") }) with { ScaleX = Scale.Time(TimeUnit.Nanoseconds) };
+        using var plan = TestPlans.Create(pool, Size, Size);
+
+        var segments = SegmentsOf(plan.Render(spec), 0);
+
+        Assert.Equal([(25f, 50f), (50f, 75f)], segments.Select(s => (s.Start.X, s.End.X)));
+    }
+
+    /// <summary>
+    /// A whole Baseline keeps a long column's learned domain exact (design §3.6, §4.2): it joins the range as an integer.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A Column&lt;long&gt; Y of 2^60 + 1 and 2^60 + 3; an area with Baseline 2^60, a whole value a double holds.
+    ///
+    /// Steps:
+    /// - Render with a learned y domain.
+    ///
+    /// Expected:
+    /// - The y domain is the origin 2^60 with differences 0 and 3.
+    /// </remarks>
+    [Fact]
+    public void Learn_WholeBaseline_KeepsALongDomainExact()
+    {
+        const long Far = 1L << 60;
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(new[] { Far + 1, Far + 3 });
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2)).Add("y", y).Build();
+        var area = new AreaLayerSpec
+        {
+            X = table.Col<double>("x"),
+            Y = table.Col<long>("y"),
+            Baseline = Far,
+        };
+        using var plan = TestPlans.Create(pool, Size, Size);
+
+        _ = plan.Render(Spec(table, area) with { ScaleY = Scale.Linear() });
+
+        Assert.Equal((Far, 0d, 3d), (plan.YDomain.Origin, plan.YDomain.Lower, plan.YDomain.Upper));
     }
 
     /// <summary>A probe that turns an index of a table into an untyped reference, whatever the column's type.</summary>
