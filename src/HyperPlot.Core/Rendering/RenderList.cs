@@ -87,11 +87,15 @@ public sealed class RenderList
     /// <summary>
     /// Records a polyline through <paramref name="points"/>, in physical pixels. A point with a coordinate that is not finite
     /// (NaN or ±∞) breaks the line there, and the dash pattern starts again after it. Fewer than two points in a run draw
-    /// nothing; two equal points in a row draw a dot.
+    /// nothing; a run of equal points draws a dot: a circle with a round cap, a square along the x axis with a square cap,
+    /// nothing with a butt cap. Joins and caps that are not round, and patterns of more than one dash and gap, add pieces
+    /// that the backend draws as a union of 32 samples a pixel (design §5.1, §5.3, row R4).
     /// </summary>
     /// <param name="points">The points.</param>
     /// <param name="style">The stroke.</param>
-    /// <exception cref="ArgumentOutOfRangeException">The width or the dash pattern is out of its range (design §5.1).</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The width, the dash pattern, the join, the cap, or a miter join's limit is out of its range (design §5.1).
+    /// </exception>
     public void DrawPolyline(ReadOnlySpan<Vector2> points, in LineStyle style)
     {
         ValidateStyle(style);
