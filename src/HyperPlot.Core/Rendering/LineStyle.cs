@@ -99,7 +99,7 @@ public readonly record struct LineDash
     }
 
     /// <summary>Returns a pattern of intervals, dash and gap in turn; an odd count is repeated to make it even.</summary>
-    /// <param name="intervals">1 to <see cref="MaxIntervals"/> lengths, and 4 at most when odd.</param>
+    /// <param name="intervals">1 to <see cref="MaxIntervals"/> lengths, and 3 at most when odd (repeated, 6).</param>
     /// <returns>The pattern, with an offset of 0; set another with <c>with</c>.</returns>
     /// <exception cref="ArgumentOutOfRangeException">No interval, or more than <see cref="MaxIntervals"/> once repeated.</exception>
     /// <remarks><see cref="RenderList.DrawPolyline"/> checks the lengths: finite, at least 0, with a positive sum.</remarks>

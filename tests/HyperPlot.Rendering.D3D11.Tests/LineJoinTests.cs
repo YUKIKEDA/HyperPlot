@@ -146,6 +146,31 @@ public sealed class LineJoinTests
         Check((turning, style), (corner, style with { Dash = new LineDash(12, 4) }), (dotted, dots));
     }
 
+    /// <summary>
+    /// A pattern of more than one dash and gap is drawn as a union of samples with the default round join and round cap too,
+    /// as row R2's shader reads one dash and gap only (design §5.1, §5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A turning line with a 6-interval pattern (3 repeated), round join and cap by default; a 4-interval pattern of a dot.
+    ///
+    /// Steps:
+    /// - Draw them 5 pixels wide; read back.
+    ///
+    /// Expected:
+    /// - Within 1 of the reference: dashes with round ends, round joins inside dashes, round dots.
+    /// </remarks>
+    [Fact]
+    public void Dashes_RoundByDefault_MatchTheReference()
+    {
+        var pattern = new LineStyle(new Color(10, 110, 60, 230), 5, LineDash.Of(11, 4, 3) with { Offset = 1.5f });
+        var dotted = new LineStyle(new Color(120, 30, 30, 255), 5, LineDash.Of(9, 4, 0, 4));
+        Vector2[] turning = [new(8.3f, 12.1f), new(62.2f, 14.4f), new(82.6f, 52.3f), new(30.2f, 60.8f)];
+        Vector2[] straight = [new(6.4f, 82.2f), new(90.1f, 78.4f)];
+
+        Check((turning, pattern), (straight, dotted));
+    }
+
     /// <summary>A line half a pixel wide, mitered, covers its samples as the reference does (design §5.3).</summary>
     /// <remarks>
     /// Preconditions:
