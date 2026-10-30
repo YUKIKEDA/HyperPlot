@@ -3,7 +3,7 @@ using System.Numerics;
 namespace HyperPlot.Rendering;
 
 /// <summary>
-/// The commands of one frame, in buffers kept from frame to frame (design §5.1): polylines, texts, and clips, in physical
+/// The commands of one frame, in buffers kept from frame to frame (design §5.1): polylines, texts, filled rectangles, and clips, in physical
 /// pixels of the render target, with the origin at the top left and pixel centers at +0.5. A backend draws the commands in
 /// the order they were recorded, so a later command lies over an earlier one.
 /// </summary>
@@ -14,9 +14,12 @@ public sealed class RenderList
     private SegmentRecord[] _segments = new SegmentRecord[256];
     private TextRecord[] _texts = new TextRecord[4];
     private RenderCommand[] _commands = new RenderCommand[8];
+    private RectInstance[] _rects = new RectInstance[4];
+    private ClipRect[] _rectClips = new ClipRect[4];
     private int _polylineCount;
     private int _segmentCount;
     private int _textCount;
+    private int _rectCount;
     private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
@@ -29,7 +32,13 @@ public sealed class RenderList
     /// <summary>Gets the recorded texts, in order.</summary>
     internal ReadOnlySpan<TextRecord> Texts => _texts.AsSpan(0, _textCount);
 
-    /// <summary>Gets every recorded command in order: each names a polyline or a text.</summary>
+    /// <summary>Gets the recorded rectangles, in order, as the GPU reads them.</summary>
+    internal ReadOnlySpan<RectInstance> Rects => _rects.AsSpan(0, _rectCount);
+
+    /// <summary>Gets the clip of each recorded rectangle.</summary>
+    internal ReadOnlySpan<ClipRect> RectClips => _rectClips.AsSpan(0, _rectCount);
+
+    /// <summary>Gets every recorded command in order: each names a polyline, a text, or a rectangle.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
@@ -38,6 +47,7 @@ public sealed class RenderList
         _polylineCount = 0;
         _segmentCount = 0;
         _textCount = 0;
+        _rectCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
     }
@@ -161,6 +171,69 @@ public sealed class RenderList
         _texts[_textCount++] = new TextRecord(text, position, style, _clip);
     }
 
+    /// <summary>
+    /// Records a filled rectangle, in physical pixels (design §5.1): each pixel is covered by the area it shares with the
+    /// rectangle, so whole-pixel edges cover a pixel fully or not at all and a fractional edge covers it in part. Rectangles
+    /// that overlap are each blended over what is below.
+    /// </summary>
+    /// <param name="x">The left edge.</param>
+    /// <param name="y">The top edge.</param>
+    /// <param name="width">The width: finite and at least 0; 0 draws nothing.</param>
+    /// <param name="height">The height: finite and at least 0; 0 draws nothing.</param>
+    /// <param name="color">The color.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="x"/> or <paramref name="y"/> is not finite, or <paramref name="width"/> or <paramref name="height"/> is
+    /// not finite or below 0.
+    /// </exception>
+    public void DrawRect(float x, float y, float width, float height, Color color)
+    {
+        if (!float.IsFinite(x))
+        {
+            throw new ArgumentOutOfRangeException(nameof(x), x, "The left edge is finite.");
+        }
+
+        if (!float.IsFinite(y))
+        {
+            throw new ArgumentOutOfRangeException(nameof(y), y, "The top edge is finite.");
+        }
+
+        if (!float.IsFinite(width) || width < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(width), width, "The width is finite and at least 0.");
+        }
+
+        if (!float.IsFinite(height) || height < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(height), height, "The height is finite and at least 0.");
+        }
+
+        if (width == 0 || height == 0)
+        {
+            return;
+        }
+
+        if (_rectCount == _rects.Length)
+        {
+            Array.Resize(ref _rects, _rects.Length * 2);
+            Array.Resize(ref _rectClips, _rectClips.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.Rect, _rectCount));
+        _rects[_rectCount] = new RectInstance(
+            x,
+            y,
+            width,
+            height,
+            new Vector4(
+                Premultiplied.Multiply(color.R, color.A) / 255f,
+                Premultiplied.Multiply(color.G, color.A) / 255f,
+                Premultiplied.Multiply(color.B, color.A) / 255f,
+                color.A / 255f
+            )
+        );
+        _rectClips[_rectCount++] = _clip;
+    }
+
     /// <summary>Throws unless a text and its style are in range (design §5.1): what <see cref="DrawText"/> and <see cref="TextEngine.Measure"/> check.</summary>
     internal static void ValidateText(string text, in TextStyle style)
     {
@@ -236,6 +309,9 @@ internal enum RenderCommandKind : byte
 
     /// <summary>A text: the index is into <see cref="RenderList.Texts"/>.</summary>
     Text,
+
+    /// <summary>A filled rectangle: the index is into <see cref="RenderList.Rects"/>.</summary>
+    Rect,
 }
 
 /// <summary>One recorded command: its kind and the index of its record.</summary>
@@ -243,6 +319,13 @@ internal readonly record struct RenderCommand(RenderCommandKind Kind, int Index)
 
 /// <summary>One recorded text: the reference, the position, the style, and the clip when it was recorded.</summary>
 internal readonly record struct TextRecord(string Text, Vector2 Position, TextStyle Style, ClipRect Clip);
+
+/// <summary>
+/// One filled rectangle as the GPU reads it (design §5.1, §5.3): its top left, width, and height in physical pixels, and its
+/// premultiplied color. 32 bytes, laid out as the HLSL structure of Rect.hlsl.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly record struct RectInstance(float X, float Y, float Width, float Height, Vector4 Color);
 
 /// <summary>A rectangle of whole pixels, edges included on the left and top and excluded on the right and bottom.</summary>
 internal readonly record struct ClipRect(long Left, long Top, long Right, long Bottom)

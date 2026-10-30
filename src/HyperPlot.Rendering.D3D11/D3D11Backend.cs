@@ -24,6 +24,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly List<D3D11RenderTarget> _targets = [];
     private readonly D3D11LinePipeline _lines;
     private readonly D3D11GlyphPipeline _glyphs;
+    private readonly D3D11RectPipeline _rects;
     private readonly DWriteTextBackend? _directWrite;
     private readonly D3D11FrameTimer _timer;
     private long[] _open = new long[8];
@@ -41,6 +42,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         CreateDevice = createDevice;
         _lines = new D3D11LinePipeline(this);
         _glyphs = new D3D11GlyphPipeline(this);
+        _rects = new D3D11RectPipeline(this);
         _timer = new D3D11FrameTimer(this);
         if (text is null)
         {
@@ -100,6 +102,8 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     internal D3D11LinePipeline Lines => _lines;
 
     internal D3D11GlyphPipeline Glyphs => _glyphs;
+
+    internal D3D11RectPipeline Rects => _rects;
 
     /// <summary>Gets the DirectWrite text backend, or null when a test gave the backend a text engine of its own.</summary>
     internal DWriteTextBackend? DirectWrite => _directWrite;
@@ -183,42 +187,65 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
 
         _lines.Upload(list);
+        _rects.Upload(list.Rects);
         var polylines = list.Polylines;
-        var bound = DrawStepKind.Polyline;
-        var any = false;
+        DrawStepKind? bound = null;
         foreach (ref readonly var step in steps)
         {
             // The steps go in the list's order; each pipeline binds what it shares when the kind changes.
-            if (!any || step.Kind != bound)
+            if (step.Kind != bound)
             {
-                if (step.Kind == DrawStepKind.Polyline)
+                Unbind(bound);
+                switch (step.Kind)
                 {
-                    _glyphs.Unbind();
-                    _lines.Bind(own);
-                }
-                else
-                {
-                    _lines.Unbind();
-                    _glyphs.Bind(own);
+                    case DrawStepKind.Polyline:
+                        _lines.Bind(own);
+                        break;
+                    case DrawStepKind.Glyphs:
+                        _glyphs.Bind(own);
+                        break;
+                    default:
+                        _rects.Bind(own);
+                        break;
                 }
 
                 bound = step.Kind;
-                any = true;
             }
 
-            if (step.Kind == DrawStepKind.Polyline)
+            switch (step.Kind)
             {
-                _lines.Draw(own, polylines[step.Index]);
-            }
-            else
-            {
-                _glyphs.Draw(own, step);
+                case DrawStepKind.Polyline:
+                    _lines.Draw(own, polylines[step.Index]);
+                    break;
+                case DrawStepKind.Glyphs:
+                    _glyphs.Draw(own, step);
+                    break;
+                default:
+                    _rects.Draw(own, step);
+                    break;
             }
         }
 
         // Nothing stays bound, so that a readback, a clear, or a page update finds every texture free.
-        _lines.Unbind();
-        _glyphs.Unbind();
+        Unbind(bound);
+    }
+
+    private void Unbind(DrawStepKind? kind)
+    {
+        switch (kind)
+        {
+            case DrawStepKind.Polyline:
+                _lines.Unbind();
+                break;
+            case DrawStepKind.Glyphs:
+                _glyphs.Unbind();
+                break;
+            case DrawStepKind.Rects:
+                _rects.Unbind();
+                break;
+            default:
+                break;
+        }
     }
 
     /// <inheritdoc />
@@ -370,6 +397,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         {
             _lines.Make();
             _glyphs.Make();
+            _rects.Make();
             _timer.Make();
         }
         catch (InvalidOperationException)
@@ -419,6 +447,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private void ReleaseDevice()
     {
         _timer.Release();
+        _rects.Release();
         _glyphs.Release();
         _lines.Release();
         if (_context != null)
