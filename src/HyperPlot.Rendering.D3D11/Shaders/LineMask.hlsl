@@ -27,6 +27,7 @@ struct Piece
     float2 In;             // a join's incoming direction; a cap's direction away from the line
     float2 Out;            // a join's outgoing direction
     uint Kind;             // 0 bevel, 1 miter, 2 disk, 3 square cap, 4 square
+    uint Unused;           // 32 bytes, as RenderList's PieceRecord
 };
 
 StructuredBuffer<Piece> Pieces : register(t1);
@@ -108,39 +109,142 @@ void SegmentMaskPS(SegmentVertex input)
     float length = sqrt(dot(direction, direction));
     float2 tangent = length > 1e-6 ? direction / length : float2(1, 0);
     float2 normal = float2(-tangent.y, tangent.x);
-    float period = IntervalCount == 0 ? 1 : IntervalEnd(IntervalCount - 1);
-    float shift = input.Along + DashOffset;
-    uint bits = 0;
-    [loop]
-    for (uint i = 0; i < 32; i++)
+
+    // The pixel's samples lie within √2 / 2 of its center. A pixel farther than that past the reach of every shape of the
+    // segment (half the width across; half the width past the ends, where a dash's cap can reach) is left at once.
+    float2 center = float2(pixel) + 0.5 - input.Start;
+    float ac = dot(center, tangent);
+    float cc = dot(center, normal);
+    float margin = HalfWidth + 0.7072;
+    if (abs(cc) > margin || ac < -margin || ac > length + margin)
     {
-        float2 q = float2(pixel) + SampleAt(i) - input.Start;
-        float a = dot(q, tangent);
-        float c = dot(q, normal);
-        bool inside = false;
-        if (IntervalCount == 0)
+        return;
+    }
+
+    uint bits = 0;
+    if (IntervalCount == 0)
+    {
+        // Solid: a pixel wholly inside the box has every sample.
+        if (abs(cc) <= HalfWidth - 0.7072 && ac >= 0.7072 && ac <= length - 0.7072)
         {
-            inside = InDash(a, c, 0, length, length);
+            InterlockedOr(Mask[pixel], 0xFFFFFFFFu);
+            return;
+        }
+
+        [loop]
+        for (uint i = 0; i < 32; i++)
+        {
+            float2 q = float2(pixel) + SampleAt(i) - input.Start;
+            bits |= InDash(dot(q, tangent), dot(q, normal), 0, length, length) ? (1u << i) : 0u;
+        }
+    }
+    else
+    {
+        // The dashes that can cover a sample of the pixel: those within the reach of the pixel's along range, gathered once
+        // for the 32 samples. When more than 4 do (a pattern much shorter than the width), each sample looks at the dashes
+        // of its own period and the two beside it: the dash nearest along the line covers whenever any does.
+        float period = IntervalEnd(IntervalCount - 1);
+        float shift = input.Along + DashOffset;
+        // Kept in registers: every index of the array is a constant once the loops over it unroll.
+        float2 spans[4];
+        spans[0] = spans[1] = spans[2] = spans[3] = float2(1, 0);
+        uint count = 0;
+        bool many = false;
+        float first = floor((ac - margin + shift) / period) - 1;
+        float last = floor((ac + margin + shift) / period);
+        [loop]
+        for (float k = first; k <= last && !many; k++)
+        {
+            float base = k * period - shift;
+            float start = 0;
+            [loop]
+            for (uint j = 0; j < IntervalCount; j += 2)
+            {
+                float2 span = float2(base + start, base + IntervalEnd(j));
+                start = IntervalEnd(j + 1);
+                if (span.y >= ac - margin && span.x <= ac + margin)
+                {
+                    many = count == 4 || many;
+                    [unroll]
+                    for (uint slot = 0; slot < 4; slot++)
+                    {
+                        spans[slot] = count == slot ? span : spans[slot];
+                    }
+
+                    count++;
+                }
+            }
+
+            many = many || last - first > 8;
+        }
+
+        // The branch is taken once a pixel, outside the samples' loop: a loop that held both ways ran 3 times as long
+        // (docs/benchmarks/r4-lines.md).
+        if (!many && count == 1)
+        {
+            // One dash near the pixel, as for most pixels of a pattern longer than the width: the loop of a solid line.
+            [loop]
+            for (uint i = 0; i < 32; i++)
+            {
+                float2 q = float2(pixel) + SampleAt(i) - input.Start;
+                bits |= InDash(dot(q, tangent), dot(q, normal), spans[0].x, spans[0].y, length) ? (1u << i) : 0u;
+            }
+        }
+        else if (!many)
+        {
+            [loop]
+            for (uint i = 0; i < 32; i++)
+            {
+                float2 q = float2(pixel) + SampleAt(i) - input.Start;
+                float a = dot(q, tangent);
+                float c = dot(q, normal);
+                // HLSL's && and || evaluate both sides; [branch] skips the dashes a pixel does not have.
+                bool inside = InDash(a, c, spans[0].x, spans[0].y, length);
+                [branch]
+                if (count > 1 && !inside)
+                {
+                    inside = InDash(a, c, spans[1].x, spans[1].y, length);
+                    [branch]
+                    if (count > 2 && !inside)
+                    {
+                        inside = InDash(a, c, spans[2].x, spans[2].y, length);
+                        [branch]
+                        if (count > 3 && !inside)
+                        {
+                            inside = InDash(a, c, spans[3].x, spans[3].y, length);
+                        }
+                    }
+                }
+
+                bits |= inside ? (1u << i) : 0u;
+            }
         }
         else
         {
-            // The dash nearest along the line covers whenever any does: the period of the sample's position and the two beside it.
-            float k = floor((clamp(a, 0, length) + shift) / period);
             [loop]
-            for (int dk = -1; dk <= 1 && !inside; dk++)
+            for (uint i = 0; i < 32; i++)
             {
-                float base = (k + dk) * period - shift;
-                float start = 0;
+                float2 q = float2(pixel) + SampleAt(i) - input.Start;
+                float a = dot(q, tangent);
+                float c = dot(q, normal);
+                bool inside = false;
+                float k = floor((clamp(a, 0, length) + shift) / period);
                 [loop]
-                for (uint j = 0; j < IntervalCount && !inside; j += 2)
+                for (int dk = -1; dk <= 1 && !inside; dk++)
                 {
-                    inside = InDash(a, c, base + start, base + IntervalEnd(j), length);
-                    start = IntervalEnd(j + 1);
+                    float base = (k + dk) * period - shift;
+                    float start = 0;
+                    [loop]
+                    for (uint j = 0; j < IntervalCount && !inside; j += 2)
+                    {
+                        inside = InDash(a, c, base + start, base + IntervalEnd(j), length);
+                        start = IntervalEnd(j + 1);
+                    }
                 }
+
+                bits |= inside ? (1u << i) : 0u;
             }
         }
-
-        bits |= inside ? (1u << i) : 0u;
     }
 
     if (bits != 0)
@@ -230,6 +334,14 @@ void PieceMaskPS(PieceVertex input)
 {
     int2 pixel = int2(input.Position.xy);
     uint bits = 0;
+    float2 center = float2(pixel) + 0.5 - input.Point;
+
+    // A disk or a square reaches at most √2 half widths; a pixel past that and its own reach is left at once.
+    if (input.Kind >= 2 && dot(center, center) > pow(HalfWidth * 1.4143 + 0.7072, 2))
+    {
+        return;
+    }
+
     [loop]
     for (uint i = 0; i < 32; i++)
     {
