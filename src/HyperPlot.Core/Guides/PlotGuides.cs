@@ -139,7 +139,11 @@ internal sealed class PlotGuides
         list.ResetClip();
     }
 
-    /// <summary>Records what goes over the data (design §4.6): the axes, their ticks and labels, the titles, and the legend.</summary>
+    /// <summary>
+    /// Records what goes over the data (design §4.6): the axes, their ticks and labels, the titles, and the legend. A text's
+    /// horizontal alignment aligns its lines inside its block, whose left edge is the position (design §5.6), so a label
+    /// centered on a point starts half its measured width before it, and one ending at a point starts its width before.
+    /// </summary>
     internal void RecordOver(RenderList list, PlotSpec spec)
     {
         var theme = spec.Theme;
@@ -156,10 +160,10 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 spec.Title!,
-                new Vector2(Left + (Width / 2f), padding),
+                new Vector2(Left + (Width / 2f) - (_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Width / 2), padding),
                 Style(theme, theme.TitleSize) with
                 {
-                    Horizontal = TextAlign.Center,
+                    Horizontal = TextAlign.Left,
                     Vertical = TextBaseline.Top,
                 }
             );
@@ -272,10 +276,10 @@ internal sealed class PlotGuides
             {
                 list.DrawText(
                     xLabels[i],
-                    new Vector2(at, Top + Height + tick + gap),
+                    new Vector2(at - (X.Extents[i] / 2), Top + Height + tick + gap),
                     labelStyle with
                     {
-                        Horizontal = TextAlign.Center,
+                        Horizontal = TextAlign.Left,
                         Vertical = TextBaseline.Top,
                     }
                 );
@@ -292,10 +296,10 @@ internal sealed class PlotGuides
             {
                 list.DrawText(
                     yLabels[i],
-                    new Vector2(Left - tick - gap, at),
+                    new Vector2(Left - tick - gap - _text.Measure(yLabels[i], labelStyle).Width, at),
                     labelStyle with
                     {
-                        Horizontal = TextAlign.Right,
+                        Horizontal = TextAlign.Left,
                         Vertical = TextBaseline.Middle,
                     }
                 );
@@ -307,10 +311,10 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 xTitle,
-                new Vector2(Left + (Width / 2f), _height - padding),
+                new Vector2(Left + (Width / 2f) - (_text.Measure(xTitle, titleStyle).Width / 2), _height - padding),
                 titleStyle with
                 {
-                    Horizontal = TextAlign.Center,
+                    Horizontal = TextAlign.Left,
                     Vertical = TextBaseline.Bottom,
                 }
             );
@@ -320,10 +324,10 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 yTitle,
-                new Vector2(padding, Top + (Height / 2f)),
+                new Vector2(padding, Top + (Height / 2f) + (_text.Measure(yTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
-                    Horizontal = TextAlign.Center,
+                    Horizontal = TextAlign.Left,
                     Vertical = TextBaseline.Top,
                     Rotation = TextRotation.CounterClockwise90,
                 }
