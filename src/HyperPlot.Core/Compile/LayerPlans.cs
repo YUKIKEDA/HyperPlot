@@ -227,12 +227,18 @@ internal abstract class LayerPlan
         return false;
     }
 
-    /// <summary>Returns whether a change of node changes what the layer adds to the domains (design §4.8): a bar's or an area's Baseline or a bar's Width.</summary>
+    /// <summary>
+    /// Returns whether a change of node changes what the layer adds to the domains (design §4.8): a bar's or an area's
+    /// Baseline, a bar's Width, or any new node of a user's geom.
+    /// </summary>
     public static bool RangesDiffer(LayerSpec before, LayerSpec after) =>
         (before, after) switch
         {
             (AreaLayerSpec b, AreaLayerSpec a) => !b.Baseline.Equals(a.Baseline),
             (BarLayerSpec b, BarLayerSpec a) => !b.Baseline.Equals(a.Baseline) || b.Width != a.Width,
+
+            // A new node of the same geom is how a user says its content changed: it learns again.
+            (CustomLayerSpec, CustomLayerSpec) => true,
             _ => false,
         };
 

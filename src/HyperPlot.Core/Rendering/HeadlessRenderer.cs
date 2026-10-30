@@ -90,8 +90,10 @@ public sealed class HeadlessRenderer : IDisposable
     /// <param name="plot">The plot. Its columns stay with their owner, who disposes them after the renderer.</param>
     /// <exception cref="ArgumentNullException"><paramref name="plot"/>, one of its members (its theme included), or a layer is null.</exception>
     /// <exception cref="ArgumentException">
-    /// The plot does not check (design §4.8): a reference that is default or names another table, a Y column that is not a
-    /// <see cref="Column{T}"/>, a layer that is not a line, a scale that is not one of the position scales of
+    /// The plot does not check (design §4.8): a reference that is default or names another table, a Y, YMin, or YMax column
+    /// that is not a <see cref="Column{T}"/>, a layer of a type the plot does not draw, a rule with both X and Y or
+    /// neither, a Baseline not finite, a bar's Width not finite and above 0, a CapWidth not finite and at least 0, a step's
+    /// Mode not named, a scale that is not one of the position scales of
     /// <see cref="Scale"/>, a domain or a stroke out of range, a time scale over a column that is not a long date-time
     /// column, or an x domain too narrow for the panel's width (in the scale space, or once mapped back to data units). Or
     /// a member of the theme is out of range (design §4.7): a text size not finite, not above 0, or past 512 pixels at the
@@ -100,12 +102,13 @@ public sealed class HeadlessRenderer : IDisposable
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// A learned domain has an end that is not finite, in data units or once the scale maps it (a log scale over a value at
-    /// or below 0, design §4.2), or an X column decreases or holds NaN. A failure to read a column while building its
+    /// or below 0, design §4.2), or an X column, or a rule's column, decreases or holds NaN. A segment or a rect layer has
+    /// more than 131,072 elements (design §5.5.3). A failure to read a column while building its
     /// indexes is thrown again as it was, and nothing is drawn. While ticks are chosen (the theme shows axes or a grid): a
     /// time scale's domain reaches outside the years 1 to 9999, a <see cref="TickFormatter"/> or
     /// <see cref="TimeTickFormatter"/> returns false or a length outside 0 to 64, or a default label does not fit 64
     /// characters (design §4.6). Shaping a text failed, or the texts' glyphs need more than 8 atlas pages (design §5.6). An
-    /// exception that a user's <see cref="IScale"/> or tick format throws comes out as it is.
+    /// exception that a user's <see cref="IScale"/>, tick format, or <see cref="IGeom"/> throws comes out as it is.
     /// </exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>

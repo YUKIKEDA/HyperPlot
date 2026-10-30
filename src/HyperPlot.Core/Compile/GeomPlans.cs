@@ -619,13 +619,8 @@ internal sealed class SegmentPlan : LayerPlan
         var count = 0;
         for (var i = 0; i < xs0.Length; i++)
         {
-            var (x0, y0, x1, y1) = (xs0[i], ys0[i], xs1[i], ys1[i]);
-            if (!double.IsFinite(x0) || !double.IsFinite(y0) || !double.IsFinite(x1) || !double.IsFinite(y1))
-            {
-                continue;
-            }
-
-            count = ErrorBarPlan.Segment(buffer, count, (float)x0, (float)y0, (float)x1, (float)y1);
+            // An end that does not map is NaN, which breaks the polyline on both sides: the segment draws nothing.
+            count = ErrorBarPlan.Segment(buffer, count, (float)xs0[i], (float)ys0[i], (float)xs1[i], (float)ys1[i]);
         }
 
         context.List.DrawPolyline(buffer[..count], context.Guides.Scaled(segment.Style));

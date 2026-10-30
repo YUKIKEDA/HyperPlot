@@ -94,10 +94,10 @@ internal sealed class PlotPlan : IDisposable
     /// the scale space or once mapped back to data units.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// A learned domain has an end that is not finite, in data units or once the scale maps it (design §4.2), or an X column
-    /// decreases. While ticks are chosen: a time domain outside the years 1 to 9999, a tick format that returns false or a
+    /// A learned domain has an end that is not finite, in data units or once the scale maps it (design §4.2), an X column or
+    /// a rule's column decreases, or a segment or a rect layer has more than 131,072 elements (design §5.5.3). While ticks are chosen: a time domain outside the years 1 to 9999, a tick format that returns false or a
     /// length outside 0 to 64, or a default label past 64 characters (design §4.6). Shaping a text failed. An exception
-    /// that a user's <see cref="IScale"/> or tick format throws comes out as it is.
+    /// that a user's <see cref="IScale"/>, tick format, or <see cref="IGeom"/> throws comes out as it is.
     /// </exception>
     internal RenderList Render(PlotSpec spec)
     {

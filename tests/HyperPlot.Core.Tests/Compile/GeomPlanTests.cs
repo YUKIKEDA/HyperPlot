@@ -12,6 +12,7 @@ public sealed class GeomPlanTests
     private static readonly double[] EdgeXs = [0.5, 3.5];
     private static readonly double[] RuleXs = [10.5, 30.25];
     private static readonly double[] GapXs = [0.5, 1.5, 2.5, 3.5];
+    private static readonly double[] BandXs = [0.5, 1.5, 3.5];
 
     /// <summary>
     /// Each geom's domains are the union of its channels' ranges (design §4.2): an area's and a bar's Baseline joins y, a
@@ -589,10 +590,11 @@ public sealed class GeomPlanTests
     ///   around 70.
     ///
     /// Steps:
-    /// - Render the few with CapWidth 6 and 0; render the many.
+    /// - Render the few with CapWidth 6 and 0, and with 6 on a plan at the scale 1.5; render the many.
     ///
     /// Expected:
-    /// - CapWidth 6: one polyline of each bar, then its caps 3 to each side, each followed by NaN; 0: the bars alone. Many:
+    /// - CapWidth 6: one polyline of each bar, then its caps 3 to each side, each followed by NaN; at the scale 1.5, 4.5 to
+    ///   each side and a stroke 1.5 wide; 0: the bars alone. Many:
     ///   one polyline, a line at each column's center from the pixel of its greatest YMax to that of its least YMin.
     /// </remarks>
     [Fact]
@@ -640,6 +642,35 @@ public sealed class GeomPlanTests
         var bare = Expected();
         bare.DrawPolyline([new(20, 90), new(20, 70), nan, new(50, 60), new(50, 30), nan], Black);
         AssertSameList(bare, plan.Render(Spec(table, layer with { CapWidth = 0 })));
+        using var scaled = new PlotPlan(pool, Size, Size, new TextEngine(new FakeTextBackend()), 1.5f);
+        var wide = Expected();
+        wide.DrawPolyline(
+            [
+                new(20, 90),
+                new(20, 70),
+                nan,
+                new(15.5f, 90),
+                new(24.5f, 90),
+                nan,
+                new(15.5f, 70),
+                new(24.5f, 70),
+                nan,
+                new(50, 60),
+                new(50, 30),
+                nan,
+                new(45.5f, 60),
+                new(54.5f, 60),
+                nan,
+                new(45.5f, 30),
+                new(54.5f, 30),
+                nan,
+            ],
+            Black with
+            {
+                Width = 1.5f,
+            }
+        );
+        AssertSameList(wide, scaled.Render(Spec(table, layer)));
 
         var lows = Enumerable.Range(0, 800).Select(i => 30 + (10 * Math.Sin(i * 0.07))).ToArray();
         var highs = Enumerable.Range(0, 800).Select(i => 70 + (10 * Math.Cos(i * 0.05))).ToArray();
@@ -1031,8 +1062,8 @@ public sealed class GeomPlanTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 1,000 sorted values from 0 to 99.9; a sqrt y over [0, 100] and a pow 2 y over [0, √10], both [0, 10] in the scale
-    ///   space.
+    /// - 1,000 sorted values from 0 to 1.998; a sqrt y over [0, 16] and a pow 2 y over [0, 2], both exactly [0, 4] in the
+    ///   scale space.
     ///
     /// Steps:
     /// - Render the rule with the sqrt scale, then with the pow scale on the same plan; render the pow scale on a new plan.
@@ -1044,11 +1075,11 @@ public sealed class GeomPlanTests
     public void HRule_Many_NewTransformMakesTheRowsAgain()
     {
         using var pool = new PlotWorkerPool(1);
-        using var y = Column.Wrap(Enumerable.Range(0, 1000).Select(i => i / 10.0).ToArray());
+        using var y = Column.Wrap(Enumerable.Range(0, 1000).Select(i => i * 0.002).ToArray());
         var table = DataTable.Create().Add("y", y).Build();
         var rule = Spec(table, new RuleLayerSpec { Y = table.Col<double>("y") });
-        var sqrt = rule with { ScaleY = Scale.Sqrt().WithDomain(0, 100) };
-        var pow = rule with { ScaleY = Scale.Pow(2).WithDomain(0, Math.Sqrt(10)) };
+        var sqrt = rule with { ScaleY = Scale.Sqrt().WithDomain(0, 16) };
+        var pow = rule with { ScaleY = Scale.Pow(2).WithDomain(0, 2) };
         using var plan = TestPlans.Create(pool, Size, Size);
         using var fresh = TestPlans.Create(pool, Size, Size);
 
@@ -1129,6 +1160,95 @@ public sealed class GeomPlanTests
         _ = plan.Render(Spec(table, area) with { ScaleY = Scale.Linear() });
 
         Assert.Equal((Far, 0d, 3d), (plan.YDomain.Origin, plan.YDomain.Lower, plan.YDomain.Upper));
+    }
+
+    /// <summary>
+    /// Between W and 4W visible elements, bars and error bars are still drawn one by one, error bars with their caps
+    /// (design §5.5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300 elements at x = i / 3 on 100 pixel columns; y 50 + 10 + i % 7 above Baseline 50; YMin 40, YMax y.
+    ///
+    /// Steps:
+    /// - Render the bars and the error bars.
+    ///
+    /// Expected:
+    /// - 300 bars; 900 segments of error bars (a bar and two caps each).
+    /// </remarks>
+    [Fact]
+    public void BarAndErrorBar_BetweenWAndFourW_DrawEachElement()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(Enumerable.Range(0, 300).Select(i => 60.0 + (i % 7)).ToArray());
+        using var low = Column.Wrap(Enumerable.Repeat(40.0, 300).ToArray());
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1 / 3.0, 300)).Add("y", y).Add("low", low).Build();
+        var (x, ry, rl) = (table.Col<double>("x"), table.Col<double>("y"), table.Col<double>("low"));
+        using var plan = TestPlans.Create(pool, Size, Size);
+
+        var bars = DataRects(
+            plan.Render(
+                Spec(
+                    table,
+                    new BarLayerSpec
+                    {
+                        X = x,
+                        Y = ry,
+                        Baseline = 50,
+                    }
+                )
+            )
+        );
+        var errorBars = plan.Render(
+            Spec(
+                table,
+                new ErrorBarLayerSpec
+                {
+                    X = x,
+                    YMin = rl,
+                    YMax = ry,
+                }
+            )
+        );
+
+        Assert.Equal(300, bars.Length);
+        Assert.Equal(900, errorBars.Segments.Length);
+    }
+
+    /// <summary>
+    /// A band's columns start where both lines are: where YMin is NaN, the band is not drawn though YMax is (design
+    /// §5.5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - x 0.5, 1.5, 3.5; YMin NaN, 10, 20; YMax 30, 40, 60.
+    ///
+    /// Steps:
+    /// - Render the band.
+    ///
+    /// Expected:
+    /// - The first trapezoid starts at 1.5, where YMin starts; none lies left of it.
+    /// </remarks>
+    [Fact]
+    public void Band_StartsWhereBothLinesAre()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.Wrap(BandXs);
+        using var lo = Column.Wrap(new double[] { double.NaN, 10, 20 });
+        using var hi = Column.Wrap(new double[] { 30, 40, 60 });
+        var table = DataTable.Create().Add("x", x).Add("lo", lo).Add("hi", hi).Build();
+        var band = new BandLayerSpec
+        {
+            X = table.Col<double>("x"),
+            YMin = table.Col<double>("lo"),
+            YMax = table.Col<double>("hi"),
+        };
+        using var plan = TestPlans.Create(pool, Size, Size);
+
+        var trapezoids = Trapezoids(plan.Render(Spec(table, band)));
+
+        Assert.NotEmpty(trapezoids);
+        Assert.Equal(1.5f, trapezoids.Min(t => t.Left));
     }
 
     /// <summary>A probe that turns an index of a table into an untyped reference, whatever the column's type.</summary>

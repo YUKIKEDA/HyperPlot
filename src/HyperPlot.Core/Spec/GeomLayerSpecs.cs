@@ -173,6 +173,9 @@ public sealed record CustomLayerSpec : LayerSpec
         Geom = geom;
     }
 
-    /// <summary>Gets the geom. A new geom, or a geom whose content changed, is a new node: the plan does not see inside it.</summary>
+    /// <summary>
+    /// Gets the geom. The plan does not see inside it: when its content changes, make a new node, of the same geom or a new
+    /// one, and the plot learns and records it again.
+    /// </summary>
     public IGeom Geom { get; }
 }

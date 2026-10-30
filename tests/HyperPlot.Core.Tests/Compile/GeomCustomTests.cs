@@ -55,11 +55,13 @@ public sealed class GeomCustomTests
     /// - Geoms that add x [−5, 200] and y [−1, 3]; x [2^60 + 1, 2^60 + 3] as longs; nothing; x [NaN, 1]; y [2, 1].
     ///
     /// Steps:
-    /// - Render each with a line over x 10 to 90 and y 10 to 30, with learned domains.
+    /// - Render each with a line over x 10 to 90 and y 10 to 30, with learned domains; render the shrinking geom twice,
+    ///   with a new node of the same geom the second time.
     ///
     /// Expected:
     /// - [−5, 200] × [−1, 30]; alone, the long range [2^60 + 1, 2^60 + 3] with its origin exact; the line's own [10, 90] ×
-    ///   [10, 30]; ArgumentException for the last two.
+    ///   [10, 30]; a geom whose x range shrinks from [0, 500] to [0, 100] learns [0, 100] the second time; ArgumentException
+    ///   for the last two.
     /// </remarks>
     [Fact]
     public void Custom_RangesJoinTheDomains()
@@ -86,6 +88,19 @@ public sealed class GeomCustomTests
         }
 
         Assert.Equal(((10d, 90d), (10d, 30d)), Learned(_ => { }, line));
+
+        // A geom whose range shrinks between two learnings: the second forgets the first.
+        var wide = true;
+        var shrinking = new DelegateGeom(r => r.AddX(0, wide ? 500 : 100));
+        using (var plan = TestPlans.Create(pool, Size, Size))
+        {
+            var spec = Spec(shrinking, line) with { ScaleX = Scale.Linear(), ScaleY = Scale.Linear() };
+            _ = plan.Render(spec);
+            wide = false;
+            _ = plan.Render(spec with { Layers = [new CustomLayerSpec(shrinking), line] });
+            Assert.Equal((0d, 100d), Ends(plan.XDomain));
+        }
+
         _ = Assert.Throws<ArgumentException>(() => Learned(r => r.AddX(double.NaN, 1), line));
         _ = Assert.Throws<ArgumentException>(() => Learned(r => r.AddY(2, 1), line));
 
@@ -293,7 +308,7 @@ public sealed class GeomCustomTests
     /// Expected:
     /// - (pyramids, extractions, recordings): first (2, 1, 1); same (0, 0, 0); Baseline and Width (0, 1, 1); Fill, Outline,
     ///   Style, Mode, CapWidth, and Label (0, 0, 1); the area's Y to "z" and the error bar's YMax to "y" (0, 1, 1): the
-    ///   pyramids of "y" and "z" are kept.
+    ///   pyramids of "y" and "z" are kept; the step's Y to "w", which has no pyramid yet, (1, 1, 1).
     /// </remarks>
     [Fact]
     public void Diff_ChannelsRangesAndLooks()
@@ -301,8 +316,9 @@ public sealed class GeomCustomTests
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Values);
         using var z = Column.Wrap(new double[] { 5, 6, 7 });
-        var table = DataTable.Create().Add("x", Column.Wrap(Ats)).Add("y", y).Add("z", z).Build();
-        var (rx, ry, rz) = (table.Col<double>("x"), table.Col<double>("y"), table.Col<double>("z"));
+        using var w = Column.Wrap(new double[] { 8, 9, 10 });
+        var table = DataTable.Create().Add("x", Column.Wrap(Ats)).Add("y", y).Add("z", z).Add("w", w).Build();
+        var (rx, ry, rz, rw) = (table.Col<double>("x"), table.Col<double>("y"), table.Col<double>("z"), table.Col<double>("w"));
         var area = new AreaLayerSpec { X = rx, Y = ry };
         var bar = new BarLayerSpec
         {
@@ -333,6 +349,7 @@ public sealed class GeomCustomTests
         Step(With(1, bar = bar with { Label = "b2" }), (0, 0, 1));
         Step(With(0, area with { Y = rz }), (0, 1, 1));
         Step(With(3, errorBar with { YMax = ry }), (0, 1, 1));
+        Step(With(2, step with { Y = rw }), (1, 1, 1));
 
         PlotSpec With(int index, LayerSpec layer)
         {
