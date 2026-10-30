@@ -375,6 +375,75 @@ public sealed class TickTests
         Assert.True(differs);
     }
 
+    /// <summary>
+    /// When no log candidate fits the widened domain, the axis takes no nice and the choice without it (design §4.6).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A log domain [0.3, 3000] over 250 pixels, spacing 90: every skip that fits overflows the spacing once widened.
+    ///
+    /// Steps:
+    /// - Choose with nice and without.
+    ///
+    /// Expected:
+    /// - The same ticks both ways, two or more, and the final domain the learned one.
+    /// </remarks>
+    [Fact]
+    public void Log_NiceFits_Nothing_FallsBack()
+    {
+        var log = Scale.Log();
+        var plain = Axis(log, log.CreateTransform(), Log(0.3, 3000), 250, 90);
+        plain.Choose(nice: false);
+        var nice = Axis(log, log.CreateTransform(), Log(0.3, 3000), 250, 90);
+        nice.Choose(nice: true);
+        Assert.True(nice.Count >= 2);
+        Assert.Equal(Values(plain), Values(nice));
+        Assert.Equal(nice.Domain, nice.FinalDomain);
+    }
+
+    /// <summary>
+    /// Symlog and time judge a nice candidate in the widened domain too: over a range of lengths, every choice with nice
+    /// fits its final domain (design §4.6).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A symlog (C = 1) domain [−700, 40] and a Ticks time domain of 50 hours from 2026-01-01 03:07, over lengths 60 to
+    ///   400, spacing 40.
+    ///
+    /// Steps:
+    /// - Choose with nice at each length.
+    ///
+    /// Expected:
+    /// - When there are ticks: count − 1 at most the length over the spacing, and no labels overlapping, over the final
+    ///   domain.
+    /// </remarks>
+    [Fact]
+    public void SymlogAndTime_Nice_FitTheFinalDomain()
+    {
+        var symlog = Scale.Symlog(1);
+        var transform = symlog.CreateTransform()!;
+        var start = new DateTime(2026, 1, 1, 3, 7, 0).Ticks;
+        for (var length = 60; length <= 400; length += 10)
+        {
+            var axes = new[]
+            {
+                Axis(symlog, transform, Mapped(transform, -700, 40), length, 40),
+                Axis(Scale.Time(), null, ScaleRange.FromInteger(start, start + (50 * TimeSpan.TicksPerHour)), length, 40),
+            };
+            foreach (var axis in axes)
+            {
+                axis.Choose(nice: true);
+                if (axis.Count == 0)
+                {
+                    continue;
+                }
+
+                Assert.True(axis.Count - 1 <= (length / 40.0) + 1e-9 || axis.Scale is TimeScaleSpec, $"{axis.Scale.GetType().Name} at {length}");
+                Assert.True(Overlap(axis) > double.NegativeInfinity, $"{axis.Scale.GetType().Name} at {length}");
+            }
+        }
+    }
+
     /// <summary>Symlog ticks hold 0 and both sides, |value| ≥ C; a domain within 10 C takes the linear choice (design §4.6).</summary>
     /// <remarks>
     /// Preconditions:

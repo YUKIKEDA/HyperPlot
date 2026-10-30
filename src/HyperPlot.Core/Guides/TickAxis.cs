@@ -82,12 +82,24 @@ internal sealed class TickAxis
         {
             case TimeScaleSpec time:
                 TimeTicks.Choose(this, time, nice);
+                if (nice && _count == 0)
+                {
+                    // No candidate fits the widened domain: the axis takes no nice (design §4.6, Issue #115).
+                    FinalDomain = Domain;
+                    TimeTicks.Choose(this, time, nice: false);
+                }
+
                 break;
             case LogScaleSpec:
-                LogTicks.Choose(this, nice, constant: 0);
-                break;
-            case SymlogScaleSpec symlog:
-                LogTicks.Choose(this, nice, symlog.Constant);
+            case SymlogScaleSpec:
+                var constant = Scale is SymlogScaleSpec symlog ? symlog.Constant : 0;
+                LogTicks.Choose(this, nice, constant);
+                if (nice && _count == 0)
+                {
+                    FinalDomain = Domain;
+                    LogTicks.Choose(this, nice: false, constant);
+                }
+
                 break;
             default:
                 ExtendedTicks.Choose(this, nice);
