@@ -196,6 +196,46 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
 
     /// <inheritdoc />
+    internal override double DifferenceAt(long index, long origin) => ScaleSpace.Difference(GetValue(index), origin);
+
+    /// <inheritdoc />
+    internal override void ReadDifferences(Span<double> destination, long origin)
+    {
+        // A segment's or a rect's columns hold at most 131,072 elements (design §5.5.3): all in the first chunk (2^20).
+        if (destination.IsEmpty)
+        {
+            return;
+        }
+
+        var values = GetChunk(0)[..destination.Length];
+        if (ScaleSpace.IsInteger<T>())
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = ScaleSpace.Difference(long.CreateTruncating(values[i]), origin);
+            }
+
+            return;
+        }
+
+        // The floating-point branch of ScaleSpace.Difference, taken once for the span.
+        for (var i = 0; i < values.Length; i++)
+        {
+            destination[i] = double.CreateTruncating(values[i]) - origin;
+        }
+    }
+
+    /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin) => new M4.ColumnX<T>(this, origin).LowerBound(boundary);
+
+    /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool)
+    {
+        PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+        return TryIsNonDecreasing(out var nonDecreasing) && nonDecreasing;
+    }
+
+    /// <inheritdoc />
     PlotPyramid IPyramidColumn.BuildPlotPyramid(PlotWorkerPool pool) => new PlotPyramid<T>(pool.BuildPyramid(this));
 
     /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>

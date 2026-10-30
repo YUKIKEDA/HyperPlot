@@ -16,10 +16,13 @@ public sealed class RenderList
     private RenderCommand[] _commands = new RenderCommand[8];
     private RectInstance[] _rects = new RectInstance[4];
     private ClipRect[] _rectClips = new ClipRect[4];
+    private ColumnInstance[] _columns = new ColumnInstance[16];
+    private ClipRect[] _columnClips = new ClipRect[16];
     private int _polylineCount;
     private int _segmentCount;
     private int _textCount;
     private int _rectCount;
+    private int _columnCount;
     private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
@@ -38,7 +41,13 @@ public sealed class RenderList
     /// <summary>Gets the clip of each recorded rectangle.</summary>
     internal ReadOnlySpan<ClipRect> RectClips => _rectClips.AsSpan(0, _rectCount);
 
-    /// <summary>Gets every recorded command in order: each names a polyline, a text, or a rectangle.</summary>
+    /// <summary>Gets the recorded column trapezoids, in order, as the GPU reads them.</summary>
+    internal ReadOnlySpan<ColumnInstance> Columns => _columns.AsSpan(0, _columnCount);
+
+    /// <summary>Gets the clip of each recorded column trapezoid.</summary>
+    internal ReadOnlySpan<ClipRect> ColumnClips => _columnClips.AsSpan(0, _columnCount);
+
+    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, or a column trapezoid.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
@@ -48,6 +57,7 @@ public sealed class RenderList
         _segmentCount = 0;
         _textCount = 0;
         _rectCount = 0;
+        _columnCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
     }
@@ -234,6 +244,58 @@ public sealed class RenderList
         _rectClips[_rectCount++] = _clip;
     }
 
+    /// <summary>
+    /// Records column trapezoids filled with one color, in physical pixels (design §5.1): each covers x from Left to Right
+    /// and y between its top and bottom edges, the straight lines through their values at the left and right sides. A
+    /// pixel is covered by the area it shares with the region between the two edges, in either order, so edges that cross
+    /// paint a bow tie. A trapezoid with a coordinate that is not finite, or with Left at or past Right, draws nothing.
+    /// </summary>
+    /// <param name="columns">The trapezoids; they are meant not to overlap (an area or a band gives one a pixel column).</param>
+    /// <param name="color">The color.</param>
+    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color color)
+    {
+        var premultiplied = new Vector4(
+            Premultiplied.Multiply(color.R, color.A) / 255f,
+            Premultiplied.Multiply(color.G, color.A) / 255f,
+            Premultiplied.Multiply(color.B, color.A) / 255f,
+            color.A / 255f
+        );
+        foreach (var column in columns)
+        {
+            var finite =
+                float.IsFinite(column.Left)
+                && float.IsFinite(column.Right)
+                && float.IsFinite(column.TopLeft)
+                && float.IsFinite(column.TopRight)
+                && float.IsFinite(column.BottomLeft)
+                && float.IsFinite(column.BottomRight);
+            if (!finite || !(column.Left < column.Right))
+            {
+                continue;
+            }
+
+            if (_columnCount == _columns.Length)
+            {
+                Array.Resize(ref _columns, _columns.Length * 2);
+                Array.Resize(ref _columnClips, _columnClips.Length * 2);
+            }
+
+            AddCommand(new RenderCommand(RenderCommandKind.Columns, _columnCount));
+            _columns[_columnCount] = new ColumnInstance(
+                column.Left,
+                column.Right,
+                column.TopLeft,
+                column.TopRight,
+                column.BottomLeft,
+                column.BottomRight,
+                0,
+                0,
+                premultiplied
+            );
+            _columnClips[_columnCount++] = _clip;
+        }
+    }
+
     /// <summary>Throws unless a text and its style are in range (design §5.1): what <see cref="DrawText"/> and <see cref="TextEngine.Measure"/> check.</summary>
     internal static void ValidateText(string text, in TextStyle style)
     {
@@ -312,6 +374,9 @@ internal enum RenderCommandKind : byte
 
     /// <summary>A filled rectangle: the index is into <see cref="RenderList.Rects"/>.</summary>
     Rect,
+
+    /// <summary>A filled column trapezoid: the index is into <see cref="RenderList.Columns"/>.</summary>
+    Columns,
 }
 
 /// <summary>One recorded command: its kind and the index of its record.</summary>
@@ -326,6 +391,35 @@ internal readonly record struct TextRecord(string Text, Vector2 Position, TextSt
 /// </summary>
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
 internal readonly record struct RectInstance(float X, float Y, float Width, float Height, Vector4 Color);
+
+/// <summary>
+/// One trapezoid of a pixel column (design §5.1): its left and right sides, and its top and bottom edges by their values at
+/// those sides, in physical pixels of the target, y down.
+/// </summary>
+/// <param name="Left">The left side.</param>
+/// <param name="Right">The right side, past <paramref name="Left"/>.</param>
+/// <param name="TopLeft">The top edge at the left side.</param>
+/// <param name="TopRight">The top edge at the right side.</param>
+/// <param name="BottomLeft">The bottom edge at the left side.</param>
+/// <param name="BottomRight">The bottom edge at the right side.</param>
+public readonly record struct ColumnTrapezoid(float Left, float Right, float TopLeft, float TopRight, float BottomLeft, float BottomRight);
+
+/// <summary>
+/// One column trapezoid as the GPU reads it (design §5.3): its sides, its edges' values at them, two unused floats, and the
+/// premultiplied color. 48 bytes, laid out as the HLSL structure of Columns.hlsl.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly record struct ColumnInstance(
+    float Left,
+    float Right,
+    float TopLeft,
+    float TopRight,
+    float BottomLeft,
+    float BottomRight,
+    float Unused0,
+    float Unused1,
+    Vector4 Color
+);
 
 /// <summary>A rectangle of whole pixels, edges included on the left and top and excluded on the right and bottom.</summary>
 internal readonly record struct ClipRect(long Left, long Top, long Right, long Bottom)

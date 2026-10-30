@@ -206,6 +206,21 @@ public abstract class Column
     /// </summary>
     internal abstract Task? PrecomputeStatsIfMissing(PlotWorkerPool pool);
 
+    /// <summary>Returns d(v(i)), the difference of the element's value from an origin (design §3.6): exact for integer columns.</summary>
+    internal abstract double DifferenceAt(long index, long origin);
+
+    /// <summary>Writes d(v(i)) of the first elements into <paramref name="destination"/>, at most a chunk of them.</summary>
+    internal abstract void ReadDifferences(Span<double> destination, long origin);
+
+    /// <summary>
+    /// Returns the least i whose difference from <paramref name="origin"/> reaches <paramref name="boundary"/>, or the length
+    /// when there is none, for a non-decreasing column (the search of M4, design §5.5.1).
+    /// </summary>
+    internal abstract long LowerBound(double boundary, long origin);
+
+    /// <summary>Returns whether the column is non-decreasing without NaN, from its statistics; a uniform column always is.</summary>
+    internal abstract bool IsNonDecreasing(PlotWorkerPool pool);
+
     /// <summary>Adds a series with this column as X to a batch (design §5.5.1).</summary>
     internal abstract int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination)
         where TY : unmanaged, INumber<TY>;

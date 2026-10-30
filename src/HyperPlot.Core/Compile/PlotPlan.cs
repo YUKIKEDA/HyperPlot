@@ -17,12 +17,14 @@ internal sealed class PlotPlan : IDisposable
     private readonly Dictionary<Column, PlotPyramid> _pyramids = [];
     private readonly M4Batch _batch = new();
     private readonly RenderList _list = new();
-    private readonly Vector2[] _points;
+    private readonly RecordContext _context;
+    private readonly RangeSink _sink = new();
+    private readonly int _capacity;
 
-    // Work areas of row G2, made once: one layer's coordinates before and after a transform (design §4.2).
-    private readonly double[] _values;
+    // The channels of a layer's node and of the one before it, for the checks and the diff (design §4.8).
+    private readonly ColumnRef[] _channels = new ColumnRef[4];
+    private readonly ColumnRef[] _previousChannels = new ColumnRef[4];
     private readonly (double[] Data, double[] Scale)[] _widths = new (double[], double[])[4];
-    private readonly double[] _mapped;
     private IScale? _xTransform;
     private IScale? _yTransform;
     private LayerPlan[] _layers = [];
@@ -51,11 +53,10 @@ internal sealed class PlotPlan : IDisposable
         _pool = pool;
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
+        _context = new RecordContext(_guides, _batch, _list, new GeomFrame());
 
-        // Each M4 point may bring a break before it, which is a point of NaN (design §5.1). The panel is never wider than the target.
-        _points = new Vector2[2 * M4.MaxPointCount(width)];
-        _values = new double[M4.MaxPointCount(width)];
-        _mapped = new double[M4.MaxPointCount(width)];
+        // The panel is never wider than the target.
+        _capacity = M4.MaxPointCount(width);
     }
 
     /// <summary>Gets the number of pyramids built, for the tests of the diff (design §4.8).</summary>
@@ -93,14 +94,14 @@ internal sealed class PlotPlan : IDisposable
     /// the scale space or once mapped back to data units.
     /// </exception>
     /// <exception cref="InvalidOperationException">
-    /// A learned domain has an end that is not finite, in data units or once the scale maps it (design §4.2), or an X column
-    /// decreases. While ticks are chosen: a time domain outside the years 1 to 9999, a tick format that returns false or a
+    /// A learned domain has an end that is not finite, in data units or once the scale maps it (design §4.2), an X column or
+    /// a rule's column decreases, or a segment or a rect layer has more than 131,072 elements (design §5.5.3). While ticks are chosen: a time domain outside the years 1 to 9999, a tick format that returns false or a
     /// length outside 0 to 64, or a default label past 64 characters (design §4.6). Shaping a text failed. An exception
-    /// that a user's <see cref="IScale"/> or tick format throws comes out as it is.
+    /// that a user's <see cref="IScale"/>, tick format, or <see cref="IGeom"/> throws comes out as it is.
     /// </exception>
     internal RenderList Render(PlotSpec spec)
     {
-        Validate(spec, _spec);
+        Validate(spec);
         if (spec.Theme is null)
         {
             throw new ArgumentNullException(nameof(spec), "The spec's Theme must not be null.");
@@ -113,9 +114,10 @@ internal sealed class PlotPlan : IDisposable
         _spec = null;
         var data = previous is null || DataChanged(previous, spec);
         var scales = previous is null || !SameMapping(previous.ScaleX, spec.ScaleX) || !SameMapping(previous.ScaleY, spec.ScaleY);
+        var ranges = data || RangesChanged(previous!, spec);
         var looks =
             data
-            || StyleChanged(previous!, spec)
+            || NodesChanged(previous!, spec)
             || OptionsChanged(previous!.ScaleX, spec.ScaleX)
             || OptionsChanged(previous!.ScaleY, spec.ScaleY)
             || !string.Equals(previous.Title, spec.Title, StringComparison.Ordinal)
@@ -136,10 +138,10 @@ internal sealed class PlotPlan : IDisposable
         }
         else
         {
-            // The layers name the same columns; take the new nodes for their strokes.
+            // The layers name the same columns; take the new nodes for their looks, baselines, and widths.
             for (var i = 0; i < _layers.Length; i++)
             {
-                _layers[i].Spec = (LineLayerSpec)spec.Layers[i];
+                _layers[i].Spec = spec.Layers[i];
             }
         }
 
@@ -147,13 +149,22 @@ internal sealed class PlotPlan : IDisposable
         // recorded versions behind the column's, so the next Render extracts again.
         foreach (var layer in _layers)
         {
-            (layer.XSeen, layer.YSeen) = (layer.X.Version, layer.Y.Column.Version);
+            layer.ReadVersions();
         }
 
         WaitForIndexes();
-        var extract = data || scales || ValuesChanged();
+        var extract = ranges || scales || ValuesChanged();
         if (extract)
         {
+            // A user's geom learns only when an axis learns: with both domains given, nothing would read its ranges.
+            if (Learns((ContinuousScaleSpec)spec.ScaleX) || Learns((ContinuousScaleSpec)spec.ScaleY))
+            {
+                foreach (var layer in _layers)
+                {
+                    layer.BeginLearning();
+                }
+            }
+
             _learnedX = Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true);
             _learnedY = Learn(spec, (ContinuousScaleSpec)spec.ScaleY, _yTransform, ofX: false);
         }
@@ -187,7 +198,7 @@ internal sealed class PlotPlan : IDisposable
                 Extractions++;
                 foreach (var layer in _layers)
                 {
-                    (layer.XVersion, layer.YVersion) = (layer.XSeen, layer.YSeen);
+                    layer.MarkExtracted();
                 }
             }
 
@@ -213,8 +224,8 @@ internal sealed class PlotPlan : IDisposable
         _spec = null;
     }
 
-    /// <summary>Throws unless the spec is one that row G1 compiles (design §4.8). Reads no data.</summary>
-    private static void Validate(PlotSpec plot, PlotSpec? previous)
+    /// <summary>Throws unless the spec is one that rows G1 to G4 compile (design §4.8). Reads no data but column lengths.</summary>
+    private void Validate(PlotSpec plot)
     {
         if (plot.Data is null || plot.Layers is null || plot.ScaleX is null || plot.ScaleY is null)
         {
@@ -223,43 +234,12 @@ internal sealed class PlotPlan : IDisposable
 
         for (var i = 0; i < plot.Layers.Count; i++)
         {
-            var layer = plot.Layers[i];
-            if (layer is null)
-            {
-                throw new ArgumentNullException(nameof(plot), $"Layer {i} of the spec is null.");
-            }
-
-            if (layer is not LineLayerSpec line)
-            {
-                throw new ArgumentException($"Layer {i} is a {layer.GetType().Name}; row G1 compiles line layers only.", nameof(plot));
-            }
-
-            CheckReference(plot.Data, line.X, i, "X");
-            CheckReference(plot.Data, line.Y, i, "Y");
-            if (line.Y.Column is not IPyramidColumn)
-            {
-                throw new ArgumentException(
-                    $"The Y column \"{plot.Data.GetName(line.Y.Index)}\" of layer {i} is a {line.Y.Column.KindName}; a line's Y is a stored column.",
-                    nameof(plot)
-                );
-            }
+            var layer = plot.Layers[i] ?? throw new ArgumentNullException(nameof(plot), $"Layer {i} of the spec is null.");
+            LayerPlan.Validate(plot.Data, layer, i, _channels);
         }
 
-        CheckScale(plot, plot.ScaleX, previous?.ScaleX, "ScaleX", ofX: true);
-        CheckScale(plot, plot.ScaleY, previous?.ScaleY, "ScaleY", ofX: false);
-    }
-
-    private static void CheckReference(DataTable data, ColumnRef reference, int layer, string channel)
-    {
-        if (reference.IsDefault)
-        {
-            throw new ArgumentException($"The {channel} of layer {layer} is the default reference, which names no column.");
-        }
-
-        if (!ReferenceEquals(reference.TableOrNull, data))
-        {
-            throw new ArgumentException($"The {channel} column of layer {layer} belongs to another table than the spec's Data.");
-        }
+        CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true);
+        CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false);
     }
 
     /// <summary>
@@ -267,7 +247,7 @@ internal sealed class PlotPlan : IDisposable
     /// and a time scale reads long date-time columns. A user cannot derive a new continuous kind: its base has internal
     /// abstract members.
     /// </summary>
-    private static void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX)
+    private void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX)
     {
         if (scale is not ContinuousScaleSpec continuous)
         {
@@ -287,21 +267,26 @@ internal sealed class PlotPlan : IDisposable
 
         foreach (var layer in plot.Layers)
         {
-            var reference = ofX ? ((LineLayerSpec)layer).X : ((LineLayerSpec)layer).Y;
-            if (reference.Column is not (Column<long> or UniformColumn { IsInteger: true }))
+            var count = LayerPlan.AxisChannels(layer, ofX, _channels);
+            for (var c = 0; c < count; c++)
             {
-                throw new ArgumentException(
-                    $"The {name} is a time scale, and the column \"{plot.Data.GetName(reference.Index)}\" is a {reference.Column.KindName}, not a long date-time column."
-                );
+                var reference = _channels[c];
+                if (reference.Column is not (Column<long> or UniformColumn { IsInteger: true }))
+                {
+                    throw new ArgumentException(
+                        $"The {name} is a time scale, and the column \"{plot.Data.GetName(reference.Index)}\" is a {reference.Column.KindName}, not a long date-time column."
+                    );
+                }
             }
         }
     }
 
     /// <summary>
-    /// Returns whether a layer's columns changed, or the layers were added, removed, or moved (design §4.8). A new table
-    /// changes every reference, since a reference names its table and the check refuses another table's.
+    /// Returns whether a layer's columns or kind changed, or the layers were added, removed, or moved (design §4.8): the
+    /// "data" stage. A new table changes every reference, since a reference names its table and the check refuses another
+    /// table's.
     /// </summary>
-    private static bool DataChanged(PlotSpec previous, PlotSpec spec)
+    private bool DataChanged(PlotSpec previous, PlotSpec spec)
     {
         if (previous.Layers.Count != spec.Layers.Count)
         {
@@ -310,9 +295,8 @@ internal sealed class PlotPlan : IDisposable
 
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            var before = (LineLayerSpec)previous.Layers[i];
-            var after = (LineLayerSpec)spec.Layers[i];
-            if (before.Id != after.Id && (before.X != after.X || before.Y != after.Y))
+            var (before, after) = (previous.Layers[i], spec.Layers[i]);
+            if (before.Id != after.Id && LayerPlan.ChannelsDiffer(before, after, _previousChannels, _channels))
             {
                 return true;
             }
@@ -321,14 +305,30 @@ internal sealed class PlotPlan : IDisposable
         return false;
     }
 
-    /// <summary>Returns whether a layer's stroke changed; called only when the layers name the same columns.</summary>
-    private static bool StyleChanged(PlotSpec previous, PlotSpec spec)
+    /// <summary>Returns whether a layer's Baseline or bar Width changed (the "scale" stage); called when the layers name the same columns.</summary>
+    private static bool RangesChanged(PlotSpec previous, PlotSpec spec)
     {
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            var before = (LineLayerSpec)previous.Layers[i];
-            var after = (LineLayerSpec)spec.Layers[i];
-            if (before.Id != after.Id && (before.Style != after.Style || !string.Equals(before.Label, after.Label, StringComparison.Ordinal)))
+            var (before, after) = (previous.Layers[i], spec.Layers[i]);
+            if (before.Id != after.Id && LayerPlan.RangesDiffer(before, after))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Returns whether a layer is a new node (design §4.8): over the same columns and ranges, a new node changes only its
+    /// looks (a stroke, a fill, a label, a mode), which records again.
+    /// </summary>
+    private static bool NodesChanged(PlotSpec previous, PlotSpec spec)
+    {
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (previous.Layers[i].Id != spec.Layers[i].Id)
             {
                 return true;
             }
@@ -378,7 +378,7 @@ internal sealed class PlotPlan : IDisposable
     /// column, and as <see cref="double"/> once a floating-point one comes in. With a transform it is in the scale space: the
     /// ends are mapped, and the cases of no value and one value are taken there.
     /// </summary>
-    private static ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX)
+    private ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX)
     {
         if (scale is TimeScaleSpec { Domain: { } time })
         {
@@ -392,37 +392,20 @@ internal sealed class PlotPlan : IDisposable
                 : Mapped(transform, domain.Min, domain.Max, string.Empty, string.Empty);
         }
 
-        var (integerMin, integerMax) = (long.MaxValue, long.MinValue);
-        var (min, max) = (double.PositiveInfinity, double.NegativeInfinity);
-        var (minName, maxName) = (string.Empty, string.Empty);
-        var (found, integer) = (false, true);
-        for (var i = 0; i < spec.Layers.Count; i++)
+        _sink.Reset();
+        foreach (var layer in _layers)
         {
-            var line = (LineLayerSpec)spec.Layers[i];
-            var reference = ofX ? line.X : line.Y;
-            if (!reference.Column.TryGetRange(out var low, out var high))
-            {
-                continue;
-            }
-
-            var name = spec.Data.GetName(reference.Index);
-            if (!double.IsFinite(low.Value) || !double.IsFinite(high.Value))
-            {
-                throw new InvalidOperationException(
-                    $"The column \"{name}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
-                );
-            }
-
-            integer &= low.IsInteger;
-            if (low.IsInteger)
-            {
-                (integerMin, integerMax) = (Math.Min(integerMin, low.Integer), Math.Max(integerMax, high.Integer));
-            }
-
-            (minName, maxName) = (low.Value < min ? name : minName, high.Value > max ? name : maxName);
-            (min, max, found) = (Math.Min(min, low.Value), Math.Max(max, high.Value), true);
+            layer.AddRanges(_sink, ofX, spec.Data);
         }
 
+        if (_sink.BaselineMin <= _sink.BaselineMax)
+        {
+            AddBaseline(transform, _sink.BaselineMin);
+            AddBaseline(transform, _sink.BaselineMax);
+        }
+
+        var (integerMin, integerMax, min, max) = (_sink.IntegerMin, _sink.IntegerMax, _sink.Min, _sink.Max);
+        var (minName, maxName, found, integer) = (_sink.MinName, _sink.MaxName, _sink.Found, _sink.Integer);
         if (!found)
         {
             // No value: [0, 1], in the scale space when there is a transform (log: 1 to 10).
@@ -449,6 +432,26 @@ internal sealed class PlotPlan : IDisposable
         // One value v gives [v - 0.5, v + 0.5], taken as differences from v so that a v past 2^53 stays exact.
         return integerMin == integerMax ? new ScaleRange(integerMin, -0.5, 0.5).Anchor() : ScaleRange.FromInteger(integerMin, integerMax);
     }
+
+    /// <summary>Adds a baseline to the range when the scale maps it to a finite value (design §4.2).</summary>
+    private void AddBaseline(IScale? transform, double value)
+    {
+        if (transform is not null)
+        {
+            Span<double> end = [value];
+            Span<double> mapped = stackalloc double[1];
+            transform.Forward(end, mapped);
+            if (!double.IsFinite(mapped[0]))
+            {
+                return;
+            }
+        }
+
+        _sink.Add(value, value, "the Baseline");
+    }
+
+    /// <summary>Returns whether a scale learns its domain from the data, that is, has no domain given (design §4.2).</summary>
+    private static bool Learns(ContinuousScaleSpec scale) => scale is not TimeScaleSpec { Domain: not null } && scale.GivenDomain is null;
 
     /// <summary>Returns the range of the scale space between the mapped ends, or throws when an end does not map to a finite value.</summary>
     private static ScaleRange Mapped(IScale transform, double min, double max, string minName, string maxName)
@@ -550,29 +553,24 @@ internal sealed class PlotPlan : IDisposable
         return _widths[0];
     }
 
-    /// <summary>Makes the layers again: a pyramid for each Y column not held yet, one M4 series a layer, and frees the pyramids no layer uses.</summary>
+    /// <summary>
+    /// Makes the layers again (design §4.8): a pyramid for each Y column not held yet, the layers' M4 series, and frees the
+    /// pyramids no layer uses.
+    /// </summary>
     private void BuildLayers(PlotSpec spec)
     {
         _batch.Clear();
+        var used = new HashSet<Column>();
+        var build = new PlanBuild(Pyramid, _batch, _capacity);
         var layers = new LayerPlan[spec.Layers.Count];
         for (var i = 0; i < layers.Length; i++)
         {
-            var line = (LineLayerSpec)spec.Layers[i];
-            var y = line.Y.Column;
-            if (!_pyramids.TryGetValue(y, out var pyramid))
-            {
-                pyramid = ((IPyramidColumn)y).BuildPlotPyramid(_pool);
-                _pyramids.Add(y, pyramid);
-                PyramidsBuilt++;
-            }
-
-            var output = new M4Point[_values.Length];
-            layers[i] = new LayerPlan(line, line.X.Column, pyramid, output, pyramid.AddTo(_batch, line.X.Column, output));
+            layers[i] = LayerPlan.Create(spec.Layers[i], build);
         }
 
         foreach (var column in _pyramids.Keys.ToArray())
         {
-            if (!Array.Exists(layers, layer => ReferenceEquals(layer.Y.Column, column)))
+            if (!used.Contains(column))
             {
                 _pyramids[column].Dispose();
                 _ = _pyramids.Remove(column);
@@ -580,18 +578,35 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _layers = layers;
+
+        PlotPyramid Pyramid(Column y)
+        {
+            _ = used.Add(y);
+            if (!_pyramids.TryGetValue(y, out var pyramid))
+            {
+                pyramid = ((IPyramidColumn)y).BuildPlotPyramid(_pool);
+                _pyramids.Add(y, pyramid);
+                PyramidsBuilt++;
+            }
+
+            return pyramid;
+        }
     }
 
     /// <summary>
-    /// Waits until every pyramid and every stored X column's statistics are there for the columns' current values (design
-    /// §4.8): a headless image is the same whenever it is drawn. A failure is thrown again as it was.
+    /// Waits until every pyramid and the statistics and orders the layers search are there for the columns' current values
+    /// (design §4.8): a headless image is the same whenever it is drawn. A failure is thrown again as it was.
     /// </summary>
     private void WaitForIndexes()
     {
+        foreach (var pyramid in _pyramids.Values)
+        {
+            pyramid.WhenComplete().GetAwaiter().GetResult();
+        }
+
         foreach (var layer in _layers)
         {
-            layer.Y.WhenComplete().GetAwaiter().GetResult();
-            layer.X.PrecomputeStatsIfMissing(_pool)?.GetAwaiter().GetResult();
+            layer.WaitForIndexes(_pool);
         }
     }
 
@@ -600,7 +615,7 @@ internal sealed class PlotPlan : IDisposable
     {
         foreach (var layer in _layers)
         {
-            if (layer.XSeen != layer.XVersion || layer.YSeen != layer.YVersion)
+            if (layer.ValuesChanged())
             {
                 return true;
             }
@@ -610,106 +625,26 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
-    /// Maps each layer's M4 points to pixels in double and records them as a polyline, in layer order (design §4.2, §4.8). A
-    /// transformed axis maps the points' coordinates to the scale space first, a span at a time; a point that maps to a value
-    /// that is not finite is dropped and breaks the line.
+    /// Records the guides behind, each layer in order inside the panel's clip, and the guides over (design §4.6, §5.5.3). A
+    /// layer maps its values to pixels in double, through the transforms a span at a time.
     /// </summary>
     private void Record(PlotSpec spec)
     {
         var (xScale, yScale) = ((ContinuousScaleSpec)spec.ScaleX, (ContinuousScaleSpec)spec.ScaleY);
         _list.Clear();
         _guides.RecordBehind(_list, spec);
-        _list.SetClip(_guides.Left, _guides.Top, _guides.Width, _guides.Height);
+        _context.Begin(
+            new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, _guides.Left, _guides.Width),
+            new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, _guides.Top, _guides.Height),
+            _boundaries,
+            _scale
+        );
+        _context.ClipToPanel();
         foreach (var layer in _layers)
         {
-            var points = layer.Output.AsSpan(0, _batch.GetResult(layer.Series).Count);
-            var count = 0;
-            foreach (var point in points)
-            {
-                if (point.BreakBefore)
-                {
-                    _points[count] = new Vector2(float.NaN);
-                }
-
-                count += point.BreakBefore ? 1 : 0;
-                _points[count++] = default;
-            }
-
-            Map(points, ofX: true, _xTransform, _x, xScale, _guides.Width, _guides.Left);
-            Map(points, ofX: false, _yTransform, _y, yScale, _guides.Height, _guides.Top);
-            _list.DrawPolyline(_points.AsSpan(0, count), _guides.Scaled(layer.Spec.Style));
+            layer.Record(_context);
         }
 
         _guides.RecordOver(_list, spec);
-    }
-
-    /// <summary>
-    /// Writes one coordinate of each point's pixel into the slots <see cref="Record"/> left for them: (d − lower) / (upper −
-    /// lower) maps to [0, 1] in differences from the domain's origin; x runs left to right and y bottom to top, or the other
-    /// way with reverse; clamp keeps d inside the domain (design §3.6, §4.2).
-    /// </summary>
-    private void Map(ReadOnlySpan<M4Point> points, bool ofX, IScale? transform, ScaleRange domain, ContinuousScaleSpec scale, int size, int offset)
-    {
-        var values = _values.AsSpan(0, points.Length);
-        for (var i = 0; i < points.Length; i++)
-        {
-            values[i] = ofX ? points[i].X : points[i].Y;
-        }
-
-        if (transform is not null)
-        {
-            var mapped = _mapped.AsSpan(0, points.Length);
-            transform.Forward(values, mapped);
-            for (var i = 0; i < points.Length; i++)
-            {
-                values[i] = mapped[i] - domain.Origin;
-            }
-        }
-
-        var slot = 0;
-        for (var i = 0; i < points.Length; i++)
-        {
-            slot += points[i].BreakBefore ? 1 : 0;
-            var d = values[i];
-            float pixel;
-            if (!double.IsFinite(d))
-            {
-                pixel = float.NaN;
-            }
-            else
-            {
-                d = scale.Clamp ? Math.Clamp(d, domain.Lower, domain.Upper) : d;
-                var t = (d - domain.Lower) / (domain.Upper - domain.Lower) * size;
-                pixel = (float)(offset + (ofX == scale.Reverse ? size - t : t));
-            }
-
-            _points[slot] = ofX ? _points[slot] with { X = pixel } : _points[slot] with { Y = pixel };
-            slot++;
-        }
-    }
-
-    /// <summary>
-    /// One layer of the plan: its node, its columns, its M4 series, the column versions it was extracted at, and the versions
-    /// this Render read before its wait.
-    /// </summary>
-    private sealed class LayerPlan(LineLayerSpec spec, Column x, PlotPyramid y, M4Point[] output, int series)
-    {
-        public LineLayerSpec Spec { get; set; } = spec;
-
-        public Column X { get; } = x;
-
-        public PlotPyramid Y { get; } = y;
-
-        public M4Point[] Output { get; } = output;
-
-        public int Series { get; } = series;
-
-        public long XVersion { get; set; } = -1;
-
-        public long YVersion { get; set; } = -1;
-
-        public long XSeen { get; set; }
-
-        public long YSeen { get; set; }
     }
 }

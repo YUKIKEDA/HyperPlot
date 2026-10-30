@@ -344,7 +344,7 @@ public static class M4
     }
 
     /// <summary>The X of a series: its value at an element, and the position of a boundary (design §5.5.1).</summary>
-    private interface IXSource
+    internal interface IXSource
     {
         /// <summary>Returns d(x(i)), the difference of x(i) from the X origin (design §3.6).</summary>
         /// <param name="index">The element.</param>
@@ -359,7 +359,7 @@ public static class M4
 
     private readonly record struct Candidate(long Index, double Y, M4Roles Roles);
 
-    private readonly struct UniformX(UniformColumn column, long origin) : IXSource
+    internal readonly struct UniformX(UniformColumn column, long origin) : IXSource
     {
         public double ValueAt(long index) =>
             column.IsInteger ? ScaleSpace.Difference(column.IntegerAt(index), origin) : column.GetValue(index) - origin;
@@ -392,7 +392,7 @@ public static class M4
         }
     }
 
-    private readonly struct ColumnX<TX>(Column<TX> column, long origin) : IXSource
+    internal readonly struct ColumnX<TX>(Column<TX> column, long origin) : IXSource
         where TX : unmanaged, INumber<TX>
     {
         public double ValueAt(long index) => ScaleSpace.Difference(column.GetValue(index), origin);
