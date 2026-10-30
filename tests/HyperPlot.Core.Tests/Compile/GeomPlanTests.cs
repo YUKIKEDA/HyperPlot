@@ -545,18 +545,18 @@ public sealed class GeomPlanTests
     }
 
     /// <summary>
-    /// A bar's default width is 0.9 times an evenly spaced X's step, or a stored X's mean spacing, or 0.9 for one element
-    /// (design §5.5.3).
+    /// A bar's default width is 0.9 times an evenly spaced X's step, or a stored X's mean spacing, or 0.9 for one element or
+    /// a stored X whose values are all the same (design §5.5.3).
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - X columns: evenly spaced with step 2; stored 10, 11, 14; stored 50 alone.
+    /// - X columns: evenly spaced with step 2; stored 10, 11, 14; stored 50 alone; stored 50 three times.
     ///
     /// Steps:
     /// - Render a bar of each.
     ///
     /// Expected:
-    /// - Bars 1.8, 1.8, and 0.9 pixels wide.
+    /// - Bars 1.8, 1.8, 0.9, and 0.9 pixels wide: a stored X with no spread is as one element.
     /// </remarks>
     [Fact]
     public void Bar_DefaultWidth_FollowsTheX()
@@ -564,12 +564,14 @@ public sealed class GeomPlanTests
         using var pool = new PlotWorkerPool(1);
         using var three = Column.Wrap(new double[] { 10, 11, 14 });
         using var one = Column.Wrap(new double[] { 50 });
+        using var same = Column.Wrap(new double[] { 50, 50, 50 });
         using var y3 = Column.Wrap(new double[] { 20, 20, 20 });
         using var y1 = Column.Wrap(new double[] { 20 });
 
         Assert.Equal(1.8, Width(Column.Uniform(10, 2, 3), y3), 4);
         Assert.Equal(1.8, Width(three, y3), 4);
         Assert.Equal(0.9, Width(one, y1), 4);
+        Assert.Equal(0.9, Width(same, y3), 4);
 
         double Width(Column x, Column y)
         {

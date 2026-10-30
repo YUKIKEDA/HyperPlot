@@ -16,12 +16,6 @@ internal sealed class LinePlan : LayerPlan
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column);
     }
 
-    /// <summary>Gets the M4 output of the layer. Tests only.</summary>
-    public M4Point[] Output => _output;
-
-    /// <summary>Gets the series number of the layer in the batch.</summary>
-    public int Series => _series;
-
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
@@ -297,7 +291,10 @@ internal sealed class BarPlan : LayerPlan
     /// <summary>Gets the width the bars are drawn with, in data units: read from the X's statistics, so after the wait.</summary>
     private double Width => ((BarLayerSpec)Spec).Width ?? DefaultWidth(Columns[0]);
 
-    /// <summary>Returns the default width (design §5.5.3): 0.9 times a uniform X's step or a stored X's mean spacing.</summary>
+    /// <summary>
+    /// Returns the default width (design §5.5.3): 0.9 times a uniform X's step or a stored X's mean spacing, or 0.9 when a
+    /// stored X has one element or all its values are the same.
+    /// </summary>
     internal static double DefaultWidth(Column x)
     {
         if (x is UniformColumn uniform)
@@ -305,7 +302,9 @@ internal sealed class BarPlan : LayerPlan
             return uniform.Step * 0.9;
         }
 
-        return x.Length > 1 && x.TryGetRange(out var min, out var max) ? (max.Value - min.Value) / (x.Length - 1) * 0.9 : 0.9;
+        return x.Length > 1 && x.TryGetRange(out var min, out var max) && max.Value > min.Value
+            ? (max.Value - min.Value) / (x.Length - 1) * 0.9
+            : 0.9;
     }
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();

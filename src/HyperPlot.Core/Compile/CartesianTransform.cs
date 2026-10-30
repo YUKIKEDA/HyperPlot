@@ -3,8 +3,9 @@ using System.Runtime.CompilerServices;
 namespace HyperPlot;
 
 /// <summary>
-/// The cartesian transform of a panel (design §4.4, row G4): from a point's differences from the origins of the scale space
-/// to the target's physical pixels, with the origins it is taken from. It is the 4×4 transform written as its factors on
+/// The cartesian transform of a panel (design §4.4, row G4): from a point's differences from the domains' origins in the
+/// scale space to the target's physical pixels; the origins come with the domains (row R3 adds them when it hands the
+/// transform to the GPU). It is the 4×4 transform written as its factors on
 /// each axis (a move by the domain's lower end, a scale from the domain's width to the panel's, a flip, a move to the
 /// panel's edge), which it applies in the order of the formula of rows G1 to G3: a product of the factors rounds
 /// differently and would move pixels. Clamp is applied to a difference before it is mapped. The public contract
@@ -15,25 +16,19 @@ internal readonly struct CartesianTransform
     private readonly Factors _x;
     private readonly Factors _y;
 
-    private CartesianTransform(Factors x, Factors y, long xOrigin, long yOrigin) => (_x, _y, XOrigin, YOrigin) = (x, y, xOrigin, yOrigin);
-
-    /// <summary>Gets the origin of x in the scale space (design §3.6).</summary>
-    public long XOrigin { get; }
-
-    /// <summary>Gets the origin of y in the scale space.</summary>
-    public long YOrigin { get; }
+    private CartesianTransform(Factors x, Factors y) => (_x, _y) = (x, y);
 
     /// <summary>
     /// Makes the transform of a panel from its axes: x runs left to right and y bottom to top over the domains' differences,
     /// or the other way when reversed.
     /// </summary>
     public static CartesianTransform Create(in GeomFrame.Axis x, in GeomFrame.Axis y) =>
-        new(Factors.Of(x, flip: x.Reverse), Factors.Of(y, flip: !y.Reverse), x.Domain.Origin, y.Domain.Origin);
+        new(Factors.Of(x, flip: x.Reverse), Factors.Of(y, flip: !y.Reverse));
 
-    /// <summary>Returns the pixel x of a difference dx from <see cref="XOrigin"/>.</summary>
+    /// <summary>Returns the pixel x of a difference dx from the x domain's origin.</summary>
     public double MapX(double dx) => _x.Map(dx);
 
-    /// <summary>Returns the pixel y of a difference dy from <see cref="YOrigin"/>.</summary>
+    /// <summary>Returns the pixel y of a difference dy from the y domain's origin.</summary>
     public double MapY(double dy) => _y.Map(dy);
 
     /// <summary>

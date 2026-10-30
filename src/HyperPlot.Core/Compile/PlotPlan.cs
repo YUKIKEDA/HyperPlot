@@ -156,9 +156,13 @@ internal sealed class PlotPlan : IDisposable
         var extract = ranges || scales || ValuesChanged();
         if (extract)
         {
-            foreach (var layer in _layers)
+            // A user's geom learns only when an axis learns: with both domains given, nothing would read its ranges.
+            if (Learns((ContinuousScaleSpec)spec.ScaleX) || Learns((ContinuousScaleSpec)spec.ScaleY))
             {
-                layer.BeginLearning();
+                foreach (var layer in _layers)
+                {
+                    layer.BeginLearning();
+                }
             }
 
             _learnedX = Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true);
@@ -445,6 +449,9 @@ internal sealed class PlotPlan : IDisposable
 
         _sink.Add(value, value, "the Baseline");
     }
+
+    /// <summary>Returns whether a scale learns its domain from the data, that is, has no domain given (design §4.2).</summary>
+    private static bool Learns(ContinuousScaleSpec scale) => scale is not TimeScaleSpec { Domain: not null } && scale.GivenDomain is null;
 
     /// <summary>Returns the range of the scale space between the mapped ends, or throws when an end does not map to a finite value.</summary>
     private static ScaleRange Mapped(IScale transform, double min, double max, string minName, string maxName)

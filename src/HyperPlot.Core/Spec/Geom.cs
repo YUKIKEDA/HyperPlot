@@ -22,7 +22,10 @@ public interface IGeom
     /// the target's physical pixels. The geom may set its own clip; the plot sets the panel's back afterwards.
     /// </summary>
     /// <param name="frame">The panel and the mapping, usable inside this call only.</param>
-    /// <param name="list">The list to record into.</param>
+    /// <param name="list">
+    /// The list to record into: the plot's own, which already holds the panel, the grid, and the layers before this one. Do
+    /// not call <see cref="RenderList.Clear"/> on it, which removes them all.
+    /// </param>
     void Record(GeomFrame frame, RenderList list);
 }
 

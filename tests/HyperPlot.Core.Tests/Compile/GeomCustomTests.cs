@@ -19,10 +19,11 @@ public sealed class GeomCustomTests
     /// - A custom layer that counts its calls and a line, with learned domains.
     ///
     /// Steps:
-    /// - Render the spec; again; with a new title (looks); with a given x domain (scale).
+    /// - Render the spec; again; with a new title (looks); with a given x domain (scale); with both domains given; with a
+    ///   time x of a given domain and a given y domain.
     ///
     /// Expected:
-    /// - Learn and Record calls: (1, 1), (0, 0), (0, 1), (1, 1).
+    /// - Learn and Record calls: (1, 1), (0, 0), (0, 1), (1, 1), then (0, 1) twice: no axis learns, so the geom does not.
     /// </remarks>
     [Fact]
     public void Custom_CalledOnceALearningAndARecording()
@@ -37,6 +38,18 @@ public sealed class GeomCustomTests
         Assert.Equal((0, 0), Calls(spec));
         Assert.Equal((0, 1), Calls(spec with { Title = "New" }));
         Assert.Equal((1, 1), Calls(spec with { ScaleX = Scale.Linear().WithDomain(0, 100) }));
+        var given = spec with { ScaleX = Scale.Linear().WithDomain(0, 100), ScaleY = Scale.Linear().WithDomain(0, 50) };
+        Assert.Equal((0, 1), Calls(given));
+        using var ticks = Column.Wrap(new long[] { 1, 2, 3 });
+        var timeTable = DataTable.Create().Add("t", ticks).Add("y", Column.Wrap(Values)).Build();
+        var timeGiven = Plot.Create(timeTable)
+            .Custom(geom)
+            .Line(timeTable.Col<long>("t"), timeTable.Col<double>("y"))
+            .ScaleX(Scale.Time(TimeUnit.Ticks).WithDomain(0, 10))
+            .ScaleY(Scale.Linear().WithDomain(0, 50))
+            .Theme(TestPlans.Bare)
+            .Build();
+        Assert.Equal((0, 1), Calls(timeGiven));
 
         (int Learns, int Records) Calls(PlotSpec next)
         {
