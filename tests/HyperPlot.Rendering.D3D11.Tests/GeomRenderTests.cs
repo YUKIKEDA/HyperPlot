@@ -3,7 +3,7 @@ using HyperPlot.Tests;
 
 namespace HyperPlot.Rendering.D3D11.Tests;
 
-/// <summary>Row G4's geoms drawn on WARP (design §5.5.3, §10.1 scenes 8 and 9), with the fake text backend.</summary>
+/// <summary>Row G4's geoms and row G10's flip drawn on WARP (design §5.5.3, §10.1 scenes 8, 9, and 11), with the fake text backend.</summary>
 public sealed class GeomRenderTests
 {
     private const int Width = 640;
@@ -150,6 +150,64 @@ public sealed class GeomRenderTests
             .Build();
 
         Check(spec, pool, "geoms-line.png");
+    }
+
+    /// <summary>
+    /// The flipped coordinate system (§10.1 scene 11, row G10): a line, an area, bars, vertical and horizontal rules, and
+    /// error bars with caps, x on the left axis and y on the bottom one.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 100 evenly spaced x from 0 to 99; seeded curves; bars and error bars whose other elements are NaN, so not drawn;
+    ///   rules at two x and one y; the fake text backend; Theme.Light; Coord.Cartesian(flip: true).
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/coord-flip.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void Flip_MatchesBaseline()
+    {
+        var line = Enumerable.Range(0, Points).Select(i => 6 + (2 * Math.Sin(i * 0.09))).ToArray();
+        var area = Enumerable.Range(0, Points).Select(i => 2 + Math.Cos(i * 0.06)).ToArray();
+        var bars = Enumerable.Range(0, Points).Select(i => i % 10 == 4 ? 1 + ((0.13 * i) % 2.5) : double.NaN).ToArray();
+        var center = Enumerable.Range(0, Points).Select(i => 6 + (2 * Math.Sin(i * 0.09))).ToArray();
+        using var pool = new PlotWorkerPool(2);
+        using var lineColumn = Column.Wrap(line);
+        using var areaColumn = Column.Wrap(area);
+        using var barColumn = Column.Wrap(bars);
+        using var lo = Column.Wrap(center.Select((v, i) => i % 10 == 7 ? v - 0.8 : double.NaN).ToArray());
+        using var hi = Column.Wrap(center.Select((v, i) => i % 10 == 7 ? v + 0.6 : double.NaN).ToArray());
+        using var vrule = Column.Wrap(Enumerable.Range(0, Points).Select(i => i < 50 ? 25.0 : 75.0).ToArray());
+        using var hrule = Column.Wrap(Enumerable.Range(0, Points).Select(_ => 8.5).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", Column.Uniform(0, 1, Points))
+            .Add("line", lineColumn)
+            .Add("area", areaColumn)
+            .Add("bar", barColumn)
+            .Add("lo", lo)
+            .Add("hi", hi)
+            .Add("vrule", vrule)
+            .Add("hrule", hrule)
+            .Build();
+        var x = table.Col<double>("x");
+        var spec = Plot.Create(table)
+            .Area(x, table.Col<double>("area"), 0, a => a.Fill(new Color(44, 160, 44, 110)).Label("area"))
+            .Bar(x, table.Col<double>("bar"), 0, 3, b => b.Fill(new Color(214, 39, 40, 200)).Label("bar"))
+            .VRule(table.Col<double>("vrule"), l => l.Color(new Color(127, 127, 127, 255)).Dash(new LineDash(4, 3)).Label("vrule"))
+            .HRule(table.Col<double>("hrule"), l => l.Color(new Color(188, 189, 34, 255)).Width(2).Label("hrule"))
+            .Line(x, table.Col<double>("line"), l => l.Color(new Color(31, 119, 180, 255)).Width(1.5f).Label("line"))
+            .ErrorBar(x, table.Col<double>("lo"), table.Col<double>("hi"), 6, l => l.Color(new Color(148, 103, 189, 255)).Label("errorbar"))
+            .ScaleY(Scale.Linear().WithDomain(0, 10).WithTitle("Value"))
+            .ScaleX(Scale.Linear().WithTitle("x"))
+            .Coord(Coord.Cartesian(flip: true))
+            .Title("Flipped")
+            .Build();
+
+        Check(spec, pool, "coord-flip.png");
     }
 
     private static void Check(PlotSpec spec, PlotWorkerPool pool, string baseline)

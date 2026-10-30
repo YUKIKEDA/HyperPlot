@@ -1,7 +1,8 @@
 // Column trapezoids (design §5.1, §5.3): area and band fills. One quad per trapezoid: ColumnsVS makes it from SV_VertexID
 // over the trapezoid's bounding box widened outward to whole pixels, and ColumnsPS covers each pixel by the area it shares
 // with the region between the top and bottom edges, in either order, and multiplies the premultiplied color by it.
-// Positions are physical pixels of the target, origin at the top left; SV_Position.xy is the pixel center.
+// Positions are physical pixels of the target, origin at the top left; SV_Position.xy is the pixel center. A horizontal
+// trapezoid (row G10) is the same with x and y swapped: its sides are rows, its edges x values.
 
 cbuffer Columns : register(b0)
 {
@@ -15,7 +16,8 @@ struct Column
     float2 Sides;         // left, right
     float2 Top;           // the top edge at the left and right sides
     float2 Bottom;        // the bottom edge at the left and right sides
-    float2 Unused;
+    float Horizontal;     // 1 when x and y are swapped, else 0
+    float Unused;
     float4 Color;         // premultiplied, 0..1
 };
 
@@ -28,6 +30,7 @@ struct ColumnVertex
     nointerpolation float2 Top : TOP;
     nointerpolation float2 Bottom : BOTTOM;
     nointerpolation float4 Color : COLOR;
+    nointerpolation float Horizontal : HORIZONTAL;
 };
 
 // Corners 0..3 of a triangle strip: (0,0) (0,1) (1,0) (1,1) in (x, y) of the widened box.
@@ -39,12 +42,14 @@ ColumnVertex ColumnsVS(uint vertex : SV_VertexID, uint instance : SV_InstanceID)
     float2 corner = float2(
         (vertex & 2) != 0 ? ceil(column.Sides.y) : floor(column.Sides.x),
         (vertex & 1) != 0 ? high : low);
+    corner = column.Horizontal != 0 ? corner.yx : corner;
     ColumnVertex output;
     output.Position = float4(corner.x * InverseSize.x * 2 - 1, 1 - corner.y * InverseSize.y * 2, 0, 1);
     output.Sides = column.Sides;
     output.Top = column.Top;
     output.Bottom = column.Bottom;
     output.Color = column.Color;
+    output.Horizontal = column.Horizontal;
     return output;
 }
 
@@ -75,6 +80,7 @@ float4 ColumnsPS(ColumnVertex input) : SV_Target
     // The integrand |clamp(bottom) − clamp(top)| is linear between the x where an edge meets the pixel's top or bottom,
     // or the edges meet each other: integrate exactly with the trapezoid rule over the pieces between those points.
     float2 pixel = floor(input.Position.xy);
+    pixel = input.Horizontal != 0 ? pixel.yx : pixel;
     float a = max(pixel.x, input.Sides.x);
     float b = min(pixel.x + 1, input.Sides.y);
     if (!(a < b))

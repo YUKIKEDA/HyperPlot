@@ -6,10 +6,11 @@ namespace HyperPlot;
 /// The cartesian transform of a panel (design §4.4, row G4): from a point's differences from the domains' origins in the
 /// scale space to the target's physical pixels; the origins come with the domains (row R3 adds them when it hands the
 /// transform to the GPU). It is the 4×4 transform written as its factors on
-/// each axis (a move by the domain's lower end, a scale from the domain's width to the panel's, a flip, a move to the
+/// each axis (a move by the domain's lower end, a scale from the domain's width to the panel's, a reversal, a move to the
 /// panel's edge), which it applies in the order of the formula of rows G1 to G3: a product of the factors rounds
-/// differently and would move pixels. Clamp is applied to a difference before it is mapped. The public contract
-/// (<c>CoordSpec</c>) comes in row G10, and the GPU applies the transform from row R3 (<c>SetTransform</c>).
+/// differently and would move pixels. Clamp is applied to a difference before it is mapped. Each axis maps to the pixels
+/// along its own side of the panel: with flip (row G10), x to the vertical pixels and y to the horizontal ones, and the
+/// record swaps them back. The public 4×4 contract and the GPU's use of it come in row R3 (<c>SetTransform</c>).
 /// </summary>
 internal readonly struct CartesianTransform
 {
@@ -19,16 +20,16 @@ internal readonly struct CartesianTransform
     private CartesianTransform(Factors x, Factors y) => (_x, _y) = (x, y);
 
     /// <summary>
-    /// Makes the transform of a panel from its axes: x runs left to right and y bottom to top over the domains' differences,
-    /// or the other way when reversed.
+    /// Makes the transform of a panel from its axes: each runs over its span of the panel, toward lower pixels when it is
+    /// <see cref="GeomFrame.Axis.Descending"/>.
     /// </summary>
     public static CartesianTransform Create(in GeomFrame.Axis x, in GeomFrame.Axis y) =>
-        new(Factors.Of(x, flip: x.Reverse), Factors.Of(y, flip: !y.Reverse));
+        new(Factors.Of(x, x.Descending), Factors.Of(y, y.Descending));
 
-    /// <summary>Returns the pixel x of a difference dx from the x domain's origin.</summary>
+    /// <summary>Returns the pixel along the x axis of a difference dx from the x domain's origin.</summary>
     public double MapX(double dx) => _x.Map(dx);
 
-    /// <summary>Returns the pixel y of a difference dy from the y domain's origin.</summary>
+    /// <summary>Returns the pixel along the y axis of a difference dy from the y domain's origin.</summary>
     public double MapY(double dy) => _y.Map(dy);
 
     /// <summary>
@@ -47,18 +48,18 @@ internal readonly struct CartesianTransform
         }
     }
 
-    /// <summary>One axis's factors: t = (d − lower) / width · size, then offset + t, or offset + size − t when flipped.</summary>
-    private readonly record struct Factors(double Lower, double Width, int Size, int Offset, bool Flip)
+    /// <summary>One axis's factors: t = (d − lower) / width · size, then offset + t, or offset + size − t when descending.</summary>
+    private readonly record struct Factors(double Lower, double Width, int Size, int Offset, bool Descending)
     {
-        public static Factors Of(in GeomFrame.Axis axis, bool flip) =>
-            new(axis.Domain.Lower, axis.Domain.Upper - axis.Domain.Lower, axis.Size, axis.Offset, flip);
+        public static Factors Of(in GeomFrame.Axis axis, bool descending) =>
+            new(axis.Domain.Lower, axis.Domain.Upper - axis.Domain.Lower, axis.Size, axis.Offset, descending);
 
         // Inlined into the span loop: a call an element was a fifth of a segment layer's frame (docs/benchmarks/g4-geoms.md).
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public double Map(double d)
         {
             var t = (d - Lower) / Width * Size;
-            return Offset + (Flip ? Size - t : t);
+            return Offset + (Descending ? Size - t : t);
         }
     }
 }

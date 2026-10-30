@@ -332,11 +332,19 @@ public sealed class RenderList
     /// and y between its top and bottom edges, the straight lines through their values at the left and right sides. A
     /// pixel is covered by the area it shares with the region between the two edges, in either order, so edges that cross
     /// paint a bow tie. A trapezoid with a coordinate that is not finite, or with Left at or past Right, draws nothing.
+    /// With <see cref="ColumnAxis.Horizontal"/>, x and y swap: Left and Right are rows, and the edges are x values (row G10).
     /// </summary>
     /// <param name="columns">The trapezoids; they are meant not to overlap (an area or a band gives one a pixel column).</param>
     /// <param name="color">The color.</param>
-    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color color)
+    /// <param name="axis">Which way the trapezoids' sides run: <see cref="ColumnAxis.Vertical"/> by default.</param>
+    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color color, ColumnAxis axis = ColumnAxis.Vertical)
     {
+        var horizontal = axis switch
+        {
+            ColumnAxis.Vertical => 0f,
+            ColumnAxis.Horizontal => 1f,
+            _ => throw new ArgumentOutOfRangeException(nameof(axis), axis, "The axis is a named ColumnAxis value."),
+        };
         var premultiplied = new Vector4(
             Premultiplied.Multiply(color.R, color.A) / 255f,
             Premultiplied.Multiply(color.G, color.A) / 255f,
@@ -371,7 +379,7 @@ public sealed class RenderList
                 column.TopRight,
                 column.BottomLeft,
                 column.BottomRight,
-                0,
+                horizontal,
                 0,
                 premultiplied
             );
@@ -738,9 +746,23 @@ internal readonly record struct RectInstance(float X, float Y, float Width, floa
 /// <param name="BottomRight">The bottom edge at the right side.</param>
 public readonly record struct ColumnTrapezoid(float Left, float Right, float TopLeft, float TopRight, float BottomLeft, float BottomRight);
 
+/// <summary>Which way a column trapezoid's sides run (design §5.1, row G10).</summary>
+public enum ColumnAxis
+{
+    /// <summary>Left and Right are x values; the top and bottom edges are y values.</summary>
+    Vertical,
+
+    /// <summary>
+    /// x and y swapped: Left and Right are y values (top to bottom), TopLeft and BottomLeft are the x ends of the row at
+    /// Left, and TopRight and BottomRight those of the row at Right. A flipped area or band draws these.
+    /// </summary>
+    Horizontal,
+}
+
 /// <summary>
-/// One column trapezoid as the GPU reads it (design §5.3): its sides, its edges' values at them, two unused floats, and the
-/// premultiplied color. 48 bytes, laid out as the HLSL structure of Columns.hlsl.
+/// One column trapezoid as the GPU reads it (design §5.3): its sides, its edges' values at them, 1 when x and y are swapped
+/// (<see cref="ColumnAxis.Horizontal"/>) or 0, an unused float, and the premultiplied color. 48 bytes, laid out as the
+/// HLSL structure of Columns.hlsl.
 /// </summary>
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
 internal readonly record struct ColumnInstance(
@@ -750,8 +772,8 @@ internal readonly record struct ColumnInstance(
     float TopRight,
     float BottomLeft,
     float BottomRight,
-    float Unused0,
-    float Unused1,
+    float Horizontal,
+    float Unused,
     Vector4 Color
 );
 

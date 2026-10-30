@@ -15,6 +15,7 @@ public sealed class PlotBuilder
     private ScaleSpec? _scaleY;
     private string? _title;
     private Theme? _theme;
+    private CoordSpec? _coord;
     private bool _built;
 
     internal PlotBuilder(DataTable data) => _data = data;
@@ -461,6 +462,19 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Sets the coordinate system (design §4.4): <see cref="HyperPlot.Coord.Cartesian(bool)"/> with flip swaps x and y.</summary>
+    /// <param name="coord">The coordinate system.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="coord"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Coord(CoordSpec coord)
+    {
+        ArgumentNullException.ThrowIfNull(coord);
+        ThrowIfBuilt();
+        _coord = coord;
+        return this;
+    }
+
     /// <summary>Makes the spec. A plot of no layers draws nothing. The builder cannot be used afterwards.</summary>
     /// <returns>The spec.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Build"/> was called before.</exception>
@@ -476,6 +490,7 @@ public sealed class PlotBuilder
             ScaleY = _scaleY ?? Scale.Linear(),
             Title = _title,
             Theme = _theme ?? HyperPlot.Theme.Light,
+            Coord = _coord ?? HyperPlot.Coord.Cartesian(),
         };
     }
 

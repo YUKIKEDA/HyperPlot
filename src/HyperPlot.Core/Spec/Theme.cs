@@ -85,10 +85,13 @@ public sealed record Theme
     /// <summary>Gets the length of a legend entry's line sample, in DIPs.</summary>
     public float LegendSwatch { get; init; } = 24;
 
-    /// <summary>Gets the target spacing of the x ticks, in DIPs: finite and above 0 (design §4.6).</summary>
+    /// <summary>
+    /// Gets the target spacing of the ticks on the bottom axis, in DIPs: finite and above 0 (design §4.6). The bottom axis is
+    /// x's, or y's when the coordinate system is flipped (row G10).
+    /// </summary>
     public float TickSpacingX { get; init; } = 100;
 
-    /// <summary>Gets the target spacing of the y ticks, in DIPs.</summary>
+    /// <summary>Gets the target spacing of the ticks on the left axis, in DIPs: y's, or x's when flipped.</summary>
     public float TickSpacingY { get; init; } = 60;
 
     /// <summary>Gets a value indicating whether the axis lines, ticks, tick labels, and axis titles are drawn.</summary>
