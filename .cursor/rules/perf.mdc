@@ -35,6 +35,7 @@ These rules come from the shape of Cysharp's R3, ZLinq, ZString, MemoryPack, and
 
 ## Order of work and conversions
 
+- A step that sorts the output of an aggregation into pixel columns again uses the aggregation's own comparison (the boundaries in data units), not the floor of the mapped pixel. In PR #125, a point at the boundary 29 mapped to 28.999… and went into another column than M4 had put it in.
 - Work that can be refused is done after it is accepted: a tile is aggregated after the cache has room for it, not before.
 - An unsigned integer becomes a `float` through `int` (`(float)(int)value`) where the value fits: x64 has no instruction from an unsigned integer to a float, and the conversion showed in profiles of a scaler.
 - Data values become `float` for the GPU only as a difference from an origin, computed in `double` (design §3.6, invariant 6): a `float` holds 24 bits, so a timestamp or a value far from 0 loses whole pixels when converted as it is.
