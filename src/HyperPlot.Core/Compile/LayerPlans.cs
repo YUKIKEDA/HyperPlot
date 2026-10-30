@@ -1,0 +1,736 @@
+using System.Numerics;
+using HyperPlot.Rendering;
+
+namespace HyperPlot;
+
+/// <summary>
+/// One compiled layer (design §4.8, §5.5.3): the columns it reads and their versions, its M4 series over the plan's
+/// pyramids, the ranges it adds to the domains, and how it records itself. One kind a geom of rows G1 and G4, and one for a
+/// user's <see cref="IGeom"/>; the plan treats them all one way.
+/// </summary>
+internal abstract class LayerPlan
+{
+    /// <summary>The most elements a segment or a rect layer draws (design §5.5.3): 2^17, 4 MB of rectangle records.</summary>
+    public const int MaxElements = 131_072;
+
+    private Column[] _columns = [];
+
+    protected LayerPlan(LayerSpec spec) => Spec = spec;
+
+    /// <summary>Gets or sets the layer's node: a new node of the same columns is taken without building again.</summary>
+    public LayerSpec Spec { get; set; }
+
+    /// <summary>Gets the columns the layer reads; their versions decide whether it is extracted again.</summary>
+    public ReadOnlySpan<Column> Columns => _columns;
+
+    /// <summary>Gets the versions of <see cref="Columns"/> this Render read before its wait.</summary>
+    public long[] Seen { get; private set; } = [];
+
+    /// <summary>Gets the versions of <see cref="Columns"/> at the last extraction.</summary>
+    public long[] Extracted { get; private set; } = [];
+
+    /// <summary>Makes the plan of a layer: its pyramids and series join the plan's.</summary>
+    public static LayerPlan Create(LayerSpec spec, PlanBuild build) =>
+        spec switch
+        {
+            LineLayerSpec line => new LinePlan(line, build),
+            StepLayerSpec step => new StepPlan(step, build),
+            AreaLayerSpec area => new AreaPlan(area, build),
+            BandLayerSpec band => new BandPlan(band, build),
+            BarLayerSpec bar => new BarPlan(bar, build),
+            ErrorBarLayerSpec errorBar => new ErrorBarPlan(errorBar, build),
+            RuleLayerSpec rule => new RulePlan(rule),
+            RectLayerSpec rect => new RectPlan(rect),
+            SegmentLayerSpec segment => new SegmentPlan(segment),
+            _ => new CustomPlan((CustomLayerSpec)spec),
+        };
+
+    /// <summary>
+    /// Writes the channels a layer puts on one axis into <paramref name="into"/> and returns their count (design §4.2):
+    /// what the axis learns from and what a time scale checks. Allocates nothing.
+    /// </summary>
+    public static int AxisChannels(LayerSpec layer, bool ofX, Span<ColumnRef> into)
+    {
+        switch (layer)
+        {
+            case LineLayerSpec l:
+                into[0] = ofX ? l.X : l.Y;
+                return 1;
+            case StepLayerSpec s:
+                into[0] = ofX ? s.X : s.Y;
+                return 1;
+            case AreaLayerSpec a:
+                into[0] = ofX ? a.X : a.Y;
+                return 1;
+            case BarLayerSpec b:
+                into[0] = ofX ? b.X : b.Y;
+                return 1;
+            case BandLayerSpec b:
+                return Two(ofX, b.X, b.YMin, b.YMax, into);
+            case ErrorBarLayerSpec e:
+                return Two(ofX, e.X, e.YMin, e.YMax, into);
+            case RectLayerSpec r:
+                (into[0], into[1]) = ofX ? (r.XMin, r.XMax) : (r.YMin, r.YMax);
+                return 2;
+            case SegmentLayerSpec s:
+                (into[0], into[1]) = ofX ? (s.X, s.XEnd) : (s.Y, s.YEnd);
+                return 2;
+            case RuleLayerSpec r:
+                var channel = ofX ? r.X : r.Y;
+                into[0] = channel;
+                return channel.IsDefault ? 0 : 1;
+            default:
+                return 0;
+        }
+
+        static int Two(bool ofX, ColumnRef x, ColumnRef low, ColumnRef high, Span<ColumnRef> into)
+        {
+            if (ofX)
+            {
+                into[0] = x;
+                return 1;
+            }
+
+            (into[0], into[1]) = (low, high);
+            return 2;
+        }
+    }
+
+    /// <summary>
+    /// Throws unless a layer is one the plan compiles and its members are in range (design §4.8). Reads no data but the
+    /// lengths of a segment's and a rect's columns.
+    /// </summary>
+    public static void Validate(DataTable data, LayerSpec layer, int index, Span<ColumnRef> buffer)
+    {
+        switch (layer)
+        {
+            case LineLayerSpec:
+            case StepLayerSpec:
+            case AreaLayerSpec:
+            case BandLayerSpec:
+            case BarLayerSpec:
+            case ErrorBarLayerSpec:
+            case RectLayerSpec:
+            case SegmentLayerSpec:
+            case CustomLayerSpec:
+                break;
+            case RuleLayerSpec rule:
+                if (rule.X.IsDefault == rule.Y.IsDefault)
+                {
+                    throw new ArgumentException(
+                        $"Layer {index} is a rule with {(rule.X.IsDefault ? "neither" : "both")} X and Y; a rule has exactly one."
+                    );
+                }
+
+                break;
+            default:
+                throw new ArgumentException(
+                    $"Layer {index} is a {layer.GetType().Name}; the plot compiles the layers of rows G1 and G4 and a CustomLayerSpec.",
+                    nameof(layer)
+                );
+        }
+
+        foreach (var ofX in (ReadOnlySpan<bool>)[true, false])
+        {
+            var count = AxisChannels(layer, ofX, buffer);
+            for (var c = 0; c < count; c++)
+            {
+                CheckReference(data, buffer[c], index, ofX ? "x channel" : "y channel");
+            }
+        }
+
+        switch (layer)
+        {
+            case LineLayerSpec l:
+                CheckStored(data, l.Y, index, "a line's Y");
+                break;
+            case StepLayerSpec s:
+                CheckStored(data, s.Y, index, "a step's Y");
+                if ((uint)s.Mode > (uint)StepMode.Middle)
+                {
+                    throw new ArgumentException($"The Mode of layer {index} is {s.Mode}, not a named value.");
+                }
+
+                break;
+            case AreaLayerSpec a:
+                CheckStored(data, a.Y, index, "an area's Y");
+                CheckFinite(a.Baseline, index, "Baseline");
+                break;
+            case BandLayerSpec b:
+                CheckStored(data, b.YMin, index, "a band's YMin");
+                CheckStored(data, b.YMax, index, "a band's YMax");
+                break;
+            case BarLayerSpec b:
+                CheckStored(data, b.Y, index, "a bar's Y");
+                CheckFinite(b.Baseline, index, "Baseline");
+                if (b.Width is { } w && (!double.IsFinite(w) || w <= 0))
+                {
+                    throw new ArgumentException($"The Width of layer {index} is {w}; a bar's width is finite and above 0.");
+                }
+
+                break;
+            case ErrorBarLayerSpec e:
+                CheckStored(data, e.YMin, index, "an error bar's YMin");
+                CheckStored(data, e.YMax, index, "an error bar's YMax");
+                if (!float.IsFinite(e.CapWidth) || e.CapWidth < 0)
+                {
+                    throw new ArgumentException($"The CapWidth of layer {index} is {e.CapWidth}; a cap is finite and at least 0 wide.");
+                }
+
+                break;
+            case RectLayerSpec r:
+                CheckCount(r.XMin.Column.Length, index);
+                break;
+            case SegmentLayerSpec s:
+                CheckCount(s.X.Column.Length, index);
+                break;
+            case CustomLayerSpec c when c.Geom is null:
+                throw new ArgumentNullException(nameof(layer), $"The Geom of layer {index} is null.");
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Returns whether a layer's node, over the same kind, names other columns or another geom (design §4.8): the
+    /// "data" stage.
+    /// </summary>
+    public static bool ChannelsDiffer(LayerSpec before, LayerSpec after, Span<ColumnRef> a, Span<ColumnRef> b)
+    {
+        if (before.GetType() != after.GetType())
+        {
+            return true;
+        }
+
+        if (before is CustomLayerSpec custom)
+        {
+            return !ReferenceEquals(custom.Geom, ((CustomLayerSpec)after).Geom);
+        }
+
+        foreach (var ofX in (ReadOnlySpan<bool>)[true, false])
+        {
+            var count = AxisChannels(before, ofX, a);
+            if (count != AxisChannels(after, ofX, b))
+            {
+                return true;
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                if (a[i] != b[i])
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Returns whether a change of node changes what the layer adds to the domains (design §4.8): a bar's or an area's Baseline or a bar's Width.</summary>
+    public static bool RangesDiffer(LayerSpec before, LayerSpec after) =>
+        (before, after) switch
+        {
+            (AreaLayerSpec b, AreaLayerSpec a) => !b.Baseline.Equals(a.Baseline),
+            (BarLayerSpec b, BarLayerSpec a) => !b.Baseline.Equals(a.Baseline) || b.Width != a.Width,
+            _ => false,
+        };
+
+    /// <summary>Remembers the columns' versions before the wait.</summary>
+    public void ReadVersions()
+    {
+        for (var i = 0; i < _columns.Length; i++)
+        {
+            Seen[i] = _columns[i].Version;
+        }
+    }
+
+    /// <summary>Records that the layer was extracted at the versions read.</summary>
+    public void MarkExtracted() => Seen.CopyTo(Extracted, 0);
+
+    /// <summary>Returns whether a column changed between the last extraction and this Render's read.</summary>
+    public bool ValuesChanged()
+    {
+        for (var i = 0; i < _columns.Length; i++)
+        {
+            if (Seen[i] != Extracted[i])
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Waits until the statistics the layer's searches need are there, and checks its sorted columns' order.</summary>
+    public virtual void WaitForIndexes(PlotWorkerPool pool) { }
+
+    /// <summary>Starts a learning of both domains, before the layer adds its ranges on each axis.</summary>
+    public virtual void BeginLearning() { }
+
+    /// <summary>Adds the layer's ranges on one axis (design §4.2).</summary>
+    public abstract void AddRanges(RangeSink sink, bool ofX, DataTable data);
+
+    /// <summary>Records the layer into the panel (design §5.5.3).</summary>
+    public abstract void Record(RecordContext context);
+
+    protected void SetColumns(params Column[] columns)
+    {
+        _columns = columns;
+        Seen = new long[columns.Length];
+        Extracted = new long[columns.Length];
+        Array.Fill(Extracted, -1);
+    }
+
+    private static void CheckReference(DataTable data, ColumnRef reference, int layer, string channel)
+    {
+        if (reference.IsDefault)
+        {
+            throw new ArgumentException($"A {channel} of layer {layer} is the default reference, which names no column.");
+        }
+
+        if (!ReferenceEquals(reference.TableOrNull, data))
+        {
+            throw new ArgumentException($"A {channel} column of layer {layer} belongs to another table than the spec's Data.");
+        }
+    }
+
+    private static void CheckStored(DataTable data, ColumnRef reference, int layer, string what)
+    {
+        if (reference.Column is not IPyramidColumn)
+        {
+            throw new ArgumentException(
+                $"The column \"{data.GetName(reference.Index)}\" of layer {layer} is a {reference.Column.KindName}; {what} is a stored column."
+            );
+        }
+    }
+
+    private static void CheckFinite(double value, int layer, string name)
+    {
+        if (!double.IsFinite(value))
+        {
+            throw new ArgumentException($"The {name} of layer {layer} is {value}; it is finite.");
+        }
+    }
+
+    private static void CheckCount(long count, int layer)
+    {
+        if (count > MaxElements)
+        {
+            throw new InvalidOperationException(
+                $"Layer {layer} has {count} elements; a segment or a rect layer draws at most {MaxElements} (design §5.5.3). Row R3 draws more as a density."
+            );
+        }
+    }
+}
+
+/// <summary>What a layer's plan needs from the plan while it is made: the shared pyramids and the M4 batch.</summary>
+internal sealed class PlanBuild(Func<Column, PlotPyramid> pyramid, M4Batch batch, int capacity)
+{
+    /// <summary>Adds a series of an X column over a Y column's pyramid, and returns its number and its output.</summary>
+    public (int Series, M4Point[] Output) AddSeries(Column x, Column y)
+    {
+        var output = new M4Point[capacity];
+        return (pyramid(y).AddTo(batch, x, output), output);
+    }
+}
+
+/// <summary>
+/// The union of the ranges an axis learns (design §4.2): the columns' statistics and extra ranges (a baseline, a bar's
+/// half width, a user's geom), kept as long while every end is an integer, with the names of the columns at its ends.
+/// </summary>
+internal sealed class RangeSink
+{
+    public long IntegerMin { get; private set; } = long.MaxValue;
+
+    public long IntegerMax { get; private set; } = long.MinValue;
+
+    public double Min { get; private set; } = double.PositiveInfinity;
+
+    public double Max { get; private set; } = double.NegativeInfinity;
+
+    public string MinName { get; private set; } = string.Empty;
+
+    public string MaxName { get; private set; } = string.Empty;
+
+    public bool Found { get; private set; }
+
+    public bool Integer { get; private set; } = true;
+
+    public void Reset()
+    {
+        (IntegerMin, IntegerMax, Min, Max) = (long.MaxValue, long.MinValue, double.PositiveInfinity, double.NegativeInfinity);
+        (MinName, MaxName, Found, Integer) = (string.Empty, string.Empty, false, true);
+    }
+
+    /// <summary>Adds a column's range of values that are not NaN, or nothing when it has none; throws for an infinite end.</summary>
+    public void AddColumn(Column column, string name)
+    {
+        if (column.TryGetRange(out var low, out var high))
+        {
+            if (!double.IsFinite(low.Value) || !double.IsFinite(high.Value))
+            {
+                throw new InvalidOperationException(
+                    $"The column \"{name}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
+                );
+            }
+
+            Add(low, high, name);
+        }
+    }
+
+    /// <summary>Adds a range of ends.</summary>
+    public void Add(ScaleEnd low, ScaleEnd high, string name)
+    {
+        Integer &= low.IsInteger && high.IsInteger;
+        if (low.IsInteger && high.IsInteger)
+        {
+            (IntegerMin, IntegerMax) = (Math.Min(IntegerMin, low.Integer), Math.Max(IntegerMax, high.Integer));
+        }
+
+        (MinName, MaxName) = (low.Value < Min ? name : MinName, high.Value > Max ? name : MaxName);
+        (Min, Max, Found) = (Math.Min(Min, low.Value), Math.Max(Max, high.Value), true);
+    }
+
+    /// <summary>
+    /// Adds a range of doubles: a baseline, a bar's widened ends. A whole value that a double holds exactly counts as an
+    /// integer, so that a baseline of 0 keeps a long column's domain exact.
+    /// </summary>
+    public void Add(double low, double high, string name) => Add(End(low), End(high), name);
+
+    private static ScaleEnd End(double value) =>
+        Math.Abs(value) <= 9_007_199_254_740_992 && value == Math.Floor(value) ? ScaleEnd.Of((long)value) : ScaleEnd.Of(value);
+}
+
+/// <summary>
+/// What every layer records with (design §4.4, §5.5.3): the list, the batch's results, the cartesian mapping of each axis,
+/// the boundaries of the pixel columns, and work buffers kept from frame to frame.
+/// </summary>
+internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList list, GeomFrame frame)
+{
+    private readonly double[] _one = new double[1];
+    private readonly double[] _oneMapped = new double[1];
+    private double[] _values = new double[64];
+    private double[] _mapped = new double[64];
+    private Vector2[] _points = new Vector2[64];
+    private ColumnTrapezoid[] _trapezoids = new ColumnTrapezoid[64];
+    private double[] _yBoundaries = [];
+    private ScaleRange _yBoundaryDomain = ScaleRange.None;
+    private IScale? _yBoundaryTransform;
+
+    public RenderList List => list;
+
+    public M4Batch Batch => batch;
+
+    public PlotGuides Guides => guides;
+
+    public GeomFrame Frame => frame;
+
+    public GeomFrame.Axis X { get; private set; }
+
+    public GeomFrame.Axis Y { get; private set; }
+
+    /// <summary>Gets the origin the X columns are read in: the x domain's without a transform, 0 with one (design §4.2).</summary>
+    public long XOrigin { get; private set; }
+
+    /// <summary>Gets the origin the Y columns are read in.</summary>
+    public long YOrigin { get; private set; }
+
+    /// <summary>Gets the W + 1 boundaries of the pixel columns, as differences from <see cref="XOrigin"/>.</summary>
+    public double[] Boundaries { get; private set; } = [];
+
+    public float Scale { get; private set; }
+
+    public void Begin(in GeomFrame.Axis x, in GeomFrame.Axis y, double[] boundaries, float scale)
+    {
+        (X, Y, Boundaries, Scale) = (x, y, boundaries, scale);
+        XOrigin = x.Transform is null ? x.Domain.Origin : 0;
+        YOrigin = y.Transform is null ? y.Domain.Origin : 0;
+    }
+
+    /// <summary>Sets the panel's clip back, after a layer that may have changed it.</summary>
+    public void ClipToPanel() => list.SetClip(X.Offset, Y.Offset, X.Size, Y.Size);
+
+    /// <summary>Returns the x pixel of a difference from <see cref="XOrigin"/>, through the transform; NaN when it does not map.</summary>
+    public double PixelX(double d) => Pixel(X, d, ofX: true);
+
+    /// <summary>Returns the y pixel of a difference from <see cref="YOrigin"/>, through the transform; NaN when it does not map.</summary>
+    public double PixelY(double d) => Pixel(Y, d, ofX: false);
+
+    /// <summary>Returns the y pixel of a baseline in data units, at the panel's edge when it does not map or lies outside (design §5.5.3).</summary>
+    public double BaselinePixel(double value)
+    {
+        var pixel = PixelY(value - YOrigin);
+        var bottom = Y.Offset + (Y.Reverse ? 0 : Y.Size);
+        return double.IsFinite(pixel) ? Math.Clamp(pixel, Y.Offset, Y.Offset + Y.Size) : bottom;
+    }
+
+    /// <summary>Returns the pixel of a column's element on the x axis.</summary>
+    public double ElementX(Column column, long index) => PixelX(column.DifferenceAt(index, XOrigin));
+
+    /// <summary>Returns the pixel of a column's element on the y axis.</summary>
+    public double ElementY(Column column, long index) => PixelY(column.DifferenceAt(index, YOrigin));
+
+    /// <summary>
+    /// Maps a series' M4 points to pixels, both coordinates at once through the transforms' spans (design §4.2), and returns
+    /// them; a point whose coordinate does not map is NaN.
+    /// </summary>
+    public int MapSeries(ReadOnlySpan<M4Point> points, out ReadOnlySpan<double> xs, out ReadOnlySpan<double> ys)
+    {
+        var n = points.Length;
+        Ensure(ref _values, 2 * n);
+        Ensure(ref _mapped, 2 * n);
+        var x = _values.AsSpan(0, n);
+        var y = _values.AsSpan(n, n);
+        for (var i = 0; i < n; i++)
+        {
+            (x[i], y[i]) = (points[i].X, points[i].Y);
+        }
+
+        MapAxis(X, x, _mapped.AsSpan(0, n), ofX: true);
+        MapAxis(Y, y, _mapped.AsSpan(n, n), ofX: false);
+        xs = _mapped.AsSpan(0, n);
+        ys = _mapped.AsSpan(n, n);
+        return n;
+    }
+
+    /// <summary>Gets a point buffer of at least a length, kept from frame to frame.</summary>
+    public Span<Vector2> Points(int length)
+    {
+        Ensure(ref _points, length);
+        return _points;
+    }
+
+    /// <summary>Gets a trapezoid buffer of at least a length.</summary>
+    public Span<ColumnTrapezoid> Trapezoids(int length)
+    {
+        Ensure(ref _trapezoids, length);
+        return _trapezoids;
+    }
+
+    /// <summary>Records a series as a polyline, broken where M4 broke it and where a point does not map (design §5.1).</summary>
+    public void Polyline(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, in LineStyle style)
+    {
+        var buffer = Points((2 * points.Length) + 1);
+        var count = 0;
+        for (var i = 0; i < points.Length; i++)
+        {
+            if (points[i].BreakBefore)
+            {
+                buffer[count++] = new Vector2(float.NaN);
+            }
+
+            buffer[count++] = new Vector2((float)xs[i], (float)ys[i]);
+        }
+
+        list.DrawPolyline(buffer[..count], guides.Scaled(style));
+    }
+
+    /// <summary>
+    /// Returns the H + 1 boundaries of the pixel rows over the y domain, as differences from <see cref="YOrigin"/> in data
+    /// units, from the bottom (design §5.5.3, a horizontal rule). Made again when the domain, the transform, or the height changes.
+    /// </summary>
+    public ReadOnlySpan<double> YBoundaries()
+    {
+        var domain = Y.Domain;
+        var height = Y.Size;
+        if (_yBoundaryDomain == domain && ReferenceEquals(_yBoundaryTransform, Y.Transform) && _yBoundaries.Length == height + 1)
+        {
+            return _yBoundaries;
+        }
+
+        if (_yBoundaries.Length != height + 1)
+        {
+            _yBoundaries = new double[height + 1];
+        }
+
+        for (var k = 0; k <= height; k++)
+        {
+            var s = domain.Lower + ((domain.Upper - domain.Lower) * k / height);
+            _yBoundaries[k] = Y.Transform is null ? s : Inverse(Y.Transform, s + domain.Origin);
+        }
+
+        (_yBoundaryDomain, _yBoundaryTransform) = (domain, Y.Transform);
+        return _yBoundaries;
+    }
+
+    /// <summary>
+    /// Fills per pixel column of the panel the envelope of a series (design §5.5.3): the curve's x span inside the column,
+    /// its values at the column's sides where it crosses them, and the least and greatest pixel of the points inside.
+    /// </summary>
+    public void Envelope(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, ColumnEnvelope envelope)
+    {
+        envelope.Reset(X.Offset, X.Size);
+        for (var i = 0; i < points.Length; i++)
+        {
+            if (double.IsFinite(xs[i]) && double.IsFinite(ys[i]))
+            {
+                envelope.Point(xs[i], ys[i]);
+            }
+
+            if (
+                i > 0
+                && !points[i].BreakBefore
+                && double.IsFinite(xs[i - 1])
+                && double.IsFinite(ys[i - 1])
+                && double.IsFinite(xs[i])
+                && double.IsFinite(ys[i])
+            )
+            {
+                envelope.Segment(xs[i - 1], ys[i - 1], xs[i], ys[i]);
+            }
+        }
+    }
+
+    private static void Ensure<T>(ref T[] buffer, int length)
+    {
+        if (buffer.Length < length)
+        {
+            Array.Resize(ref buffer, Math.Max(length, buffer.Length * 2));
+        }
+    }
+
+    private double Inverse(IScale transform, double s)
+    {
+        _one[0] = s;
+        transform.Inverse(_one, _oneMapped);
+        return _oneMapped[0];
+    }
+
+    private double Pixel(in GeomFrame.Axis axis, double d, bool ofX)
+    {
+        if (axis.Transform is null)
+        {
+            return GeomFrame.Pixel(axis, d, ofX);
+        }
+
+        _one[0] = d;
+        axis.Transform.Forward(_one, _oneMapped);
+        return GeomFrame.Pixel(axis, _oneMapped[0] - axis.Domain.Origin, ofX);
+    }
+
+    private static void MapAxis(in GeomFrame.Axis axis, Span<double> values, Span<double> pixels, bool ofX)
+    {
+        if (axis.Transform is not null)
+        {
+            axis.Transform.Forward(values, pixels);
+            for (var i = 0; i < values.Length; i++)
+            {
+                pixels[i] = GeomFrame.Pixel(axis, pixels[i] - axis.Domain.Origin, ofX);
+            }
+
+            return;
+        }
+
+        for (var i = 0; i < values.Length; i++)
+        {
+            pixels[i] = GeomFrame.Pixel(axis, values[i], ofX);
+        }
+    }
+}
+
+/// <summary>
+/// The envelope of a curve over the pixel columns of a panel (design §5.5.3): for each column, the x span the curve
+/// covers in it, its values at the column's left and right sides when it crosses them, and the least and greatest y of
+/// the points inside. Reused from frame to frame.
+/// </summary>
+internal sealed class ColumnEnvelope
+{
+    private double[] _from = [];
+    private double[] _to = [];
+    private double[] _left = [];
+    private double[] _right = [];
+    private double[] _low = [];
+    private double[] _high = [];
+
+    public int Offset { get; private set; }
+
+    public int Width { get; private set; }
+
+    /// <summary>Gets the x where the curve starts in the column, or NaN when it is not there.</summary>
+    public ReadOnlySpan<double> From => _from.AsSpan(0, Width);
+
+    /// <summary>Gets the x where the curve ends in the column.</summary>
+    public ReadOnlySpan<double> To => _to.AsSpan(0, Width);
+
+    /// <summary>Gets the curve's y at the column's left side, or NaN when it does not reach it.</summary>
+    public ReadOnlySpan<double> Left => _left.AsSpan(0, Width);
+
+    /// <summary>Gets the curve's y at the column's right side, or NaN.</summary>
+    public ReadOnlySpan<double> Right => _right.AsSpan(0, Width);
+
+    /// <summary>Gets the least y of the points inside the column, or NaN when none is.</summary>
+    public ReadOnlySpan<double> Low => _low.AsSpan(0, Width);
+
+    /// <summary>Gets the greatest y of the points inside the column, or NaN.</summary>
+    public ReadOnlySpan<double> High => _high.AsSpan(0, Width);
+
+    public void Reset(int offset, int width)
+    {
+        if (_from.Length < width)
+        {
+            (_from, _to, _left, _right, _low, _high) = (
+                new double[width],
+                new double[width],
+                new double[width],
+                new double[width],
+                new double[width],
+                new double[width]
+            );
+        }
+
+        (Offset, Width) = (offset, width);
+        foreach (var array in (ReadOnlySpan<double[]>)[_from, _to, _left, _right, _low, _high])
+        {
+            array.AsSpan(0, width).Fill(double.NaN);
+        }
+    }
+
+    /// <summary>Adds a point inside its column.</summary>
+    public void Point(double x, double y)
+    {
+        var c = (int)Math.Floor(x) - Offset;
+        if ((uint)c >= (uint)Width)
+        {
+            return;
+        }
+
+        _low[c] = double.IsNaN(_low[c]) ? y : Math.Min(_low[c], y);
+        _high[c] = double.IsNaN(_high[c]) ? y : Math.Max(_high[c], y);
+        Span(c, x, x);
+    }
+
+    /// <summary>Adds the straight segment between two points, in whichever order of x.</summary>
+    public void Segment(double x0, double y0, double x1, double y1)
+    {
+        if (x1 < x0)
+        {
+            (x0, y0, x1, y1) = (x1, y1, x0, y0);
+        }
+
+        var first = Math.Max((int)Math.Floor(x0), Offset);
+        var last = Math.Min((int)Math.Floor(x1), Offset + Width - 1);
+        for (var column = first; column <= last; column++)
+        {
+            var c = column - Offset;
+            var from = Math.Max(column, x0);
+            var to = Math.Min(column + 1, x1);
+            Span(c, from, to);
+            if (x0 <= column && x1 >= column && x1 > x0)
+            {
+                _left[c] = y0 + ((y1 - y0) * (column - x0) / (x1 - x0));
+            }
+
+            if (x0 <= column + 1 && x1 >= column + 1 && x1 > x0)
+            {
+                _right[c] = y0 + ((y1 - y0) * (column + 1 - x0) / (x1 - x0));
+            }
+        }
+    }
+
+    private void Span(int c, double from, double to)
+    {
+        _from[c] = double.IsNaN(_from[c]) ? from : Math.Min(_from[c], from);
+        _to[c] = double.IsNaN(_to[c]) ? to : Math.Max(_to[c], to);
+    }
+}

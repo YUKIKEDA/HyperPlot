@@ -108,5 +108,14 @@ public sealed class UniformColumn : Column
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => null;
 
     /// <inheritdoc />
+    internal override double DifferenceAt(long index, long origin) => new M4.UniformX(this, origin).ValueAt(index);
+
+    /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin) => new M4.UniformX(this, origin).LowerBound(boundary);
+
+    /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool) => true;
+
+    /// <inheritdoc />
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
 }

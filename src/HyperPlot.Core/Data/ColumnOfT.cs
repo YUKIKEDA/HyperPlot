@@ -196,6 +196,19 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
 
     /// <inheritdoc />
+    internal override double DifferenceAt(long index, long origin) => ScaleSpace.Difference(GetValue(index), origin);
+
+    /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin) => new M4.ColumnX<T>(this, origin).LowerBound(boundary);
+
+    /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool)
+    {
+        PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+        return TryIsNonDecreasing(out var nonDecreasing) && nonDecreasing;
+    }
+
+    /// <inheritdoc />
     PlotPyramid IPyramidColumn.BuildPlotPyramid(PlotWorkerPool pool) => new PlotPyramid<T>(pool.BuildPyramid(this));
 
     /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>

@@ -16,6 +16,7 @@ internal sealed class PlotGuides
     private readonly int _width;
     private readonly int _height;
     private readonly LabelTable _labels = new();
+    private static readonly LineStyle CustomSample = new(new Color(0, 0, 0, 255), 1);
     private readonly Vector2[] _segment = new Vector2[2];
 
     internal PlotGuides(TextEngine text, float scale, int width, int height)
@@ -205,7 +206,7 @@ internal sealed class PlotGuides
         var style = Style(theme, theme.LegendSize);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            if (((LineLayerSpec)spec.Layers[i]).Label is { Length: > 0 } label)
+            if (spec.Layers[i].Label is { Length: > 0 } label)
             {
                 widest = MathF.Max(widest, _text.Measure(label, style).Width);
             }
@@ -345,20 +346,55 @@ internal sealed class PlotGuides
         for (var i = 0; i < spec.Layers.Count; i++)
         {
             // An index, not foreach: the interface's enumerator would be boxed on every recording.
-            var line = (LineLayerSpec)spec.Layers[i];
-            if (line.Label is not { Length: > 0 } label)
+            var layer = spec.Layers[i];
+            if (layer.Label is not { Length: > 0 } label)
             {
                 continue;
             }
 
-            var sample = Scaled(line.Style);
-            var row = MathF.Max(lineHeight, sample.Width);
+            float row;
+            if (Fill(layer) is { } fill)
+            {
+                // A fill geom's sample is a square of the row's height in its fill (design §4.6, row G4).
+                row = lineHeight;
+                list.DrawRect(x, y, row, row, fill);
+            }
+            else
+            {
+                var sample = Scaled(Stroke(layer));
+                row = MathF.Max(lineHeight, sample.Width);
+                var center = y + (row / 2);
+                Line(list, new Vector2(x, center), new Vector2(x + swatch, center), sample);
+            }
+
             var middle = y + (row / 2);
-            Line(list, new Vector2(x, middle), new Vector2(x + swatch, middle), sample);
             list.DrawText(label, new Vector2(x + swatch + gap, middle), style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle });
             y += row;
         }
     }
+
+    /// <summary>Returns the fill of a fill geom (area, band, bar, rect), or null for a geom drawn with lines.</summary>
+    private static Color? Fill(LayerSpec layer) =>
+        layer switch
+        {
+            AreaLayerSpec a => a.Fill,
+            BandLayerSpec b => b.Fill,
+            BarLayerSpec b => b.Fill,
+            RectLayerSpec r => r.Fill,
+            _ => null,
+        };
+
+    /// <summary>Returns the stroke of a line geom's sample: its style, or black 1 wide for a user's geom.</summary>
+    private static LineStyle Stroke(LayerSpec layer) =>
+        layer switch
+        {
+            LineLayerSpec l => l.Style,
+            StepLayerSpec s => s.Style,
+            RuleLayerSpec r => r.Style,
+            SegmentLayerSpec s => s.Style,
+            ErrorBarLayerSpec e => e.Style,
+            _ => CustomSample,
+        };
 
     private void Line(RenderList list, Vector2 from, Vector2 to, in LineStyle style)
     {
