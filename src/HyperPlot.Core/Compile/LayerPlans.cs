@@ -454,9 +454,12 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     public float Scale { get; private set; }
 
+    /// <summary>Gets the panel's cartesian transform (design §4.4).</summary>
+    public CartesianTransform Transform { get; private set; }
+
     public void Begin(in GeomFrame.Axis x, in GeomFrame.Axis y, double[] boundaries, float scale)
     {
-        (X, Y, Boundaries, Scale) = (x, y, boundaries, scale);
+        (X, Y, Boundaries, Scale, Transform) = (x, y, boundaries, scale, CartesianTransform.Create(x, y));
         XOrigin = x.Transform is null ? x.Domain.Origin : 0;
         YOrigin = y.Transform is null ? y.Domain.Origin : 0;
     }
@@ -500,8 +503,8 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
             (x[i], y[i]) = (points[i].X, points[i].Y);
         }
 
-        MapAxis(X, x, _mapped.AsSpan(0, n), ofX: true);
-        MapAxis(Y, y, _mapped.AsSpan(n, n), ofX: false);
+        MapAxis(Transform, X, x, _mapped.AsSpan(0, n), ofX: true);
+        MapAxis(Transform, Y, y, _mapped.AsSpan(n, n), ofX: false);
         xs = _mapped.AsSpan(0, n);
         ys = _mapped.AsSpan(n, n);
         return n;
@@ -638,22 +641,22 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     {
         if (axis.Transform is null)
         {
-            return GeomFrame.Pixel(axis, d, ofX);
+            return GeomFrame.Pixel(Transform, axis, d, ofX);
         }
 
         _one[0] = d;
         axis.Transform.Forward(_one, _oneMapped);
-        return GeomFrame.Pixel(axis, _oneMapped[0] - axis.Domain.Origin, ofX);
+        return GeomFrame.Pixel(Transform, axis, _oneMapped[0] - axis.Domain.Origin, ofX);
     }
 
-    private static void MapAxis(in GeomFrame.Axis axis, Span<double> values, Span<double> pixels, bool ofX)
+    private static void MapAxis(in CartesianTransform transform, in GeomFrame.Axis axis, Span<double> values, Span<double> pixels, bool ofX)
     {
         if (axis.Transform is not null)
         {
             axis.Transform.Forward(values, pixels);
             for (var i = 0; i < values.Length; i++)
             {
-                pixels[i] = GeomFrame.Pixel(axis, pixels[i] - axis.Domain.Origin, ofX);
+                pixels[i] = GeomFrame.Pixel(transform, axis, pixels[i] - axis.Domain.Origin, ofX);
             }
 
             return;
@@ -661,7 +664,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
         for (var i = 0; i < values.Length; i++)
         {
-            pixels[i] = GeomFrame.Pixel(axis, values[i], ofX);
+            pixels[i] = GeomFrame.Pixel(transform, axis, values[i], ofX);
         }
     }
 }

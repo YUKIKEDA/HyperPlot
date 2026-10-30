@@ -118,6 +118,7 @@ public sealed class GeomFrame
     private readonly double[] _mapped = new double[1];
     private Axis _x;
     private Axis _y;
+    private CartesianTransform _transform;
     private float _scale;
     private bool _active;
 
@@ -170,25 +171,28 @@ public sealed class GeomFrame
     /// <summary>Opens the frame for one <see cref="IGeom.Record"/>.</summary>
     internal void Open(in Axis x, in Axis y, float scale)
     {
-        (_x, _y, _scale, _active) = (x, y, scale, true);
+        (_x, _y, _transform, _scale, _active) = (x, y, CartesianTransform.Create(x, y), scale, true);
     }
 
     /// <summary>Closes the frame after <see cref="IGeom.Record"/>.</summary>
     internal void Close() => _active = false;
 
-    /// <summary>Maps a difference from an axis's origin, in the scale space, to the target's pixel (design §4.4).</summary>
-    internal static double Pixel(in Axis axis, double d, bool ofX)
+    /// <summary>
+    /// Maps a difference from an axis's origin, in the scale space, to the target's pixel through a panel's transform
+    /// (design §4.4): clamped first when the scale clamps, NaN when it is not finite.
+    /// </summary>
+    internal static double Pixel(in CartesianTransform transform, in Axis axis, double d, bool ofX)
     {
         if (!double.IsFinite(d))
         {
             return double.NaN;
         }
 
-        var domain = axis.Domain;
-        d = axis.Clamp ? Math.Clamp(d, domain.Lower, domain.Upper) : d;
-        var t = (d - domain.Lower) / (domain.Upper - domain.Lower) * axis.Size;
-        return axis.Offset + (ofX == axis.Reverse ? axis.Size - t : t);
+        d = axis.Clamp ? Math.Clamp(d, axis.Domain.Lower, axis.Domain.Upper) : d;
+        return ofX ? transform.MapX(d) : transform.MapY(d);
     }
+
+    private double Pixel(in Axis axis, double d, bool ofX) => Pixel(_transform, axis, d, ofX);
 
     private double Map(in Axis axis, double value, bool ofX)
     {

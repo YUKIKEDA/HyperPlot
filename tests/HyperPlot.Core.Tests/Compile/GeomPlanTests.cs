@@ -831,64 +831,38 @@ public sealed class GeomPlanTests
         using var plan = TestPlans.Create(pool, Size, Size);
         PlotSpec On(LayerSpec layer) => Spec(table, layer) with { ScaleX = Scale.Log().WithDomain(0.1, 10) };
 
-        Assert.Single(
-            DataRects(
-                plan.Render(
-                    On(
-                        new BarLayerSpec
-                        {
-                            X = rx,
-                            Y = ry,
-                            Width = 1,
-                        }
-                    )
-                )
-            )
-        );
-        Assert.Equal(
-            2,
-            plan.Render(
-                On(
-                    new SegmentLayerSpec
-                    {
-                        X = rx,
-                        Y = ry,
-                        XEnd = r5,
-                        YEnd = r8,
-                    }
-                )
-            ).Segments.Length
-        );
-        Assert.Equal(
-            2,
-            DataRects(
-                plan.Render(
-                    On(
-                        new RectLayerSpec
-                        {
-                            XMin = rx,
-                            XMax = r5,
-                            YMin = ry,
-                            YMax = r8,
-                        }
-                    )
-                )
-            ).Length
-        );
-        Assert.Equal(
-            2,
-            plan.Render(
-                On(
-                    new ErrorBarLayerSpec
-                    {
-                        X = rx,
-                        YMin = ry,
-                        YMax = r8,
-                        CapWidth = 0,
-                    }
-                )
-            ).Segments.Length
-        );
+        var bar = new BarLayerSpec
+        {
+            X = rx,
+            Y = ry,
+            Width = 1,
+        };
+        var segment = new SegmentLayerSpec
+        {
+            X = rx,
+            Y = ry,
+            XEnd = r5,
+            YEnd = r8,
+        };
+        var rect = new RectLayerSpec
+        {
+            XMin = rx,
+            XMax = r5,
+            YMin = ry,
+            YMax = r8,
+        };
+        var errorBar = new ErrorBarLayerSpec
+        {
+            X = rx,
+            YMin = ry,
+            YMax = r8,
+            CapWidth = 0,
+        };
+
+        Assert.Single(DataRects(plan.Render(On(bar))));
+        Assert.Equal(2, plan.Render(On(segment)).Segments.Length);
+        Assert.Equal(2, DataRects(plan.Render(On(rect))).Length);
+        Assert.Equal(2, plan.Render(On(errorBar)).Segments.Length);
     }
 
     /// <summary>A time scale refuses a new geom's channel that is not a long date-time column, naming it and its kind (design §4.8).</summary>
