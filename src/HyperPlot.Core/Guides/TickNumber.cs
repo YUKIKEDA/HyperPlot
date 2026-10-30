@@ -37,9 +37,22 @@ internal readonly record struct TickNumber(Int128 Mantissa, int Exponent)
 
     /// <summary>Gets the value as a double: M · 10^E, or M / 10^−E, each rounded once while 10^|E| is exact.</summary>
     public double Value =>
-        Exponent >= 0 ? (double)Mantissa * Pow10(Exponent)
-        : -Exponent <= 22 ? (double)Mantissa / Pow10(-Exponent)
-        : (double)Mantissa * Math.Pow(10, Exponent);
+        Exponent >= 0 && Exponent <= 22 ? (double)Mantissa * Pow10(Exponent)
+        : Exponent < 0 && -Exponent <= 22 ? (double)Mantissa / Pow10(-Exponent)
+        : Parsed();
+
+    /// <summary>
+    /// Returns M · 10^E rounded once, by parsing its decimal text: past 10^±22 a power is not exact, and M · 10^E through
+    /// <see cref="Math.Pow"/> can be an ulp off the value its label writes.
+    /// </summary>
+    private double Parsed()
+    {
+        Span<char> text = stackalloc char[64];
+        _ = Mantissa.TryFormat(text, out var length, default, System.Globalization.CultureInfo.InvariantCulture);
+        text[length++] = 'e';
+        _ = Exponent.TryFormat(text[length..], out var count, default, System.Globalization.CultureInfo.InvariantCulture);
+        return double.Parse(text[..(length + count)], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     /// <summary>Returns 10^n for n from 0 to 22 exactly, and the nearest double beyond.</summary>
     public static double Pow10(int n) => n <= 22 ? Powers[n] : Math.Pow(10, n);

@@ -21,14 +21,16 @@ internal sealed class PlotPlan : IDisposable
 
     // Work areas of row G2, made once: one layer's coordinates before and after a transform (design §4.2).
     private readonly double[] _values;
+    private readonly (double[] Data, double[] Scale)[] _widths = new (double[], double[])[4];
     private readonly double[] _mapped;
     private IScale? _xTransform;
     private IScale? _yTransform;
     private LayerPlan[] _layers = [];
     private PlotSpec? _spec;
 
-    // The boundaries of the pixel columns, W + 1 of them for the panel's width W, in data units and in the scale space;
-    // made again when W changes (design §4.8).
+    // The boundaries of the pixel columns, W + 1 of them for the panel's width W, in data units and in the scale space
+    // (design §4.8). The y labels set W, so a new y domain can change it: _widths keeps the buffers of the last four widths,
+    // so that drawing domains seen before allocates nothing (§4.6).
     private double[] _boundaries = [];
     private double[] _scaleBoundaries = [];
 
@@ -490,8 +492,7 @@ internal sealed class PlotPlan : IDisposable
         _x = ScaleRange.None;
         if (_boundaries.Length != width + 1)
         {
-            _boundaries = new double[width + 1];
-            _scaleBoundaries = new double[width + 1];
+            (_boundaries, _scaleBoundaries) = Buffers(width + 1);
         }
 
         var target = _xTransform is null ? _boundaries : _scaleBoundaries;
@@ -526,6 +527,25 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _x = domain;
+    }
+
+    /// <summary>Returns the buffers of a length: kept ones, or new ones in the place of the least recent.</summary>
+    private (double[] Data, double[] Scale) Buffers(int length)
+    {
+        for (var i = 0; i < _widths.Length; i++)
+        {
+            if (_widths[i].Data?.Length == length)
+            {
+                var found = _widths[i];
+                Array.Copy(_widths, 0, _widths, 1, i);
+                _widths[0] = found;
+                return found;
+            }
+        }
+
+        Array.Copy(_widths, 0, _widths, 1, _widths.Length - 1);
+        _widths[0] = (new double[length], new double[length]);
+        return _widths[0];
     }
 
     /// <summary>Makes the layers again: a pyramid for each Y column not held yet, one M4 series a layer, and frees the pyramids no layer uses.</summary>

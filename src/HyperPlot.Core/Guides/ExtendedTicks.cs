@@ -103,7 +103,9 @@ internal static class ExtendedTicks
 
                             var zero = a <= 0 && (-a) % j == 0 && (-a) / j <= k - 1;
                             var simplicity = 1 - ((double)i / (Q10.Length - 1)) - j + (zero ? 1 : 0);
-                            var coverage = 1 - (0.5 * ((Square(high - highTick) + Square(low - lowTick)) / Square(0.1 * range)));
+
+                            // Each distance over a tenth of the range, then squared: squaring first under- or overflows at 1e±300.
+                            var coverage = 1 - (0.5 * (Square((high - highTick) / (0.1 * range)) + Square((low - lowTick) / (0.1 * range))));
                             var span = nice
                                 ? axis.Length
                                 : Pixel(axis, lmax, origin, lowTick, highTick, nice) - Pixel(axis, lmin, origin, lowTick, highTick, nice);
@@ -217,7 +219,7 @@ internal static class ExtendedTicks
     }
 
     /// <summary>The coverage's bound for a label span: centered on the data range (§5; the formula is HyperPlot's, design §4.6).</summary>
-    private static double CoverageMax(double span, double range) => span <= range ? 1 : 1 - (0.25 * Square(span - range) / Square(0.1 * range));
+    private static double CoverageMax(double span, double range) => span <= range ? 1 : 1 - (0.25 * Square((span - range) / (0.1 * range)));
 
     private static double Square(double x) => x * x;
 

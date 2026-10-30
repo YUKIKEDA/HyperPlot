@@ -182,6 +182,40 @@ public sealed class HeadlessRendererTests
         Assert.Throws<ObjectDisposedException>(() => first.MeasureText("a", style));
     }
 
+    /// <summary>
+    /// The scale (design §7.5): 0, a negative, NaN, or ∞ throws ArgumentOutOfRangeException naming it; at 1.5, Render of a
+    /// list draws the list as it is and MeasureText gives the physical pixels of scale 1.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A fake backend.
+    ///
+    /// Steps:
+    /// - Make renderers with the bad scales; make one at 1.5 and one at 1; render a list and measure a text with both.
+    ///
+    /// Expected:
+    /// - "scale" each time; the backend draws the same list object; the two measures are equal.
+    /// </remarks>
+    [Fact]
+    public void Scale_ArgumentsAndPhysicalPaths()
+    {
+        using var backend = new FakeBackend(new byte[4]);
+        foreach (var scale in new[] { 0f, -1f, float.NaN, float.PositiveInfinity })
+        {
+            Assert.Equal("scale", Assert.Throws<ArgumentOutOfRangeException>(() => new HeadlessRenderer(backend, 1, 1, scale: scale)).ParamName);
+        }
+
+        using var scaled = new HeadlessRenderer(backend, 1, 1, scale: 1.5f);
+        using var plain = new HeadlessRenderer(backend, 1, 1);
+        Assert.Equal(1.5f, scaled.Scale);
+        var list = new RenderList();
+        list.DrawPolyline([new(0, 0), new(1, 1)], new LineStyle(new Color(0, 0, 0, 255), 1));
+        scaled.Render(list);
+        Assert.Same(list, backend.Drawn);
+        var style = new TextStyle(new Color(0, 0, 0, 255), 12);
+        Assert.Equal(plain.MeasureText("abc", style), scaled.MeasureText("abc", style));
+    }
+
     private sealed class FakeBackend(byte[] pixels) : IGpuBackend
     {
         public bool IsWarp => true;

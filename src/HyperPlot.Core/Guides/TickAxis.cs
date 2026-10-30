@@ -154,6 +154,9 @@ internal sealed class TickAxis
     /// <summary>Returns the numeric tick in a slot.</summary>
     internal TickNumber NumberAt(int index) => _numbers[index];
 
+    /// <summary>Returns the instant of the time tick in a slot, in ns from 0001-01-01.</summary>
+    internal Int128 InstantAt(int index) => _times[index];
+
     /// <summary>Sets the pixel of the tick in a slot.</summary>
     internal void SetPixel(int index, double pixel) => _pixels[index] = pixel;
 
@@ -288,8 +291,11 @@ internal sealed class TickAxis
 
         for (var i = 0; i < _count; i++)
         {
-            var own = sameDecimals ? mantissaDecimals : TickFormat.Decimals(new TickNumber(_numbers[i].Mantissa, _numbers[i].Exponent - exponent));
-            if (!TickFormat.TryWriteExponent(_numbers[i], exponent, own, _buffer, out var written))
+            // An axis of alike decimals shares the largest magnitude; a log axis writes each label with its own (1e-30, 1e30).
+            var shared = sameDecimals || _numbers[i].Mantissa == 0;
+            var own = shared ? exponent : TickFormat.Magnitude(_numbers[i]);
+            var places = sameDecimals ? mantissaDecimals : TickFormat.Decimals(new TickNumber(_numbers[i].Mantissa, _numbers[i].Exponent - own));
+            if (!TickFormat.TryWriteExponent(_numbers[i], own, places, _buffer, out var written))
             {
                 throw new InvalidOperationException($"The label of the tick {_numbers[i].Value} does not fit {TickFormat.BufferLength} characters.");
             }
