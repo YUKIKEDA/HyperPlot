@@ -273,6 +273,7 @@ public sealed class TickTests
         Assert.Equal("0", Fixed(new TickNumber(0, -3), 0));
         Assert.Equal("-1250", Fixed(new TickNumber(-125, 1), 0));
         Assert.Equal("0.0005", Fixed(new TickNumber(5, -4), 4));
+        Assert.Equal("-1", Fixed(new TickNumber(-1, 0), 0));
     }
 
     /// <summary>
@@ -340,7 +341,7 @@ public sealed class TickTests
     ///
     /// Expected:
     /// - [2, 8]: not all powers of ten. [1, 300]: mantissas from {1, 2, 5}, some not 1. [1e-30, 1e30]: powers of ten only,
-    ///   evenly skipped, at most 11 (600 / 60 + 1). Nice: the domain [1, 10000].
+    ///   evenly skipped, at most 11 (600 / 60 + 1). Nice: the domain [1, 10000], and [10, 10000] for [10, 7000].
     /// </remarks>
     [Fact]
     public void Log_Candidates()
@@ -367,6 +368,11 @@ public sealed class TickTests
         nice.Choose(nice: true);
         Assert.Equal(0, nice.FinalDomain.Origin + nice.FinalDomain.Lower, 12);
         Assert.Equal(4, nice.FinalDomain.Origin + nice.FinalDomain.Upper, 12);
+
+        // An end on a power of ten is its own outer tick.
+        var onPower = Axis(log, log.CreateTransform(), Log(10, 7000), 600, 60);
+        onPower.Choose(nice: true);
+        Assert.Equal(1, onPower.FinalDomain.Origin + onPower.FinalDomain.Lower, 12);
     }
 
     /// <summary>
@@ -529,14 +535,14 @@ public sealed class TickTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - Ticks-unit time scales over spans from 2 µs to 400 years from 2026-01-01, 800 pixels, spacing 100.
+    /// - Ticks-unit time scales over spans from 2 µs to 400 years from 2026-01-01, 800 pixels, spacing 100; 40 days for weeks.
     ///
     /// Steps:
     /// - Choose each.
     ///
     /// Expected:
-    /// - Two ticks or more; consecutive ticks a whole step apart; 7-day ticks on Mondays, 3-month ticks in months 1, 4, 7,
-    ///   10, year ticks on multiples of the step.
+    /// - Two ticks or more; the 40 days in 7-day ticks on Mondays; 3-month ticks in months 1, 4, 7, 10; year ticks on
+    ///   multiples of the step.
     /// </remarks>
     [Fact]
     public void Time_StepsAndAnchors()
@@ -560,13 +566,12 @@ public sealed class TickTests
             Assert.True(axis.Count >= 2, $"span {span}");
         }
 
-        var weeks = TimeAxis(Scale.Time(), start, start + (120 * TimeSpan.TicksPerDay), 800);
+        // 40 days over 800 pixels: a day is 20 pixels, so 2 days fall short of 100 and 7 days pass it.
+        var weeks = TimeAxis(Scale.Time(), start, start + (40 * TimeSpan.TicksPerDay), 800);
         weeks.Choose(nice: false);
         var labelsOfWeeks = Times(weeks);
-        if ((labelsOfWeeks[1] - labelsOfWeeks[0]).Days == 7)
-        {
-            Assert.All(labelsOfWeeks, t => Assert.Equal(DayOfWeek.Monday, t.DayOfWeek));
-        }
+        Assert.Equal(7, (labelsOfWeeks[1] - labelsOfWeeks[0]).Days);
+        Assert.All(labelsOfWeeks, t => Assert.Equal(DayOfWeek.Monday, t.DayOfWeek));
 
         var quarters = TimeAxis(Scale.Time(), start, start + (3 * 365 * TimeSpan.TicksPerDay), 800);
         quarters.Choose(nice: false);
@@ -618,6 +623,26 @@ public sealed class TickTests
         Assert.All(instants, i => Assert.Equal(0, i % step));
     }
 
+    /// <summary>A time step that leaves one tick on the axis stops the choice: no ticks (design §4.6).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 5 hours from 03:07 over 40 pixels, spacing 10: the hour is 8 pixels, the 3-hour step 24 and only 06:00 inside.
+    ///
+    /// Steps:
+    /// - Choose.
+    ///
+    /// Expected:
+    /// - No tick.
+    /// </remarks>
+    [Fact]
+    public void Time_OneTick_Stops()
+    {
+        var start = new DateTime(2026, 1, 1, 3, 7, 0).Ticks;
+        var axis = Axis(Scale.Time(), null, ScaleRange.FromInteger(start, start + (5 * TimeSpan.TicksPerHour)), 40, 10);
+        axis.Choose(nice: false);
+        Assert.Equal(0, axis.Count);
+    }
+
     /// <summary>The boundary passed for each time tick is the coarsest it lies on (design §4.6).</summary>
     /// <remarks>
     /// Preconditions:
@@ -642,6 +667,7 @@ public sealed class TickTests
         Assert.Equal(TimeInterval.Millisecond, TimeTicks.Boundary(At(2026, 3, 15, 12, 30, 15) + 250_000_000));
         Assert.Equal(TimeInterval.Microsecond, TimeTicks.Boundary(At(2026, 3, 15, 12, 30, 15) + 250_125_000));
         Assert.Equal(TimeInterval.Nanosecond, TimeTicks.Boundary(At(2026, 3, 15, 12, 30, 15) + 250_125_375));
+        Assert.Equal(TimeInterval.Nanosecond, TimeTicks.Boundary(At(2026, 3, 15, 12, 30, 15) + 250_125_300));
     }
 
     /// <summary>The time labels of the nine boundaries (design §4.6).</summary>

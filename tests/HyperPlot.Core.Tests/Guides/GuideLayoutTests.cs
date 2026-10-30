@@ -270,6 +270,26 @@ public sealed class GuideLayoutTests : IDisposable
         Assert.Equal(16 * 1.5f, texts.Single(t => t.Text == "Title").Style.Size);
     }
 
+    /// <summary>Nice widens only a learned domain: a given one stays as it is (design §4.6).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The full spec with the y domain [0.37, 9.81] given and Nice true.
+    ///
+    /// Steps:
+    /// - Render.
+    ///
+    /// Expected:
+    /// - The y domain is [0.37, 9.81].
+    /// </remarks>
+    [Fact]
+    public void Nice_GivenDomain_Kept()
+    {
+        using var plan = Plan(1);
+        _ = plan.Render(Full() with { ScaleY = Scale.Linear().WithDomain(0.37, 9.81) with { Nice = true } });
+        Assert.Equal(0.37, plan.YDomain.Origin + plan.YDomain.Lower, 12);
+        Assert.Equal(9.81, plan.YDomain.Origin + plan.YDomain.Upper, 12);
+    }
+
     /// <summary>A legend row is as tall as the larger of the line and the sample's width (design §4.6).</summary>
     /// <remarks>
     /// Preconditions:
