@@ -156,7 +156,10 @@ public sealed class TextEngine
             _ => (u, v),
         };
 
-    /// <summary>Rounds to a whole pixel, halves up: ⌊x + 0.5⌋, saturated to the range of an int.</summary>
+    /// <summary>
+    /// Rounds to a whole pixel, halves up: ⌊x + 0.5⌋, saturated to the range of a long. The glyphs that reach
+    /// <c>AddGlyph</c> fit an int: the culling before it drops every origin more than a page outside the clip.
+    /// </summary>
     internal static long RoundPixel(float x) => (long)MathF.Floor(x + 0.5f);
 
     private static (long Left, long Top, int Width, int Height) GlyphRect(TextRotation rotation, long x, long y, GlyphBox box) =>

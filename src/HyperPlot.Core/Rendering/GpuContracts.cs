@@ -63,7 +63,8 @@ public interface IGpuBackend : IDisposable
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
     /// <exception cref="InvalidOperationException">
     /// After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame
-    /// tries again. Or the texts' glyphs need more than 8 atlas pages, or shaping or rasterizing failed; nothing is drawn.
+    /// tries again. Or the texts' glyphs need more than 8 atlas pages, or a glyph's rectangle is as wide or as tall as a page,
+    /// or shaping or rasterizing failed; nothing is drawn.
     /// </exception>
     /// <exception cref="ObjectDisposedException">The backend or the target was disposed.</exception>
     void Draw(IRenderTarget target, RenderList list);

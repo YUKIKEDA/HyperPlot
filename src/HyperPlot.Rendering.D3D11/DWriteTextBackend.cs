@@ -521,6 +521,9 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
         internal void AddRun(float originX, float originY, DWRITE_GLYPH_RUN* run, DWRITE_GLYPH_RUN_DESCRIPTION* description)
         {
             Hook?.Invoke();
+
+            // DirectWrite gives the run's three arrays glyphCount elements each, and only glyphOffsets may be null. They live
+            // until DrawGlyphRun returns, and the spans do not outlive this call.
             var count = (int)run->glyphCount;
             var indices = new ReadOnlySpan<ushort>(run->glyphIndices, count);
             var advances = new ReadOnlySpan<float>(run->glyphAdvances, count);
