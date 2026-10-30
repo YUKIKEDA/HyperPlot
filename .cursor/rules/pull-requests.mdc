@@ -27,6 +27,7 @@ Follow `.github/pull_request_template.md` with the same headings in the same ord
 - A section the body says the PR changed, or a sample it says was compiled, is one that `git diff main...HEAD` shows. PR #77's body listed design §4.9 as changed and its example as compiled; the diff had no change to §4.9.
 - A count the body gives ("the other 9 places") is the output of a command that selects exactly what the count names, not a reading of a broader search.
 - `## Measurements` carries the numbers for a frame-path or data-path change: time per stage before and after, allocations per frame, bytes uploaded per frame, at the named data and viewport sizes, against a named baseline (`.cursor/rules/bench.mdc`). `N/A` only when nothing on those paths changed.
+- A design PR's body lists the details decided while writing, not in the Grill (names, defaults, how a degenerate case is drawn), so that the owner can see and change them. PR #121's review asked for the list.
 - Pass the body to `gh pr create` through a temporary UTF-8 file (`--body-file`), deleted after the call (`.cursor/rules/scratch.mdc`).
 
 ```text
