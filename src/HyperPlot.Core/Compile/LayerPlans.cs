@@ -424,7 +424,9 @@ internal sealed class RangeSink
 
 /// <summary>
 /// What every layer records with (design §4.4, §5.5.3): the list, the batch's results, the cartesian mapping of each axis,
-/// the boundaries of the pixel columns, and work buffers kept from frame to frame.
+/// the boundaries of the pixel columns, and work buffers kept from frame to frame. A layer computes along × across: x
+/// pixels along the x axis and y pixels along the y axis, whichever side each runs on; the drawing methods here swap
+/// them into the target's (horizontal, vertical) when the coordinate system is flipped (row G10).
 /// </summary>
 internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList list, GeomFrame frame)
 {
@@ -469,18 +471,68 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     public float Scale { get; private set; }
 
+    /// <summary>Gets a value indicating whether x runs on the vertical side and y on the horizontal one (row G10).</summary>
+    public bool Flipped { get; private set; }
+
     /// <summary>Gets the panel's cartesian transform (design §4.4).</summary>
     public CartesianTransform Transform { get; private set; }
 
-    public void Begin(in GeomFrame.Axis x, in GeomFrame.Axis y, double[] boundaries, float scale)
+    public void Begin(in GeomFrame.Axis x, in GeomFrame.Axis y, double[] boundaries, float scale, bool flipped)
     {
-        (X, Y, Boundaries, Scale, Transform) = (x, y, boundaries, scale, CartesianTransform.Create(x, y));
+        (X, Y, Boundaries, Scale, Flipped, Transform) = (x, y, boundaries, scale, flipped, CartesianTransform.Create(x, y));
         XOrigin = x.Transform is null ? x.Domain.Origin : 0;
         YOrigin = y.Transform is null ? y.Domain.Origin : 0;
     }
 
     /// <summary>Sets the panel's clip back, after a layer that may have changed it.</summary>
-    public void ClipToPanel() => list.SetClip(X.Offset, Y.Offset, X.Size, Y.Size);
+    public void ClipToPanel()
+    {
+        if (Flipped)
+        {
+            list.SetClip(Y.Offset, X.Offset, Y.Size, X.Size);
+        }
+        else
+        {
+            list.SetClip(X.Offset, Y.Offset, X.Size, Y.Size);
+        }
+    }
+
+    /// <summary>Records a polyline of along × across points, swapped in place when flipped, with its style's DIPs scaled.</summary>
+    public void DrawPolyline(Span<Vector2> points, in LineStyle style)
+    {
+        if (Flipped)
+        {
+            foreach (ref var point in points)
+            {
+                point = new Vector2(point.Y, point.X);
+            }
+        }
+
+        list.DrawPolyline(points, guides.Scaled(style));
+    }
+
+    /// <summary>Records a rectangle between two x pixels and two y pixels, in either order; nothing when one is not finite.</summary>
+    public void DrawRect(double x0, double x1, double y0, double y1, Color fill)
+    {
+        if (!double.IsFinite(x0) || !double.IsFinite(x1) || !double.IsFinite(y0) || !double.IsFinite(y1))
+        {
+            return;
+        }
+
+        var (left, top, width, height) = ((float)Math.Min(x0, x1), (float)Math.Min(y0, y1), (float)Math.Abs(x1 - x0), (float)Math.Abs(y1 - y0));
+        if (Flipped)
+        {
+            list.DrawRect(top, left, height, width, fill);
+        }
+        else
+        {
+            list.DrawRect(left, top, width, height, fill);
+        }
+    }
+
+    /// <summary>Records trapezoids whose sides are x pixels and whose edges are y pixels: horizontal ones when flipped.</summary>
+    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color fill) =>
+        list.DrawColumns(columns, fill, Flipped ? ColumnAxis.Horizontal : ColumnAxis.Vertical);
 
     /// <summary>Returns the x pixel of a difference from <see cref="XOrigin"/>, through the transform; NaN when it does not map.</summary>
     public double PixelX(double d) => Pixel(X, d, ofX: true);
@@ -488,11 +540,14 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Returns the y pixel of a difference from <see cref="YOrigin"/>, through the transform; NaN when it does not map.</summary>
     public double PixelY(double d) => Pixel(Y, d, ofX: false);
 
-    /// <summary>Returns the y pixel of a baseline in data units, at the panel's edge when it does not map or lies outside (design §5.5.3).</summary>
+    /// <summary>
+    /// Returns the y pixel of a baseline in data units, at the panel's edge where y is least when it does not map, or the
+    /// nearest edge when it lies outside (design §5.5.3).
+    /// </summary>
     public double BaselinePixel(double value)
     {
         var pixel = PixelY(value - YOrigin);
-        var bottom = Y.Offset + (Y.Reverse ? 0 : Y.Size);
+        var bottom = Y.Offset + (Y.Descending ? Y.Size : 0);
         return double.IsFinite(pixel) ? Math.Clamp(pixel, Y.Offset, Y.Offset + Y.Size) : bottom;
     }
 
@@ -570,7 +625,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
             buffer[count++] = new Vector2((float)xs[i], (float)ys[i]);
         }
 
-        list.DrawPolyline(buffer[..count], guides.Scaled(style));
+        DrawPolyline(buffer[..count], style);
     }
 
     /// <summary>
@@ -627,6 +682,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>
     /// Fills per pixel column the least and greatest pixel y of the points inside (design §5.5.3). A point's column is the
     /// one M4 put it in, found from its X against the boundaries, not from its pixel, which rounding can put across a side.
+    /// The columns are along the x axis: pixel rows when flipped.
     /// </summary>
     public void PointEnvelope(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, ColumnEnvelope envelope)
     {
@@ -648,8 +704,8 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
                 continue;
             }
 
-            // The boundaries run with the data; a reversed x runs the pixel columns the other way.
-            envelope.Point(X.Reverse ? width - 1 - k : k, xs[i], ys[i]);
+            // The boundaries run with the data; a descending x (reversed, or flipped and not) runs the pixels the other way.
+            envelope.Point(X.Descending ? width - 1 - k : k, xs[i], ys[i]);
         }
     }
 

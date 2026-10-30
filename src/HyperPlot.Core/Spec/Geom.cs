@@ -114,6 +114,8 @@ public sealed class GeomRanges
 /// The panel and the mapping an <see cref="IGeom"/> records with (design §4.4, §5.5.3): data values to the target's
 /// physical pixels, through the scale's transform, clamp, and reverse, in double. The plot keeps one and reuses it; it
 /// can be used only inside <see cref="IGeom.Record"/>. x and y have a method each; 3D adds z the same way (invariant 12).
+/// <see cref="PixelX(double)"/> and <see cref="PixelY(double)"/> return the pixel along each data axis, which a flipped
+/// coordinate system puts on the other side (<see cref="Flipped"/>); <see cref="Map(double, double, out double, out double)"/> returns a point of the target.
 /// </summary>
 public sealed class GeomFrame
 {
@@ -123,58 +125,89 @@ public sealed class GeomFrame
     private Axis _y;
     private CartesianTransform _transform;
     private float _scale;
+    private bool _flipped;
     private bool _active;
 
     internal GeomFrame() { }
 
-    /// <summary>Gets the panel's left edge, in whole physical pixels.</summary>
+    /// <summary>Gets the panel's left edge, in whole physical pixels, flipped or not.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Left => Active()._x.Offset;
+    public int Left => Active()._flipped ? _y.Offset : _x.Offset;
 
     /// <summary>Gets the panel's top edge.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Top => Active()._y.Offset;
+    public int Top => Active()._flipped ? _x.Offset : _y.Offset;
 
     /// <summary>Gets the panel's width.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Width => Active()._x.Size;
+    public int Width => Active()._flipped ? _y.Size : _x.Size;
 
     /// <summary>Gets the panel's height.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Height => Active()._y.Size;
+    public int Height => Active()._flipped ? _x.Size : _y.Size;
+
+    /// <summary>
+    /// Gets a value indicating whether the coordinate system is flipped (design §4.4, row G10): then
+    /// <see cref="PixelX(double)"/> returns the target's vertical pixel, and <see cref="PixelY(double)"/> the horizontal one.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
+    public bool Flipped => Active()._flipped;
 
     /// <summary>Gets the scale from DIPs to physical pixels.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
     public float Scale => Active()._scale;
 
-    /// <summary>Returns the target's x pixel of an x value, or NaN when the scale maps it to a value that is not finite.</summary>
+    /// <summary>
+    /// Returns the target's pixel along the x axis of an x value: horizontal, or vertical when <see cref="Flipped"/>. NaN
+    /// when the scale maps the value to one that is not finite.
+    /// </summary>
     /// <param name="value">The value, in data units.</param>
     /// <returns>The pixel.</returns>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public double PixelX(double value) => Map(Active()._x, value, ofX: true);
+    public double PixelX(double value) => Along(Active()._x, value, ofX: true);
 
-    /// <summary>Returns the target's y pixel of a y value, or NaN when the scale maps it to a value that is not finite.</summary>
+    /// <summary>
+    /// Returns the target's pixel along the y axis of a y value: vertical, or horizontal when <see cref="Flipped"/>. NaN
+    /// when the scale maps the value to one that is not finite.
+    /// </summary>
     /// <param name="value">The value, in data units.</param>
     /// <returns>The pixel.</returns>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public double PixelY(double value) => Map(Active()._y, value, ofX: false);
+    public double PixelY(double value) => Along(Active()._y, value, ofX: false);
 
-    /// <summary>Returns the target's x pixel of a long x value, exactly from the domain's origin (design §3.6).</summary>
-    /// <param name="value">The value, in data units.</param>
-    /// <returns>The pixel.</returns>
+    /// <summary>
+    /// Maps a data point to the target's point (horizontal, vertical), flipped or not: <see cref="PixelX(double)"/> and
+    /// <see cref="PixelY(double)"/>, swapped when <see cref="Flipped"/>. A coordinate is NaN when it does not map.
+    /// </summary>
+    /// <param name="x">The x value, in data units.</param>
+    /// <param name="y">The y value, in data units.</param>
+    /// <param name="pixelX">The target's horizontal pixel.</param>
+    /// <param name="pixelY">The target's vertical pixel.</param>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public double PixelX(long value) => Map(Active()._x, value, ofX: true);
+    public void Map(double x, double y, out double pixelX, out double pixelY)
+    {
+        var alongX = PixelX(x);
+        var alongY = PixelY(y);
+        pixelX = _flipped ? alongY : alongX;
+        pixelY = _flipped ? alongX : alongY;
+    }
 
-    /// <summary>Returns the target's y pixel of a long y value, exactly from the domain's origin.</summary>
+    /// <summary>Returns the target's pixel along the x axis of a long x value, exactly from the domain's origin (design §3.6).</summary>
     /// <param name="value">The value, in data units.</param>
     /// <returns>The pixel.</returns>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public double PixelY(long value) => Map(Active()._y, value, ofX: false);
+    public double PixelX(long value) => Along(Active()._x, value, ofX: true);
+
+    /// <summary>Returns the target's pixel along the y axis of a long y value, exactly from the domain's origin.</summary>
+    /// <param name="value">The value, in data units.</param>
+    /// <returns>The pixel.</returns>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
+    public double PixelY(long value) => Along(Active()._y, value, ofX: false);
 
     /// <summary>Opens the frame for one <see cref="IGeom.Record"/>.</summary>
-    internal void Open(in Axis x, in Axis y, float scale)
+    internal void Open(in Axis x, in Axis y, float scale, bool flipped)
     {
-        (_x, _y, _transform, _scale, _active) = (x, y, CartesianTransform.Create(x, y), scale, true);
+        (_x, _y, _transform, _scale, _flipped, _active) = (x, y, CartesianTransform.Create(x, y), scale, flipped, true);
     }
 
     /// <summary>Closes the frame after <see cref="IGeom.Record"/>.</summary>
@@ -197,7 +230,7 @@ public sealed class GeomFrame
 
     private double Pixel(in Axis axis, double d, bool ofX) => Pixel(_transform, axis, d, ofX);
 
-    private double Map(in Axis axis, double value, bool ofX)
+    private double Along(in Axis axis, double value, bool ofX)
     {
         if (axis.Transform is null)
         {
@@ -209,12 +242,16 @@ public sealed class GeomFrame
         return Pixel(axis, _mapped[0] - axis.Domain.Origin, ofX);
     }
 
-    private double Map(in Axis axis, long value, bool ofX) =>
-        axis.Transform is null ? Pixel(axis, ScaleSpace.Difference(value, axis.Domain.Origin), ofX) : Map(axis, (double)value, ofX);
+    private double Along(in Axis axis, long value, bool ofX) =>
+        axis.Transform is null ? Pixel(axis, ScaleSpace.Difference(value, axis.Domain.Origin), ofX) : Along(axis, (double)value, ofX);
 
     private GeomFrame Active() =>
         _active ? this : throw new InvalidOperationException("A GeomFrame is used only inside IGeom.Record, while the plot records.");
 
-    /// <summary>One axis of the frame: its scale's transform, domain, options, and the panel's span along it.</summary>
-    internal readonly record struct Axis(IScale? Transform, ScaleRange Domain, bool Reverse, bool Clamp, int Offset, int Size);
+    /// <summary>
+    /// One axis of the frame: its scale's transform, domain, and clamp, and the panel's span along the side it runs on.
+    /// <c>Descending</c> is whether its pixels decrease as its data increases: a vertical axis not reversed, or a horizontal
+    /// one reversed. <c>Offset</c> and <c>Size</c> are the panel's left and width, or its top and height for a vertical axis.
+    /// </summary>
+    internal readonly record struct Axis(IScale? Transform, ScaleRange Domain, bool Descending, bool Clamp, int Offset, int Size);
 }

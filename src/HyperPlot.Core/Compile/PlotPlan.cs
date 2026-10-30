@@ -30,9 +30,9 @@ internal sealed class PlotPlan : IDisposable
     private LayerPlan[] _layers = [];
     private PlotSpec? _spec;
 
-    // The boundaries of the pixel columns, W + 1 of them for the panel's width W, in data units and in the scale space
-    // (design §4.8). The y labels set W, so a new y domain can change it: _widths keeps the buffers of the last four widths,
-    // so that drawing domains seen before allocates nothing (§4.6).
+    // The boundaries of the pixel columns along x, W + 1 of them for the panel's width W (H + 1 for its height when
+    // flipped), in data units and in the scale space (design §4.8). The labels on the left set W, so a new domain can change
+    // it: _widths keeps the buffers of the last four lengths, so that drawing domains seen before allocates nothing (§4.6).
     private double[] _boundaries = [];
     private double[] _scaleBoundaries = [];
 
@@ -55,8 +55,8 @@ internal sealed class PlotPlan : IDisposable
         _guides = new PlotGuides(text, scale, width, height);
         _context = new RecordContext(_guides, _batch, _list, new GeomFrame());
 
-        // The panel is never wider than the target.
-        _capacity = M4.MaxPointCount(width);
+        // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10).
+        _capacity = M4.MaxPointCount(Math.Max(width, height));
     }
 
     /// <summary>Gets the number of pyramids built, for the tests of the diff (design §4.8).</summary>
@@ -77,6 +77,9 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Gets the pyramids the plan holds, one a Y column. Tests only.</summary>
     internal IReadOnlyCollection<PlotPyramid> Pyramids => _pyramids.Values;
 
+    /// <summary>Gets the number of pixel columns (rows when flipped) M4 last ran over: W, or H when flipped. Tests only.</summary>
+    internal int PixelColumns => _boundaries.Length - 1;
+
     /// <summary>Gets the x domain of the last extraction, as an origin and differences (design §3.6). Tests only.</summary>
     internal ScaleRange XDomain => _x;
 
@@ -88,7 +91,7 @@ internal sealed class PlotPlan : IDisposable
     /// current values, lays out the guides, and returns the recorded panel, grid, lines, axes, titles, and legend (design
     /// §4.6, §4.8); an empty list when the panel is too small. Allocates nothing for the spec drawn last once warm.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The spec has a null member (its theme included) or layer.</exception>
+    /// <exception cref="ArgumentNullException">The spec has a null member (its theme and coordinate system included) or layer.</exception>
     /// <exception cref="ArgumentException">
     /// The spec or its theme does not check (design §4.7, §4.8), or the x domain is too narrow for the panel's width, in
     /// the scale space or once mapped back to data units.
@@ -107,13 +110,25 @@ internal sealed class PlotPlan : IDisposable
             throw new ArgumentNullException(nameof(spec), "The spec's Theme must not be null.");
         }
 
+        if (spec.Coord is null)
+        {
+            throw new ArgumentNullException(nameof(spec), "The spec's Coord must not be null.");
+        }
+
         spec.Theme.Validate(_scale);
         var previous = _spec;
 
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
         _spec = null;
         var data = previous is null || DataChanged(previous, spec);
-        var scales = previous is null || !SameMapping(previous.ScaleX, spec.ScaleX) || !SameMapping(previous.ScaleY, spec.ScaleY);
+        var flipped = Flipped(spec);
+
+        // A flip changes the axes' lengths, which nice and the boundaries depend on: the "scale" stage (design §4.8).
+        var scales =
+            previous is null
+            || !SameMapping(previous.ScaleX, spec.ScaleX)
+            || !SameMapping(previous.ScaleY, spec.ScaleY)
+            || Flipped(previous) != flipped;
         var ranges = data || RangesChanged(previous!, spec);
         var looks =
             data
@@ -185,10 +200,11 @@ internal sealed class PlotPlan : IDisposable
 
             var x = _guides.X.FinalDomain;
             _y = _guides.Y.FinalDomain;
-            var boundaries = x != _x || _boundaries.Length != _guides.Width + 1;
+            var along = flipped ? _guides.Height : _guides.Width;
+            var boundaries = x != _x || _boundaries.Length != along + 1;
             if (boundaries)
             {
-                MakeBoundaries(x, _guides.Width);
+                MakeBoundaries(x, along);
             }
 
             if (extract || boundaries)
@@ -202,7 +218,7 @@ internal sealed class PlotPlan : IDisposable
                 }
             }
 
-            Record(spec);
+            Record(spec, flipped);
             Recordings++;
         }
 
@@ -336,6 +352,9 @@ internal sealed class PlotPlan : IDisposable
 
         return false;
     }
+
+    /// <summary>Returns whether a spec's coordinate system swaps x and y (row G10).</summary>
+    private static bool Flipped(PlotSpec spec) => spec.Coord is CartesianCoordSpec { Flip: true };
 
     /// <summary>
     /// Returns whether two scales map data the same way (design §4.8): the same node, or the same kind with the same domain,
@@ -626,19 +645,22 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>
     /// Records the guides behind, each layer in order inside the panel's clip, and the guides over (design §4.6, §5.5.3). A
-    /// layer maps its values to pixels in double, through the transforms a span at a time.
+    /// layer maps its values to pixels in double, through the transforms a span at a time. A horizontal axis runs left to
+    /// right and a vertical one bottom to top, or the other way when reversed; flipped, x is the vertical one (row G10).
     /// </summary>
-    private void Record(PlotSpec spec)
+    private void Record(PlotSpec spec, bool flipped)
     {
         var (xScale, yScale) = ((ContinuousScaleSpec)spec.ScaleX, (ContinuousScaleSpec)spec.ScaleY);
         _list.Clear();
         _guides.RecordBehind(_list, spec);
-        _context.Begin(
-            new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, _guides.Left, _guides.Width),
-            new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, _guides.Top, _guides.Height),
-            _boundaries,
-            _scale
-        );
+        var (left, top, width, height) = (_guides.Left, _guides.Top, _guides.Width, _guides.Height);
+        var x = flipped
+            ? new GeomFrame.Axis(_xTransform, _x, !xScale.Reverse, xScale.Clamp, top, height)
+            : new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, left, width);
+        var y = flipped
+            ? new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, left, width)
+            : new GeomFrame.Axis(_yTransform, _y, !yScale.Reverse, yScale.Clamp, top, height);
+        _context.Begin(x, y, _boundaries, _scale, flipped);
         _context.ClipToPanel();
         foreach (var layer in _layers)
         {

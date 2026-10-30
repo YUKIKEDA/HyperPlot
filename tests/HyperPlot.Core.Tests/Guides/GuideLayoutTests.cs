@@ -138,6 +138,84 @@ public sealed class GuideLayoutTests : IDisposable
         Assert.Equal((int)Math.Ceiling(Widest(wide)) - (int)Math.Ceiling(Widest(narrow)), narrow.Guides.Width - wide.Guides.Width);
     }
 
+    /// <summary>
+    /// Flipped, the left band holds x and the bottom band y (design §4.6, row G10): x's ticks are chosen first over H with
+    /// the vertical spacing and their widest label sets W; y's over W with the horizontal spacing; the x title is on the
+    /// left, turned, and the y title at the bottom; the grid's vertical lines are y's ticks and its horizontal ones x's.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The full spec (axis titles "X" and "Y") with Coord.Cartesian(flip: true) at the scale 1, and once with x's domain
+    ///   [0, 1000000].
+    ///
+    /// Steps:
+    /// - Render; read the guides, the texts, and the grid's lines.
+    ///
+    /// Expected:
+    /// - X runs over H with the spacing 60 and measures its labels by the line height, Y over W with 100 and by width; the
+    ///   left band is T + G + the widest x label + G + the title's line; the bottom band holds Y's title. The long x labels
+    ///   narrow the panel by the difference of the widest labels. Each x label ends left of the panel, and each y label
+    ///   starts below it; "X" is turned counterclockwise at the padding and "Y" is not, at the bottom. The first grid lines
+    ///   are vertical, as many as y's ticks, then horizontal, as many as x's.
+    /// </remarks>
+    [Fact]
+    public void Layout_Flip_XOnTheLeft()
+    {
+        using var plan = Plan(1);
+        var theme = Theme.Light;
+        var spec = Full() with { Coord = Coord.Cartesian(flip: true) };
+        var list = plan.Render(spec);
+        var g = plan.Guides;
+
+        int R(float v) => (int)Math.Floor(v + 0.5);
+        double TextWidth(string s) => s.Length * FakeTextBackend.Advance(theme.TickLabelSize);
+        var (p, gap, t) = (R(theme.Padding), R(theme.Spacing), R(theme.TickLength));
+        var widest = g.X.TickLabels.ToArray().Max(TextWidth);
+        var titleLine = (int)Math.Ceiling(FakeTextBackend.LineHeight(theme.AxisTitleSize));
+        Assert.True(g.Flipped);
+        Assert.Equal((g.Height, theme.TickSpacingY, false), (g.X.Length, g.X.Spacing, g.X.Horizontal));
+        Assert.Equal((g.Width, theme.TickSpacingX, true), (g.Y.Length, g.Y.Spacing, g.Y.Horizontal));
+        Assert.Equal(p + t + gap + (int)Math.Ceiling(widest) + gap + titleLine, g.Left);
+        var bottomBand = t + gap + (int)Math.Ceiling(FakeTextBackend.LineHeight(theme.TickLabelSize)) + gap + titleLine;
+        Assert.Equal(Height - p - bottomBand - g.Top, g.Height);
+
+        using var wide = Plan(1);
+        _ = wide.Render(spec with { ScaleX = Scale.Linear().WithDomain(0, 1_000_000).WithTitle("X") });
+        var wideWidest = wide.Guides.X.TickLabels.ToArray().Max(TextWidth);
+        Assert.Equal((int)Math.Ceiling(wideWidest) - (int)Math.Ceiling(widest), g.Width - wide.Guides.Width);
+
+        var texts = list.Texts.ToArray();
+        foreach (var label in g.X.TickLabels)
+        {
+            Assert.Contains(texts, x => x.Text == label && x.Position.X + TextWidth(label) <= g.Left);
+        }
+
+        foreach (var label in g.Y.TickLabels)
+        {
+            Assert.Contains(texts, x => x.Text == label && x.Position.Y >= g.Top + g.Height);
+        }
+
+        var xTitle = texts.Single(x => x.Text == "X");
+        var yTitle = texts.Single(x => x.Text == "Y");
+        Assert.Equal((TextRotation.CounterClockwise90, (float)p), (xTitle.Style.Rotation, xTitle.Position.X));
+        Assert.Equal(TextRotation.None, yTitle.Style.Rotation);
+        Assert.True(yTitle.Position.Y > g.Top + g.Height);
+
+        var grid = list.Polylines[..(g.X.Count + g.Y.Count)].ToArray();
+        var ends = grid.Select(l => list.Segments[l.SegmentStart]).ToArray();
+        Assert.All(ends[..g.Y.Count], s => Assert.Equal(s.Start.X, s.End.X));
+        Assert.All(ends[g.Y.Count..], s => Assert.Equal(s.Start.Y, s.End.Y));
+        Assert.True(ends[g.Y.Count].Start.Y > g.Top + (g.Height / 2));
+
+        // x reversed: its lowest tick is at the top; y not reversed: its lowest at the left.
+        using var reversed = Plan(1);
+        var reversedList = reversed.Render(spec with { ScaleX = Scale.Linear().WithTitle("X") with { Reverse = true } });
+        var r = reversed.Guides;
+        var reversedEnds = reversedList.Polylines[..(r.X.Count + r.Y.Count)].ToArray().Select(l => reversedList.Segments[l.SegmentStart]).ToArray();
+        Assert.True(reversedEnds[r.Y.Count].Start.Y < r.Top + (r.Height / 2));
+        Assert.True(reversedEnds[0].Start.X < r.Left + (r.Width / 2));
+    }
+
     /// <summary>A target too small for a panel draws only the background and throws nothing (design §4.6).</summary>
     /// <remarks>
     /// Preconditions:

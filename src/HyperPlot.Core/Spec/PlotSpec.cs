@@ -23,4 +23,7 @@ public sealed record PlotSpec : SpecNode
 
     /// <summary>Gets the theme of the guides: <see cref="Theme.Light"/> by default (design §4.7).</summary>
     public Theme Theme { get; init; } = Theme.Light;
+
+    /// <summary>Gets the coordinate system: <see cref="HyperPlot.Coord.Cartesian(bool)"/> without flip by default (design §4.4).</summary>
+    public CoordSpec Coord { get; init; } = HyperPlot.Coord.Cartesian();
 }

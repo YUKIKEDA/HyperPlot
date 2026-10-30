@@ -90,7 +90,7 @@ internal sealed class StepPlan : LayerPlan
             buffer[count++] = new Vector2((float)xs[i], (float)ys[i]);
         }
 
-        context.List.DrawPolyline(buffer[..count], context.Guides.Scaled(step.Style));
+        context.DrawPolyline(buffer[..count], step.Style);
     }
 }
 
@@ -138,7 +138,7 @@ internal sealed class AreaPlan : LayerPlan
             }
         }
 
-        context.List.DrawColumns(trapezoids[..count], area.Fill);
+        context.DrawColumns(trapezoids[..count], area.Fill);
         if (area.Outline is { } outline)
         {
             context.Polyline(points, xs, ys, outline);
@@ -262,7 +262,7 @@ internal sealed class BandPlan : LayerPlan
             trapezoids[count++] = new ColumnTrapezoid((float)from, (float)to, (float)low, (float)low, (float)high, (float)high);
         }
 
-        context.List.DrawColumns(trapezoids[..count], band.Fill);
+        context.DrawColumns(trapezoids[..count], band.Fill);
         if (band.Outline is { } outline)
         {
             // Over the fill; the mapped buffer holds one series at a time, so each is mapped again.
@@ -346,7 +346,7 @@ internal sealed class BarPlan : LayerPlan
                 var left = context.PixelX(d - half);
                 var right = context.PixelX(d + half);
                 var top = context.ElementY(y, i);
-                Rect(context, left, right, top, baseline, bar.Fill);
+                context.DrawRect(left, right, top, baseline, bar.Fill);
             }
 
             return;
@@ -362,24 +362,14 @@ internal sealed class BarPlan : LayerPlan
             var column = _envelope.Offset + c;
             if (_envelope.Low[c] < baseline)
             {
-                Rect(context, column, column + 1, _envelope.Low[c], baseline, bar.Fill);
+                context.DrawRect(column, column + 1, _envelope.Low[c], baseline, bar.Fill);
             }
 
             if (_envelope.High[c] > baseline)
             {
-                Rect(context, column, column + 1, _envelope.High[c], baseline, bar.Fill);
+                context.DrawRect(column, column + 1, _envelope.High[c], baseline, bar.Fill);
             }
         }
-    }
-
-    private static void Rect(RecordContext context, double x0, double x1, double y0, double y1, Color fill)
-    {
-        if (!double.IsFinite(x0) || !double.IsFinite(x1) || !double.IsFinite(y0) || !double.IsFinite(y1))
-        {
-            return;
-        }
-
-        context.List.DrawRect((float)Math.Min(x0, x1), (float)Math.Min(y0, y1), (float)Math.Abs(x1 - x0), (float)Math.Abs(y1 - y0), fill);
     }
 }
 
@@ -440,7 +430,7 @@ internal sealed class ErrorBarPlan : LayerPlan
                 }
             }
 
-            context.List.DrawPolyline(buffer[..count], context.Guides.Scaled(bars.Style));
+            context.DrawPolyline(buffer[..count], bars.Style);
             return;
         }
 
@@ -462,7 +452,7 @@ internal sealed class ErrorBarPlan : LayerPlan
             n = Segment(lines, n, center, (float)top, center, (float)bottom);
         }
 
-        context.List.DrawPolyline(lines[..n], context.Guides.Scaled(bars.Style));
+        context.DrawPolyline(lines[..n], bars.Style);
     }
 
     /// <summary>Adds a segment and a break after it to a polyline that holds many (design §5.5.3).</summary>
@@ -482,7 +472,10 @@ internal sealed class ErrorBarPlan : LayerPlan
     }
 }
 
-/// <summary>Rules: a line each up to 4W (4H) of them, else one a pixel column (row) that holds one (design §5.5.3).</summary>
+/// <summary>
+/// Rules: a line each up to 4 per pixel along the rule's data axis, else one a pixel that holds one (design §5.5.3): 4W and
+/// pixel columns for x, 4H and rows for y, the other way round when flipped.
+/// </summary>
 internal sealed class RulePlan : LayerPlan
 {
     public RulePlan(RuleLayerSpec spec)
@@ -544,9 +537,8 @@ internal sealed class RulePlan : LayerPlan
                 var next = column.LowerBound(boundaries[k + 1], origin);
                 if (next > start)
                 {
-                    // The boundaries run with the data; a reversed axis (x) or a y axis not reversed runs the pixels the other way.
-                    var flipped = vertical ? axis.Reverse : !axis.Reverse;
-                    var at = axis.Offset + (flipped ? axis.Size - k - 0.5f : k + 0.5f);
+                    // The boundaries run with the data; a descending axis runs the pixels the other way.
+                    var at = axis.Offset + (axis.Descending ? axis.Size - k - 0.5f : k + 0.5f);
                     count = vertical ? ErrorBarPlan.Segment(buffer, count, at, from, at, to) : ErrorBarPlan.Segment(buffer, count, from, at, to, at);
                 }
 
@@ -554,7 +546,7 @@ internal sealed class RulePlan : LayerPlan
             }
         }
 
-        context.List.DrawPolyline(buffer[..count], context.Guides.Scaled(rule.Style));
+        context.DrawPolyline(buffer[..count], rule.Style);
     }
 }
 
@@ -581,14 +573,9 @@ internal sealed class RectPlan : LayerPlan
         var ys1 = context.ElementPixels(rect.YMax.Column, ofX: false, 3);
         for (var i = 0; i < xs0.Length; i++)
         {
-            var (x0, x1, y0, y1) = (xs0[i], xs1[i], ys0[i], ys1[i]);
-            if (!double.IsFinite(x0) || !double.IsFinite(x1) || !double.IsFinite(y0) || !double.IsFinite(y1))
-            {
-                continue;
-            }
-
-            // Corners mapped one by one: the smaller is the top left whatever the scales' directions.
-            context.List.DrawRect((float)Math.Min(x0, x1), (float)Math.Min(y0, y1), (float)Math.Abs(x1 - x0), (float)Math.Abs(y1 - y0), rect.Fill);
+            // Corners mapped one by one: the smaller is the top left whatever the scales' directions. A corner that does
+            // not map draws nothing.
+            context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], rect.Fill);
         }
     }
 }
@@ -622,7 +609,7 @@ internal sealed class SegmentPlan : LayerPlan
             count = ErrorBarPlan.Segment(buffer, count, (float)xs0[i], (float)ys0[i], (float)xs1[i], (float)ys1[i]);
         }
 
-        context.List.DrawPolyline(buffer[..count], context.Guides.Scaled(segment.Style));
+        context.DrawPolyline(buffer[..count], segment.Style);
     }
 }
 
@@ -656,7 +643,7 @@ internal sealed class CustomPlan : LayerPlan
 
     public override void Record(RecordContext context)
     {
-        context.Frame.Open(context.X, context.Y, context.Scale);
+        context.Frame.Open(context.X, context.Y, context.Scale, context.Flipped);
         try
         {
             ((CustomLayerSpec)Spec).Geom.Record(context.Frame, context.List);

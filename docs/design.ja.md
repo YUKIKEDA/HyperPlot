@@ -745,7 +745,7 @@ public sealed class FillBuilder                          // 行 G4。Bar と Rec
 4. **x の帯**（`ShowAxes` が真のとき）: F の下に「T + G + h(`TickLabelSize`)」と、x の軸のタイトルがあれば「+ G + h(`AxisTitleSize`)」を取る。x の帯の高さは目盛りによらない
 5. パネルの高さ H = F の高さ − タイトルの帯 − x の帯。**y の目盛り**を、軸の長さ H で選ぶ（下の「目盛りの選び方」）
 6. **y の帯**（`ShowAxes` が真のとき）: F の左に「T + G + 選んだ y の目盛りのラベルの幅の最大」と、y の軸のタイトルがあれば「+ G + h(`AxisTitleSize`)」を取る
-   - **flip（行 G10、Issue #136）**: 左の帯は x のデータの軸、下の帯は y のデータの軸になる。目盛りを選ぶ順は「左の軸を先に」のままで、flip では x の目盛りを H で先に選び、そのラベルの幅が W を決め、y の目盛りを W で選ぶ。軸のタイトルは、左（x、回転）と下（y）。グリッドの線も向きを入れ替える
+   - **flip（行 G10、Issue #136）**: 左の帯は x のデータの軸、下の帯は y のデータの軸になる。目盛りを選ぶ順は「左の軸を先に」のままで、flip では x の目盛りを H で先に選び、そのラベルの幅が W を決め、y の目盛りを W で選ぶ。目標の間隔とラベルの大きさは軸の向きに付いたままで、x は `TickSpacingY` とラベルの高さ、y は `TickSpacingX` とラベルの幅で選ぶ（Issue #140 で決めた。既定の 100 と 60 は横に長いラベルと 1 行の高さに合わせた値なので、flip しても画面の密度が変わらない）。軸のタイトルは、左（x、回転）と下（y）。グリッドの線も向きを入れ替える
 7. パネルの幅 W = F の幅 − y の帯 − 凡例の帯。**x の目盛り**を、軸の長さ W で選ぶ
 8. W か H が 1 未満なら、背景だけを描き、データも軸も描かない。例外にしない。ホストがウィンドウを小さくしただけで投げないためである（Issue #111）
 
@@ -773,7 +773,7 @@ public sealed class FillBuilder                          // 行 G4。Bar と Rec
 
 #### 目盛りの選び方
 
-共通の量: 軸の長さ L（W か H、画素）、目標の密度 ρt = 1 / (`TickSpacingX` か `TickSpacingY` · s)（画素あたりのラベルの数）、em = `TickLabelSize` · s、ラベルの軸に沿った大きさ（x はラベルを測った幅、y は h(`TickLabelSize`)）。ラベルは下の「書式」で書き、`TextEngine.Measure` で測る（整形のキャッシュ、§5.6）。
+共通の量: 軸の長さ L（W か H、画素）、目標の密度 ρt = 1 / (`TickSpacingX` か `TickSpacingY` · s)（画素あたりのラベルの数。`TickSpacingX` は下の横の軸、`TickSpacingY` は左の縦の軸に当て、flip でも画面の向きで決める）、em = `TickLabelSize` · s、ラベルの軸に沿った大きさ（下の横の軸はラベルを測った幅、左の縦の軸は h(`TickLabelSize`)）。ラベルは下の「書式」で書き、`TextEngine.Measure` で測る（整形のキャッシュ、§5.6）。
 
 - **重なりの値**: 隣り合うラベルの、軸に沿った間 d（画素）ごとに、d ≥ 1.5 em なら 1、0 < d < 1.5 em なら 2 − 1.5 em / d、d ≤ 0 なら −∞ とし、その最小を取る（Talbot ら 2010 §4.4.4。目盛りが 1 つなら 1）
 
@@ -872,8 +872,8 @@ public sealed record Theme                    // コンストラクタは privat
     public float Padding { get; init; }          // 描画先の縁と図の間
     public float Spacing { get; init; }          // タイトル・凡例・軸・ラベルの間
     public float LegendSwatch { get; init; }     // 凡例の線の見本の長さ
-    public float TickSpacingX { get; init; }     // 目盛りの目標の間隔（§4.6 の ρt）
-    public float TickSpacingY { get; init; }
+    public float TickSpacingX { get; init; }     // 下の横の軸の目盛りの目標の間隔（§4.6 の ρt）。flip でも下の軸
+    public float TickSpacingY { get; init; }     // 左の縦の軸の目盛りの目標の間隔
     public bool ShowAxes { get; init; }          // 軸の線・目盛り・ラベル・軸のタイトル
     public bool ShowGrid { get; init; }
 }

@@ -49,6 +49,57 @@ public sealed class ColumnTests
     public void Crossing_PaintsTheBowTie() => Check((new ColumnTrapezoid(4.5f, 27.5f, 6.25f, 25.75f, 20f, 10f), new Color(30, 120, 200, 160)));
 
     /// <summary>
+    /// A horizontal trapezoid (row G10) is a vertical one with x and y swapped: Left and Right are rows, and the edges are x
+    /// values, for sloped, steep, narrow, and crossing edges (design §5.1).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The trapezoids of the sloped, steep, narrow, and bow-tie cases above, drawn with ColumnAxis.Horizontal.
+    ///
+    /// Steps:
+    /// - Draw them; read back.
+    ///
+    /// Expected:
+    /// - Within 1 of the vertical reference of the same trapezoids, transposed.
+    /// </remarks>
+    [Fact]
+    public void Horizontal_IsTheVerticalReferenceTransposed()
+    {
+        (ColumnTrapezoid Column, Color Color)[] columns =
+        [
+            (new ColumnTrapezoid(2.25f, 9.5f, 4.3f, 7.9f, 18.6f, 15.1f), new Color(20, 40, 160, 255)),
+            (new ColumnTrapezoid(12f, 15f, 2.5f, 22.7f, 28f, 28f), new Color(200, 60, 20, 255)),
+            (new ColumnTrapezoid(20.2f, 20.6f, 5.5f, 6.1f, 12.25f, 12.25f), new Color(0, 0, 0, 255)),
+            (new ColumnTrapezoid(4.5f, 27.5f, 6.25f, 25.75f, 20f, 10f), new Color(30, 120, 200, 160)),
+        ];
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(Size, Size));
+        var list = new RenderList();
+        foreach (var (column, color) in columns)
+        {
+            list.DrawColumns([column], color, ColumnAxis.Horizontal);
+        }
+
+        target.Clear(Background);
+        backend.Draw(target, list);
+        var actual = new byte[Size * Size * 4];
+        target.ReadPixels(actual);
+
+        var vertical = Reference(columns.Select(c => (c.Column, c.Color, ((int, int, int, int)?)null)).ToArray());
+        var expected = new byte[vertical.Length];
+        for (var row = 0; row < Size; row++)
+        {
+            for (var col = 0; col < Size; col++)
+            {
+                vertical.AsSpan(((col * Size) + row) * 4, 4).CopyTo(expected.AsSpan(((row * Size) + col) * 4, 4));
+            }
+        }
+
+        AssertClose(expected, actual);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawColumns([columns[0].Column], columns[0].Color, (ColumnAxis)2));
+    }
+
+    /// <summary>
     /// A trapezoid with a coordinate that is not finite, or with Left at or past Right, draws nothing; the clip holds them
     /// (design §5.1).
     /// </summary>

@@ -5,8 +5,9 @@ namespace HyperPlot;
 
 /// <summary>
 /// The layout of a plot's guides and their recording (design §4.6): from the figure's rectangle, the title, the legend, the
-/// x band, the y ticks, the y band, and the x ticks, in that order, leave the panel; the guides are then recorded around
-/// the data, behind it (panel, grid) and over it (axes, labels, titles, legend). Lengths are DIPs times the scale.
+/// bottom band, the left ticks, the left band, and the bottom ticks, in that order, leave the panel; the guides are then
+/// recorded around the data, behind it (panel, grid) and over it (axes, labels, titles, legend). x is on the bottom and y
+/// on the left, or the other way round when the coordinate system is flipped (row G10). Lengths are DIPs times the scale.
 /// </summary>
 /// <remarks>One thread at a time uses the guides, the plan's. Allocates only for labels and shapes not seen before.</remarks>
 internal sealed class PlotGuides
@@ -29,10 +30,13 @@ internal sealed class PlotGuides
     }
 
     /// <summary>Gets the ticks of x.</summary>
-    internal TickAxis X { get; } = new() { Horizontal = true };
+    internal TickAxis X { get; } = new();
 
     /// <summary>Gets the ticks of y.</summary>
-    internal TickAxis Y { get; } = new() { Horizontal = false };
+    internal TickAxis Y { get; } = new();
+
+    /// <summary>Gets a value indicating whether the last layout put x on the left and y on the bottom (row G10).</summary>
+    internal bool Flipped { get; private set; }
 
     /// <summary>Gets the panel's left edge, in whole pixels.</summary>
     internal int Left { get; private set; }
@@ -56,13 +60,19 @@ internal sealed class PlotGuides
     internal int Round(float dips) => (int)MathF.Floor((dips * _scale) + 0.5f);
 
     /// <summary>
-    /// Lays the guides out (design §4.6): the bands, the panel, the ticks of y then x, and the domains nice widens. The
-    /// domains are the learned ones in the scale space; nice applies to a scale that asks for it and whose domain is learned.
+    /// Lays the guides out (design §4.6): the bands, the panel, the ticks of the left axis then the bottom one, and the
+    /// domains nice widens. The domains are the learned ones in the scale space; nice applies to a scale that asks for it
+    /// and whose domain is learned. The tick spacings go with the sides: <see cref="Theme.TickSpacingX"/> on the bottom.
     /// </summary>
     internal void Layout(PlotSpec spec, IScale? xTransform, ScaleRange x, IScale? yTransform, ScaleRange y)
     {
         var theme = spec.Theme;
-        var (xScale, yScale) = ((ContinuousScaleSpec)spec.ScaleX, (ContinuousScaleSpec)spec.ScaleY);
+        Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
+        var (bottom, bottomScale) = Bottom(spec);
+        var (side, sideScale) = Side(spec);
+        var (bottomTransform, bottomDomain, sideTransform, sideDomain) = Flipped ? (yTransform, y, xTransform, x) : (xTransform, x, yTransform, y);
+        bottom.Horizontal = true;
+        side.Horizontal = false;
         var padding = Round(theme.Padding);
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
@@ -81,35 +91,35 @@ internal sealed class PlotGuides
         var titleStyle = Style(theme, theme.AxisTitleSize);
         var lineHeight = _text.Measure("0", tickStyle).Height;
         var titleHeight = _text.Measure("0", titleStyle).Height;
-        var xBand = 0;
+        var bottomBand = 0;
         if (theme.ShowAxes)
         {
-            xBand = tick + gap + Ceiling(lineHeight) + (HasText(xScale.Title) ? gap + Ceiling(titleHeight) : 0);
+            bottomBand = tick + gap + Ceiling(lineHeight) + (HasText(bottomScale.Title) ? gap + Ceiling(titleHeight) : 0);
         }
 
         Top = figureTop + titleBand;
-        Height = figureBottom - xBand - Top;
-        Prepare(Y, yScale, yTransform, y, Height, theme.TickSpacingY, tickStyle, lineHeight, theme);
-        var yBand = 0;
+        Height = figureBottom - bottomBand - Top;
+        Prepare(side, sideScale, sideTransform, sideDomain, Height, theme.TickSpacingY, tickStyle, lineHeight, theme);
+        var sideBand = 0;
         if (theme.ShowAxes)
         {
             var widest = 0f;
-            foreach (var label in Y.TickLabels)
+            foreach (var label in side.TickLabels)
             {
                 widest = label.Length == 0 ? widest : MathF.Max(widest, _text.Measure(label, tickStyle).Width);
             }
 
-            yBand = tick + gap + Ceiling(widest) + (HasText(yScale.Title) ? gap + Ceiling(titleHeight) : 0);
+            sideBand = tick + gap + Ceiling(widest) + (HasText(sideScale.Title) ? gap + Ceiling(titleHeight) : 0);
         }
 
-        Left = figureLeft + yBand;
+        Left = figureLeft + sideBand;
         Width = figureRight - legendBand - Left;
         if (Empty)
         {
             return;
         }
 
-        Prepare(X, xScale, xTransform, x, Width, theme.TickSpacingX, tickStyle, lineHeight, theme);
+        Prepare(bottom, bottomScale, bottomTransform, bottomDomain, Width, theme.TickSpacingX, tickStyle, lineHeight, theme);
     }
 
     /// <summary>Records what goes behind the data (design §4.6): the panel and the grid.</summary>
@@ -125,15 +135,17 @@ internal sealed class PlotGuides
         list.SetClip(Left, Top, Width, Height);
         var grid = new LineStyle(theme.GridColor, theme.GridWidth * _scale);
         var width = Round(theme.GridWidth);
-        foreach (var pixel in X.Pixels)
+        var (bottom, bottomScale) = Bottom(spec);
+        foreach (var pixel in bottom.Pixels)
         {
-            var at = Snap(XOf(spec, pixel), width);
+            var at = Snap(HorizontalOf(bottomScale, pixel), width);
             Line(list, new Vector2(at, Top), new Vector2(at, Top + Height), grid);
         }
 
-        foreach (var pixel in Y.Pixels)
+        var (side, sideScale) = Side(spec);
+        foreach (var pixel in side.Pixels)
         {
-            var at = Snap(YOf(spec, pixel), width);
+            var at = Snap(VerticalOf(sideScale, pixel), width);
             Line(list, new Vector2(Left, at), new Vector2(Left + Width, at), grid);
         }
 
@@ -241,11 +253,19 @@ internal sealed class PlotGuides
         axis.Choose(scale.Nice && learned);
     }
 
-    /// <summary>The x pixel on the target of a pixel along the x axis: left to right, or right to left when reversed.</summary>
-    private double XOf(PlotSpec spec, double pixel) => Left + (((ContinuousScaleSpec)spec.ScaleX).Reverse ? Width - pixel : pixel);
+    /// <summary>Returns the axis and the scale on the bottom: x, or y when flipped.</summary>
+    private (TickAxis Axis, ContinuousScaleSpec Scale) Bottom(PlotSpec spec) =>
+        Flipped ? (Y, (ContinuousScaleSpec)spec.ScaleY) : (X, (ContinuousScaleSpec)spec.ScaleX);
 
-    /// <summary>The y pixel on the target of a pixel along the y axis: bottom to top, or top to bottom when reversed.</summary>
-    private double YOf(PlotSpec spec, double pixel) => Top + (((ContinuousScaleSpec)spec.ScaleY).Reverse ? pixel : Height - pixel);
+    /// <summary>Returns the axis and the scale on the left: y, or x when flipped.</summary>
+    private (TickAxis Axis, ContinuousScaleSpec Scale) Side(PlotSpec spec) =>
+        Flipped ? (X, (ContinuousScaleSpec)spec.ScaleX) : (Y, (ContinuousScaleSpec)spec.ScaleY);
+
+    /// <summary>The target's x pixel of a pixel along the bottom axis: left to right, or right to left when reversed.</summary>
+    private double HorizontalOf(ContinuousScaleSpec scale, double pixel) => Left + (scale.Reverse ? Width - pixel : pixel);
+
+    /// <summary>The target's y pixel of a pixel along the left axis: bottom to top, or top to bottom when reversed.</summary>
+    private double VerticalOf(ContinuousScaleSpec scale, double pixel) => Top + (scale.Reverse ? pixel : Height - pixel);
 
     private void RecordAxes(RenderList list, PlotSpec spec, Theme theme, int gap, int tick, int padding)
     {
@@ -262,17 +282,19 @@ internal sealed class PlotGuides
         Line(list, new Vector2(yLine, Top), new Vector2(yLine, xLine), axis);
 
         var labelStyle = Style(theme, theme.TickLabelSize);
-        var xLabels = X.TickLabels;
-        var xPixels = X.Pixels;
-        for (var i = 0; i < xPixels.Length; i++)
+        var (bottom, bottomScale) = Bottom(spec);
+        var (side, sideScale) = Side(spec);
+        var bottomLabels = bottom.TickLabels;
+        var bottomPixels = bottom.Pixels;
+        for (var i = 0; i < bottomPixels.Length; i++)
         {
-            var at = Snap(XOf(spec, xPixels[i]), tickPixels);
+            var at = Snap(HorizontalOf(bottomScale, bottomPixels[i]), tickPixels);
             Line(list, new Vector2(at, xLine), new Vector2(at, MathF.Max(xLine, Top + Height + tick - halfTick)), ticks);
-            if (xLabels[i].Length > 0)
+            if (bottomLabels[i].Length > 0)
             {
                 list.DrawText(
-                    xLabels[i],
-                    new Vector2(at - (X.Extents[i] / 2), Top + Height + tick + gap),
+                    bottomLabels[i],
+                    new Vector2(at - (bottom.Extents[i] / 2), Top + Height + tick + gap),
                     labelStyle with
                     {
                         Horizontal = TextAlign.Left,
@@ -282,17 +304,17 @@ internal sealed class PlotGuides
             }
         }
 
-        var yLabels = Y.TickLabels;
-        var yPixels = Y.Pixels;
-        for (var i = 0; i < yPixels.Length; i++)
+        var sideLabels = side.TickLabels;
+        var sidePixels = side.Pixels;
+        for (var i = 0; i < sidePixels.Length; i++)
         {
-            var at = Snap(YOf(spec, yPixels[i]), tickPixels);
+            var at = Snap(VerticalOf(sideScale, sidePixels[i]), tickPixels);
             Line(list, new Vector2(yLine, at), new Vector2(MathF.Min(yLine, Left - tick + halfTick), at), ticks);
-            if (yLabels[i].Length > 0)
+            if (sideLabels[i].Length > 0)
             {
                 list.DrawText(
-                    yLabels[i],
-                    new Vector2(Left - tick - gap - _text.Measure(yLabels[i], labelStyle).Width, at),
+                    sideLabels[i],
+                    new Vector2(Left - tick - gap - _text.Measure(sideLabels[i], labelStyle).Width, at),
                     labelStyle with
                     {
                         Horizontal = TextAlign.Left,
@@ -303,11 +325,11 @@ internal sealed class PlotGuides
         }
 
         var titleStyle = Style(theme, theme.AxisTitleSize);
-        if (((ContinuousScaleSpec)spec.ScaleX).Title is { Length: > 0 } xTitle)
+        if (bottomScale.Title is { Length: > 0 } bottomTitle)
         {
             list.DrawText(
-                xTitle,
-                new Vector2(Left + (Width / 2f) - (_text.Measure(xTitle, titleStyle).Width / 2), _height - padding),
+                bottomTitle,
+                new Vector2(Left + (Width / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -316,11 +338,11 @@ internal sealed class PlotGuides
             );
         }
 
-        if (((ContinuousScaleSpec)spec.ScaleY).Title is { Length: > 0 } yTitle)
+        if (sideScale.Title is { Length: > 0 } sideTitle)
         {
             list.DrawText(
-                yTitle,
-                new Vector2(padding, Top + (Height / 2f) + (_text.Measure(yTitle, titleStyle).Width / 2)),
+                sideTitle,
+                new Vector2(padding, Top + (Height / 2f) + (_text.Measure(sideTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
