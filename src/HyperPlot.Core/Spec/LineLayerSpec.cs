@@ -16,7 +16,4 @@ public sealed record LineLayerSpec : LayerSpec
     /// renderer's scale (design §4.6).
     /// </summary>
     public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
-
-    /// <summary>Gets the legend's label; null or empty leaves the layer out of the legend.</summary>
-    public string? Label { get; init; }
 }
