@@ -124,7 +124,11 @@ public sealed class TextEngine
             }
             else if (command.Kind == RenderCommandKind.Rect)
             {
-                AddRect(command.Index, list.RectClips[command.Index]);
+                AddRun(DrawStepKind.Rects, command.Index, list.RectClips[command.Index]);
+            }
+            else if (command.Kind == RenderCommandKind.Columns)
+            {
+                AddRun(DrawStepKind.Columns, command.Index, list.ColumnClips[command.Index]);
             }
             else if (!TryPlace(texts[command.Index], width, height))
             {
@@ -281,20 +285,21 @@ public sealed class TextEngine
         AddStep(new DrawStep(DrawStepKind.Glyphs, _instanceCount - 1, 1, page, clip));
     }
 
-    private void AddRect(int index, ClipRect clip)
+    private void AddRun(DrawStepKind kind, int index, ClipRect clip)
     {
-        // Rectangles that follow one another under the same clip are one step: their records are in order (design §5.3).
+        // Rectangles or column trapezoids that follow one another under the same clip are one step: their records are in
+        // order (design §5.3).
         if (_stepCount > 0)
         {
             ref var last = ref _steps[_stepCount - 1];
-            if (last.Kind == DrawStepKind.Rects && last.Clip == clip)
+            if (last.Kind == kind && last.Clip == clip)
             {
                 last = last with { Count = last.Count + 1 };
                 return;
             }
         }
 
-        AddStep(new DrawStep(DrawStepKind.Rects, index, 1, 0, clip));
+        AddStep(new DrawStep(kind, index, 1, 0, clip));
     }
 
     private void AddStep(in DrawStep step)
@@ -368,6 +373,9 @@ internal enum DrawStepKind : byte
 
     /// <summary>Rectangles under one clip: a range of <see cref="RenderList.Rects"/>.</summary>
     Rects,
+
+    /// <summary>Column trapezoids under one clip: a range of <see cref="RenderList.Columns"/>.</summary>
+    Columns,
 }
 
 /// <summary>One step of a backend's <c>Draw</c>, in the order of the list's commands.</summary>

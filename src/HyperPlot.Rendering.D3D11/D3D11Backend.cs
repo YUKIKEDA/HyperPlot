@@ -25,6 +25,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly D3D11LinePipeline _lines;
     private readonly D3D11GlyphPipeline _glyphs;
     private readonly D3D11RectPipeline _rects;
+    private readonly D3D11ColumnPipeline _columns;
     private readonly DWriteTextBackend? _directWrite;
     private readonly D3D11FrameTimer _timer;
     private long[] _open = new long[8];
@@ -43,6 +44,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _lines = new D3D11LinePipeline(this);
         _glyphs = new D3D11GlyphPipeline(this);
         _rects = new D3D11RectPipeline(this);
+        _columns = new D3D11ColumnPipeline(this);
         _timer = new D3D11FrameTimer(this);
         if (text is null)
         {
@@ -104,6 +106,8 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     internal D3D11GlyphPipeline Glyphs => _glyphs;
 
     internal D3D11RectPipeline Rects => _rects;
+
+    internal D3D11ColumnPipeline Columns => _columns;
 
     /// <summary>Gets the DirectWrite text backend, or null when a test gave the backend a text engine of its own.</summary>
     internal DWriteTextBackend? DirectWrite => _directWrite;
@@ -188,6 +192,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
         _lines.Upload(list);
         _rects.Upload(list.Rects);
+        _columns.Upload(list.Columns);
         var polylines = list.Polylines;
         DrawStepKind? bound = null;
         foreach (ref readonly var step in steps)
@@ -204,8 +209,11 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     case DrawStepKind.Glyphs:
                         _glyphs.Bind(own);
                         break;
-                    default:
+                    case DrawStepKind.Rects:
                         _rects.Bind(own);
+                        break;
+                    default:
+                        _columns.Bind(own);
                         break;
                 }
 
@@ -220,8 +228,11 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                 case DrawStepKind.Glyphs:
                     _glyphs.Draw(own, step);
                     break;
-                default:
+                case DrawStepKind.Rects:
                     _rects.Draw(own, step);
+                    break;
+                default:
+                    _columns.Draw(own, step);
                     break;
             }
         }
@@ -242,6 +253,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                 break;
             case DrawStepKind.Rects:
                 _rects.Unbind();
+                break;
+            case DrawStepKind.Columns:
+                _columns.Unbind();
                 break;
             default:
                 break;
@@ -398,6 +412,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             _lines.Make();
             _glyphs.Make();
             _rects.Make();
+            _columns.Make();
             _timer.Make();
         }
         catch (InvalidOperationException)
@@ -447,6 +462,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private void ReleaseDevice()
     {
         _timer.Release();
+        _columns.Release();
         _rects.Release();
         _glyphs.Release();
         _lines.Release();
