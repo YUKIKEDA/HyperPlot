@@ -19,8 +19,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 
 - **フェーズ:** B（GoG）
 - **作業中:** G3（T1 は #104 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **ブランチ:** `docs/111-g3-guides`（設計）
+- **Issue:** [#111](https://github.com/YUKIKEDA/HyperPlot/issues/111)（設計）
 
 ## ツールチェーン
 
@@ -50,17 +50,17 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計と実装（`ScaleOrigin`、M4 と `PlotWorkerPool.Extract` の原点、整数の等間隔の列 `Column.UniformInteger`、コンパイルの中の domain、R-6 のテスト、M4 の前後の計測） | done | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11)（設計）、[#85](https://github.com/YUKIKEDA/HyperPlot/issues/85) |
 | G2 | 位置のスケール（linear の zero・reverse・clamp、log・symlog・sqrt・power、time の単位と起点（既定は .NET のティック、ns・µs の Unix 起点、日時の domain を `long` で正確に指定する口、§3.1・§4.2）、変換を足す口 `IScale`、log と linear の描き直しの計測） | done | [#94](https://github.com/YUKIKEDA/HyperPlot/issues/94)（設計）、[#95](https://github.com/YUKIKEDA/HyperPlot/issues/95) |
 | T1 | テキスト（`RenderList.DrawText` と `HeadlessRenderer.MeasureText`、契約 `ITextBackend`、DirectWrite の整形とグレースケールのラスタライズ、グリフのアトラス、グリフのパイプライン、`HelloPlot` の見出し、ラベルの描き直しの計測） | done | [#103](https://github.com/YUKIKEDA/HyperPlot/issues/103)（設計）、[#104](https://github.com/YUKIKEDA/HyperPlot/issues/104) |
-| G3 | ガイドと配置（軸・凡例・タイトル・テーマ）、目盛り（線形・log の 10 の冪・日時の暦の粒度、§4.6）と nice（要件 G-6） | not-started | |
+| G3 | ガイドと配置（x と y の軸・線のレイヤーの凡例・タイトル・テーマ・DPI の倍率）、目盛り（Wilkinson の拡張・log の 10 の冪・symlog・日時の暦の段、§4.6）と nice（要件 G-6）、塗りつぶしの矩形 `DrawRect`、`SpecPlot` のサンプル、ガイドの CPU 時間の計測 | in-progress | [#111](https://github.com/YUKIKEDA/HyperPlot/issues/111)（設計） |
 | G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image）、Geom を足す口（`IGeom`）、`RenderList.SetTransform`（§3.6）と座標系の 4×4 の変換の契約（§4.4）、線のマイターと面取りの結合・平らと四角の端・3 つ以上の区間の破線 | not-started | |
-| G7 | 色とカテゴリのスケール（band・point・ordinal・sequential・diverging）、名前つきの色（`Colors`）とパレット、列で色を分けるチャネル、カテゴリの列 `CategoricalColumn`（§3.1・§4.2・§5.2） | not-started | |
+| G7 | 色とカテゴリのスケール（band・point・ordinal・sequential・diverging）、名前つきの色（`Colors`）とパレット、列で色を分けるチャネル、カテゴリの列 `CategoricalColumn`（§3.1・§4.2・§5.2）、連続のカラーバーの凡例と、テーマが決める系列の既定の色（§4.6・§4.7） | not-started | |
 | G5 | Stat と Position | not-started | |
-| G6 | ファセットと複数のプロット | not-started | |
+| G6 | ファセットと複数のプロット、二次軸（要件 G-9）と上や右に置く軸（§4.6） | not-started | |
 | **C: インタラクションと WPF** | | | |
-| I1 | 入力のモデル、ツールの状態機械、ビューの操作（原点の付け直し、§6.2）、ズームの履歴 | not-started | |
-| W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2） | not-started | |
+| I1 | 入力のモデル、ツールの状態機械、ビューの操作（原点の付け直し、§6.2）、ズームの履歴、ズーム中に新しい目盛りのラベルで確保しないこと（span を受ける `DrawText` と確保しない整形、§4.6・不変条件 3） | not-started | |
+| W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI とその変化での描き直し、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2）、プロットの要約をアクセシビリティの API に渡すこと（要件 N-10、§4.6） | not-started | |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6） | not-started | |
 | I3 | 選択とリンク | not-started | |
-| I4 | 注釈と計測 | not-started | |
+| I4 | 注釈と計測、注記（要件 G-10、§4.6） | not-started | |
 | **D: 散布の大規模化とストリーミング** | | | |
 | C3 | 空間タイル索引（Morton 順の並べ直し、四分木の表） | not-started | |
 | R3 | 密度タイルと生の点の切り替え、常駐キャッシュ（`ResidencyCache`）と喪失の後の作り直し | not-started | |
