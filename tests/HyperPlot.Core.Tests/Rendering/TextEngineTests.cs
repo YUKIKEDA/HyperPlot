@@ -848,4 +848,51 @@ public sealed class TextEngineTests
 
         return records;
     }
+
+    /// <summary>
+    /// Rectangles that follow one another under one clip are one step, and a polyline, a text, or another clip starts a new
+    /// one (design §5.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A list: two rectangles, a polyline, a rectangle, a clip, two rectangles, a text, a rectangle.
+    ///
+    /// Steps:
+    /// - Prepare it.
+    ///
+    /// Expected:
+    /// - Steps of rectangles (0, 2), a polyline, (2, 1), (3, 2) under the clip, glyphs, (5, 1).
+    /// </remarks>
+    [Fact]
+    public void Prepare_RectsJoinUnderOneClip()
+    {
+        var engine = new TextEngine(new FakeTextBackend());
+        var list = new RenderList();
+        var black = new Color(0, 0, 0, 255);
+        list.DrawRect(0, 0, 2, 2, black);
+        list.DrawRect(3, 0, 2, 2, black);
+        list.DrawPolyline([new(0, 0), new(5, 5)], new LineStyle(black, 1));
+        list.DrawRect(6, 0, 2, 2, black);
+        list.SetClip(0, 0, 50, 50);
+        list.DrawRect(9, 0, 2, 2, black);
+        list.DrawRect(12, 0, 2, 2, black);
+        list.DrawText("A", new System.Numerics.Vector2(20, 20), new TextStyle(black, 12));
+        list.DrawRect(15, 0, 2, 2, black);
+        engine.Prepare(list, 100, 100);
+
+        var steps = engine.Steps.ToArray();
+        Assert.Equal(
+            [
+                (DrawStepKind.Rects, 0, 2),
+                (DrawStepKind.Polyline, 0, 1),
+                (DrawStepKind.Rects, 2, 1),
+                (DrawStepKind.Rects, 3, 2),
+                (DrawStepKind.Glyphs, 0, 1),
+                (DrawStepKind.Rects, 5, 1),
+            ],
+            steps.Select(s => (s.Kind, s.Index, s.Count)).ToArray()
+        );
+        Assert.Equal(ClipRect.All, steps[2].Clip);
+        Assert.Equal(new ClipRect(0, 0, 50, 50), steps[3].Clip);
+    }
 }

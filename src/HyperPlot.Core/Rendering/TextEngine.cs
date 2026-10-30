@@ -100,7 +100,8 @@ public sealed class TextEngine
 
     /// <summary>
     /// Turns a list's commands into steps for a backend's <c>Draw</c> (design §5.6): a polyline is a step of its own, and the
-    /// glyphs of the texts that follow one another go into one step until the page or the clip changes. Shapes what the
+    /// glyphs of the texts that follow one another go into one step until the page or the clip changes, and so do the
+    /// rectangles that follow one another until the clip changes. Shapes what the
     /// cache lacks, places in the atlas what it lacks, and starts a new <c>Draw</c> of the atlas.
     /// </summary>
     /// <param name="list">The commands.</param>
@@ -120,6 +121,10 @@ public sealed class TextEngine
             if (command.Kind == RenderCommandKind.Polyline)
             {
                 AddStep(new DrawStep(DrawStepKind.Polyline, command.Index, 1, 0, list.Polylines[command.Index].Clip));
+            }
+            else if (command.Kind == RenderCommandKind.Rect)
+            {
+                AddRect(command.Index, list.RectClips[command.Index]);
             }
             else if (!TryPlace(texts[command.Index], width, height))
             {
@@ -276,6 +281,22 @@ public sealed class TextEngine
         AddStep(new DrawStep(DrawStepKind.Glyphs, _instanceCount - 1, 1, page, clip));
     }
 
+    private void AddRect(int index, ClipRect clip)
+    {
+        // Rectangles that follow one another under the same clip are one step: their records are in order (design §5.3).
+        if (_stepCount > 0)
+        {
+            ref var last = ref _steps[_stepCount - 1];
+            if (last.Kind == DrawStepKind.Rects && last.Clip == clip)
+            {
+                last = last with { Count = last.Count + 1 };
+                return;
+            }
+        }
+
+        AddStep(new DrawStep(DrawStepKind.Rects, index, 1, 0, clip));
+    }
+
     private void AddStep(in DrawStep step)
     {
         if (_stepCount == _steps.Length)
@@ -344,12 +365,15 @@ internal enum DrawStepKind : byte
 
     /// <summary>Glyphs of one atlas page under one clip: a range of <see cref="TextEngine.Instances"/>.</summary>
     Glyphs,
+
+    /// <summary>Rectangles under one clip: a range of <see cref="RenderList.Rects"/>.</summary>
+    Rects,
 }
 
 /// <summary>One step of a backend's <c>Draw</c>, in the order of the list's commands.</summary>
 /// <param name="Kind">What it draws.</param>
-/// <param name="Index">The polyline, or the first glyph record.</param>
-/// <param name="Count">The number of glyph records; 1 for a polyline.</param>
+/// <param name="Index">The polyline, the first glyph record, or the first rectangle.</param>
+/// <param name="Count">The number of glyph records or rectangles; 1 for a polyline.</param>
 /// <param name="Page">The atlas page of the glyphs.</param>
 /// <param name="Clip">The clip of the glyphs or of the polyline.</param>
 internal readonly record struct DrawStep(DrawStepKind Kind, int Index, int Count, int Page, ClipRect Clip);

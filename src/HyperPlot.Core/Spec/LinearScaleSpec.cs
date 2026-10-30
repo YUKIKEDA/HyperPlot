@@ -6,6 +6,12 @@ public sealed record LinearScaleSpec : ContinuousScaleSpec
     /// <summary>Gets the domain, or null to learn it from the data. A domain is finite, with Min below Max.</summary>
     public (double Min, double Max)? Domain { get; init; }
 
+    /// <summary>Gets the format of the tick labels, or null for the default (design §4.6).</summary>
+    public TickFormatter? TickFormat { get; init; }
+
+    /// <inheritdoc />
+    internal override TickFormatter? NumericFormat => TickFormat;
+
     /// <summary>Gets a value indicating whether a learned domain is widened to hold 0. A given domain is kept as it is.</summary>
     public bool Zero { get; init; }
 

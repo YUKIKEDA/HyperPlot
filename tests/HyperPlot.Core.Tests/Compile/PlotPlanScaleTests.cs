@@ -101,7 +101,7 @@ public sealed class PlotPlanScaleTests
 
         void Check(Column<float> y, ScaleSpec xScale, ScaleSpec yScale, Axis xAxis, Axis yAxis)
         {
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             var list = plan.Render(Spec(x, y) with { ScaleX = xScale, ScaleY = yScale });
             PlotPlanTests.AssertSameLines(ByHand(pool, x, y, xAxis, yAxis), list);
         }
@@ -128,7 +128,7 @@ public sealed class PlotPlanScaleTests
         float[] values = [3, -5, 2, 4, 6, 8, 7, 9, 5, 4, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(values);
-        using var plan = new PlotPlan(pool, 2, Height);
+        using var plan = TestPlans.Create(pool, 2, Height);
 
         var list = plan.Render(
             Spec(Column.Uniform(0, 1, values.Length), y) with
@@ -163,11 +163,11 @@ public sealed class PlotPlanScaleTests
         using var pool = new PlotWorkerPool(1);
         using var x = Column.Wrap(Enumerable.Range(0, Length).Select(i => 1_793_232_000_000_000_000L + i).ToArray());
         using var y = Column.Wrap(Enumerable.Range(0, Length).Select(_ => (float)random.NextDouble()).ToArray());
-        using var linear = new PlotPlan(pool, Width, Height);
+        using var linear = TestPlans.Create(pool, Width, Height);
         var expected = linear.Render(Spec(x, y));
         foreach (var unit in new[] { TimeUnit.Nanoseconds, TimeUnit.Ticks })
         {
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             PlotPlanTests.AssertSameLines(expected, plan.Render(Spec(x, y) with { ScaleX = Scale.Time(unit) }));
             Assert.Equal(linear.XDomain, plan.XDomain);
         }
@@ -202,8 +202,9 @@ public sealed class PlotPlanScaleTests
                 .Line(table.Col<double>("x"), table.Col<float>("small"))
                 .Line(table.Col<double>("x"), table.Col<double>("huge"))
                 .ScaleY(Scale.Pow(2))
+                .Theme(TestPlans.Bare)
                 .Build();
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             Assert.Contains("\"huge\"", Assert.Throws<InvalidOperationException>(() => plan.Render(two)).Message, StringComparison.Ordinal);
         }
 
@@ -237,7 +238,7 @@ public sealed class PlotPlanScaleTests
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(new float[] { 1, 2, 3 });
         using var doubles = Column.Wrap(new double[] { 1, 2, 3 });
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = Spec(Column.Uniform(1, 1, 3), y);
 
         Assert.Contains(
@@ -276,7 +277,7 @@ public sealed class PlotPlanScaleTests
     {
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(new float[] { 1, 2, 3 });
-        using var plan = new PlotPlan(pool, 1000, Height);
+        using var plan = TestPlans.Create(pool, 1000, Height);
 
         var exception = Assert.Throws<ArgumentException>(() =>
             plan.Render(Spec(Column.Uniform(1, 1, 3), y) with { ScaleX = Scale.Log().WithDomain(1, 1 + 1e-13) })
@@ -306,7 +307,7 @@ public sealed class PlotPlanScaleTests
     {
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Enumerable.Range(1, 100).Select(i => (float)i).ToArray());
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = Spec(Column.Uniform(1, 1, 100), y);
         _ = plan.Render(spec);
 
@@ -362,7 +363,7 @@ public sealed class PlotPlanScaleTests
         const long ticks = 639_288_288_000_000_001;
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Enumerable.Range(1, 100).Select(i => (float)i).ToArray());
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = Spec(Column.UniformInteger(ticks, 10, 100), y) with { ScaleX = Scale.Time(TimeUnit.Ticks, DateTime.UnixEpoch) };
         _ = plan.Render(spec);
 
@@ -402,8 +403,8 @@ public sealed class PlotPlanScaleTests
     {
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Enumerable.Range(1, 100).Select(i => (float)Math.Sin(i * 0.1)).ToArray());
-        using var plan = new PlotPlan(pool, Width, Height);
-        using var fresh = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
+        using var fresh = TestPlans.Create(pool, Width, Height);
         var spec = Spec(Column.Uniform(1, 1, 100), y);
         _ = plan.Render(spec with { ScaleX = Scale.Linear().WithDomain(0, 2) });
 
@@ -428,7 +429,7 @@ public sealed class PlotPlanScaleTests
     {
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(new float[] { 1, 2, 3 });
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var failure = new InvalidDataException("transform");
 
         var thrown = Assert.Throws<InvalidDataException>(() =>
@@ -467,7 +468,7 @@ public sealed class PlotPlanScaleTests
             }
         )
         {
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             foreach (var warm in new[] { zooms[0], zooms[1], zooms[0], zooms[1], zooms[0] })
             {
                 _ = plan.Render(warm);
@@ -511,7 +512,7 @@ public sealed class PlotPlanScaleTests
     {
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(new float[] { 1, 2, 3 });
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var counting = new Counting();
         var spec = Spec(Column.Uniform(1, 1, 3), y) with { ScaleY = Scale.Transform(counting).WithDomain(1, 4) };
         _ = plan.Render(spec);
@@ -527,10 +528,11 @@ public sealed class PlotPlanScaleTests
         using (var y = Column.Wrap(values))
         {
             var table = DataTable.Create().Add("x", Column.Uniform(1, 1, y.Length)).Add(name, y).Build();
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             _ = plan.Render(
                 new PlotSpec
                 {
+                    Theme = TestPlans.Bare,
                     Data = table,
                     Layers = [new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<float>(name) }],
                     ScaleY = scale,
@@ -545,10 +547,11 @@ public sealed class PlotPlanScaleTests
         using (var y = Column.Wrap(values))
         {
             var table = DataTable.Create().Add("x", Column.Uniform(1, 1, y.Length)).Add(name, y).Build();
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             _ = plan.Render(
                 new PlotSpec
                 {
+                    Theme = TestPlans.Bare,
                     Data = table,
                     Layers = [new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<long>(name) }],
                     ScaleY = scale,
@@ -566,7 +569,12 @@ public sealed class PlotPlanScaleTests
             UniformColumn { IsInteger: true } or Column<long> => table.Col<long>("x"),
             _ => table.Col<double>("x"),
         };
-        return new PlotSpec { Data = table, Layers = [new LineLayerSpec { X = xRef, Y = table.Col<float>("y") }] };
+        return new PlotSpec
+        {
+            Theme = TestPlans.Bare,
+            Data = table,
+            Layers = [new LineLayerSpec { X = xRef, Y = table.Col<float>("y") }],
+        };
     }
 
     /// <summary>
@@ -606,6 +614,9 @@ public sealed class PlotPlanScaleTests
         }
 
         var list = new RenderList();
+
+        // The plan clips its data to the panel, here the whole target (row G3, design §4.8).
+        list.SetClip(0, 0, Width, Height);
         list.DrawPolyline(polyline.ToArray(), new LineStyle(new Color(0, 0, 0, 255), 1));
         return list;
     }

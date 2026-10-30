@@ -23,7 +23,7 @@ public sealed class LineBuilder
     }
 
     /// <summary>Sets the width.</summary>
-    /// <param name="width">The width in physical pixels: finite and at least 0.</param>
+    /// <param name="width">The width in DIPs, times the renderer's scale (design §4.6): finite and at least 0.</param>
     /// <returns>This builder.</returns>
     public LineBuilder Width(float width)
     {
@@ -31,8 +31,20 @@ public sealed class LineBuilder
         return this;
     }
 
+    /// <summary>Gets the label set so far.</summary>
+    internal string? LabelText { get; private set; }
+
+    /// <summary>Sets the legend's label.</summary>
+    /// <param name="label">The label; null or empty leaves the layer out of the legend.</param>
+    /// <returns>This builder.</returns>
+    public LineBuilder Label(string? label)
+    {
+        LabelText = label;
+        return this;
+    }
+
     /// <summary>Sets the dash pattern.</summary>
-    /// <param name="dash">The pattern, or null for a solid line.</param>
+    /// <param name="dash">The pattern in DIPs, or null for a solid line.</param>
     /// <returns>This builder.</returns>
     public LineBuilder Dash(LineDash? dash)
     {

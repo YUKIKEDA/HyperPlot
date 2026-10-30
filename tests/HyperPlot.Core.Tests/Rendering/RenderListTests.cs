@@ -219,4 +219,42 @@ public sealed partial class RenderListTests
 
     [GeneratedRegex("HlslSha256 = \"([0-9A-F]{64})\"")]
     private static partial Regex HashLine();
+
+    /// <summary>
+    /// DrawRect checks its arguments (design §5.1): a position that is not finite, and a width or a height that is not
+    /// finite or below 0, throw ArgumentOutOfRangeException naming it; 0 records nothing; the record is premultiplied.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An empty list.
+    ///
+    /// Steps:
+    /// - Draw rectangles with NaN and ∞ positions, negative, NaN, and ∞ sizes, a size of 0, and a valid half-transparent one.
+    ///
+    /// Expected:
+    /// - The parameter's name in each exception; no rectangle for the size 0; one record of the premultiplied color under
+    ///   the clip set before it.
+    /// </remarks>
+    [Fact]
+    public void DrawRect_Arguments()
+    {
+        var list = new RenderList();
+        var black = new Color(0, 0, 0, 255);
+        Assert.Equal("x", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawRect(float.NaN, 0, 1, 1, black)).ParamName);
+        Assert.Equal("y", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawRect(0, float.PositiveInfinity, 1, 1, black)).ParamName);
+        Assert.Equal("width", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawRect(0, 0, -1, 1, black)).ParamName);
+        Assert.Equal("width", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawRect(0, 0, float.NaN, 1, black)).ParamName);
+        Assert.Equal("height", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawRect(0, 0, 1, float.PositiveInfinity, black)).ParamName);
+        Assert.Equal("height", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawRect(0, 0, 1, -0.5f, black)).ParamName);
+        list.DrawRect(0, 0, 0, 5, black);
+        list.DrawRect(0, 0, 5, 0, black);
+        Assert.Equal(0, list.Rects.Length);
+        Assert.Equal(0, list.Commands.Length);
+
+        list.SetClip(1, 2, 3, 4);
+        list.DrawRect(1.5f, 2.5f, 3, 4, new Color(255, 128, 0, 128));
+        Assert.Equal(new RectInstance(1.5f, 2.5f, 3, 4, new System.Numerics.Vector4(128 / 255f, 64 / 255f, 0, 128 / 255f)), list.Rects[0]);
+        Assert.Equal(new ClipRect(1, 2, 4, 6), list.RectClips[0]);
+        Assert.Equal(new RenderCommand(RenderCommandKind.Rect, 0), list.Commands[0]);
+    }
 }

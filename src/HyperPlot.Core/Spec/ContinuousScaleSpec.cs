@@ -18,6 +18,18 @@ public abstract record ContinuousScaleSpec : ScaleSpec
     /// </summary>
     public bool Clamp { get; init; }
 
+    /// <summary>Gets the axis title; null or empty for none (design §4.6).</summary>
+    public string? Title { get; init; }
+
+    /// <summary>
+    /// Gets a value indicating whether a learned domain is widened to the outer ticks, so that the axis starts and ends on a
+    /// tick (design §4.6). A given domain is kept as it is. False by default.
+    /// </summary>
+    public bool Nice { get; init; }
+
+    /// <summary>Gets the tick format of a numeric scale, or null for the default; a time scale's is <see cref="TimeScaleSpec.TickFormat"/>.</summary>
+    internal abstract TickFormatter? NumericFormat { get; }
+
     /// <summary>Gets a value indicating whether a learned domain is widened to hold 0 (design §4.2). Linear, symlog, and pow.</summary>
     internal abstract bool ZeroOption { get; }
 

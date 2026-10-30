@@ -13,6 +13,8 @@ public sealed class PlotBuilder
     private readonly List<LayerSpec> _layers = [];
     private ScaleSpec? _scaleX;
     private ScaleSpec? _scaleY;
+    private string? _title;
+    private Theme? _theme;
     private bool _built;
 
     internal PlotBuilder(DataTable data) => _data = data;
@@ -53,6 +55,7 @@ public sealed class PlotBuilder
                 X = x,
                 Y = y,
                 Style = style.Style,
+                Label = style.LabelText,
             }
         );
         return this;
@@ -84,6 +87,30 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Sets the title above the plot.</summary>
+    /// <param name="title">The title; null or empty for none.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Title(string? title)
+    {
+        ThrowIfBuilt();
+        _title = title;
+        return this;
+    }
+
+    /// <summary>Sets the theme of the guides.</summary>
+    /// <param name="theme">The theme.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="theme"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Theme(Theme theme)
+    {
+        ArgumentNullException.ThrowIfNull(theme);
+        ThrowIfBuilt();
+        _theme = theme;
+        return this;
+    }
+
     /// <summary>Makes the spec. A plot of no layers draws nothing. The builder cannot be used afterwards.</summary>
     /// <returns>The spec.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Build"/> was called before.</exception>
@@ -97,6 +124,8 @@ public sealed class PlotBuilder
             Layers = [.. _layers],
             ScaleX = _scaleX ?? Scale.Linear(),
             ScaleY = _scaleY ?? Scale.Linear(),
+            Title = _title,
+            Theme = _theme ?? HyperPlot.Theme.Light,
         };
     }
 

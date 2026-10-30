@@ -21,8 +21,13 @@ public sealed class HeadlessRenderer : IDisposable
     /// The pool that builds the pyramids of the plots drawn with <see cref="Render(PlotSpec)"/>, or null for
     /// <see cref="PlotWorkerPool.Shared"/>. Its owner disposes it, after the renderer.
     /// </param>
-    /// <exception cref="ArgumentOutOfRangeException">A side is outside 1 to 16,384.</exception>
-    public HeadlessRenderer(IGpuBackend backend, int width, int height, PlotWorkerPool? pool = null)
+    /// <param name="scale">
+    /// The scale from DIPs to physical pixels that <see cref="Render(PlotSpec)"/> applies to the theme's lengths and the
+    /// layers' strokes (1.5 at 150 %, design §4.6); <see cref="Render(RenderList)"/> and <see cref="MeasureText"/> stay in
+    /// physical pixels.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">A side is outside 1 to 16,384, or the scale is not finite or not above 0.</exception>
+    public HeadlessRenderer(IGpuBackend backend, int width, int height, PlotWorkerPool? pool = null, float scale = 1)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -31,6 +36,12 @@ public sealed class HeadlessRenderer : IDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(width, RenderTargetDescription.MaxSide);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(height, RenderTargetDescription.MaxSide);
+        if (!float.IsFinite(scale) || scale <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scale), scale, "The scale is finite and above 0.");
+        }
+
+        Scale = scale;
         _backend = backend;
         _pool = pool;
         _target = backend.CreateRenderTarget(new RenderTargetDescription(width, height));
@@ -41,6 +52,9 @@ public sealed class HeadlessRenderer : IDisposable
 
     /// <summary>Gets the height in physical pixels.</summary>
     public int Height => _target.Description.Height;
+
+    /// <summary>Gets the scale from DIPs to physical pixels of <see cref="Render(PlotSpec)"/> (design §4.6).</summary>
+    public float Scale { get; }
 
     /// <summary>Fills the image with one color.</summary>
     /// <param name="color">The color.</param>
@@ -67,23 +81,31 @@ public sealed class HeadlessRenderer : IDisposable
     }
 
     /// <summary>
-    /// Draws a plot over the whole image (design §7.5): compiles it against the plot drawn last and does again only what
-    /// changed, waits until the indexes are built for the columns' current values, and draws the lines. Clear first for a
-    /// background. Once warm, drawing the same spec again allocates nothing.
+    /// Draws a plot over the whole image (design §4.6, §7.5): compiles it against the plot drawn last and does again only
+    /// what changed, waits until the indexes are built for the columns' current values, fills the image with the theme's
+    /// background, lays out the guides, and draws the lines in the panel and the axes, titles, and legend around it. Once
+    /// warm, drawing the same spec again allocates nothing; a new tick label allocates its string and its shaping (row I1
+    /// removes that).
     /// </summary>
     /// <param name="plot">The plot. Its columns stay with their owner, who disposes them after the renderer.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="plot"/>, one of its members, or a layer is null.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="plot"/>, one of its members (its theme included), or a layer is null.</exception>
     /// <exception cref="ArgumentException">
     /// The plot does not check (design §4.8): a reference that is default or names another table, a Y column that is not a
     /// <see cref="Column{T}"/>, a layer that is not a line, a scale that is not one of the position scales of
     /// <see cref="Scale"/>, a domain or a stroke out of range, a time scale over a column that is not a long date-time
-    /// column, or an x domain too narrow for the width (in the scale space, or once mapped back to data units).
+    /// column, or an x domain too narrow for the panel's width (in the scale space, or once mapped back to data units). Or
+    /// a member of the theme is out of range (design §4.7): a text size not finite, not above 0, or past 512 pixels at the
+    /// scale; a width or a length not finite or below 0; a tick spacing not finite or not above 0; a font family or a
+    /// locale null or empty.
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// A learned domain has an end that is not finite, in data units or once the scale maps it (a log scale over a value at
     /// or below 0, design §4.2), or an X column decreases or holds NaN. A failure to read a column while building its
-    /// indexes is thrown again as it was, and nothing is drawn. An exception that a user's <see cref="IScale"/> throws
-    /// comes out as it is.
+    /// indexes is thrown again as it was, and nothing is drawn. While ticks are chosen (the theme shows axes or a grid): a
+    /// time scale's domain reaches outside the years 1 to 9999, a <see cref="TickFormatter"/> or
+    /// <see cref="TimeTickFormatter"/> returns false or a length outside 0 to 64, or a default label does not fit 64
+    /// characters (design §4.6). Shaping a text failed, or the texts' glyphs need more than 8 atlas pages (design §5.6). An
+    /// exception that a user's <see cref="IScale"/> or tick format throws comes out as it is.
     /// </exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
@@ -91,8 +113,11 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height);
-        _backend.Draw(_target, _plan.Render(plot));
+        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale);
+        var list = _plan.Render(plot);
+        using var frame = _backend.BeginFrame();
+        _target.Clear(plot.Theme.Background);
+        _backend.Draw(_target, list);
     }
 
     /// <summary>

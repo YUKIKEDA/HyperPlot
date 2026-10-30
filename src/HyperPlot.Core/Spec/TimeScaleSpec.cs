@@ -18,6 +18,12 @@ public sealed record TimeScaleSpec : ContinuousScaleSpec
     /// <summary>Gets the domain in the column's unit, or null to learn it from the data. Min is below Max.</summary>
     public (long Min, long Max)? Domain { get; init; }
 
+    /// <summary>Gets the format of the tick labels, or null for the default (design §4.6).</summary>
+    public TimeTickFormatter? TickFormat { get; init; }
+
+    /// <inheritdoc />
+    internal override TickFormatter? NumericFormat => null;
+
     /// <inheritdoc />
     internal override bool ZeroOption => false;
 

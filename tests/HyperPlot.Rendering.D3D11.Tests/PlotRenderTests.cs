@@ -11,6 +11,9 @@ public sealed class PlotRenderTests
     private const int Height = 360;
     private const int Points = 100_000;
 
+    // The theme without guides of row G3 (design §4.8): the panel is the whole target, as rows G1 and G2 drew.
+    private static readonly Theme Bare = Theme.Light with { ShowAxes = false, ShowGrid = false, Padding = 0 };
+
     private static readonly Color White = new(255, 255, 255, 255);
 
     /// <summary>
@@ -56,6 +59,7 @@ public sealed class PlotRenderTests
         var spec = Plot.Create(table)
             .Line(table.Col<double>("t"), table.Col<float>("a"), l => l.Color(solid.Color).Width(solid.Width))
             .Line(table.Col<double>("xs"), table.Col<double>("b"), l => l.Color(dashed.Color).Width(dashed.Width).Dash(dashed.Dash))
+            .Theme(Bare)
             .Build();
 
         using var backend = D3D11Backend.Create(useWarp: true);
@@ -110,6 +114,7 @@ public sealed class PlotRenderTests
             .Line(table.Col<long>("t"), table.Col<float>("v"), l => l.Color(new Color(31, 119, 180, 255)).Width(1.5f))
             .ScaleX(Scale.Time(TimeUnit.Nanoseconds))
             .ScaleY(Scale.Log())
+            .Theme(Bare)
             .Build();
 
         using var backend = D3D11Backend.Create(useWarp: true);
@@ -149,6 +154,7 @@ public sealed class PlotRenderTests
                 var plot = Plot.Create(table)
                     .Line(x: table.Col<double>("t"), y: table.Col<float>("ch1"), l => l.Color(new Color(31, 119, 180, 255)).Width(1))
                     .ScaleY(Scale.Linear().WithDomain(-1, 1))
+                    .Theme(Bare)
                     .Build();
 
                 using var backend = D3D11Backend.Create(useWarp: true);
