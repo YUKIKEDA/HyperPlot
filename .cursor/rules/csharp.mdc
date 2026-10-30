@@ -47,7 +47,7 @@ _slots[index].Generation = 1;
 
 - Argument and state checks throw through `ThrowHelper` (`.cursor/rules/perf.mdc`), with one-sentence English messages that name the condition.
 - An internal invariant violation calls `Invariant.Fail` (debug: throws `InvariantViolationException`, so a test can observe it; release: `Environment.FailFast`, design §0.1). Never `Debug.Fail`: without a debugger attached it ends the process. It is not caught.
-- Public exception types are few and documented in the XML docs of the members that throw them.
+- Public exception types are few and documented in the XML docs of the members that throw them. A public member lists what its internal callees throw too: compare each internal member's `<exception>` lines with every public member that reaches it. In PR #108, `TextEngine.Prepare` threw for a glyph larger than a page, and the review found it missing from `IGpuBackend.Draw`.
 - A public type that wraps its arguments into another type's (a width into a `RenderTargetDescription`) checks them first, so that `ArgumentException.ParamName` is the caller's name. PR #39's `HeadlessRenderer(backend, 0, 100)` first threw for `description`.
 - A `catch` that runs cleanup which can throw keeps the exception it caught: when the cleanup throws too, throw an `AggregateException` with the caught exception first, then the cleanup's. The rule holds in benchmarks and tools too (a `Process.Kill` in a `catch`).
 - A comment that states how a runtime or OS API behaves names what was checked: the call, the version, and the result. What the documentation says and what a run showed are written apart.
