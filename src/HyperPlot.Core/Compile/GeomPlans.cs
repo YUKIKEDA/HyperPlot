@@ -123,7 +123,7 @@ internal sealed class AreaPlan : LayerPlan
         sink.AddColumn(reference.Column, data.GetName(reference.Index));
         if (!ofX)
         {
-            sink.Add(area.Baseline, area.Baseline, "the Baseline");
+            sink.AddBaseline(area.Baseline);
         }
     }
 
@@ -286,7 +286,6 @@ internal sealed class BarPlan : LayerPlan
     private readonly int _series;
     private readonly M4Point[] _output;
     private readonly ColumnEnvelope _envelope = new();
-    private double _width;
 
     public BarPlan(BarLayerSpec spec, PlanBuild build)
         : base(spec)
@@ -295,8 +294,8 @@ internal sealed class BarPlan : LayerPlan
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column);
     }
 
-    /// <summary>Gets the width the bars are drawn with, in data units. Tests only.</summary>
-    public double Width => _width;
+    /// <summary>Gets the width the bars are drawn with, in data units: read from the X's statistics, so after the wait.</summary>
+    private double Width => ((BarLayerSpec)Spec).Width ?? DefaultWidth(Columns[0]);
 
     /// <summary>Returns the default width (design §5.5.3): 0.9 times a uniform X's step or a stored X's mean spacing.</summary>
     internal static double DefaultWidth(Column x)
@@ -317,16 +316,16 @@ internal sealed class BarPlan : LayerPlan
         if (!ofX)
         {
             sink.AddColumn(bar.Y.Column, data.GetName(bar.Y.Index));
-            sink.Add(bar.Baseline, bar.Baseline, "the Baseline");
+            sink.AddBaseline(bar.Baseline);
             return;
         }
 
-        _width = bar.Width ?? DefaultWidth(bar.X.Column);
         sink.AddColumn(bar.X.Column, data.GetName(bar.X.Index));
         if (bar.X.Column.TryGetRange(out var min, out var max))
         {
             // Half a bar past each end, so that the end bars are not cut (design §4.2).
-            sink.Add(min.Value - (_width / 2), max.Value + (_width / 2), data.GetName(bar.X.Index));
+            var half = Width / 2;
+            sink.Add(min.Value - half, max.Value + half, data.GetName(bar.X.Index));
         }
     }
 
@@ -336,7 +335,7 @@ internal sealed class BarPlan : LayerPlan
         var x = bar.X.Column;
         var y = bar.Y.Column;
         var boundaries = context.Boundaries;
-        var half = _width / 2;
+        var half = Width / 2;
         var first = x.LowerBound(boundaries[0] - half, context.XOrigin);
         var end = x.LowerBound(boundaries[^1] + half, context.XOrigin);
         var baseline = context.BaselinePixel(bar.Baseline);
@@ -357,14 +356,7 @@ internal sealed class BarPlan : LayerPlan
         // More bars than 4W: the M4 points of each pixel column, from the baseline to their extreme above and below.
         var points = _output.AsSpan(0, context.Batch.GetResult(_series).Count);
         _ = context.MapSeries(points, out var xs, out var ys);
-        _envelope.Reset(context.X.Offset, context.X.Size);
-        for (var i = 0; i < points.Length; i++)
-        {
-            if (double.IsFinite(xs[i]) && double.IsFinite(ys[i]))
-            {
-                _envelope.Point(xs[i], ys[i]);
-            }
-        }
+        context.PointEnvelope(points, xs, ys, _envelope);
 
         for (var c = 0; c < _envelope.Width; c++)
         {
@@ -487,14 +479,7 @@ internal sealed class ErrorBarPlan : LayerPlan
     {
         var points = output.AsSpan(0, context.Batch.GetResult(series).Count);
         _ = context.MapSeries(points, out var xs, out var ys);
-        envelope.Reset(context.X.Offset, context.X.Size);
-        for (var i = 0; i < points.Length; i++)
-        {
-            if (double.IsFinite(xs[i]) && double.IsFinite(ys[i]))
-            {
-                envelope.Point(xs[i], ys[i]);
-            }
-        }
+        context.PointEnvelope(points, xs, ys, envelope);
     }
 }
 

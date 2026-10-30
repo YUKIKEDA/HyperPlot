@@ -394,6 +394,12 @@ internal sealed class PlotPlan : IDisposable
             layer.AddRanges(_sink, ofX, spec.Data);
         }
 
+        if (_sink.BaselineMin <= _sink.BaselineMax)
+        {
+            AddBaseline(transform, _sink.BaselineMin);
+            AddBaseline(transform, _sink.BaselineMax);
+        }
+
         var (integerMin, integerMax, min, max) = (_sink.IntegerMin, _sink.IntegerMax, _sink.Min, _sink.Max);
         var (minName, maxName, found, integer) = (_sink.MinName, _sink.MaxName, _sink.Found, _sink.Integer);
         if (!found)
@@ -421,6 +427,23 @@ internal sealed class PlotPlan : IDisposable
 
         // One value v gives [v - 0.5, v + 0.5], taken as differences from v so that a v past 2^53 stays exact.
         return integerMin == integerMax ? new ScaleRange(integerMin, -0.5, 0.5).Anchor() : ScaleRange.FromInteger(integerMin, integerMax);
+    }
+
+    /// <summary>Adds a baseline to the range when the scale maps it to a finite value (design §4.2).</summary>
+    private void AddBaseline(IScale? transform, double value)
+    {
+        if (transform is not null)
+        {
+            Span<double> end = [value];
+            Span<double> mapped = stackalloc double[1];
+            transform.Forward(end, mapped);
+            if (!double.IsFinite(mapped[0]))
+            {
+                return;
+            }
+        }
+
+        _sink.Add(value, value, "the Baseline");
     }
 
     /// <summary>Returns the range of the scale space between the mapped ends, or throws when an end does not map to a finite value.</summary>

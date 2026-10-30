@@ -357,11 +357,24 @@ internal sealed class RangeSink
 
     public bool Integer { get; private set; } = true;
 
+    /// <summary>Gets the least baseline added, or +∞ for none.</summary>
+    public double BaselineMin { get; private set; } = double.PositiveInfinity;
+
+    /// <summary>Gets the greatest baseline added, or −∞ for none.</summary>
+    public double BaselineMax { get; private set; } = double.NegativeInfinity;
+
     public void Reset()
     {
         (IntegerMin, IntegerMax, Min, Max) = (long.MaxValue, long.MinValue, double.PositiveInfinity, double.NegativeInfinity);
         (MinName, MaxName, Found, Integer) = (string.Empty, string.Empty, false, true);
+        (BaselineMin, BaselineMax) = (double.PositiveInfinity, double.NegativeInfinity);
     }
+
+    /// <summary>
+    /// Adds an area's or a bar's baseline, held apart until the plan knows the transform: a baseline the scale does not map
+    /// to a finite value (0 on log) is the panel's edge, not a domain's end (design §4.2, §5.5.3).
+    /// </summary>
+    public void AddBaseline(double value) => (BaselineMin, BaselineMax) = (Math.Min(BaselineMin, value), Math.Max(BaselineMax, value));
 
     /// <summary>Adds a column's range of values that are not NaN, or nothing when it has none; throws for an infinite end.</summary>
     public void AddColumn(Column column, string name)
@@ -560,14 +573,9 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// </summary>
     public void Envelope(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, ColumnEnvelope envelope)
     {
-        envelope.Reset(X.Offset, X.Size);
+        PointEnvelope(points, xs, ys, envelope);
         for (var i = 0; i < points.Length; i++)
         {
-            if (double.IsFinite(xs[i]) && double.IsFinite(ys[i]))
-            {
-                envelope.Point(xs[i], ys[i]);
-            }
-
             if (
                 i > 0
                 && !points[i].BreakBefore
@@ -579,6 +587,35 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
             {
                 envelope.Segment(xs[i - 1], ys[i - 1], xs[i], ys[i]);
             }
+        }
+    }
+
+    /// <summary>
+    /// Fills per pixel column the least and greatest pixel y of the points inside (design §5.5.3). A point's column is the
+    /// one M4 put it in, found from its X against the boundaries, not from its pixel, which rounding can put across a side.
+    /// </summary>
+    public void PointEnvelope(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, ColumnEnvelope envelope)
+    {
+        envelope.Reset(X.Offset, X.Size);
+        var boundaries = Boundaries;
+        var width = X.Size;
+        var k = 0;
+        for (var i = 0; i < points.Length; i++)
+        {
+            // The points run in X order, so the column only moves forward.
+            var x = points[i].X;
+            while (k < width && x >= boundaries[k + 1])
+            {
+                k++;
+            }
+
+            if (x < boundaries[0] || k == width || !double.IsFinite(xs[i]) || !double.IsFinite(ys[i]))
+            {
+                continue;
+            }
+
+            // The boundaries run with the data; a reversed x runs the pixel columns the other way.
+            envelope.Point(X.Reverse ? width - 1 - k : k, xs[i], ys[i]);
         }
     }
 
@@ -686,15 +723,9 @@ internal sealed class ColumnEnvelope
         }
     }
 
-    /// <summary>Adds a point inside its column.</summary>
-    public void Point(double x, double y)
+    /// <summary>Adds a point inside a column, counted from the panel's left.</summary>
+    public void Point(int c, double x, double y)
     {
-        var c = (int)Math.Floor(x) - Offset;
-        if ((uint)c >= (uint)Width)
-        {
-            return;
-        }
-
         _low[c] = double.IsNaN(_low[c]) ? y : Math.Min(_low[c], y);
         _high[c] = double.IsNaN(_high[c]) ? y : Math.Max(_high[c], y);
         Span(c, x, x);
