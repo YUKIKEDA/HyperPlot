@@ -387,14 +387,121 @@ public sealed record PlotSpec : SpecNode
     public Theme Theme { get; init; }                   // 行 G3。既定は Theme.Light（§4.7）
 }
 
-public abstract record LayerSpec : SpecNode             // 新しく作るコンストラクタは private protected。Geom を足す口（IGeom）は行 G4
+public abstract record LayerSpec : SpecNode             // 新しく作るコンストラクタは private protected。Geom を足す口は CustomLayerSpec（行 G4）
+{
+    public string? Label { get; init; }                 // 凡例のラベル。null か空なら凡例に出さない（行 G3 の LineLayerSpec.Label を行 G4 で基底へ）
+}
 
 public sealed record LineLayerSpec : LayerSpec
 {
     public required ColumnRef X { get; init; }          // UniformColumn か、単調非減少で NaN のない Column<T>
     public required ColumnRef Y { get; init; }
     public LineStyle Style { get; init; }               // 既定は黒（0, 0, 0, 255）、太さ 1、破線なし。太さと破線は DIP（行 G3、§4.6）
-    public string? Label { get; init; }                 // 行 G3。凡例のラベル。null か空なら凡例に出さない
+}
+
+// 行 G4: 数の列の Geom（§5.5.3、Issue #120）。チャネルは ColumnRef、線の太さと破線と ErrorBar の端の幅は DIP
+public enum StepMode { After, Before, Middle }         // After: 横に進んでから縦、Before: 縦から横、Middle: 2 点の中点で縦
+
+public sealed record StepLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // 単調非減少（LineLayerSpec と同じ）
+    public required ColumnRef Y { get; init; }          // Column<T>
+    public LineStyle Style { get; init; }               // 既定は黒、太さ 1
+    public StepMode Mode { get; init; }                 // 既定は After
+}
+
+public sealed record AreaLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // 単調非減少
+    public required ColumnRef Y { get; init; }          // Column<T>
+    public Color Fill { get; init; }                    // 既定は (0, 0, 0, 128)。行 G7 のパレットまで
+    public double Baseline { get; init; }               // 塗りの下の端の y（データの単位）。既定 0、有限
+    public LineStyle? Outline { get; init; }            // y の線。null なら描かない
+}
+
+public sealed record BandLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // 単調非減少
+    public required ColumnRef YMin { get; init; }       // Column<T>
+    public required ColumnRef YMax { get; init; }       // Column<T>
+    public Color Fill { get; init; }
+    public LineStyle? Outline { get; init; }            // YMin と YMax の線
+}
+
+public sealed record BarLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // 単調非減少
+    public required ColumnRef Y { get; init; }          // Column<T>
+    public Color Fill { get; init; }
+    public double Baseline { get; init; }               // 棒の根元の y。既定 0、有限
+    public double? Width { get; init; }                 // データの単位。null なら既定（§5.5.3）、与えるなら有限で正
+}
+
+public sealed record RectLayerSpec : LayerSpec
+{
+    public required ColumnRef XMin { get; init; }       // 4 つとも数の列（Column<T> か UniformColumn）
+    public required ColumnRef XMax { get; init; }
+    public required ColumnRef YMin { get; init; }
+    public required ColumnRef YMax { get; init; }
+    public Color Fill { get; init; }
+}
+
+public sealed record RuleLayerSpec : LayerSpec
+{
+    public ColumnRef X { get; init; }                   // 縦の線の x。X か Y のちょうど 1 つが default でない
+    public ColumnRef Y { get; init; }                   // 横の線の y。どちらも単調非減少
+    public LineStyle Style { get; init; }
+}
+
+public sealed record SegmentLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // 4 つとも数の列
+    public required ColumnRef Y { get; init; }
+    public required ColumnRef XEnd { get; init; }
+    public required ColumnRef YEnd { get; init; }
+    public LineStyle Style { get; init; }
+}
+
+public sealed record ErrorBarLayerSpec : LayerSpec
+{
+    public required ColumnRef X { get; init; }          // 単調非減少
+    public required ColumnRef YMin { get; init; }       // Column<T>
+    public required ColumnRef YMax { get; init; }       // Column<T>
+    public LineStyle Style { get; init; }
+    public float CapWidth { get; init; }                // 端の横線の幅、DIP。既定 6、有限で 0 以上（0 は端なし）
+}
+
+public sealed record CustomLayerSpec : LayerSpec        // 利用者の Geom（§5.5.3）
+{
+    public CustomLayerSpec(IGeom geom);                 // null は ArgumentNullException
+    public IGeom Geom { get; }
+}
+
+public interface IGeom                                   // Geom を足す口（行 G4、要件 N-6）
+{
+    void Learn(GeomRanges ranges);                      // domain を学ぶとき 1 回。x と y の値の範囲を足す
+    void Record(GeomFrame frame, RenderList list);      // 記録するたびに 1 回。パネルに記録する
+}
+
+public sealed class GeomRanges                           // 計画が 1 つ持って使い回す
+{
+    public void AddX(double min, double max);           // 有限で min ≤ max。外れれば ArgumentException
+    public void AddY(double min, double max);
+    public void AddX(long min, long max);               // long の列（日時）を正確に
+    public void AddY(long min, long max);
+}
+
+public sealed class GeomFrame                            // 計画が 1 つ持って使い回す。Record の外では InvalidOperationException
+{
+    public int Left { get; }                            // パネルの整数の矩形（物理画素、§4.6）
+    public int Top { get; }
+    public int Width { get; }
+    public int Height { get; }
+    public float Scale { get; }                         // DIP から物理画素への倍率
+    public double PixelX(double value);                 // データの値を描画先の物理画素へ。スケールの変換・reverse・clamp を当てる
+    public double PixelY(double value);                 // 写した値が有限でなければ NaN
+    public double PixelX(long value);                   // long の値を原点からの正確な差で（§3.6）
+    public double PixelY(long value);
 }
 
 public abstract record ScaleSpec : SpecNode             // 新しく作るコンストラクタは private protected
@@ -501,6 +608,17 @@ public sealed class PlotBuilder
         where TY : unmanaged, INumber<TY>;
     public PlotBuilder ScaleX(ScaleSpec scale);
     public PlotBuilder ScaleY(ScaleSpec scale);
+    // 行 G4: TX・TY は Line と同じ制約（unmanaged, INumber<T>）。configure の値は LineStyle の検査を通す
+    public PlotBuilder Step<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, StepMode mode = StepMode.After, Action<LineBuilder>? configure = null);
+    public PlotBuilder Area<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, double baseline = 0, Action<AreaBuilder>? configure = null);
+    public PlotBuilder Band<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> yMin, ColumnRef<TY> yMax, Action<AreaBuilder>? configure = null);
+    public PlotBuilder Bar<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, double baseline = 0, double? width = null, Action<FillBuilder>? configure = null);
+    public PlotBuilder Rect<TX, TY>(ColumnRef<TX> xMin, ColumnRef<TX> xMax, ColumnRef<TY> yMin, ColumnRef<TY> yMax, Action<FillBuilder>? configure = null);
+    public PlotBuilder VRule<T>(ColumnRef<T> x, Action<LineBuilder>? configure = null);
+    public PlotBuilder HRule<T>(ColumnRef<T> y, Action<LineBuilder>? configure = null);
+    public PlotBuilder Segment<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, ColumnRef<TX> xEnd, ColumnRef<TY> yEnd, Action<LineBuilder>? configure = null);
+    public PlotBuilder ErrorBar<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> yMin, ColumnRef<TY> yMax, float capWidth = 6, Action<LineBuilder>? configure = null);
+    public PlotBuilder Custom(IGeom geom, string? label = null);
     public PlotBuilder Title(string? title);            // 行 G3
     public PlotBuilder Theme(Theme theme);              // 行 G3。null は ArgumentNullException
     public PlotSpec Build();
@@ -513,11 +631,26 @@ public sealed class LineBuilder
     public LineBuilder Dash(LineDash? dash);            // DIP（行 G3）
     public LineBuilder Label(string? label);            // 行 G3
 }
+
+public sealed class AreaBuilder                          // 行 G4。Area と Band
+{
+    public AreaBuilder Fill(Color color);
+    public AreaBuilder Outline(LineStyle? outline);     // DIP。null なら縁なし
+    public AreaBuilder Label(string? label);
+}
+
+public sealed class FillBuilder                          // 行 G4。Bar と Rect
+{
+    public FillBuilder Fill(Color color);
+    public FillBuilder Label(string? label);
+}
 ```
 
 - **同一性**: `SpecId` は、ノードを作るときと、`with` で写すとき（record の写しのコンストラクタ）に、プロセスで一意の値を新しく振る（`Interlocked.Increment`）。record の写しのコンストラクタは値をそのまま写すので、`Id` だけを持つ基底 `SpecNode` が自分の写しのコンストラクタで振り直し、派生の record の生成された写しのコンストラクタがそれを呼ぶ（派生の型が自分のメンバーを手で写さずに済む）。仕様は不変なので、同じ `Id` のノードは中身も同じである。`Id` は record の等しさに入る（中身が同じでも、別に作ったノードは等しくない）。中身を比べるのは、コンパイルの差分（§4.8）の役目である
 - **ビルダ**: `Line` は、`x` と `y` が `Create` に渡した表の列でなければ、`default` の参照なら、`y` の列が `Column<T>` でなければ（ピラミッドは `Column<T>` に作る。列の種類を見るだけでデータには触れない）`ArgumentException`。`configure` は `Line` の中で 1 回だけ呼び、`LineBuilder` の値は `LineStyle` の検査（§5.1）を通す。`Build` はレイヤーが 0 個でもよく（何も描かない）、`Build` の後のビルダは使えない（`InvalidOperationException`）。ビルダは不変の仕様を作るだけで、データに触れない
 - 仕様の型を直接作ってもよい（ビルダを通さない）。そのときの検査は、コンパイル（§4.8）が同じ例外で行う
+- **`IGeom` の口と不変条件 12**（PR #121 のレビュー）: `GeomFrame` の `PixelX`・`PixelY` と `GeomRanges` の `AddX`・`AddY` は、x と y の 2 成分の口である。v1 の Geom はすべて 2D で、成分の数に依らない形（span を受ける形）にすると、呼び出しのたびに span を作らせることになる。3D（§13）では、sealed class に z の成分の口（`PixelZ`・`AddZ`）を足し、今の Geom を壊さずに広げる。不変条件 12 の例外としてその文に書く。`GeomFrame` のメンバーは `Record` の中でだけ使え、外で呼ぶと `InvalidOperationException`。`Record` が受ける `RenderList` はパネルで切り抜かれていて、`Record` の中で `SetClip` や `ResetClip` を呼んでもよい。`Record` が戻った後、コンパイルがパネルの切り抜きを戻すので、後のレイヤーは崩れない
+- **行 G4 の仕様**（Issue #120）: Geom ごとの sealed record と `PlotBuilder` のメソッドで、チャネルは `ColumnRef`、見た目はビルダの configure で変える（`LineLayerSpec` と同じ形）。凡例の `Label` は行 G3 の `LineLayerSpec.Label` を基底の `LayerSpec` に移したもので、`LineLayerSpec` の使い方は変わらない。塗りの色の既定は、行 G7 のパレットが入るまで黒の半透明（0, 0, 0, 128）。ビルダは、`Line` と同じく、列が `Create` に渡した表の列でない、`default` の参照、`Column<T>` が要るチャネル（ピラミッドを作る Y・YMin・YMax）が `Column<T>` でないときに `ArgumentException`。`Baseline` が有限でない、`Width` が有限で正でない、`CapWidth` が有限で 0 以上でないときは `ArgumentOutOfRangeException`（configure の線は §5.1 の `LineStyle` の検査）。`RuleLayerSpec` を直接作って X と Y の両方か両方とも `default` にすると、コンパイルが `ArgumentException`。`Custom` と `CustomLayerSpec` は null の `geom` に `ArgumentNullException`
 - **行 G3 の仕様**（Issue #111）: ガイドの設定は、§4.1 の表のとおりスケールに持つ（軸のタイトル・nice・書式）。`PlotSpec` の別の軸の仕様にしないのは、軸の中身がスケールの種類（数か日時か）で決まり、スケールと軸が 1 対 1 だからである（`design-decisions.md`）。§4.9 の例の `.Title("…")` は、`Title` のプロパティと同じ名前のメソッドを C# の型が持てないので、`WithTitle` にした。`WithTitle` は `WithDomain` と違い種類によらないので、拡張メソッド 1 つにする。`Title` と `Label` は null と空を「なし」とし、例外にしない。グリッドと軸を描くかはテーマ（§4.7）で決める。`LineLayerSpec.Style` の太さと破線の長さは、行 G3 から DIP で、`HeadlessRenderer` の `Scale`（§7.5）を掛けて記録する（倍率 1 なら行 G1 と同じ画素）
 
 ### 4.2 エンコーディングとスケール
@@ -539,6 +672,7 @@ public sealed class LineBuilder
   - **zero**: 既定は偽で、linear・symlog・pow が持つ（log は 0 を表せず、time の 0 は起点で意味を持たないので持たない）。真なら、学習した domain を 0 を含むまで広げる（min を min(min, 0)、max を max(max, 0) に。整数の列だけなら `long` で）。明示の domain は変えない。値が 1 つ（v）のときは、先に 0 を含め、それでも幅がなければ（v = 0）スケールの空間で ±0.5 する。v = 5 なら [0, 5]、v = 0 なら [−0.5, 0.5]（linear）になる
   - **reverse**: 既定は偽で、連続の位置のスケールすべてが持つ。真なら、画素への写像の向きを反対にする（x は右から左、y は上から下）。境界と M4 は変えない
   - **clamp**: 既定は偽で、すべてが持つ。真なら、写した値を domain の両端に寄せてから画素にする。M4 の範囲の外の点（`Before`・`After`、§5.5.1）も端に寄るので、線は画面の端に沿う。偽なら今のとおり、端の外の点へ線を延ばし、描画先で切る。y の clamp も同じで、domain の外の min / max は上端か下端に寄る
+- **行 G4 の学習**（Issue #120）: x と y の domain は、そのスケールを使うすべてのレイヤーのチャネルの範囲の和である。チャネルは、Step・Area・Bar の X と Y、Band と ErrorBar の X・YMin・YMax、Rect の XMin・XMax（x）と YMin・YMax（y）、Segment の X・XEnd（x）と Y・YEnd（y）、縦の Rule の X（x だけ）、横の Rule の Y（y だけ）。Area と Bar は `Baseline` も y に含め、Bar は x の範囲を棒の幅の半分ずつ外へ広げる（端の棒が半分切れないように）。`CustomLayerSpec` は `IGeom.Learn` が `GeomRanges` に足した範囲で、何も足さなければ寄与しない。範囲の読み方（チャンクの統計、`UniformColumn` の両端、`long` の正確な比べ方、値なし・値が 1 つ・無限大）は線と同じ
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
   - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない
@@ -557,6 +691,7 @@ public sealed class LineBuilder
 - cartesian: ビリオン級のすべての経路に対応する。z = 0 の正射影の変換を返す。flip は x と y の役割を入れ替える
 - polar: 頂点を CPU（線・面）または頂点シェーダ（点）で極座標に変換する。M4 と密度タイルは使わず、1e7 点までとする（要件 G-7）
 - 3D の cartesian（v1.x、§13.2）は、同じ契約で透視または正射影の変換を返す。v1 の契約を変えずに足せる（不変条件 12）
+- **行 G4**（Issue #120）: cartesian の変換を Core の internal の型として作る。倍精度の 4×4 の行列と x・y の原点（`long`、§3.6）を持ち、スケールの空間の原点からの差を、描画先の物理画素へ写す（パネルの矩形、reverse を含む。clamp は写す前に差に当てる）。Geom の CPU の写し方（§5.5.3）と `GeomFrame` が、これを使う。今の線の写し方（§4.8 の「描く」）と同じ式を行列にしたもので、画素は変わらない。公開の契約（`CoordSpec`、flip、polar）は行 G10、GPU でこの行列を当てる `SetTransform` はデータを GPU に置き続ける行 R3 で作る
 
 ### 4.5 ファセットと複数のプロット
 
@@ -759,6 +894,12 @@ public sealed record Theme                    // コンストラクタは privat
   - 失敗: ピラミッドが `Fault` を持つか、`WhenComplete` か `PrecomputeStats` の `Task` が例外で終わったら、`Render` はその例外を包まずに投げ直す（`ExceptionDispatchInfo`）。失敗したチャンクは列の世代が進むまで作り直されない（§3.3 の規則 3）ので、`Render` は暫定の画像を描かない。`Fault` はピラミッドに残り、`WhenComplete` は呼ぶ前の `Fault` で終わる（§3.3）。そのため列を `Invalidate` しても、`HeadlessRenderer` がその列のピラミッドを持つ間（その列を描く仕様が続く間）は、その列を描けない。ホストで同じことが困るなら、行 W1 で、世代が進んだら `Fault` を捨てる形を Grill する（PR #82 のレビュー）
 - **描く**: プロットの領域は描画先の全体である（行 G3 からは配置のパネル。下の「行 G3 のコンパイル」）。x の domain の差から画素列の境界（W + 1 個、x の原点からの差）を作り、x と y の domain の原点を `ScaleOrigin` にして `M4Batch` で全レイヤーを引き（domain の幅が狭く、倍精度の W + 1 個の境界の差が狭義に増加しないときは、`M4Batch` に渡す前に、x の domain と描画先の幅を書いた `ArgumentException` にする。差で計算し、下端の差は [0, 1) にあるので、値の大きさによらず、幅が約 W × 2^−53 より狭い domain だけが当たる。例は幅 1,000 の `[0.5, 0.5 + 1e-14]` で、0.5 の 1 ulp は 2^−53（約 1.1e-16）、境界の間隔は 1e-17 なので、隣り合う境界が同じ値になる）、y の domain の差で画素に写して（倍精度）、レイヤーの順に `RenderList` の折れ線として記録する。同じ仕様を描き直すとき、温まった後は確保しない（不変条件 3）
 
+**行 G4 のコンパイル**（Issue #120）: レイヤーは行 G4 の 9 種（`LineLayerSpec` と §4.1 の 8 つと `CustomLayerSpec`）で、知らない派生は今と同じ `ArgumentException`。
+
+- **検査**: チャネルの参照（`default`・別の表）、ピラミッドを作るチャネルが `Column<T>`、X（と横の Rule の Y）の単調性は、線と同じ（単調性は M4 か境界の探索が確かめ、`InvalidOperationException`）。`RuleLayerSpec` の X と Y のちょうど 1 つが `default` でない。`Baseline` が有限、`Width` が null か有限で正、`CapWidth` が有限で 0 以上、`Fill` はどの色でもよい。time のスケールは、そのスケールに乗るすべてのチャネルが `long` の日時の列。segment と rect の要素の上限（131,072、§5.5.3）は、コンパイルで確かめる
+- **差分**: チャネルの参照が変わったら「データ」、`Baseline` と Bar の `Width` が変わったら学習の範囲が変わるので「スケール」と同じ段（domain を決め直して M4 を引き直す）、`Fill`・`Outline`・`Style`・`Mode`・`CapWidth`・`Label` だけなら「見た目」。`CustomLayerSpec` は `Geom` の参照が変わったら「データ」で、同じ参照なら、domain を学ぶときと記録するときに呼ぶ（`IGeom` の中身が変わったことを計画は知らないので、利用者は新しいノードを作る）
+- **描く**: §5.5.3 の道で、レイヤーの順に、パネルで切り抜いて記録する。ピラミッドは、Y・YMin・YMax の列ごとに 1 つで、同じ列を指すチャネルは共有する（線と同じ）
+
 **行 G3 のコンパイル**（Issue #111）: 5（配置、§4.6）を足す。順は、1 → 2（学習）→ 4（索引）→ 5（配置: y の目盛り、x の目盛り、nice）→ M4 → 記録で、nice が広げた domain で M4 を引く。
 
 - **検査**: 上の検査に加えて、§4.7 のテーマの検査。`PlotSpec.Title`・`Label`・スケールの `Title` はどの文字列でも、null でもよい。time のスケールの domain が `DateTime` の範囲の外にかかるときの `InvalidOperationException`（§4.6）は、学習の後、配置で投げる
@@ -798,6 +939,31 @@ var scatter = Plot.Create(points)
 - 拡張メソッドの形で Geom を足せる（`IGeom` の実装と組で配る）
 - データ層の核（列の型、`PlotWorkerPool`・`MinMaxPyramid<T>`・`MinMax<T>`・`M4`・`M4Batch`、§3.3・§5.5.1）も公開する。行 S1（1e9 点の時系列をヘッドレスで描くサンプル）が G1 の `DataTable` より前に来るので、利用者とサンプルが列・ピラミッド・M4 を直接つなげる必要がある（オーナーの決定、2026-10-28）。ジェネリックの公開の型が NativeAOT のサンプルの大きさに与える分（`.cursor/rules/aot.mdc`）は、サンプルのできる S1 で最初に測る
 - 色の型 `Color`（§5.2）は利用者の書く型なので公開する（`HyperPlot` 名前空間）。GPU の契約（`IGpuBackend`・`IRenderTarget`・`RenderTargetDescription`・`DepthFormat`・`GpuDeviceLostException`・`GpuFrameTime`・`FrameScope`、`HyperPlot.Rendering`）は「バックエンドが実装する契約」として、`HeadlessRenderer`（`HyperPlot.Rendering`、§7.5）は画像の出力とテストに使う型として、`GoldenImage`・`ImageTolerance`・`ImageDifference`・`ImageMismatchException`（`HyperPlot.Testing`、§10.1、行 S3）は利用者のテストが描いた画像を比べる型として、`RenderList`・`LineStyle`・`LineDash`（§5.1、行 R2）は S1 のサンプルが GoG の層より前に線を描く型として、`D3D11Backend`（`HyperPlot.Rendering.D3D11`、§5.3）は D3D11 のバックエンドとして公開する（行 R1）
+- 行 G4 は、Geom の仕様（`StepLayerSpec`・`StepMode`・`AreaLayerSpec`・`BandLayerSpec`・`BarLayerSpec`・`RectLayerSpec`・`RuleLayerSpec`・`SegmentLayerSpec`・`ErrorBarLayerSpec`・`CustomLayerSpec`）、Geom を足す口（`IGeom`・`GeomRanges`・`GeomFrame`）、ビルダ（`PlotBuilder` の Geom のメソッド、`AreaBuilder`・`FillBuilder`）、`LayerSpec.Label`、`RenderList.DrawColumns` と `ColumnTrapezoid`（§5.1）を公開する（Issue #120）。`LineLayerSpec.Label` は基底に移る。行 G4 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした
+
+```csharp
+// 行 G4: 帯と平均の線、棒、誤差の棒、閾値の横線
+using var mean = Column.MapFile<float>("mean.f32");
+using var low = Column.MapFile<float>("low.f32");
+using var high = Column.MapFile<float>("high.f32");
+var table = DataTable.Create()
+    .Add("t", Column.Uniform(start: 0.0, step: 1.0, length: mean.Length))
+    .Add("mean", mean)
+    .Add("low", low)
+    .Add("high", high)
+    .Build();
+var t = table.Col<double>("t");
+var plot = Plot.Create(table)
+    .Band(t, table.Col<float>("low"), table.Col<float>("high"), a => a.Fill(new Color(31, 119, 180, 64)).Label("range"))
+    .Step(t, table.Col<float>("mean"), StepMode.Middle, l => l.Color(new Color(31, 119, 180, 255)).Label("mean"))
+    .ErrorBar(t, table.Col<float>("low"), table.Col<float>("high"), capWidth: 4)
+    .Build();
+
+using var backend = D3D11Backend.Create();
+using var renderer = new HeadlessRenderer(backend, 1280, 720);
+renderer.Render(plot);
+```
+
 - 行 G3 は、テーマ `Theme`（§4.7）、目盛りの書式の口 `TickFormatter`・`TimeTickFormatter`・`TimeInterval`、`ScaleSpecExtensions.WithTitle`（§4.1）、`PlotSpec.Title`・`PlotSpec.Theme`・`LineLayerSpec.Label`・`ContinuousScaleSpec.Title`・`ContinuousScaleSpec.Nice`・各スケールの `TickFormat`、`PlotBuilder.Title`・`PlotBuilder.Theme`・`LineBuilder.Label`、塗りつぶしの `RenderList.DrawRect`（§5.1）、`HeadlessRenderer` の倍率 `Scale`（§7.5）を公開する（Issue #111）。行 G3 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした
 
 ```csharp
@@ -828,7 +994,7 @@ renderer.Render(plot with { Theme = Theme.Dark });      // 見た目だけが変
 - 行 T1 は、テキストの型（`HyperPlot.Rendering` の `TextStyle`・`FontWeight`・`TextAlign`・`TextBaseline`・`TextRotation`・`TextMetrics`・`TextEngine`・`ITextBackend`・`ShapedText`・`PlacedGlyph`・`TextLine`・`GlyphBox`）と、`RenderList.DrawText`・`IGpuBackend.Text`・`HeadlessRenderer.MeasureText` を公開する（§5.6、Issue #103）。`ITextBackend` とその型は、`IGpuBackend` と同じく「バックエンドが実装する契約」である
 - 行 G2 は、位置のスケールの型（`ContinuousScaleSpec`・`LogScaleSpec`・`SymlogScaleSpec`・`PowScaleSpec`・`TimeScaleSpec`・`TimeUnit`・`TransformScaleSpec`、§4.1）と、変換を足す口 `IScale`（§4.2、要件 N-6）を公開する（Issue #94）。`LinearScaleSpec` は基底が `ContinuousScaleSpec` に変わり、`Zero`・`Reverse`・`Clamp` を持つ
 - 行 D2 は、M4 の原点の型 `ScaleOrigin`（§5.5.1）と、整数の等間隔の列の口 `Column.UniformInteger`・`UniformColumn.IsInteger`・`UniformColumn.TryGetInteger`（§3.1）を公開する（Issue #11）。`M4.Extract`・`M4Batch`・`PlotWorkerPool.Extract` はもともと公開で、引数に `ScaleOrigin` が加わる
-- 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色、G7）と `.WithTitle`（G3）、`.Interact`（I1）、`.Point` と `.ScaleColor`（G4・G7）、`.FacetWrap`（G6）、`view.Plot`（W1）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
+- 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色、G7）と `.WithTitle`（G3）、`.Interact`（I1）、`.Point`（R3）と `.ScaleColor`（G7）、`.FacetWrap`（G6）、`view.Plot`（W1）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
 
 ```csharp
 // 行 G1: 表から線のプロットを宣言し、ヘッドレスで描く
@@ -858,10 +1024,11 @@ Core はフレームごとに、層（§5.4）ごとの `RenderList` を作る�
 
 | コマンド | 内容 |
 | --- | --- |
-| `SetClip` / `SetTransform` | パネルの矩形、スケールの空間からクリップ空間への 4×4 の変換（倍精度から作った float の行列と原点、§3.6）。2D では z を使わない。行 R2 は `SetClip` だけを持ち、座標は物理画素である。`SetTransform` は、スケールの空間の座標を GPU で写す最初の Geom の行（G4）で足す。行 G1 の線は M4 の経路で、CPU が倍精度で画素の座標まで計算するので（§3.6）使わない（Issue #76） |
+| `SetClip` / `SetTransform` | パネルの矩形、スケールの空間からクリップ空間への 4×4 の変換（倍精度から作った float の行列と原点、§3.6）。2D では z を使わない。行 R2 は `SetClip` だけを持ち、座標は物理画素である。`SetTransform` は、データを GPU に置き続けて GPU で写す最初の行 R3（生の点の常駐）で足す。行 G1 の線と行 G4 の Geom は、CPU が倍精度で画素まで計算するので（§3.6・§5.5.3）使わない（Issue #76、#120） |
 | `DrawPolyline` | 折れ線。線分のインスタンスに展開する（アンチエイリアス・太さ・破線・丸い結合、行 R2） |
 | `DrawMarkers` | 点のインスタンス（形・大きさ・色。SDF） |
 | `DrawRects` | 矩形のインスタンス（棒・タイル・背景・選択範囲）。行 G3 は塗りつぶしの `DrawRect` を足す（パネルの背景、§4.6） |
+| `DrawColumns` | 画素列ごとの台形のインスタンス（area・band の塗り、行 G4、§5.5.3） |
 | `DrawDensityTiles` | 密度タイルのテクスチャと色の写像（§5.5.2） |
 | `DrawImage` | ラスタ（ヒートマップ・画像の Geom） |
 | `DrawText` | 文字列・位置・`TextStyle`。描くときにバックエンドが整形し、アトラスのグリフを並べる（§5.6、行 T1） |
@@ -887,17 +1054,22 @@ public sealed class RenderList
     public void DrawPolyline(ReadOnlySpan<Vector2> points, in LineStyle style);   // 物理画素
     public void DrawText(string text, Vector2 position, in TextStyle style);      // 行 T1、§5.6。物理画素
     public void DrawRect(float x, float y, float width, float height, Color color);   // 行 G3。物理画素、塗りつぶし
+    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color color);      // 行 G4。物理画素、塗りつぶし
 }
+
+public readonly record struct ColumnTrapezoid(float Left, float Right, float TopLeft, float TopRight, float BottomLeft, float BottomRight);
+                                              // 行 G4。左右の辺 x と、上と下の縁の左右の辺での y（物理画素）
 ```
 
 - 座標は描画先の物理画素で、原点は左上、画素の中心は +0.5 にある。太さも物理画素で、DPI を掛けるのは呼び出し側である（GoG の層とホスト）。GPU は DPI を知らない
 - **欠損**: 有限でない座標（NaN・±∞）の点の前後で折れ線を切る。その点に向かう線分と、そこから出る線分を描かない。破線の累計の長さは切れ目で 0 に戻す（要件 D-7）。M4 の結果は、`BreakBefore` の位置に NaN の点を置けばそのまま渡せる（§5.5.1）
 - **引数**: `points` が 0 個か 1 個なら何も描かない（M4 の列の切れ目で 1 点が残る形は普通にあり、点として描かない方が意図に近い）。隣り合う同じ点（長さ 0 の線分）は、距離の式がそのまま円になるので描く。`Width` は有限で 0 以上（0 は何も描かない）。`Dash` は `On`・`Off` が有限で 0 以上、`On + Off > 0`、`Offset` が有限。外れれば `ArgumentOutOfRangeException`。`SetClip` の幅と高さは 0 以上（0 は何も描かない）で、矩形は描画先と重なる部分だけを使う
 - **記録**: `DrawPolyline` は、Core の中で折れ線を線分のインスタンスに展開する（始点と終点、線分の始点までの破線の累計の長さ）。線分の記録は 2 成分で、深度のモードの欄は「なし」だけを持つ（§13.1）。バッファは使い回し、足りなければ 2 倍にする。温まった後のフレームの経路で確保しない（不変条件 3）。`RenderList` は一度に 1 つのスレッドだけが使う
-- **結合と端**: 結合と端は丸である（線分ごとの距離が、端を丸めた線分＝カプセルまでの距離になるため）。マイターと面取りの結合、平らと四角の端は行 G4 で足す
+- **結合と端**: 結合と端は丸である（線分ごとの距離が、端を丸めた線分＝カプセルまでの距離になるため）。マイターと面取りの結合、平らと四角の端は行 R4 で足す
 - **文字列（行 T1）**: `DrawText` は、文字列の参照・位置・スタイルを記録するだけで、整形しない（整形はバックエンドが描くとき、§5.6）。記録は使い回すバッファに書き、温まった後は確保しない。命令は記録の順に描き、折れ線と文字列が混ざっても後の命令が上に乗る。`text` が null なら `ArgumentNullException`、空なら何も描かない。`position` が有限でなければ `ArgumentOutOfRangeException`。`Size` が有限で 0 より大きく 512 以下でなければ、または太さ・揃え・回転が名前のある値でなければ `ArgumentOutOfRangeException`。`FontFamily` か `Locale` が null なら `ArgumentNullException`、空なら `ArgumentException`。切り抜きは折れ線と同じく、記録したときの `SetClip` が文字列にも当たる
 - **矩形（行 G3、Issue #111）**: `DrawRect` は、左上 (x, y)、幅と高さの軸に沿った矩形を `color` で塗る。各画素に、矩形と画素の正方形が重なる面積をカバレッジとして与える。画素 (i, j) のカバレッジは ox · oy で、ox = clamp(min(i + 1, x + width) − max(i, x), 0, 1)、oy も同じ（軸に沿った矩形の重なりは、x と y の重なりの長さの積で正確に決まる）。整数の端の矩形はカバレッジがちょうど 1 か 0 で、端数の端は面積の分だけ薄くなる（G4 の棒もこの命令で描ける）。前乗算した色にカバレッジを掛けて、`ONE`・`INV_SRC_ALPHA` で合成する。重なる矩形はそれぞれが合成される（折れ線の MAX のように 1 つの形にはしない。棒もパネルも重ならない）。`x`・`y` が有限でない、`width`・`height` が有限で 0 以上でなければ `ArgumentOutOfRangeException`。幅か高さが 0 なら何も描かない。切り抜きは折れ線と同じく記録したときの `SetClip`。記録は 2 成分で、深度のモードは「なし」（§13.1）。バッファは使い回し、温まった後は確保しない。枠線は行 G4 の rect の Geom で描く
-- **破線**: オン・オフ 1 組と開始のずれ（XylemUI と同じ形、`src/XylemUI.Rendering.D3D11/QuadShaders.cs` 271〜293 行目）。折れ線に沿った長さの累計を CPU が線分ごとに求めるので、破線は結合をまたいで続く。各破線は丸い端を持つ。3 つ以上の区間を持つパターンは行 G4 で足す
+- **列の台形（行 G4、Issue #120）**: `DrawColumns` は、台形ごとに、x が [Left, Right]、y が上の縁と下の縁の間（それぞれ左右の辺の値を結ぶ直線）の領域を `color` で塗る。カバレッジは、画素の正方形と領域が重なる面積で、矩形（上）と同じく正確に求める。画素 (i, j) では、x ∈ [max(i, Left), min(i + 1, Right)] で、|clamp(下の縁(x), j, j + 1) − clamp(上の縁(x), j, j + 1)| を積分した値である。2 つの縁の間の面積で、上と下の順によらない（縁が交わる列は蝶ネクタイの形に塗る）。縁が直線なので、clamp の折れ目と縁の交点で区切れば閉じた式になる（PR #121 のレビュー）。台形どうしは重ならない前提で（area と band は画素列ごとに 1 つ）、それぞれが合成される。座標が有限でない台形、または Left ≥ Right の台形は描かない（例外にしない。写した値が有限でない所は §4.2 のとおり落とすため）。切り抜き・記録・確保は `DrawRect` と同じ。1 回の呼び出しの台形は 1 つの命令で、同じ切り抜きの続く命令はまとめて描く
+- **破線**: オン・オフ 1 組と開始のずれ（XylemUI と同じ形、`src/XylemUI.Rendering.D3D11/QuadShaders.cs` 271〜293 行目）。折れ線に沿った長さの累計を CPU が線分ごとに求めるので、破線は結合をまたいで続く。各破線は丸い端を持つ。3 つ以上の区間を持つパターンは行 R4 で足す
 
 ### 5.2 GPU の抽象
 
@@ -911,7 +1083,7 @@ v1.x の 3D（§13）は、メッシュ（陰影）、ボリューム（レイ�
 
 パイプラインを固定にしたのは、Metal と wgpu のバックエンドを、それぞれ 10 程度のシェーダとその呼び出しだけで足せるようにするためである（要件 N-6）。契約は `HyperPlot.Rendering` 名前空間の公開の型で、利用者向けの API とは文書を分ける。
 
-契約は、作った行が実装してテストした分だけを公開する。行 R1 は、デバイス・オフスクリーンの描画先・塗りつぶし・readback・フレームの開始と終了を持つ。行 R2 は `RenderList` の折れ線を描く `Draw` を足す（§5.1）。行 T1 は `Text`（`TextEngine`）と、`Draw` の文字列の命令を足す（§5.6）。行 G3 は `Draw` の矩形の命令を足す（§5.1）。パイプラインはそれを作る行（線分は R2）で足し、GPU 時間の計測（タイムスタンプのクエリ）は最初に使う行 S2 で足す。まだない部分を `NotSupportedException` で先に公開しない（`.cursor/rules/scope.mdc`）。
+契約は、作った行が実装してテストした分だけを公開する。行 R1 は、デバイス・オフスクリーンの描画先・塗りつぶし・readback・フレームの開始と終了を持つ。行 R2 は `RenderList` の折れ線を描く `Draw` を足す（§5.1）。行 T1 は `Text`（`TextEngine`）と、`Draw` の文字列の命令を足す（§5.6）。行 G3 は `Draw` の矩形の命令を足す（§5.1）。行 G4 は列の台形の命令を足す。パイプラインはそれを作る行（線分は R2）で足し、GPU 時間の計測（タイムスタンプのクエリ）は最初に使う行 S2 で足す。まだない部分を `NotSupportedException` で先に公開しない（`.cursor/rules/scope.mdc`）。
 
 ```csharp
 namespace HyperPlot;                          // Core
@@ -1010,6 +1182,7 @@ public sealed class D3D11Backend : IGpuBackend
 - **GPU 時間（行 S2）**: 4 フレーム分のクエリの輪（`D3D11_QUERY_TIMESTAMP_DISJOINT` 1 つと `D3D11_QUERY_TIMESTAMP` 2 つずつ）を持つ。いちばん外の `BeginFrame` で輪の次の組の disjoint を始めて開始の時刻を置き、`EndFrame` で終わりの時刻を置いて disjoint を終える。`EndFrame` は、古い組から順に `GetData`（`D3D11_ASYNC_GETDATA_DONOTFLUSH`）で読めるかを見て、読めた組から `LastFrameTime` を更新する。輪がすべて読めていない組で埋まっていたら、そのフレームは測らない（待たない）。いちばん外のフレームを閉じるときは、disjoint を終えた後に `ID3D11DeviceContext::Flush` を 1 回呼ぶ。`DONOTFLUSH` で読むだけでは、`Present` のないヘッドレスで命令が GPU に送られず、クエリがいつまでも終わらないことがある（`Flush` は送るだけで待たないので、不変条件 7 に触れない）。時間は、2 つのタイムスタンプの差を `D3D11_QUERY_DATA_TIMESTAMP_DISJOINT` の `Frequency`（Hz）で割って秒にし、`TimeSpan` にする。クエリはデバイスと一緒に作り、喪失の後に作り直す
 - **グリフ（行 T1）**: アトラスの頁は `R8_UNORM` のテクスチャで、頁ごとに 1 枚。描く前に、Core の頁の書き換えた矩形を `UpdateSubresource` で送る。グリフは 1 つにつき四角を 1 つ描き（頂点は `SV_VertexID` から、インスタンスはグリフの記録: 画面の整数の矩形・アトラスの左上・回転・前乗算した色の 48 バイト。頁は段ごとに束ねるので記録に持たない）、ピクセルシェーダはアトラスを点で読み（補間しない。四角は整数の画素に乗る。回したグリフは回した向きでテクセルを読み、向きは条件の値で選んで分岐しない）、前乗算した色に掛けて `ONE`・`INV_SRC_ALPHA` で合成する。記録の順の中で、続く文字列の命令は、頁か切り抜きが変わるまでまとめて 1 回の `DrawInstanced` にする（シザー矩形は命令ごとなので、切り抜きが変われば切る）。喪失の後は、頁のテクスチャを Core の CPU の頁から作り直す
 - **矩形（行 G3）**: 矩形は 1 つにつき四角を 1 つ描く（頂点は `SV_VertexID` から、インスタンスは矩形の記録: 左上・幅・高さの float 4 つと前乗算した色の float 4 つの 32 バイト）。四角は矩形を外向きに整数の画素へ広げたもの（⌊x⌋ から ⌈x + width⌉）で、ピクセルシェーダは画素の左上（`SV_Position.xy` − 0.5）から §5.1 の ox · oy を求め、前乗算した色に掛けて `ONE`・`INV_SRC_ALPHA` で合成する。続く矩形の命令は、切り抜きが変わるまでまとめて 1 回の `DrawInstanced` にする（グリフと同じ）。記録は動的なバッファに書き、足りなければ 2 倍にする。喪失の後はシェーダとバッファを作り直す。座標は描画先の大きさ（16,384 以下）の float で、整数の端は正確に表せる
+- **列の台形（行 G4）**: 台形は 1 つにつき四角を 1 つ描く（頂点は `SV_VertexID` から、インスタンスは台形の 6 つの float と前乗算した色の float 4 つを 48 バイトにそろえた記録）。四角は台形の外接矩形を外向きに整数の画素へ広げたもので、ピクセルシェーダは §5.1 の積分を閉じた式で求め、前乗算した色に掛けて `ONE`・`INV_SRC_ALPHA` で合成する。続く命令は切り抜きが変わるまでまとめる。記録は動的なバッファに書き、足りなければ 2 倍にする。喪失の後はシェーダとバッファを作り直す
 - **切り抜き**: `SetClip` はシザー矩形（`RSSetScissorRects`）にする。プロットのパネルは軸に沿った整数の矩形なので、シェーダに手を入れず、どの画素も遅くしない。XylemUI はシェーダの中で距離で切り抜く（変換のかかった矩形のため、`QuadShaders.cs` 88〜89 行目）
 - **インスタンスの送り方**: 線分の記録は動的なバッファ（`D3D11_USAGE_DYNAMIC`）に `Map`（`D3D11_MAP_WRITE_DISCARD`）で毎フレーム書き、足りなければ 2 倍にする（XylemUI と同じ、`D3D11Renderer.cs` 1993〜2009 行目）。1 系列の M4 は最大 4W 点なので、送る量は画素数で抑えられる（要件 R-1）
 - **デバイスの喪失**: HRESULT を返す呼び出しで `DXGI_ERROR_DEVICE_REMOVED`・`DXGI_ERROR_DEVICE_RESET`・`DXGI_ERROR_DEVICE_HUNG`・`DXGI_ERROR_DRIVER_INTERNAL_ERROR` を受けたら（XylemUI の `HResults.cs` 15〜20 行目と同じ 4 つ）、バックエンドを「喪失」にし、その呼び出しは `GpuDeviceLostException` を投げる。`RemovedReason` は `GetDeviceRemovedReason` の値で、それが `S_OK`（理由がまだ出ていない）なら受けた HRESULT にする。`ClearRenderTargetView` と `CopyResource` は HRESULT を返さないので、`EndFrame` が `GetDeviceRemovedReason` を 1 回呼んで検査する。これで、塗りつぶしだけのフレームでも、喪失はそのフレームの終わりで見える。黙って作り直して続けると、描画先の中身が失われたことが呼び出し側に伝わらない。次の `BeginFrame`（`Clear` や `ReadPixels` が中で始めるフレームを含む）で、デバイスを作り直し（`Shared` はハードウェア、作れなければ WARP。`Create(useWarp: true)` は WARP）、まだ破棄されていない描画先をすべて記述から作り直し、透明（`0, 0, 0, 0`）に塗る。D3D11 は新しいテクスチャの中身を決めていないので、塗らないと作り直しの直後の `ReadPixels` の値が決まらない。前の中身は失われるので、呼び出し側が描き直す。喪失の状態で `CreateRenderTarget` を呼ぶと、`BeginFrame` と同じ作り直しを先に行う。喪失の状態の `EndFrame` は何もしない。作り直しが失敗したら `InvalidOperationException` を投げ、喪失のままにして、次の `BeginFrame` でまた試す。行 R2 からは、パイプラインの物（シェーダ・状態・動的なバッファ・中間テクスチャ）も作り直し、行 R3 からは常駐キャッシュの記述子から資源も作り直す
@@ -1138,8 +1311,18 @@ public sealed class PlotWorkerPool
 
 #### 5.5.3 その他の Geom
 
-- bar / rect / rule / segment / errorbar / text は、要素ごとのインスタンスを描く。1e6 要素を超える bar は、X が並んでいれば M4 と同じ考えで画素列ごとの最大で描く
-- 画像・ヒートマップの大きなラスタは、タイルとミップマップを作って見える部分だけを置く
+- **行 G4**（Issue #120）: 数の列の Geom を、CPU が倍精度で画素まで写して記録する（§4.4 の cartesian の変換）。1 フレームに記録する量は、どれもパネルの画素の数か定数で抑える（要件 R-1、不変条件 2）。W と H はパネルの幅と高さ。どの Geom でも、写した値が有限でない点・端を持つ要素は描かない（log の x で 0 以下になる bar の端、NaN の値。線は §4.2 のとおり切れる）。例外は area と bar の `Baseline` で、パネルの端に寄せる
+  - **step**: X は単調非減少。線と同じく M4 で点を引き（§5.5.1）、点の間を `Mode` の階段にして 1 本の折れ線で記録する。After は (xᵢ, yᵢ) → (xᵢ₊₁, yᵢ) → (xᵢ₊₁, yᵢ₊₁)、Before は (xᵢ, yᵢ) → (xᵢ, yᵢ₊₁) → (xᵢ₊₁, yᵢ₊₁)、Middle は 2 点の x の中点で縦に進む。M4 は画素列ごとの first・min・max・last を保つので、間引いた階段は間引かない階段と同じ画素列に同じ縦の幅を描く
+  - **area**: X は単調非減少。M4 で点を引き、画素列ごとに台形を 1 つ作って `DrawColumns`（§5.1）で塗る。列の中に点がなければ、一方の縁は列の左右の辺での補間（隣り合う点を結ぶ直線）で斜めになり、もう一方は `Baseline` である。線が `Baseline` をまたぐ列は、縁が交わり、蝶ネクタイの形に塗られる（§5.1 のカバレッジは順によらない）。列の中に点があれば平らにし、上は max(左右の辺での値, 列の点の max, `Baseline`)、下は min(左右の辺での値, 列の点の min, `Baseline`) とする。平らにした列は、点が列の中の極小か極大のとき、線より最大で「隣り合う線分の傾き × 列の幅（1 画素）」だけ広く塗る（大きなデータでは画素列の中の点の min と max そのもので、誤差はない。少ないデータで、点のある列だけに出る）。`Baseline` の画素は、有限に写らないか domain の外なら、パネルの端（y の下端、reverse なら上端）に寄せる。log の y で既定の 0 は −∞ に写るので、軸の下端まで塗る（clamp と同じ扱い、PR #121 のレビュー）。`Outline` があれば、y の線を線と同じ道で記録する
+  - **band**: X は単調非減少。YMin と YMax のそれぞれのピラミッドで、同じ境界の M4 を引き、画素列ごとの台形の上を YMax、下を YMin で area と同じ規則にする（YMax は max、YMin は min を取る）。`Outline` があれば YMin と YMax の 2 本の線を記録する
+  - **bar**: X は単調非減少。見える棒（x が x の domain に入る要素。`UniformColumn` は算術で、保存された X は境界の二分探索で数える。M4 と同じ）が 4W 以下なら、棒ごとに [x − 幅/2, x + 幅/2] × [`Baseline`, y] を `DrawRect` で記録する。`Baseline` の画素は area と同じくパネルの端に寄せる。4W を超えたら、M4 の画素列ごとの max（`Baseline` より上）と min（下）で、画素列の幅の棒を 1 つか 2 つ記録する。幅の既定は、`UniformColumn` なら刻み × 0.9、保存された列なら (x の最大 − 最小) / (要素の数 − 1) × 0.9（チャンクの統計だけで求まる平均の間隔。隣り合う差の最小は全要素の走査が要るので使わない。間隔が不揃いで棒が重なるときは `Width` を与える）。要素が 1 つなら 1 × 0.9
+  - **errorbar**: X は単調非減少。見える要素が 4W 以下なら、要素ごとに YMin から YMax への縦の線と、`CapWidth` · s の幅の端の横線 2 本を記録する。4W を超えたら、画素列ごとに YMin の min から YMax の max への縦の線を記録し、端は描かない
+  - **rule**: 縦の線（X）は X が単調非減少で、見える線が 4W 以下なら線ごとにパネルの高さいっぱいに、4W を超えたら、要素のある画素列ごとに列の中央に 1 本を記録する（境界の二分探索で、列に要素があるかを数える）。横の線（Y）は Y が単調非減少で、同じことを画素の行ごと（4H）に行う
+  - **segment と rect**: 並びを求めない。要素の総数が 131,072（2^17）以下なら、毎フレームすべての要素を写して記録する（走査と記録は定数で抑えられ、rect の記録で 4 MB。要件 R-1 の「1 フレームの転送は数 MB 以下」は画素の数でなく量の条件なので、上限はパネルの大きさに依らない。パネルの大きさに依ると、ウィンドウを縮めただけで投げることになり、行 G3 の小さい描画先の扱いと逆になる。PR #121 のレビュー、オーナーの決定 2026-10-30）。超えたら、要素の数と上限を書いた `InvalidOperationException`。見える要素だけを数えると毎フレーム全要素の走査になり、不変条件 2 を破るので、総数で決める（Issue #120）。大きなデータの道（密度）は行 R3。rect は 2 つの角を写し、小さい方を左上にして `DrawRect` で記録する（reverse と log でも向きによらない）
+  - **線のまとめ方**: segment・rule・errorbar の多数の線は、NaN の点で区切った 1 本の折れ線として記録する（§5.1 の欠損の切れ目）。折れ線は 1 本につき 3 回描くので（§5.3）、1 本ずつだと描画の呼び出しが線の数の 3 倍になる。1 本にまとめると、重なった半透明の線は 1 つの形として 1 回だけ塗られる（線の Geom と同じ）
+  - **`IGeom`**: `CustomLayerSpec` の `Learn` は domain を学ぶたびに 1 回、`Record` は記録するたびに 1 回呼ぶ。`Record` はパネルで切り抜かれた `RenderList` に記録し、`GeomFrame` の写し方で画素を求める。呼び出しはレイヤーごとで、点ごとには呼ばない（§4.1）。記録する量を画素の数で抑えるのは実装する側の責任で、XML に書く。呼ぶのは `Render` のスレッドだけで、投げた例外は `Render` からそのまま出る（`IScale` と同じ）。組み込みの Geom も同じ形の internal の実装で、コンパイルはレイヤーの種類によらず 1 つの道で扱う
+  - **凡例**（§4.6）: 塗りの Geom（area・band・bar・rect）の見本は、行の高さの正方形を塗りの色で塗る（`DrawRect`）。線の Geom（step・rule・segment・errorbar）は線と同じ見本。`CustomLayerSpec` は線の見本を黒の太さ 1 で描く
+- **ほかの行**: point（散布）は行 R3、text の Geom は行 G8、image（ラスタ）は行 G9、カテゴリの x の bar は行 G7。画像・ヒートマップの大きなラスタは、タイルとミップマップを作って見える部分だけを置く（行 G9）
 
 ### 5.6 テキスト
 
@@ -1308,7 +1491,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 - `Render(RenderList list)`（行 R2）は、フレームを開始し、`IGpuBackend.Draw` で描画先に描いて終える。`Clear` と組み合わせて、背景を塗ってから線を描く
 - `Render(PlotSpec plot)`（行 G1）は、仕様をコンパイルし（§4.8）、索引ができるのを待って、プロットを描画先の全体に描く。行 G3 からは、描画先をテーマの背景で塗り、ガイドを配置して、パネルにデータを、まわりに軸・タイトル・凡例を描く（§4.6）。コンパイルの結果は最後に描いた仕様の分を持ち、次の仕様とは差分でやり直す（§4.8）。ピラミッドを作るプールは、コンストラクタの省略できる引数 `pool` で渡し、渡さなければ `PlotWorkerPool.Shared` を使う。`plot` が null なら `ArgumentNullException`、検査と学習の例外は §4.8・§4.2 のとおり。ピラミッドか X の統計の失敗は、その例外を包まずに投げ直す（§4.8 のヘッドレスの待ち方）
 - **倍率（行 G3）**: コンストラクタの `scale` は DIP から物理画素への倍率（150 % なら 1.5）で、`Render(PlotSpec)` がテーマの長さと `LineLayerSpec.Style` に掛ける（§4.6）。有限で 0 より大きくなければ `ArgumentOutOfRangeException`。作った後に変えない。DPI の変化を受けて描き直す口はホストの行 W1 で作る。`Render(RenderList)` と `MeasureText` は物理画素のままで、倍率を掛けない
-- **`SpecPlot`（行 G3）**: `samples/SpecPlot` は、`PlotSpec` で 2 系列（1e6 点、Unix 起点の ns で 2026 年 1 月 1 日から 1 ms ごとの `Column.UniformInteger` の X、シードつきの正弦波と雑音の `float` の Y、ラベル "ch1" と "ch2"）を、time の x 軸（タイトル "Time"）、nice の linear の y 軸（タイトル "Value"）、タイトル、凡例つきで、1,280 × 720 に `Theme.Light` と `Theme.Dark` の 2 枚の PNG に書く。NativeAOT の検査に `HelloPlot` と並べて使う（`.cursor/rules/aot.mdc`）。`HelloPlot` は変えない（ゴールデン画像の場面を共有している、§10.1）
+- **`SpecPlot`（行 G3）**: `samples/SpecPlot` は、`PlotSpec` で 2 系列（1e6 点、Unix 起点の ns で 2026 年 1 月 1 日から 1 ms ごとの `Column.UniformInteger` の X、シードつきの正弦波と雑音の `float` の Y、ラベル "ch1" と "ch2"）を、time の x 軸（タイトル "Time"）、nice の linear の y 軸（タイトル "Value"）、タイトル、凡例つきで、1,280 × 720 に `Theme.Light` と `Theme.Dark` の 2 枚の PNG に書く。NativeAOT の検査に `HelloPlot` と並べて使う（`.cursor/rules/aot.mdc`）。行 G4 から、3 枚目の PNG に、同じ時系列から作った band（移動の min と max の列）と step と bar と errorbar を描く。`HelloPlot` は変えない（ゴールデン画像の場面を共有している、§10.1）
 - `MeasureText(string text, in TextStyle style)`（行 T1）は、`IGpuBackend.Text.Measure` を呼ぶ（バックエンドの `TextEngine` の整形のキャッシュを使う、§5.6）。描かないのでフレームを開かない。引数の検査は `RenderList.DrawText` と同じ（`position` を除く、§5.1）
 - **`HelloPlot` の見出し（行 T1）**: `samples/HelloPlot` は、`HelloScene.Record` の後に `DrawText` で 1 行の見出し（点の数と系列の数）を足して描く。ゴールデン画像のテスト（§10.1）は `HelloScene` だけを描くので、DirectWrite の画素は基準に入らない（§10 の T1 の行）
 - `Dispose` は自分の描画先と、コンパイルの結果（ピラミッド）を解放する。`backend` と `pool` と表の列は持ち主が解放する（`PlotWorkerPool.Shared` は解放しない）
@@ -1385,6 +1568,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 | スケールの空間の精度（D2） | R-6: 2026 年の .NET のティックの `Column<long>` の X と、ns・Unix 起点の `Column<long>` の X、整数の `UniformColumn`（2026 年のティックの開始値、刻み 10）で、全体の表示から、表示範囲がデータの 1 単位を幅 1,920 いっぱいに広げるところまでの各段で、境界の差が狭義に増加し、M4 の点が総当たり（`Int128` の正確な差を 1 回丸めた値で判定）と位置・値・役割まで一致し、画素の位置が理想の値（正確な差から倍精度で計算した値）と一致する。差 d: `long.MaxValue` と `long.MinValue` の値を反対の端の原点で引いて例外にならず、単調非減少のまま。`float`・`double`・`double` の `UniformColumn` で、原点 0 の結果が D2 の前と点まで同じ。Y: 2026 年のティックの近くで 1 ずつ変わる `long` の Y の M4 の Y が、Y の原点からの正確な差。原点の付け直し（`ScaleRange` の関数）: 下端の差が (−0.5, 0)・[−1, −0.5]・−1 より小さい値・[0, 1)・大きい正の値で、付け直した後の下端の差が [0, 1) にあり、付け直す前と後の位置（原点 + 差を `Int128` と分数で正確に比べた値）の違いが §3.6 の上限の中にある。d ∈ (−0.5, 0) の −0.3 で丸まること、ほかの範囲で下端がビットまで同じこと、上端の差が結果の 1 ulp の半分以下だけ動き、原点が上がるときは動かず、原点が下がる 0.5 + 2^−53 と 2^53 以上の 2^60 + 1024 で動くこと。`long` の範囲に収める端（`long.MinValue` の近くと、`double` の −1e300）。整数の列: `Column.UniformInteger` の `step` が 0 以下と、最後の値が `long` に入らない長さで `ArgumentOutOfRangeException`、`IsInteger`、`Col<long>` が参照を返し `Col<double>` が `ArgumentException`、`double` の `UniformColumn` は逆。`TryGetInteger` が整数の列で真と正確な開始値と刻み（2^53 を超える開始値で、`start + i * step` が `long` の値と一致）を返し、`double` の列で偽と 0 と 0 を返す。`double` の列の d: 原点が 2^53 を超えるとき、点のずれが ulp(o)/2 以下で、総当たりが同じ式の値と一致する。学習（コンパイル）: `long` の列の domain の原点が min そのもので、上端の差が `max − min` の正確な値。整数の列だけの和は `long` で、`double` の列が混ざると `double` で比べる。値が 1 つの `long` の列で原点が v − 1、差が 0.5 と 1.5。`PlotWorkerPool.Extract` の各系列の結果が、同じ原点の `M4.Extract` と点まで同じ。温まった後、原点の違う x の domain の切り替えでも確保しない |
 | 位置のスケール（G2） | 変換: log・symlog（C = 1 と 0.5）・pow（k = 2 と 0.5）の `Forward` と `Inverse` が式の値で、互いの逆（往復の差が、log と symlog は max(|v|, C) の ulp で 2 + ln 10 · |f(v)|、pow は |v| の ulp で 2 + 1/k 以内）。並べた乱数の値（負・0・正、0 の近くの ±1e-9 を含む）で狭義に単調増加。symlog と pow は 0 で連続。log の 0 は −∞、負は NaN。作り方の口: `Symlog` と `Pow` の 0・負・NaN・∞、`Time` の名前のない単位、`Transform(null)`。`WithDomain`: log の min ≤ 0、transform の端の `Forward` が有限でない、time の min ≥ max。time の `DateTime` の domain が外向きに丸まる（ms の単位で 5 ティック余る端の下端は ⌊⌋、上端は ⌈⌉。1969 年の日時でも下端が −∞ へ丸まる）、ns で 2300 年が `ArgumentOutOfRangeException`、`Kind` が違っても同じ値。コンパイル: 写しのコンストラクタで派生した知らない `ScaleSpec`（型の名前）、`with` で入れた範囲の外の `Domain`（種類ごと）、time のスケールの列が `double`（列の名前と種類）。学習: log の学習した端が 0 以下で列の名前と値を書いた `InvalidOperationException`、値が 1 つ（log の 0.3 で [log10 0.3 ± 0.5]）と値なし（log で 1〜10）をスケールの空間で、zero（linear・symlog・pow で学習した domain が 0 を含み、明示の domain は変わらない。整数の列は `long` で。値が 1 つの v = 5 で [0, 5]、v = 0 で [−0.5, 0.5]）。描く（記録が、同じ変換で手で組んだ M4 と `RenderList` と一致）: log の y、0 をまたぐ symlog の y、sqrt と pow 2 の y、ns と ticks の time の x（同じ `long` の列を linear で描いた画素と同じ）、利用者の `IScale`（log2）の x、log の 0 以下の値と利用者の変換が NaN を返す値で線が切れる（1 画素列に −5 と正の値が混ざる場面で、M4 がデータの単位で選んだ min の −5 が落ち、その列の正の値の min が描かれないことを固定する）、reverse の x と y、clamp の x と y（domain の外の点と `Before`・`After` が端に寄る）。非線形の境界: `Scale.Log().WithDomain(1, 1 + 1e-13)` を幅 1,000 で（log の空間の境界は増加するが、10^s に戻すと重なる）`ArgumentException`。差分: `Reverse` か `Clamp` だけでピラミッド 0・M4 0・記録 1、スケールの種類・`Zero`・`IScale` の参照の変化で 0・1・1。`IScale` が投げた例外が `Render` からそのまま出る。描く（WARP）: log の y と time の x の線のプロットのゴールデン画像。温まった後、log・symlog・pow の x で、domain を与えた同じ仕様の描き直しと domain の切り替えが確保しない（symlog と pow はスケールが変換を 1 つ持ち、検査も描画も作り直さない）。利用者の変換の与えた domain の検査は、同じノードの描き直しでは `Forward` を呼ばない |
 | テキスト（T1） | 偽のバックエンド（Core と D3D11 のテストに置く `ITextBackend`。グリフの番号から決まる矩形のカバレッジを返し、整形は 1 文字 1 グリフで送り幅が一定。D3D11 のテストは、internal の `D3D11Backend.CreateForTest` に、偽の `ITextBackend` で作った `TextEngine` を渡す差し込み口で使う）で: 横 3 通り × 縦 4 通りの揃え・回転 3 通り・2 行と 3 行の束・1/4 画素の 4 段の置き場所が、CPU の基準（同じ式で画素を求める）と WARP で一致する。折れ線と文字列を交互に記録した順のとおりに重なる。切り抜きが文字列に当たる。アトラス: 2 回の `Draw` で違うグリフを使い、3 回目で頁を満たすと、最後に使われた番号の小さい棚から空けて、今の `Draw` のグリフは動かさない、空けたグリフを次に使うときラスタライズし直す、今の `Draw` のグリフだけで満ちるとき頁を足す、9 頁要るとき `InvalidOperationException`、グリフの間の 1 画素の空き、書き換えた矩形だけを送る、喪失の後に CPU の頁から作り直して同じ画素。整形のキャッシュ: 同じ文字列で `Shape` を 2 回呼ばない、`MeasureText` で測った文字列を同じバックエンドの `Draw` が整形し直さない、2 つの `HeadlessRenderer` が同じバックエンドで 1 つのキャッシュを使う、ロケールの違いでは整形し直す、4,097 個目で最も古い項目を捨てる、色・揃え・回転の違いでは整形し直さない。`DrawText` の引数（null・空・有限でない位置・大きさ 0 と 512 を超える値と NaN・空のフォント名・名前のない列挙値）。`MeasureText` が `ShapedText.Metrics` を返し、フレームを開かず、`DrawText` と同じ引数で同じ例外を投げる。`ShapedText` のコンストラクタが配列を写す（渡した配列を後で書き換えても変わらない）。ゴールデン画像: 偽のバックエンドの場面 1 枚（揃えと回転と複数行）。DirectWrite（WARP、画素でなく性質で）: 末尾に空白のない 1 行の送り幅の和が `IDWriteTextLayout::GetMetrics` の `width` と一致し、末尾に空白のある 1 行の幅が `widthIncludingTrailingWhitespace` と一致する、アラビア語の文字列で最初の文字のグリフが行の右端にある、日本語（"日本語"）が Segoe UI からのフォールバックで描け、カバレッジがある、グレースケールのカバレッジが 0 と 255 以外の値を持つ、位置 0 と 0.25 のカバレッジが違う、太字の和が細字より大きい、見つからないフォント名でも描ける、"日本語" を ja-jp と zh-cn で整形するとフェイスの番号が違う（漢字に別のフォントが当たる）、`\n` で 2 行になり高さが 1 行のほぼ 2 倍。`IDWriteTextRenderer` のコールバックが例外を投げずに `E_FAIL` を返し、`Draw` が戻った後に、差し込み口で投げさせたその例外がそのまま出る。`CoInitialize` を呼ばないテストのスレッドで整形とラスタライズが動く。確保: 温まった後、同じ 100 個のラベルを毎フレーム記録して描いても確保しない（偽のバックエンドと DirectWrite の両方）。NativeAOT: `HelloPlot` の見出しが描ける（COM のコールバックが NativeAOT で動く） |
+| Geom（G4） | ビルダ（Core）: Geom ごとに、別の表と `default` の参照、`Column<T>` が要るチャネルの `UniformColumn`、`Baseline` の NaN と ∞、`Width` の 0・負・NaN、`CapWidth` の負と NaN、configure の線の §5.1 の例外、`Custom(null)` と `new CustomLayerSpec(null)` の `ArgumentNullException`。`RuleLayerSpec` の X と Y の両方と両方とも `default` がコンパイルで `ArgumentException`。`LineBuilder.Label` と `LineLayerSpec.Label` が基底の `Label` に入る。学習: Geom ごとに、domain が §4.2 のチャネルの和（Area と Bar は `Baseline` を含み、Bar の x は幅の半分ずつ広がる、縦の Rule は x だけ、横の Rule は y だけ）。`IGeom.Learn` の `AddX`・`AddY` が和に入り、`long` の範囲が正確で、何も足さなければ寄与せず、有限でない値と min > max が `ArgumentException`。記録（Core、`RenderList` を手で組んだものと比べる）: step の 3 つの `Mode` の点。M4 で間引いた階段が、間引かない階段と画素列ごとの縦の幅で同じ。area の台形が、点のない列で斜め、点のある列で平ら（上が max(左右の辺の値, 列の max, `Baseline`)、下が min(…)）、線が `Baseline` をまたぐ列で縁が交わる。log の y と既定の `Baseline` 0 の area と bar が、パネルの下端まで塗る（reverse で上端）。平らな列の塗りの線からのはみ出しが、隣り合う線分の傾き × 1 画素以内。band の上が YMax の max、下が YMin の min。bar が 4W 以下で棒ごと、4W を超えて画素列ごとの max と min。bar の幅の既定（`UniformColumn` の刻み × 0.9、保存された列の平均の間隔 × 0.9、要素 1 つで 0.9）。errorbar が 4W 以下で端の幅 `CapWidth` · s、`CapWidth` 0 で端なし、4W を超えて画素列ごとで端なし。縦と横の rule が 4W（4H）以下で線ごと、超えて要素のある列（行）ごと。segment と rect が 131,072 ちょうどで描き、1 つ多いと要素の数と上限を書いた `InvalidOperationException`（小さいパネルでも同じ上限）。どの Geom も、写した値が有限でない端の要素を描かない（log の x で 0 以下に写る bar の端を含む）。横の rule の Y が減ると `InvalidOperationException`。新しい Geom のチャネルが time のスケールで `long` の日時の列でないと、列の名前と種類を書いた `ArgumentException`。rect の角が reverse と log でも左上になる。segment・rule・errorbar がレイヤーごとに NaN で区切った 1 本の折れ線。`IGeom`: `Learn` が学ぶたびに 1 回、`Record` が記録するたびに 1 回、同じ仕様の描き直しで 0 回。`Record` の外の `GeomFrame` が `InvalidOperationException`。`Record` の中の `SetClip` が後のレイヤーの切り抜きを変えない。投げた例外が `Render` からそのまま出る。`GeomFrame` の `PixelX`・`PixelY` が、同じスケールの線の点の画素と一致する（linear・log・reverse・clamp、`long` の 2026 年のティックで正確、有限でない写しで NaN）。凡例: 塗りの Geom が塗りの色の正方形、線の Geom が線の見本、`CustomLayerSpec` が黒の太さ 1。差分（数え口）: チャネルの参照でピラミッドと M4、`Baseline` と `Width` で M4 1、`Fill`・`Outline`・`Style`・`Mode`・`CapWidth`・`Label` で M4 0・記録 1。座標: cartesian の 4×4 の変換で写した線が、行 G3 までの式と同じ値（G1・G2・G3 のテストとゴールデン画像が変わらない）。列の台形（WARP）: CPU の基準（§5.1 の積分を数値で細かく求め、背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（斜めの上と下の縁、1 画素の行を何本もまたぐ縁、1 画素より細い列、縁が交わる蝶ネクタイの形で 2 つの三角を塗る）。座標が有限でない台形と Left ≥ Right の台形を描かない、切り抜き、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、Geom ごとに同じ仕様の描き直しが確保しない。ゴールデン画像: §10.1 の場面 (8) と (9)。サンプル（`SpecPlot`）の 3 枚目の Geom の画像を NativeAOT で書く |
 | ガイドと配置（G3） | 目盛り（Core、偽の `ITextBackend` で測る）: 拡張アルゴリズムの探し方が、枝刈りなしの総当たり（j ≤ 8、k ≤ 30、z は §5 の最初から 6 つ上まで、start は §5 の範囲）と同じ候補を選ぶ（乱数の範囲・軸の長さ・目標の間隔で 100 通り）。点数の 4 項が §4.6 の式の値で、重みが 0.25・0.2・0.5・0.05（疑似コードの入れ替えた重みと違う候補になる範囲を 1 つ含める）、v が 0 を含む目盛りで 1。`Nice` が偽で目盛りがすべて domain の中にあり「埋める」条件を満たし、真で domain を覆い、domain が [lmin, lmax] になる。軸が短くてすべて重なるとき目盛りを描かない。重なりの値の 3 つの場合（1.5 em ちょうど、その間、重なり）。値が M · 10^e で正確（0.1 刻みの 0.3 が "0.3"）。負の範囲・0 をまたぐ範囲・1e300 と 1e-300 の大きさ。pow と sqrt と利用者の `IScale` の目盛りの画素が `Forward` の位置。log: 1 桁に満たない範囲で linear の選び方、3 桁に満たない範囲で {1, 2, 5} · 10^k、多い桁で j 個おき、重ならない、目盛りが 2 つを下回る j で止まる、nice が 10 の冪に広げる、nice の候補の当たる条件を広げた domain の画素で測る（広げる前の画素では当たり、広げた後は重なる候補を選ばない。symlog と time も）、広げた domain で当たる候補がなければ nice なしの選び方になり domain は学習したまま（log の 0.3〜3,000 を 250 画素、間隔 90）。symlog: 0 を含み両側、10 · C に届かない domain で linear。time: 各段（ns から年まで）が選ばれる範囲、置き方（7 日が月曜、月の 3 と 6 が 1 月から、年が倍数、日の 2 が 0001 年からの日数）、ns の単位で 2262 年の近くまで正確、`Ticks` の単位で 100 ns の倍数でない刻みを使わず、ms の単位で ms より細かい刻みを使わない、起点より前（1969 年）が ⌊⌋ で分かれる、`boundary` が目盛りごとに最も粗い境、`DateTime` の範囲の外の domain が `InvalidOperationException`（`ShowAxes` と `ShowGrid` が偽なら投げない）、nice が刻みの目盛りに広げる。書式: 拡張アルゴリズムの軸で小数の桁がそろう、log で目盛りごと、12 文字を超えると軸のすべてが指数の形、負の 0 を書かない、time の 9 つの境の形。利用者の書式: 偽・64 を超える `charsWritten`・負の `charsWritten` が `InvalidOperationException`、投げた例外がそのまま出る、0 文字のラベル（`DrawText` を記録せず、重なりでは幅 0 として隣のラベルとの間を測る）。文字列の表: 当たれば `string` を作らない、4,097 個目で最も古いものを捨てる。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: タイトルあり・なし、凡例あり・なし、軸のタイトルあり・なし、倍率 1 と 1.5（丸め）、`ShowAxes` が偽、y を x より先に選ぶ（y のラベルの幅が W を決める）、小さい描画先で背景だけを描き例外を投げない。記録（`RenderList` の命令の列を見る）: §4.6 の描く順、パネルの切り抜き、太さ 1 と 2 の線の位置（奇数は ⌊p⌋ + 0.5、偶数は ⌊p + 0.5⌋）、太さ 1 と 2 の軸の線がパネルの画素に重ならない（WARP で、パネルの最後の行と最初の列が軸の色を持たず、そのすぐ外が持つ）、目盛りが軸の線の中心から始まり、丸い端を含めた外の端がパネルの辺から T、凡例の見本が `Style` の s 倍、文字のスタイルが `Foreground`・大きさ · s・`FontFamily`・`Locale`。テーマの検査（メンバーごとの範囲の外、s を掛けて 512 を超える大きさ、null のテーマ）。`HeadlessRenderer` の `scale` の 0・負・NaN・∞。倍率: 1.5 でデータの線の太さと破線の長さ（`On`・`Off`・`Offset`）が 1.5 倍で記録され、1 で行 G1 と同じ値で記録される。倍率 1.5 の `HeadlessRenderer` の `Render(RenderList)` の画素と `MeasureText` の値が、倍率 1 のものと同じ。`WithTitle` の null の scale と `PlotBuilder.Theme(null)` が `ArgumentNullException`。`PlotSpec.Title`・`Label`・スケールの `Title` が null のときと空のときのどちらも「なし」で、タイトルの帯・凡例の行・軸のタイトルの帯を取らない。差分（数え口）: 同じ仕様の描き直しは配置 0・M4 0・記録 0、タイトル・テーマ・ラベル・書式・軸のタイトルだけは配置 1・M4 0・記録 1、W を変えるテーマ（`Padding`）は M4 1、`Nice` は M4 1。矩形（WARP）: CPU の基準（§5.1 の ox · oy を背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（整数の端、端数の端、1 画素より小さい矩形、半透明の 2 つの重なり）。幅か高さ 0 は何も描かない、切り抜き、§5.1 の引数の例外、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、同じ仕様の描き直しが確保しない。2 つの domain を交互に描くと、両方を一度描いた後は確保しない。ゴールデン画像: §10.1 の場面 (6) と (7)。サンプル（`SpecPlot`）は NativeAOT で発行して警告 0、実行して 2 枚の PNG を書く。行 G1 と G2 の行の「手で組んだ記録との比較」と確保のテストは、§4.8 のガイドのないテーマで描く |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
@@ -1444,13 +1628,13 @@ public sealed class ImageMismatchException : Exception
 - **合わないとき**: `<名前>` は `baselinePath` のファイル名から拡張子を除いたもの（基準をどこに置いても同じ）。`outputDirectory`（なければ作る）に `<名前>.actual.png`（実際の画像）と `<名前>.diff.png`（差の画像）を書き、`ImageMismatchException` を投げる。差の画像は、`Channel` を超えた画素を不透明の赤（255, 0, 0, 255）に、それ以外を基準の画素の輝度を薄めた灰色（`255 − (255 − Y) / 4`、Y は Rec. 709 の係数で 8 ビットに丸めた輝度、不透明）にする。メッセージには、基準のパス、超えた画素の数と許容の数、差の最大、最初に超えた画素の位置、書いた 2 つのファイルのパスを書く。大きさが基準と違うときは、両方の大きさを書き、実際の画像だけを書く（差の画像は作らない）
 - **PNG**: 書くのは `HeadlessRenderer` と同じ書き手（§7.5）。読むのは `HyperPlot.Testing` の internal の復号器で、§7.5 の書き手が書く形（8 ビットの RGBA、カラータイプ 6、インターレースなし、行のフィルタ 0）だけを読む。それ以外の形、壊れたチャンク（CRC の不一致、`IDAT` の展開の失敗、足りない長さ）は、理由を書いた `InvalidDataException` にする。外部のライブラリは使わない（§0 の表、`design-decisions.md`）。今テストの中にある復号器（`tests/HyperPlot.Core.Tests/Rendering/PngDecoder.cs`）をここへ移し、Core と D3D11 のテストは `InternalsVisibleTo` でそれを使う（チャンクの並びと CRC を見る §7.5 の PNG のテストも含む）
 - **引数**: `actual`・`expected` の長さが `width × height × 4` でない、`width`・`height` が 1 未満なら `ArgumentException`。パスと `renderer` が null なら `ArgumentNullException`。基準の PNG が読めないとき（§10.1 の「PNG」の形の外、壊れたチャンク）は、`AssertMatches` は復号器の `InvalidDataException` をそのまま投げ、`ImageMismatchException` に包まない（合わないのでなく、基準のファイルが壊れている）。`AssertMatches(HeadlessRenderer, ...)` は、`renderer` の大きさで 1 枚分を確保して `ReadPixels` で読む（テストの経路で、フレームの経路ではない）
-- **ゴールデン画像の場面**（`tests/HyperPlot.Rendering.D3D11.Tests`、WARP、Windows のみ）: (1) `HelloPlot` の場面（§2.1。4 系列の正弦波＋シードつきの雑音＋NaN の欠け、ピラミッド・`M4Batch`・格子・M4 の線、1,280 × 720）を 1e5 点で描いたもの。場面の組み立ては `samples/Shared` にあり、`HelloPlot` とテストが同じコードで描く。点の数を引数にし、欠けの位置と正弦波の周波数は点の数に対する割合で決める。場面を出す前と後で、`HelloPlot`（1e6 点）の PNG が画素まで同じことを、行 S3 の実装の PR で確かめる。(2) R2 の線の種類（太さ 0.5・1・1.5・3、破線、切り抜き、半透明の重なり）を 1 枚に並べた場面。R2 の各ケースは CPU の基準と比べているので（§10 の表）、画像では持たない。(3) 行 G1 の線のプロット（`HeadlessRenderer.Render(PlotSpec)`、640 × 360、1e5 点の 2 レイヤー: 等間隔の X と NaN の欠けのある `float` の Y、保存された X と破線の `double` の Y）。同じテストが、手で組んだ `M4Batch` と `RenderList` の画素と一致することも確かめる（§10 の G1 の行）。(4) 行 G2 の位置のスケール（640 × 360、1e5 点: 1970 年起点の ns で 1 µs 刻みの `Column<long>` の X を `Scale.Time(TimeUnit.Nanoseconds)` で、0.1〜約 1,000 の `float` の Y を NaN の欠けつきで `Scale.Log()` で、`Golden/plot-scales.png`）。画素の正しさは §10 の G2 の行の手で組んだ記録との比較が見る。(5) 行 T1 のテキスト（640 × 360、偽の `ITextBackend` で: 横 3 通り × 縦 4 通りの揃え、回転 3 通り、2 行と 3 行の束、`Golden/text.png`）。DirectWrite の画素は OS のフォントと版に依るので、基準に入れない（§5.6、不変条件 11 の例外）。(6) 行 G3 のガイドのライトテーマ（640 × 360、偽の `ITextBackend`、倍率 1、1e5 点の 2 レイヤー: ns の time の x とタイトル、nice の linear の y とタイトル、破線のレイヤーを含む 2 つのラベルの凡例、プロットのタイトル、`Theme.Light`、`Golden/guides-light.png`）。(7) 行 G3 のガイドのダークテーマ（640 × 360、偽の `ITextBackend`、倍率 1.5、log の y を nice で、sqrt の x、`Theme.Dark`、`Golden/guides-dark.png`）。行 G3 から、(3) と (4) は §4.8 のガイドのないテーマで描き、基準は変わらない。ゴールデン画像の役目は、記録から readback までの経路全体が知らないうちに変わったのを見つけることである
+- **ゴールデン画像の場面**（`tests/HyperPlot.Rendering.D3D11.Tests`、WARP、Windows のみ）: (1) `HelloPlot` の場面（§2.1。4 系列の正弦波＋シードつきの雑音＋NaN の欠け、ピラミッド・`M4Batch`・格子・M4 の線、1,280 × 720）を 1e5 点で描いたもの。場面の組み立ては `samples/Shared` にあり、`HelloPlot` とテストが同じコードで描く。点の数を引数にし、欠けの位置と正弦波の周波数は点の数に対する割合で決める。場面を出す前と後で、`HelloPlot`（1e6 点）の PNG が画素まで同じことを、行 S3 の実装の PR で確かめる。(2) R2 の線の種類（太さ 0.5・1・1.5・3、破線、切り抜き、半透明の重なり）を 1 枚に並べた場面。R2 の各ケースは CPU の基準と比べているので（§10 の表）、画像では持たない。(3) 行 G1 の線のプロット（`HeadlessRenderer.Render(PlotSpec)`、640 × 360、1e5 点の 2 レイヤー: 等間隔の X と NaN の欠けのある `float` の Y、保存された X と破線の `double` の Y）。同じテストが、手で組んだ `M4Batch` と `RenderList` の画素と一致することも確かめる（§10 の G1 の行）。(4) 行 G2 の位置のスケール（640 × 360、1e5 点: 1970 年起点の ns で 1 µs 刻みの `Column<long>` の X を `Scale.Time(TimeUnit.Nanoseconds)` で、0.1〜約 1,000 の `float` の Y を NaN の欠けつきで `Scale.Log()` で、`Golden/plot-scales.png`）。画素の正しさは §10 の G2 の行の手で組んだ記録との比較が見る。(5) 行 T1 のテキスト（640 × 360、偽の `ITextBackend` で: 横 3 通り × 縦 4 通りの揃え、回転 3 通り、2 行と 3 行の束、`Golden/text.png`）。DirectWrite の画素は OS のフォントと版に依るので、基準に入れない（§5.6、不変条件 11 の例外）。(6) 行 G3 のガイドのライトテーマ（640 × 360、偽の `ITextBackend`、倍率 1、1e5 点の 2 レイヤー: ns の time の x とタイトル、nice の linear の y とタイトル、破線のレイヤーを含む 2 つのラベルの凡例、プロットのタイトル、`Theme.Light`、`Golden/guides-light.png`）。(7) 行 G3 のガイドのダークテーマ（640 × 360、偽の `ITextBackend`、倍率 1.5、log の y を nice で、sqrt の x、`Theme.Dark`、`Golden/guides-dark.png`）。行 G3 から、(3) と (4) は §4.8 のガイドのないテーマで描き、基準は変わらない。(8) 行 G4 の塗りの Geom（640 × 360、偽の `ITextBackend`、`Theme.Light`、100 点の X に、`Baseline` 0 と縁つきの area、band、20 本の bar、4 つの rect）、`Golden/geoms-fill.png`。(9) 行 G4 の線の Geom（同じ大きさで、3 つの `Mode` の step、縦と横の rule、segment、端つきの errorbar）、`Golden/geoms-line.png`。大きなデータの道（4W を超える要素）は、§10 の G4 の行の記録の比べ方で見る。ゴールデン画像の役目は、記録から readback までの経路全体が知らないうちに変わったのを見つけることである
 - **CI**: Windows の回は、ゴールデン画像のテストが書いた `golden-output/`（テストの実行のフォルダの下）を artifact として上げる
 
 ## 11. 不変条件
 
 1. `HyperPlot.Core` は描画のバックエンドもホストも参照しない
-2. フレームの経路は、データの点数に比例する走査をしない。1 フレームに GPU へ送る量は画素数と系列数で抑えられる
+2. フレームの経路は、データの点数に比例する走査をしない。1 フレームに GPU へ送る量は画素数と系列数で抑えられる。行 G4 の segment と rect は、要素の総数が 131,072 以下のときだけ毎フレームすべてを走査する（走査は定数で抑えられる。超えれば例外で、大きなデータの道は行 R3、§5.5.3）
 3. 定常状態のフレームの経路は、マネージドのアロケーションをしない。ランタイムがプロセスで 1 回だけ行う初期化の確保（NativeAOT で `Lock` を初めて待つときの 56 バイト）は除き、その出どころを記録に書く（要件 P-9、`.cursor/rules/bench.mdc`、オーナーの判断 PR #63）。行 G3 から行 I1 までの例外: 新しい目盛りの値が出るとき、そのラベルの `string` と整形の結果を確保する（§4.6 の「確保」。同じ仕様の描き直しと、すでに描いた domain に戻る描き直しは確保しない）
 4. 派生のデータ（統計・LOD・タイル・Stat の結果）は元の列の版を持つ。古い版の結果を描くときは、それを「暫定」として扱い、ホストへ通知する
 5. M4 の間引きは、各画素列の first・min・max・last を誤差なしで保つ。点の位置と値は元の要素のものである
@@ -1460,7 +1644,7 @@ public sealed class ImageMismatchException : Exception
 9. `src/` のコードはリフレクションと実行時のコード生成を使わない
 10. GPU の資源は、Core の状態（常駐キャッシュの記述子）から作り直せる
 11. 同じ入力（データ・仕様・入力の列・時刻）から、WARP 上で同じ画素が出る。例外は DirectWrite で描いたテキストの画素で、OS のフォントと DirectWrite の版に依る（§5.6、行 T1）。テキストの画素の比較は、偽の `ITextBackend` の場面で行う（§10 の T1 の行）
-12. 座標系・ビュー・描画 IR・ヒットテスト・空間索引の公開の契約は、引数と戻り値を抽象（`PanelView`、4×4 の変換、画面の位置とビュー）で表す。2 次元を前提にした型（x と y だけの範囲・3×3 の行列など）を契約の引数や戻り値にしない。2D の範囲はその抽象の 1 つの種類（§6.2）として持ってよい。3D（§13）は、契約を変えずに種類を足して入れる
+12. 座標系・ビュー・描画 IR・ヒットテスト・空間索引の公開の契約は、引数と戻り値を抽象（`PanelView`、4×4 の変換、画面の位置とビュー）で表す。2 次元を前提にした型（x と y だけの範囲・3×3 の行列など）を契約の引数や戻り値にしない。2D の範囲はその抽象の 1 つの種類（§6.2）として持ってよい。3D（§13）は、契約を変えずに種類を足して入れる。例外: 行 G4 の `IGeom` の口（`GeomFrame`・`GeomRanges`）は x と y の成分ごとのメソッドで、3D では z の成分のメソッドを sealed class に足して広げる（§4.1、PR #121 のレビュー）
 
 ## 12. 対象外
 
@@ -1477,7 +1661,7 @@ public sealed class ImageMismatchException : Exception
 | C3（空間タイル索引） | 並べ直しの部品が次元の数を引数に取る（§3.4） |
 | R1・R2（D3D11・線分） | `IGpuBackend` の資源の種類が、描画先に深度のテクスチャを付けられる形である。コマンドの記録が深度のモードの欄を持つ（v1 は「なし」だけ、§5.1）。3 成分の記録は行 K1 で足す。シェーダは 2 成分・深度なしだけで、3D の値を持つコマンドは `NotSupportedException`（§5.2） |
 | G1（仕様モデル） | 仕様の型を init のプロパティで持ち、エンコーディングのチャネル（`z` を含む）を後から足しても既存のコードが壊れない（§4.1） |
-| G4（Geom 一式） | 座標系が 4×4 の変換の契約を持つ（§4.4）。`SetTransform` と一緒に、スケールの空間の座標を GPU で写す最初の行で作る（Issue #76） |
+| G4（Geom 一式） | 座標系の 4×4 の変換の形（倍精度の行列と原点）を Core の internal の型として作り、CPU の写し方が使う（§4.4）。公開の契約は G10 で `CoordSpec` と一緒に、GPU で行列を当てる `SetTransform` は R3 で作る（Issue #76、#120） |
 | I1・I2（ビューとヒットテスト） | ビューが `PanelView` の抽象で、ヒットテストが画面の位置とビューを受け取る（§6.2・§6.3） |
 
 ### 13.2 座標系とカメラ
