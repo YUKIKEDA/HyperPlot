@@ -497,7 +497,10 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         }
     }
 
-    /// <summary>Records a polyline of along × across points, swapped in place when flipped, with its style's DIPs scaled.</summary>
+    /// <summary>
+    /// Records a polyline of along × across points, swapped in place when flipped, with its style's DIPs scaled. The caller
+    /// does not use the points afterwards: flipped, they hold the target's coordinates.
+    /// </summary>
     public void DrawPolyline(Span<Vector2> points, in LineStyle style)
     {
         if (Flipped)
