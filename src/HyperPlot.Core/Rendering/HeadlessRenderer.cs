@@ -95,6 +95,26 @@ public sealed class HeadlessRenderer : IDisposable
         _backend.Draw(_target, _plan.Render(plot));
     }
 
+    /// <summary>
+    /// Measures a text as <see cref="RenderList.DrawText"/> draws it with the renderer's backend (design §5.6, §7.5),
+    /// through the backend's <see cref="TextEngine"/>, whose cache the next draw of the same text uses. Opens no frame.
+    /// </summary>
+    /// <param name="text">The text; a line feed starts a new line.</param>
+    /// <param name="style">The style; only the font, the size, the weight, and the locale change the size.</param>
+    /// <returns>The size in physical pixels.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="text"/>, the font family, or the locale is null.</exception>
+    /// <exception cref="ArgumentException">The font family or the locale is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The size is not finite or outside (0, 512], or the weight, an alignment, or the rotation is not a named value.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">Shaping failed.</exception>
+    /// <exception cref="ObjectDisposedException">The renderer was disposed.</exception>
+    public TextMetrics MeasureText(string text, in TextStyle style)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        return _backend.Text.Measure(text, style);
+    }
+
     /// <summary>Gets the compiled plot, or null before the first <see cref="Render(PlotSpec)"/>. Tests only.</summary>
     internal PlotPlan? Plan => _plan;
 

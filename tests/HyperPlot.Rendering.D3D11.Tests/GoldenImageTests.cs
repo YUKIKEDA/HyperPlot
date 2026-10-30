@@ -1,6 +1,7 @@
 using System.Numerics;
 using HyperPlot.Samples;
 using HyperPlot.Testing;
+using HyperPlot.Tests;
 
 namespace HyperPlot.Rendering.D3D11.Tests;
 
@@ -106,6 +107,55 @@ public sealed class GoldenImageTests
         renderer.Render(list);
 
         GoldenImage.AssertMatches(renderer, Baseline("lines.png"), Tolerance, Output);
+    }
+
+    /// <summary>
+    /// One image of texts drawn with the fake text backend matches its baseline: the 12 alignments, the 3 rotations, and
+    /// blocks of 2 and 3 lines (design §10.1). DirectWrite's pixels follow the system's fonts, so they are not in it.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend over the fake text backend; a 640 × 360 target.
+    ///
+    /// Steps:
+    /// - Record a grid of the 12 alignments, each at a crosshair of thin lines, and the 3 rotations of a 3-line block;
+    ///   clear to white and render; compare with <c>Golden/text.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline within the tolerance.
+    /// </remarks>
+    [Fact]
+    public void TextKinds_Warp_MatchBaseline()
+    {
+        var list = new RenderList();
+        var mark = new LineStyle(new Color(214, 39, 40, 255), 1);
+        var cell = 0;
+        foreach (var vertical in new[] { TextBaseline.Top, TextBaseline.Middle, TextBaseline.Baseline, TextBaseline.Bottom })
+        {
+            foreach (var horizontal in new[] { TextAlign.Left, TextAlign.Center, TextAlign.Right })
+            {
+                var at = new Vector2(70.5f + ((cell % 3) * 130), 40.5f + ((cell / 3) * 85));
+                list.DrawPolyline([at - new Vector2(30, 0), at + new Vector2(30, 0)], mark);
+                list.DrawPolyline([at - new Vector2(0, 20), at + new Vector2(0, 20)], mark);
+                var style = new TextStyle(new Color(31, 119, 180, 255), 14, Horizontal: horizontal, Vertical: vertical);
+                list.DrawText(cell % 2 == 0 ? "Ab\nCde" : "Abcd\nEf", at, style);
+                cell++;
+            }
+        }
+
+        var rotations = new[] { TextRotation.None, TextRotation.Clockwise90, TextRotation.CounterClockwise90 };
+        for (var i = 0; i < rotations.Length; i++)
+        {
+            var style = new TextStyle(new Color(44, 160, 44, 200), 15.5f, Vertical: TextBaseline.Middle, Rotation: rotations[i]);
+            list.DrawText("One\nTwo 2\nThree", new Vector2(395.25f + (i * 90), 180.75f), style);
+        }
+
+        using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));
+        using var renderer = new HeadlessRenderer(backend, 640, 360);
+        renderer.Clear(new Color(255, 255, 255, 255));
+        renderer.Render(list);
+
+        GoldenImage.AssertMatches(renderer, Baseline("text.png"), Tolerance, Output);
     }
 
     // The baselines are read from and written to the source tree, so that a rewrite lands in git.

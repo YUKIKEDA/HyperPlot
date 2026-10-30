@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** T1（G2 は #95 の PR で済み）
-- **ブランチ:** `docs/103-t1-text`
-- **Issue:** [#103](https://github.com/YUKIKEDA/HyperPlot/issues/103)
+- **作業中:** G3（T1 は #104 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -49,7 +49,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G1 | 仕様モデルとビルダ（`DataTable`、Plot / Layer / Encoding / コンパイル、`SpecId` と差分の再計算）、linear の位置のスケール、線のプロットをヘッドレスで描く（`HeadlessRenderer.Render(PlotSpec)`） | done | [#76](https://github.com/YUKIKEDA/HyperPlot/issues/76)（設計）、[#81](https://github.com/YUKIKEDA/HyperPlot/issues/81) |
 | D2 | スケールの空間の精度（日時のティックを原点からの差で表す）の設計と実装（`ScaleOrigin`、M4 と `PlotWorkerPool.Extract` の原点、整数の等間隔の列 `Column.UniformInteger`、コンパイルの中の domain、R-6 のテスト、M4 の前後の計測） | done | [#11](https://github.com/YUKIKEDA/HyperPlot/issues/11)（設計）、[#85](https://github.com/YUKIKEDA/HyperPlot/issues/85) |
 | G2 | 位置のスケール（linear の zero・reverse・clamp、log・symlog・sqrt・power、time の単位と起点（既定は .NET のティック、ns・µs の Unix 起点、日時の domain を `long` で正確に指定する口、§3.1・§4.2）、変換を足す口 `IScale`、log と linear の描き直しの計測） | done | [#94](https://github.com/YUKIKEDA/HyperPlot/issues/94)（設計）、[#95](https://github.com/YUKIKEDA/HyperPlot/issues/95) |
-| T1 | テキスト（`RenderList.DrawText` と `HeadlessRenderer.MeasureText`、契約 `ITextBackend`、DirectWrite の整形とグレースケールのラスタライズ、グリフのアトラス、グリフのパイプライン、`HelloPlot` の見出し、ラベルの描き直しの計測） | in-progress | [#103](https://github.com/YUKIKEDA/HyperPlot/issues/103)（設計）、[#104](https://github.com/YUKIKEDA/HyperPlot/issues/104) |
+| T1 | テキスト（`RenderList.DrawText` と `HeadlessRenderer.MeasureText`、契約 `ITextBackend`、DirectWrite の整形とグレースケールのラスタライズ、グリフのアトラス、グリフのパイプライン、`HelloPlot` の見出し、ラベルの描き直しの計測） | done | [#103](https://github.com/YUKIKEDA/HyperPlot/issues/103)（設計）、[#104](https://github.com/YUKIKEDA/HyperPlot/issues/104) |
 | G3 | ガイドと配置（軸・凡例・タイトル・テーマ）、目盛り（線形・log の 10 の冪・日時の暦の粒度、§4.6）と nice（要件 G-6） | not-started | |
 | G4 | Geom 一式（point / bar / area / rect / rule / segment / errorbar / band / text / image）、Geom を足す口（`IGeom`）、`RenderList.SetTransform`（§3.6）と座標系の 4×4 の変換の契約（§4.4）、線のマイターと面取りの結合・平らと四角の端・3 つ以上の区間の破線 | not-started | |
 | G7 | 色とカテゴリのスケール（band・point・ordinal・sequential・diverging）、名前つきの色（`Colors`）とパレット、列で色を分けるチャネル、カテゴリの列 `CategoricalColumn`（§3.1・§4.2・§5.2） | not-started | |

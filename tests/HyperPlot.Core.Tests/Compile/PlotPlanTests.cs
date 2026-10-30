@@ -676,6 +676,8 @@ public sealed class PlotPlanTests
 
         public GpuFrameTime? LastFrameTime => null;
 
+        public TextEngine Text { get; } = new(new FakeTextBackend());
+
         public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => new Target(description);
 
         public FrameScope BeginFrame() => new(this, 1);

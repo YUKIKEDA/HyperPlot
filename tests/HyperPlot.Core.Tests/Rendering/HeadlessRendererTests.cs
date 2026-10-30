@@ -144,6 +144,44 @@ public sealed class HeadlessRendererTests
         Assert.Null(backend.Target);
     }
 
+    /// <summary>
+    /// <c>MeasureText</c> gives the shaped text's metrics through the backend's engine, opens no frame, and throws as
+    /// <c>DrawText</c> does; two renderers on one backend share one cache (design §5.6, §7.5).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A fake backend whose text engine uses the fake text backend; two renderers on it.
+    ///
+    /// Steps:
+    /// - Measure "Two\nlines" with the first renderer and again with the second; measure with a size of 0 and with a null
+    ///   text; dispose the first renderer and measure with it.
+    ///
+    /// Expected:
+    /// - Both give the fake's metrics (width 5 advances, height 2 lines); the backend shaped once and opened no frame
+    ///   beyond the renderers' targets; the bad arguments throw ArgumentOutOfRangeException and ArgumentNullException; the
+    ///   disposed renderer throws ObjectDisposedException.
+    /// </remarks>
+    [Fact]
+    public void MeasureText_TwoRenderers_ShareTheBackendsCacheAndOpenNoFrame()
+    {
+        var backend = new FakeBackend([]);
+        var first = new HeadlessRenderer(backend, 10, 10);
+        using var second = new HeadlessRenderer(backend, 10, 10);
+        var frames = backend.Frames;
+        var style = new TextStyle(new Color(0, 0, 0, 255), 16);
+
+        var measured = first.MeasureText("Two\nlines", style);
+        Assert.Equal(measured, second.MeasureText("Two\nlines", style));
+
+        Assert.Equal(new TextMetrics(5 * FakeTextBackend.Advance(16), 2 * FakeTextBackend.LineHeight(16), FakeTextBackend.Ascent(16), 6), measured);
+        Assert.Single(((FakeTextBackend)backend.Text.Backend).Shaped);
+        Assert.Equal(frames, backend.Frames);
+        Assert.Throws<ArgumentOutOfRangeException>(() => first.MeasureText("a", style with { Size = 0 }));
+        Assert.Throws<ArgumentNullException>(() => first.MeasureText(null!, style));
+        first.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => first.MeasureText("a", style));
+    }
+
     private sealed class FakeBackend(byte[] pixels) : IGpuBackend
     {
         public bool IsWarp => true;
@@ -158,7 +196,15 @@ public sealed class HeadlessRendererTests
 
         public GpuFrameTime? LastFrameTime => null;
 
-        public FrameScope BeginFrame() => new(this, 1);
+        public TextEngine Text { get; } = new(new FakeTextBackend());
+
+        public int Frames { get; private set; }
+
+        public FrameScope BeginFrame()
+        {
+            Frames++;
+            return new(this, 1);
+        }
 
         public void Draw(IRenderTarget target, RenderList list) => Drawn = list;
 

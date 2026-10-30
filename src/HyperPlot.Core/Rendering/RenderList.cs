@@ -3,16 +3,21 @@ using System.Numerics;
 namespace HyperPlot.Rendering;
 
 /// <summary>
-/// The commands of one frame, in buffers kept from frame to frame (design §5.1). Row R2 records polylines and clips, in
-/// physical pixels of the render target, with the origin at the top left and pixel centers at +0.5.
+/// The commands of one frame, in buffers kept from frame to frame (design §5.1): polylines, texts, and clips, in physical
+/// pixels of the render target, with the origin at the top left and pixel centers at +0.5. A backend draws the commands in
+/// the order they were recorded, so a later command lies over an earlier one.
 /// </summary>
 /// <remarks>One thread at a time uses a list. After the buffers have grown to a frame's size, recording allocates nothing.</remarks>
 public sealed class RenderList
 {
     private PolylineRecord[] _polylines = new PolylineRecord[4];
     private SegmentRecord[] _segments = new SegmentRecord[256];
+    private TextRecord[] _texts = new TextRecord[4];
+    private RenderCommand[] _commands = new RenderCommand[8];
     private int _polylineCount;
     private int _segmentCount;
+    private int _textCount;
+    private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
     /// <summary>Gets the recorded polylines, in order.</summary>
@@ -21,11 +26,19 @@ public sealed class RenderList
     /// <summary>Gets the segments of every polyline; each polyline names its range.</summary>
     internal ReadOnlySpan<SegmentRecord> Segments => _segments.AsSpan(0, _segmentCount);
 
+    /// <summary>Gets the recorded texts, in order.</summary>
+    internal ReadOnlySpan<TextRecord> Texts => _texts.AsSpan(0, _textCount);
+
+    /// <summary>Gets every recorded command in order: each names a polyline or a text.</summary>
+    internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
+
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
     public void Clear()
     {
         _polylineCount = 0;
         _segmentCount = 0;
+        _textCount = 0;
+        _commandCount = 0;
         _clip = ClipRect.All;
     }
 
@@ -108,7 +121,82 @@ public sealed class RenderList
             Array.Resize(ref _polylines, _polylines.Length * 2);
         }
 
+        AddCommand(new RenderCommand(RenderCommandKind.Polyline, _polylineCount));
         _polylines[_polylineCount++] = new PolylineRecord(style, first, _segmentCount - first, _clip, min.X, min.Y, max.X, max.Y);
+    }
+
+    /// <summary>
+    /// Records a text at <paramref name="position"/>, in physical pixels (design §5.1, §5.6). The list keeps the reference
+    /// and shapes nothing: the backend shapes when it draws, through its <see cref="TextEngine"/>. An empty text draws
+    /// nothing.
+    /// </summary>
+    /// <param name="text">The text; a line feed starts a new line.</param>
+    /// <param name="position">The point that the style's alignment and rotation place the text's block at.</param>
+    /// <param name="style">The color, font, alignment, and rotation.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="text"/>, the font family, or the locale is null.</exception>
+    /// <exception cref="ArgumentException">The font family or the locale is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The position is not finite, the size is not finite or outside (0, 512], or the weight, an alignment, or the rotation
+    /// is not a named value.
+    /// </exception>
+    public void DrawText(string text, Vector2 position, in TextStyle style)
+    {
+        ValidateText(text, style);
+        if (!float.IsFinite(position.X) || !float.IsFinite(position.Y))
+        {
+            throw new ArgumentOutOfRangeException(nameof(position), position, "The position is finite.");
+        }
+
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        if (_textCount == _texts.Length)
+        {
+            Array.Resize(ref _texts, _texts.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.Text, _textCount));
+        _texts[_textCount++] = new TextRecord(text, position, style, _clip);
+    }
+
+    /// <summary>Throws unless a text and its style are in range (design §5.1): what <see cref="DrawText"/> and <see cref="TextEngine.Measure"/> check.</summary>
+    internal static void ValidateText(string text, in TextStyle style)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (!float.IsFinite(style.Size) || style.Size <= 0 || style.Size > TextEngine.MaxSize)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Size, "The size is finite, above 0, and at most 512.");
+        }
+
+        if ((uint)style.Weight > (uint)FontWeight.Bold)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Weight, "The weight is a named value.");
+        }
+
+        if ((uint)style.Horizontal > (uint)TextAlign.Right || (uint)style.Vertical > (uint)TextBaseline.Bottom)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), (style.Horizontal, style.Vertical), "The alignments are named values.");
+        }
+
+        if ((uint)style.Rotation > (uint)TextRotation.CounterClockwise90)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Rotation, "The rotation is a named value.");
+        }
+
+        ArgumentException.ThrowIfNullOrEmpty(style.FontFamily, nameof(style));
+        ArgumentException.ThrowIfNullOrEmpty(style.Locale, nameof(style));
+    }
+
+    private void AddCommand(RenderCommand command)
+    {
+        if (_commandCount == _commands.Length)
+        {
+            Array.Resize(ref _commands, _commands.Length * 2);
+        }
+
+        _commands[_commandCount++] = command;
     }
 
     /// <summary>Throws unless a stroke is in range (design §5.1): what <see cref="DrawPolyline"/> and the spec's line layers check.</summary>
@@ -139,6 +227,22 @@ public sealed class RenderList
         }
     }
 }
+
+/// <summary>What a recorded command draws.</summary>
+internal enum RenderCommandKind : byte
+{
+    /// <summary>A polyline: the index is into <see cref="RenderList.Polylines"/>.</summary>
+    Polyline,
+
+    /// <summary>A text: the index is into <see cref="RenderList.Texts"/>.</summary>
+    Text,
+}
+
+/// <summary>One recorded command: its kind and the index of its record.</summary>
+internal readonly record struct RenderCommand(RenderCommandKind Kind, int Index);
+
+/// <summary>One recorded text: the reference, the position, the style, and the clip when it was recorded.</summary>
+internal readonly record struct TextRecord(string Text, Vector2 Position, TextStyle Style, ClipRect Clip);
 
 /// <summary>A rectangle of whole pixels, edges included on the left and top and excluded on the right and bottom.</summary>
 internal readonly record struct ClipRect(long Left, long Top, long Right, long Bottom)
