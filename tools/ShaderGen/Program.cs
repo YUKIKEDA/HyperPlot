@@ -30,6 +30,11 @@ if (fxc is null)
     ("Line.hlsl", "CoveragePS", "ps_5_0"),
     ("Line.hlsl", "SegmentVS", "vs_5_0"),
     ("Line.hlsl", "ZeroPS", "ps_5_0"),
+    ("LineMask.hlsl", "MaskColorPS", "ps_5_0"),
+    ("LineMask.hlsl", "MaskZeroPS", "ps_5_0"),
+    ("LineMask.hlsl", "PieceMaskPS", "ps_5_0"),
+    ("LineMask.hlsl", "PieceVS", "vs_5_0"),
+    ("LineMask.hlsl", "SegmentMaskPS", "ps_5_0"),
     ("Rect.hlsl", "RectPS", "ps_5_0"),
     ("Rect.hlsl", "RectVS", "vs_5_0"),
 ];

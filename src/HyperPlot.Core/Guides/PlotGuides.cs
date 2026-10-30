@@ -174,12 +174,7 @@ internal sealed class PlotGuides
     }
 
     /// <summary>Returns a line style with its width and dashes in DIPs turned to pixels.</summary>
-    internal LineStyle Scaled(in LineStyle style) =>
-        style with
-        {
-            Width = style.Width * _scale,
-            Dash = style.Dash is { } dash ? new LineDash(dash.On * _scale, dash.Off * _scale, dash.Offset * _scale) : null,
-        };
+    internal LineStyle Scaled(in LineStyle style) => style with { Width = style.Width * _scale, Dash = style.Dash?.Scaled(_scale) };
 
     private static bool HasText(string? text) => !string.IsNullOrEmpty(text);
 
