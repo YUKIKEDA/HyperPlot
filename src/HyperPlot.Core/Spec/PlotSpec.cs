@@ -17,4 +17,10 @@ public sealed record PlotSpec : SpecNode
 
     /// <summary>Gets the scale of y, shared by every layer. By default a linear scale that learns its domain (design §4.2).</summary>
     public ScaleSpec ScaleY { get; init; } = Scale.Linear();
+
+    /// <summary>Gets the title above the plot; null or empty for none (design §4.6).</summary>
+    public string? Title { get; init; }
+
+    /// <summary>Gets the theme of the guides: <see cref="Theme.Light"/> by default (design §4.7).</summary>
+    public Theme Theme { get; init; } = Theme.Light;
 }

@@ -9,6 +9,12 @@ public sealed record LogScaleSpec : ContinuousScaleSpec
     /// <summary>Gets the domain in data units, or null to learn it from the data. A domain is finite, with 0 &lt; Min &lt; Max.</summary>
     public (double Min, double Max)? Domain { get; init; }
 
+    /// <summary>Gets the format of the tick labels, or null for the default (design §4.6).</summary>
+    public TickFormatter? TickFormat { get; init; }
+
+    /// <inheritdoc />
+    internal override TickFormatter? NumericFormat => TickFormat;
+
     /// <inheritdoc />
     internal override bool ZeroOption => false;
 

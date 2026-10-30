@@ -11,6 +11,12 @@ public sealed record LineLayerSpec : LayerSpec
     /// <summary>Gets the Y column: a <see cref="Column{T}"/>. NaN breaks the line.</summary>
     public required ColumnRef Y { get; init; }
 
-    /// <summary>Gets the stroke: by default black (0, 0, 0, 255), 1 pixel wide, solid.</summary>
+    /// <summary>
+    /// Gets the stroke: by default black (0, 0, 0, 255), 1 wide, solid. The width and the dash lengths are in DIPs, times the
+    /// renderer's scale (design §4.6).
+    /// </summary>
     public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
+
+    /// <summary>Gets the legend's label; null or empty leaves the layer out of the legend.</summary>
+    public string? Label { get; init; }
 }

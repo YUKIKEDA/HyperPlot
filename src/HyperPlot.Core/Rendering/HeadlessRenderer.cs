@@ -21,8 +21,13 @@ public sealed class HeadlessRenderer : IDisposable
     /// The pool that builds the pyramids of the plots drawn with <see cref="Render(PlotSpec)"/>, or null for
     /// <see cref="PlotWorkerPool.Shared"/>. Its owner disposes it, after the renderer.
     /// </param>
-    /// <exception cref="ArgumentOutOfRangeException">A side is outside 1 to 16,384.</exception>
-    public HeadlessRenderer(IGpuBackend backend, int width, int height, PlotWorkerPool? pool = null)
+    /// <param name="scale">
+    /// The scale from DIPs to physical pixels that <see cref="Render(PlotSpec)"/> applies to the theme's lengths and the
+    /// layers' strokes (1.5 at 150 %, design §4.6); <see cref="Render(RenderList)"/> and <see cref="MeasureText"/> stay in
+    /// physical pixels.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">A side is outside 1 to 16,384, or the scale is not finite or not above 0.</exception>
+    public HeadlessRenderer(IGpuBackend backend, int width, int height, PlotWorkerPool? pool = null, float scale = 1)
     {
         ArgumentNullException.ThrowIfNull(backend);
 
@@ -31,6 +36,12 @@ public sealed class HeadlessRenderer : IDisposable
         ArgumentOutOfRangeException.ThrowIfGreaterThan(width, RenderTargetDescription.MaxSide);
         ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(height, RenderTargetDescription.MaxSide);
+        if (!float.IsFinite(scale) || scale <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scale), scale, "The scale is finite and above 0.");
+        }
+
+        Scale = scale;
         _backend = backend;
         _pool = pool;
         _target = backend.CreateRenderTarget(new RenderTargetDescription(width, height));
@@ -41,6 +52,9 @@ public sealed class HeadlessRenderer : IDisposable
 
     /// <summary>Gets the height in physical pixels.</summary>
     public int Height => _target.Description.Height;
+
+    /// <summary>Gets the scale from DIPs to physical pixels of <see cref="Render(PlotSpec)"/> (design §4.6).</summary>
+    public float Scale { get; }
 
     /// <summary>Fills the image with one color.</summary>
     /// <param name="color">The color.</param>
@@ -91,8 +105,11 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height);
-        _backend.Draw(_target, _plan.Render(plot));
+        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale);
+        var list = _plan.Render(plot);
+        using var frame = _backend.BeginFrame();
+        _target.Clear(plot.Theme.Background);
+        _backend.Draw(_target, list);
     }
 
     /// <summary>

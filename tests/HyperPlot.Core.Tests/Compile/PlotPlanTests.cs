@@ -33,7 +33,7 @@ public sealed class PlotPlanTests
     {
         using var pool = new PlotWorkerPool(2);
         using var scene = new Scene();
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
 
         var list = plan.Render(scene.Spec());
 
@@ -70,8 +70,8 @@ public sealed class PlotPlanTests
         {
             using var y = Column.Wrap(new[] { 1f, 2f, infinity });
             var table = DataTable.Create().Add("t", Column.Uniform(0, 1, 3)).Add("wild", y).Build();
-            var learned = Plot.Create(table).Line(table.Col<double>("t"), table.Col<float>("wild")).Build();
-            using var plan = new PlotPlan(pool, Width, Height);
+            var learned = Plot.Create(table).Line(table.Col<double>("t"), table.Col<float>("wild")).Theme(TestPlans.Bare).Build();
+            using var plan = TestPlans.Create(pool, Width, Height);
 
             var exception = Assert.Throws<InvalidOperationException>(() => plan.Render(learned));
             Assert.Contains("\"wild\"", exception.Message, StringComparison.Ordinal);
@@ -109,13 +109,13 @@ public sealed class PlotPlanTests
         using var a = Column.Wrap(new float[] { 1, 2, 3 });
         var table = DataTable.Create().Add("t", Column.Uniform(0, 1, 3)).Add("down", down).Add("a", a).Build();
         var other = DataTable.Create().Add("t", Column.Uniform(0, 1, 3)).Add("down", down).Add("a", a).Build();
-        var good = Plot.Create(table).Line(table.Col<double>("t"), table.Col<float>("a")).Build();
+        var good = Plot.Create(table).Line(table.Col<double>("t"), table.Col<float>("a")).Theme(TestPlans.Bare).Build();
         var line = (LineLayerSpec)good.Layers[0];
 
         void Throws<TException>(PlotSpec spec, string? text = null)
             where TException : Exception
         {
-            using var plan = new PlotPlan(pool, Width, Height);
+            using var plan = TestPlans.Create(pool, Width, Height);
             var exception = Assert.Throws<TException>(() => plan.Render(spec));
             if (text is not null)
             {
@@ -143,13 +143,14 @@ public sealed class PlotPlanTests
         var fallTable = DataTable.Create().Add("fall", fall).Add("a", a).Build();
         var given = new PlotSpec
         {
+            Theme = TestPlans.Bare,
             Data = fallTable,
             Layers = [line with { X = fallTable.Col<double>("fall"), Y = fallTable.Col<float>("a") }],
             ScaleX = Scale.Linear().WithDomain(0, 3),
         };
         Throws<InvalidOperationException>(given, "non-decreasing");
 
-        using var wide = new PlotPlan(pool, 1000, Height);
+        using var wide = TestPlans.Create(pool, 1000, Height);
         var narrow = good with { ScaleX = Scale.Linear().WithDomain(0.5, 0.5 + 1e-14) };
         var exception = Assert.Throws<ArgumentException>(() => wide.Render(narrow));
         Assert.Contains($"[0 + 0.5, 0 + {0.5 + 1e-14}]", exception.Message, StringComparison.Ordinal);
@@ -182,7 +183,7 @@ public sealed class PlotPlanTests
     {
         using var pool = new PlotWorkerPool(2);
         using var scene = new Scene();
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = scene.Spec();
         var first = (LineLayerSpec)spec.Layers[0];
         var second = (LineLayerSpec)spec.Layers[1];
@@ -218,7 +219,7 @@ public sealed class PlotPlanTests
         Step(retabled, (0, 1, 1));
         Assert.Single(plan.Pyramids);
         var a = plan.Pyramids.Single();
-        Step(Plot.Create(moved).Build(), (0, 1, 1));
+        Step(Plot.Create(moved).Theme(TestPlans.Bare).Build(), (0, 1, 1));
         Assert.Equal((0, 0), (last!.Polylines.Length, plan.Pyramids.Count));
         Assert.True(a.IsDisposed);
 
@@ -230,7 +231,7 @@ public sealed class PlotPlanTests
                 expected,
                 (plan.PyramidsBuilt - before.PyramidsBuilt, plan.Extractions - before.Extractions, plan.Recordings - before.Recordings)
             );
-            using var fresh = new PlotPlan(pool, Width, Height);
+            using var fresh = TestPlans.Create(pool, Width, Height);
             AssertSameLines(fresh.Render(next), list);
             last = list;
         }
@@ -254,8 +255,8 @@ public sealed class PlotPlanTests
     {
         using var pool = new PlotWorkerPool(2);
         using var scene = new Scene();
-        using var plan = new PlotPlan(pool, Width, Height);
-        using var fresh = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
+        using var fresh = TestPlans.Create(pool, Width, Height);
         var spec = scene.Spec();
         _ = plan.Render(spec);
         using var wild = Column.Wrap(new[] { 1f, 2f, float.PositiveInfinity });
@@ -286,7 +287,7 @@ public sealed class PlotPlanTests
         using var pool = new PlotWorkerPool(1);
         using var held = TestStorage<float>.MakeColumn(values, out var storage);
         storage.Hold(1);
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
 
         var rendering = Task.Run(() => plan.Render(Line(Column.Uniform(0, 1, Length), held)));
         storage.WaitForWorker(1);
@@ -297,7 +298,7 @@ public sealed class PlotPlanTests
         Eventually.Completes(rendering);
         var drawn = await rendering;
         using var plain = Column.Wrap(values);
-        using var reference = new PlotPlan(pool, Width, Height);
+        using var reference = TestPlans.Create(pool, Width, Height);
         AssertSameLines(reference.Render(Line(Column.Uniform(0, 1, Length), plain)), drawn);
     }
 
@@ -324,7 +325,7 @@ public sealed class PlotPlanTests
         using var pool = new PlotWorkerPool(2);
         using var x = Column.Wrap(xs);
         using var y = Column.Wrap(ys);
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = Line(x, y);
         _ = plan.Render(spec);
 
@@ -367,7 +368,7 @@ public sealed class PlotPlanTests
         var ys = Values(4);
         using var pool = new PlotWorkerPool(2);
         using var y = Column.Wrap(ys);
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = Line(Column.Uniform(0, 1, Length), y);
         _ = plan.Render(spec);
         var pyramid = ((PlotPyramid<float>)plan.Pyramids.Single()).Pyramid;
@@ -390,7 +391,7 @@ public sealed class PlotPlanTests
         Assert.True(calls > 0);
         Assert.Equal(extractions + 1, plan.Extractions);
         using var plain = Column.Wrap((float[])ys.Clone());
-        using var reference = new PlotPlan(pool, Width, Height);
+        using var reference = TestPlans.Create(pool, Width, Height);
         AssertSameLines(reference.Render(Line(Column.Uniform(0, 1, Length), plain) with { ScaleX = zoomed.ScaleX }), list);
     }
 
@@ -475,7 +476,7 @@ public sealed class PlotPlanTests
     {
         using var pool = new PlotWorkerPool(1);
         using var scene = new Scene();
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         var spec = scene.Spec();
         PlotSpec[] zooms = [spec with { ScaleX = Scale.Linear().WithDomain(100, 2000) }, spec with { ScaleX = Scale.Linear().WithDomain(50, 900) }];
         foreach (var warm in new[] { spec, spec, zooms[0], zooms[1], zooms[0], zooms[1], spec })
@@ -534,22 +535,30 @@ public sealed class PlotPlanTests
         using var doubles = Column.Wrap(farValues);
         var uniform = Column.UniformInteger(ticks + 3, 1_000_000_000_001, 3);
         var table = DataTable.Create().Add("x", longs).Add("v", level).Add("u", uniform).Add("f", floats).Add("d", doubles).Build();
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
 
-        _ = plan.Render(Plot.Create(table).Line(table.Col<long>("x"), table.Col<long>("v")).Build());
+        _ = plan.Render(Plot.Create(table).Line(table.Col<long>("x"), table.Col<long>("v")).Theme(TestPlans.Bare).Build());
         Assert.Equal(new ScaleRange(ticks + 1, 0, 20), plan.XDomain);
         Assert.Equal(new ScaleRange(ticks, 0.5, 1.5), plan.YDomain);
 
-        _ = plan.Render(Plot.Create(table).Line(table.Col<long>("u"), table.Col<float>("f")).Build());
+        _ = plan.Render(Plot.Create(table).Line(table.Col<long>("u"), table.Col<float>("f")).Theme(TestPlans.Bare).Build());
         Assert.Equal(new ScaleRange(ticks + 3, 0, 2_000_000_000_002), plan.XDomain);
 
         _ = plan.Render(
-            Plot.Create(table).Line(table.Col<long>("x"), table.Col<float>("f")).Line(table.Col<long>("u"), table.Col<float>("f")).Build()
+            Plot.Create(table)
+                .Line(table.Col<long>("x"), table.Col<float>("f"))
+                .Line(table.Col<long>("u"), table.Col<float>("f"))
+                .Theme(TestPlans.Bare)
+                .Build()
         );
         Assert.Equal(new ScaleRange(ticks + 1, 0, 2_000_000_000_004), plan.XDomain);
 
         _ = plan.Render(
-            Plot.Create(table).Line(table.Col<long>("x"), table.Col<float>("f")).Line(table.Col<double>("d"), table.Col<float>("f")).Build()
+            Plot.Create(table)
+                .Line(table.Col<long>("x"), table.Col<float>("f"))
+                .Line(table.Col<double>("d"), table.Col<float>("f"))
+                .Theme(TestPlans.Bare)
+                .Build()
         );
         Assert.Equal(ScaleRange.FromDouble(ticks + 1, 6.5e17), plan.XDomain);
     }
@@ -582,7 +591,7 @@ public sealed class PlotPlanTests
         using var pool = new PlotWorkerPool(1);
         using var x = Column.Wrap(xs);
         using var y = Column.Wrap(ys);
-        using var plan = new PlotPlan(pool, width, Height);
+        using var plan = TestPlans.Create(pool, width, Height);
 
         var list = plan.Render(Line(x, y));
 
@@ -613,7 +622,7 @@ public sealed class PlotPlanTests
     private static ((double Min, double Max) X, (double Min, double Max) Y) Domains(PlotWorkerPool pool, UniformColumn x, float[] values)
     {
         using var y = Column.Wrap(values);
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
         _ = plan.Render(Line(x, y));
         return (Ends(plan.XDomain), Ends(plan.YDomain));
     }
@@ -624,7 +633,12 @@ public sealed class PlotPlanTests
     private static PlotSpec Line(Column x, Column y)
     {
         var table = DataTable.Create().Add("x", x).Add("y", y).Build();
-        return new PlotSpec { Data = table, Layers = [new LineLayerSpec { X = Ref(table, 0), Y = Ref(table, 1) }] };
+        return new PlotSpec
+        {
+            Theme = TestPlans.Bare,
+            Data = table,
+            Layers = [new LineLayerSpec { X = Ref(table, 0), Y = Ref(table, 1) }],
+        };
     }
 
     private static ColumnRef Ref(DataTable table, int index) =>
@@ -640,7 +654,7 @@ public sealed class PlotPlanTests
     {
         using var x = Column.Wrap((double[])xs.Clone());
         using var y = Column.Wrap((float[])ys.Clone());
-        using var plan = new PlotPlan(pool, Width, Height);
+        using var plan = TestPlans.Create(pool, Width, Height);
 
         // The list is the plan's own and outlives it: Dispose frees the pyramids only.
         return plan.Render(Line(x, y));
@@ -747,6 +761,7 @@ public sealed class PlotPlanTests
             Plot.Create(Table)
                 .Line(Table.Col<double>("t"), Table.Col<float>("a"), l => l.Color(new Color(31, 119, 180, 255)).Width(1.5f))
                 .Line(Table.Col<double>("xs"), Table.Col<double>("b"), l => l.Color(new Color(214, 39, 40, 255)).Dash(new LineDash(6, 3)))
+                .Theme(TestPlans.Bare)
                 .Build();
 
         /// <summary>Puts the M4 batch and the list together by hand, as design §4.8 says the plan does.</summary>
@@ -774,6 +789,9 @@ public sealed class PlotPlanTests
 
             pool.Extract(batch, origin, boundaries);
             var list = new RenderList();
+
+            // The plan clips its data to the panel, here the whole target (row G3, design §4.8).
+            list.SetClip(0, 0, Width, Height);
             var styles = Spec().Layers.Cast<LineLayerSpec>().Select(l => l.Style).ToArray();
             for (var s = 0; s < 2; s++)
             {
