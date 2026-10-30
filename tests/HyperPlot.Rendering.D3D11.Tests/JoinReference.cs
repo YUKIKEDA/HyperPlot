@@ -210,7 +210,7 @@ internal static class JoinReference
         var a = new Vector2d(-din.Y, din.X) * (sign * r);
         var b = new Vector2d(-dout.Y, dout.X) * (sign * r);
         var cosHalf = Math.Sqrt(Math.Max(0, (1 + din.Dot(dout)) / 2));
-        if (style.Join == LineJoin.Miter && cosHalf * style.MiterLimit > 1)
+        if (style.Join == LineJoin.Miter && cosHalf * style.MiterLimit >= 1)
         {
             var sum = a + b;
             var m = sum * (2 * r * r / sum.LengthSquared());

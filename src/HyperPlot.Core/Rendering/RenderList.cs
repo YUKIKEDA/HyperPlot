@@ -484,8 +484,8 @@ public sealed class RenderList
                 LineJoin.Round => PieceKind.Disk,
                 LineJoin.Bevel => PieceKind.Bevel,
 
-                // 1 / cos(θ / 2) past the limit is a bevel; a reversal, cos 0, always is.
-                _ => MathF.Sqrt(MathF.Max(0, (1 + dot) / 2)) * style.MiterLimit > 1 ? PieceKind.Miter : PieceKind.Bevel,
+                // 1 / cos(θ / 2) past the limit is a bevel, at it still a miter; a reversal, cos 0, always is a bevel.
+                _ => MathF.Sqrt(MathF.Max(0, (1 + dot) / 2)) * style.MiterLimit >= 1 ? PieceKind.Miter : PieceKind.Bevel,
             };
             AddPiece(new PieceRecord(point, incoming, outgoing, kind));
             return;
