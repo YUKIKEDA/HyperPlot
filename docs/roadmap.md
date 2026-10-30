@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** R4（G4 は #124 の PR で済み）
-- **ブランチ:** `docs/128-r4-lines`（設計）
-- **Issue:** [#128](https://github.com/YUKIKEDA/HyperPlot/issues/128)（設計）
+- **作業中:** G10（R4 は #132 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -52,7 +52,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | T1 | テキスト（`RenderList.DrawText` と `HeadlessRenderer.MeasureText`、契約 `ITextBackend`、DirectWrite の整形とグレースケールのラスタライズ、グリフのアトラス、グリフのパイプライン、`HelloPlot` の見出し、ラベルの描き直しの計測） | done | [#103](https://github.com/YUKIKEDA/HyperPlot/issues/103)（設計）、[#104](https://github.com/YUKIKEDA/HyperPlot/issues/104) |
 | G3 | ガイドと配置（x と y の軸・線のレイヤーの凡例・タイトル・テーマ・DPI の倍率）、目盛り（Wilkinson の拡張・log の 10 の冪・symlog・日時の暦の段、§4.6）と nice（要件 G-6）、塗りつぶしの矩形 `DrawRect`、`SpecPlot` のサンプル、ガイドの CPU 時間の計測 | done | [#111](https://github.com/YUKIKEDA/HyperPlot/issues/111)（設計）、[#115](https://github.com/YUKIKEDA/HyperPlot/issues/115) |
 | G4 | 数の列の Geom（step・area・band・bar・rect・rule・segment・errorbar、§5.5.3）と大きなデータの道、Geom を足す口（`IGeom`・`CustomLayerSpec`）、列の台形の命令 `DrawColumns`、座標系の cartesian の 4×4 の変換（internal、§4.4）、Geom の CPU 時間の計測 | done | [#120](https://github.com/YUKIKEDA/HyperPlot/issues/120)（設計）、[#124](https://github.com/YUKIKEDA/HyperPlot/issues/124) |
-| R4 | 線のマイターと面取りの結合、平らと四角の端、3 つ以上の区間の破線（§5.1・§5.3）、丸・マイター・面取りの線の GPU 時間と記録の CPU 時間と 8 区間の破線の GPU 時間の計測（丸の線が R2 から変わらないことを含む） | in-progress | [#128](https://github.com/YUKIKEDA/HyperPlot/issues/128)（設計） |
+| R4 | 線のマイターと面取りの結合、平らと四角の端、3 つ以上の区間の破線（§5.1・§5.3）、丸・マイター・面取りの線の GPU 時間と記録の CPU 時間と 8 区間の破線の GPU 時間の計測（丸の線が R2 から変わらないことを含む） | done | [#128](https://github.com/YUKIKEDA/HyperPlot/issues/128)（設計）、[#132](https://github.com/YUKIKEDA/HyperPlot/issues/132) |
 | G10 | 座標系（要件 G-7）: 公開の `CoordSpec` と 4×4 の変換の契約（不変条件 12）、cartesian の flip、polar（1e7 点まで） | not-started | |
 | G7 | 色とカテゴリのスケール（band・point・ordinal・sequential・diverging）、名前つきの色（`Colors`）とパレット、列で色を分けるチャネル、カテゴリの列 `CategoricalColumn`（§3.1・§4.2・§5.2）、連続のカラーバーの凡例と、テーマが決める系列の既定の色（§4.6・§4.7）、カテゴリの x の bar（§5.5.3） | not-started | |
 | G8 | text の Geom（データの文字列のラベル、`CategoricalColumn` と文字列の列を使う、§5.5.3） | not-started | |

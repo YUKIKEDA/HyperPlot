@@ -324,13 +324,14 @@ public sealed class GuideLayoutTests : IDisposable
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A layer of width 2, dash (6, 3, 1).
+    /// - A layer of width 2, dash (6, 3, 1); a layer of an 8-interval pattern with offset 2, a miter join, square caps, and
+    ///   limit 3.
     ///
     /// Steps:
-    /// - Render at 1 and at 1.5 with the bare theme.
+    /// - Render at 1 and at 1.5 with the bare theme; render the second at 1.5.
     ///
     /// Expected:
-    /// - (2, 6, 3, 1) and (3, 9, 4.5, 1.5).
+    /// - (2, 6, 3, 1) and (3, 9, 4.5, 1.5); the second's intervals and offset times 1.5, its join, cap, and limit as given.
     /// </remarks>
     [Fact]
     public void Scale_DataStrokes()
@@ -343,6 +344,23 @@ public sealed class GuideLayoutTests : IDisposable
         using var half = Plan(1.5f);
         Assert.Equal(new LineStyle(new Color(0, 0, 0, 255), 2, new LineDash(6, 3, 1)), one.Render(spec).Polylines[0].Style);
         Assert.Equal(new LineStyle(new Color(0, 0, 0, 255), 3, new LineDash(9, 4.5f, 1.5f)), half.Render(spec).Polylines[0].Style);
+
+        // Row R4: every interval and the offset scale; the join, the cap, and the miter limit (a ratio) do not.
+        var patterned = Plot.Create(_table)
+            .Line(
+                _table.Col<double>("t"),
+                _table.Col<float>("a"),
+                l => l.Width(2).Dash(LineDash.Of(4, 2, 1, 2, 3, 1, 1, 1) with { Offset = 2 }).Join(LineJoin.Miter).Cap(LineCap.Square).MiterLimit(3)
+            )
+            .Theme(TestPlans.Bare)
+            .Build();
+        var expected = new LineStyle(new Color(0, 0, 0, 255), 3, LineDash.Of(6, 3, 1.5f, 3, 4.5f, 1.5f, 1.5f, 1.5f) with { Offset = 3 })
+        {
+            Join = LineJoin.Miter,
+            Cap = LineCap.Square,
+            MiterLimit = 3,
+        };
+        Assert.Equal(expected, half.Render(patterned).Polylines[0].Style);
     }
 
     /// <summary>

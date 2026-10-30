@@ -110,6 +110,84 @@ public sealed class GoldenImageTests
     }
 
     /// <summary>
+    /// One image of row R4's joins and caps matches its baseline (design §10.1 scene 10): the 3 joins × 3 caps, sharp turns
+    /// around the miter limit, patterns of 2 to 8 intervals, a translucent line over itself, and a shallow line 1 wide.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend; a 640 × 360 target.
+    ///
+    /// Steps:
+    /// - Record the lines below; clear to white and render; compare with <c>Golden/lines-joins.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline within the tolerance.
+    /// </remarks>
+    [Fact]
+    public void LineJoins_Warp_MatchBaseline()
+    {
+        var list = new RenderList();
+        LineJoin[] joins = [LineJoin.Round, LineJoin.Miter, LineJoin.Bevel];
+        LineCap[] caps = [LineCap.Round, LineCap.Butt, LineCap.Square];
+
+        // The 3 × 3 grid: a zigzag 12 wide in each cell, its centerline drawn thin over it.
+        for (var row = 0; row < 3; row++)
+        {
+            for (var column = 0; column < 3; column++)
+            {
+                var (x, y) = (24.3f + (column * 140), 24.6f + (row * 100));
+                Vector2[] zigzag = [new(x, y + 50), new(x + 35, y), new(x + 70, y + 50), new(x + 105, y + 20)];
+                list.DrawPolyline(zigzag, new LineStyle(new Color(31, 119, 180, 255), 12) { Join = joins[row], Cap = caps[column] });
+                list.DrawPolyline(zigzag, new LineStyle(new Color(255, 255, 255, 255), 1));
+            }
+        }
+
+        // Sharp turns of 116° and 124° around a miter limit of 2.
+        foreach (var (degrees, top) in new[] { (116f, 30f), (124f, 90f) })
+        {
+            var corner = new Vector2(500.2f, top);
+            var radians = degrees * MathF.PI / 180;
+            list.DrawPolyline(
+                [corner - new Vector2(60, 0), corner, corner + (new Vector2(MathF.Cos(radians), MathF.Sin(radians)) * 45)],
+                new LineStyle(new Color(40, 40, 40, 255), 10)
+                {
+                    Join = LineJoin.Miter,
+                    Cap = LineCap.Butt,
+                    MiterLimit = 2,
+                }
+            );
+        }
+
+        // Patterns of 2, 4, 6, and 8 intervals, butt caps: square caps would close gaps narrower than the width.
+        LineDash[] patterns = [new(12, 6), LineDash.Of(12, 4, 2, 4), LineDash.Of(12, 3, 3, 3, 3, 3), LineDash.Of(16, 3, 2, 3, 8, 3, 2, 3)];
+        for (var i = 0; i < patterns.Length; i++)
+        {
+            var y = 165.4f + (i * 18);
+            list.DrawPolyline(
+                [new Vector2(440.3f, y), new Vector2(620.6f, y + 6)],
+                new LineStyle(new Color(214, 39, 40, 255), 4, patterns[i]) { Cap = LineCap.Butt }
+            );
+        }
+
+        // A translucent mitered line folding back over itself, painted once; a shallow line at a slope near 1/5.
+        list.DrawPolyline(
+            [new Vector2(450, 250), new Vector2(600, 270), new Vector2(470, 300), new Vector2(610, 330)],
+            new LineStyle(new Color(148, 103, 189, 140), 9) { Join = LineJoin.Miter, Cap = LineCap.Square }
+        );
+        list.DrawPolyline(
+            [new Vector2(20.2f, 330.4f), new Vector2(420.6f, 350.1f)],
+            new LineStyle(new Color(0, 0, 0, 255), 1) { Join = LineJoin.Miter, Cap = LineCap.Butt }
+        );
+
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var renderer = new HeadlessRenderer(backend, 640, 360);
+        renderer.Clear(new Color(255, 255, 255, 255));
+        renderer.Render(list);
+
+        GoldenImage.AssertMatches(renderer, Baseline("lines-joins.png"), Tolerance, Output);
+    }
+
+    /// <summary>
     /// One image of texts drawn with the fake text backend matches its baseline: the 12 alignments, the 3 rotations, and
     /// blocks of 2 and 3 lines (design §10.1). DirectWrite's pixels follow the system's fonts, so they are not in it.
     /// </summary>

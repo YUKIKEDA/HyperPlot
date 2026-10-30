@@ -16,6 +16,9 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     private ID3D11Texture2D* _coverage;
     private ID3D11RenderTargetView* _coverageView;
     private ID3D11ShaderResourceView* _coverageResourceView;
+    private ID3D11Texture2D* _mask;
+    private ID3D11UnorderedAccessView* _maskAccess;
+    private ID3D11ShaderResourceView* _maskResourceView;
     private bool _disposed;
 
     internal D3D11RenderTarget(D3D11Backend backend, RenderTargetDescription description)
@@ -44,6 +47,29 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
 
     /// <summary>Gets the view of the R8 coverage texture as a shader resource: the polylines' pass 2.</summary>
     internal ID3D11ShaderResourceView* CoverageResourceView => _coverageResourceView;
+
+    /// <summary>Gets the 32-sample mask of the polylines that are not round, made the first time one is drawn (design §5.3).</summary>
+    internal ID3D11UnorderedAccessView* MaskAccess
+    {
+        get
+        {
+            EnsureMask();
+            return _maskAccess;
+        }
+    }
+
+    /// <summary>Gets the mask as a shader resource, for the color pass.</summary>
+    internal ID3D11ShaderResourceView* MaskResourceView
+    {
+        get
+        {
+            EnsureMask();
+            return _maskResourceView;
+        }
+    }
+
+    /// <summary>Gets a value indicating whether the mask has been made, for the tests that it is made only when needed.</summary>
+    internal bool HasMask => _mask != null;
 
     /// <inheritdoc />
     public void Clear(Color color)
@@ -176,12 +202,51 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     /// <summary>Releases the textures; the description stays, so that the backend can make them again.</summary>
     internal void ReleaseResources()
     {
+        Release(ref _maskResourceView);
+        Release(ref _maskAccess);
+        Release(ref _mask);
         Release(ref _coverageResourceView);
         Release(ref _coverageView);
         Release(ref _coverage);
         Release(ref _view);
         Release(ref _staging);
         Release(ref _texture);
+    }
+
+    /// <summary>
+    /// Makes the mask the first time a polyline that is not round is drawn on this target, and again after a loss: 4 bytes a
+    /// pixel, cleared to 0 (design §5.3).
+    /// </summary>
+    private void EnsureMask()
+    {
+        if (_mask != null)
+        {
+            return;
+        }
+
+        var device = _backend.Device;
+        var description = new D3D11_TEXTURE2D_DESC
+        {
+            Width = (uint)Description.Width,
+            Height = (uint)Description.Height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = DXGI_FORMAT.DXGI_FORMAT_R32_UINT,
+            SampleDesc = new DXGI_SAMPLE_DESC(1, 0),
+            Usage = D3D11_USAGE.D3D11_USAGE_DEFAULT,
+            BindFlags = (uint)(D3D11_BIND_FLAG.D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_FLAG.D3D11_BIND_SHADER_RESOURCE),
+        };
+        ID3D11Texture2D* mask;
+        _backend.Check(device->CreateTexture2D(&description, null, &mask), "CreateTexture2D");
+        _mask = mask;
+        ID3D11UnorderedAccessView* access;
+        _backend.Check(device->CreateUnorderedAccessView((ID3D11Resource*)_mask, null, &access), "CreateUnorderedAccessView");
+        _maskAccess = access;
+        ID3D11ShaderResourceView* view;
+        _backend.Check(device->CreateShaderResourceView((ID3D11Resource*)_mask, null, &view), "CreateShaderResourceView");
+        _maskResourceView = view;
+        var zero = stackalloc uint[4];
+        _backend.Context->ClearUnorderedAccessViewUint(_maskAccess, zero);
     }
 
     private static void Release<T>(ref T* pointer)

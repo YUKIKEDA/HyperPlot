@@ -12,6 +12,7 @@ public sealed class RenderList
 {
     private PolylineRecord[] _polylines = new PolylineRecord[4];
     private SegmentRecord[] _segments = new SegmentRecord[256];
+    private PieceRecord[] _pieces = new PieceRecord[16];
     private TextRecord[] _texts = new TextRecord[4];
     private RenderCommand[] _commands = new RenderCommand[8];
     private RectInstance[] _rects = new RectInstance[4];
@@ -20,6 +21,7 @@ public sealed class RenderList
     private ClipRect[] _columnClips = new ClipRect[16];
     private int _polylineCount;
     private int _segmentCount;
+    private int _pieceCount;
     private int _textCount;
     private int _rectCount;
     private int _columnCount;
@@ -31,6 +33,9 @@ public sealed class RenderList
 
     /// <summary>Gets the segments of every polyline; each polyline names its range.</summary>
     internal ReadOnlySpan<SegmentRecord> Segments => _segments.AsSpan(0, _segmentCount);
+
+    /// <summary>Gets the joins and caps of every polyline that is not round; each polyline names its range (design §5.1, row R4).</summary>
+    internal ReadOnlySpan<PieceRecord> Pieces => _pieces.AsSpan(0, _pieceCount);
 
     /// <summary>Gets the recorded texts, in order.</summary>
     internal ReadOnlySpan<TextRecord> Texts => _texts.AsSpan(0, _textCount);
@@ -55,6 +60,7 @@ public sealed class RenderList
     {
         _polylineCount = 0;
         _segmentCount = 0;
+        _pieceCount = 0;
         _textCount = 0;
         _rectCount = 0;
         _columnCount = 0;
@@ -81,11 +87,15 @@ public sealed class RenderList
     /// <summary>
     /// Records a polyline through <paramref name="points"/>, in physical pixels. A point with a coordinate that is not finite
     /// (NaN or ±∞) breaks the line there, and the dash pattern starts again after it. Fewer than two points in a run draw
-    /// nothing; two equal points in a row draw a dot.
+    /// nothing; a run of equal points draws a dot: a circle with a round cap, a square along the x axis with a square cap,
+    /// nothing with a butt cap. Joins and caps that are not round, and patterns of more than one dash and gap, add pieces
+    /// that the backend draws as a union of 32 samples a pixel (design §5.1, §5.3, row R4).
     /// </summary>
     /// <param name="points">The points.</param>
     /// <param name="style">The stroke.</param>
-    /// <exception cref="ArgumentOutOfRangeException">The width or the dash pattern is out of its range (design §5.1).</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The width, the dash pattern, the join, the cap, or a miter join's limit is out of its range (design §5.1).
+    /// </exception>
     public void DrawPolyline(ReadOnlySpan<Vector2> points, in LineStyle style)
     {
         ValidateStyle(style);
@@ -95,6 +105,37 @@ public sealed class RenderList
         }
 
         var first = _segmentCount;
+        var firstPiece = _pieceCount;
+        var (min, max) = UsesPieces(style) ? RecordPieces(points, new Stroke(style)) : RecordSegments(points);
+
+        if (_segmentCount == first)
+        {
+            return;
+        }
+
+        if (_polylineCount == _polylines.Length)
+        {
+            Array.Resize(ref _polylines, _polylines.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.Polyline, _polylineCount));
+        _polylines[_polylineCount++] = new PolylineRecord(
+            style,
+            first,
+            _segmentCount - first,
+            _clip,
+            min.X,
+            min.Y,
+            max.X,
+            max.Y,
+            firstPiece,
+            _pieceCount - firstPiece
+        );
+    }
+
+    /// <summary>Records the segments of a round polyline (row R2) and returns the box of its finite points.</summary>
+    private (Vector2 Min, Vector2 Max) RecordSegments(ReadOnlySpan<Vector2> points)
+    {
         var min = new Vector2(float.PositiveInfinity);
         var max = new Vector2(float.NegativeInfinity);
         var along = 0f;
@@ -131,18 +172,60 @@ public sealed class RenderList
             hasPrevious = true;
         }
 
-        if (_segmentCount == first)
+        return (min, max);
+    }
+
+    /// <summary>Records the segments of a polyline that is not round, with its joins and caps (design §5.1, row R4).</summary>
+    private (Vector2 Min, Vector2 Max) RecordPieces(ReadOnlySpan<Vector2> points, in Stroke stroke)
+    {
+        var min = new Vector2(float.PositiveInfinity);
+        var max = new Vector2(float.NegativeInfinity);
+        var along = 0f;
+        var previous = default(Vector2);
+        var hasPrevious = false;
+        var run = default(RunState);
+        foreach (var point in points)
         {
-            return;
+            if (!float.IsFinite(point.X) || !float.IsFinite(point.Y))
+            {
+                if (hasPrevious)
+                {
+                    EndRun(ref run, previous, along, stroke);
+                }
+
+                hasPrevious = false;
+                continue;
+            }
+
+            if (hasPrevious)
+            {
+                if (_segmentCount == _segments.Length)
+                {
+                    Array.Resize(ref _segments, _segments.Length * 2);
+                }
+
+                _segments[_segmentCount++] = new SegmentRecord(previous, point, along);
+                var length = AddSegmentPieces(ref run, previous, point, along, stroke);
+                along += length;
+            }
+            else
+            {
+                along = 0;
+                run = default;
+            }
+
+            min = Vector2.Min(min, point);
+            max = Vector2.Max(max, point);
+            previous = point;
+            hasPrevious = true;
         }
 
-        if (_polylineCount == _polylines.Length)
+        if (hasPrevious)
         {
-            Array.Resize(ref _polylines, _polylines.Length * 2);
+            EndRun(ref run, previous, along, stroke);
         }
 
-        AddCommand(new RenderCommand(RenderCommandKind.Polyline, _polylineCount));
-        _polylines[_polylineCount++] = new PolylineRecord(style, first, _segmentCount - first, _clip, min.X, min.Y, max.X, max.Y);
+        return (min, max);
     }
 
     /// <summary>
@@ -334,6 +417,12 @@ public sealed class RenderList
         _commands[_commandCount++] = command;
     }
 
+    /// <summary>
+    /// Returns whether a stroke is drawn as pieces and samples rather than as row R2's capsules (design §5.3, row R4): a join or
+    /// a cap that is not round, or more than one dash and gap.
+    /// </summary>
+    internal static bool UsesPieces(in LineStyle style) => style.Join != LineJoin.Round || style.Cap != LineCap.Round || style.Dash is { Count: > 2 };
+
     /// <summary>Throws unless a stroke is in range (design §5.1): what <see cref="DrawPolyline"/> and the spec's line layers check.</summary>
     internal static void ValidateStyle(in LineStyle style)
     {
@@ -344,23 +433,268 @@ public sealed class RenderList
 
         if (style.Dash is { } dash)
         {
-            var valid =
-                float.IsFinite(dash.On)
-                && float.IsFinite(dash.Off)
-                && float.IsFinite(dash.Offset)
-                && dash.On >= 0
-                && dash.Off >= 0
-                && dash.On + dash.Off > 0;
-            if (!valid)
+            // default(LineDash) has no interval and a period of 0; a pattern made otherwise has 2 to 8.
+            var valid = float.IsFinite(dash.Offset) && dash.Period > 0;
+            for (var i = 0; valid && i < dash.Count; i++)
+            {
+                valid = float.IsFinite(dash[i]) && dash[i] >= 0;
+            }
+
+            // A sum of finite lengths can still overflow to infinity.
+            if (!valid || !float.IsFinite(dash.Period))
             {
                 throw new ArgumentOutOfRangeException(
                     nameof(style),
                     dash,
-                    "A dash pattern has a finite On and Off of at least 0 with a positive sum, and a finite Offset."
+                    "A dash pattern has 2 or more intervals, each finite and at least 0, with a finite positive sum, and a finite Offset."
                 );
             }
         }
+
+        if ((uint)style.Join > (uint)LineJoin.Bevel)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Join, "The join is a named value.");
+        }
+
+        if ((uint)style.Cap > (uint)LineCap.Square)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Cap, "The cap is a named value.");
+        }
+
+        // default(LineStyle) has a MiterLimit of 0, which a round or bevel join never reads.
+        if (style.Join == LineJoin.Miter && !(float.IsFinite(style.MiterLimit) && style.MiterLimit >= 1))
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.MiterLimit, "The miter limit of a miter join is finite and at least 1.");
+        }
     }
+
+    /// <summary>
+    /// Adds the pieces a segment brings to a run that is not round (design §5.1): the start cap before the run's first segment
+    /// with a length, and the join with the segment before it otherwise. A segment of length 0 brings nothing.
+    /// </summary>
+    private float AddSegmentPieces(ref RunState run, Vector2 start, Vector2 end, float along, in Stroke style)
+    {
+        run.HasSegment = true;
+        var delta = end - start;
+
+        // The length RecordSegments adds, so that both kinds of line measure the dash pattern alike.
+        var length = Vector2.Distance(start, end);
+        if (length == 0)
+        {
+            return 0;
+        }
+
+        var direction = delta / length;
+        if (!run.HasDirection)
+        {
+            Cap(start, -direction, along, startOfRun: true, style);
+            run.HasDirection = true;
+        }
+        else
+        {
+            Join(start, run.Direction, direction, along, style);
+        }
+
+        run.Direction = direction;
+        return length;
+    }
+
+    /// <summary>Adds the end cap of a run, or the dot of a run of segments of length 0 only (design §5.1).</summary>
+    private void EndRun(ref RunState run, Vector2 point, float along, in Stroke style)
+    {
+        if (run.HasDirection)
+        {
+            Cap(point, run.Direction, along, startOfRun: false, style);
+        }
+        else if (run.HasSegment && DashAt(style, along) is (true, _, _) or (_, true, _) or (_, _, true))
+        {
+            // The direction of a path of length 0 is the positive x axis (SVG 2 §9.4): its square is axis-aligned.
+            Dot(point, Vector2.UnitX, style);
+        }
+
+        run = default;
+    }
+
+    /// <summary>Adds the piece of a join, or the caps where a dash ends or starts exactly at the point (design §5.1).</summary>
+    private void Join(Vector2 point, Vector2 incoming, Vector2 outgoing, float along, in Stroke style)
+    {
+        var (left, right, zero) = DashAt(style, along);
+        if (left && right)
+        {
+            var dot = Vector2.Dot(incoming, outgoing);
+            var cross = (incoming.X * outgoing.Y) - (incoming.Y * outgoing.X);
+
+            // Nearly straight on: the piece would have no area, and the union of samples leaves no seam between the boxes (§5.3).
+            if (MathF.Abs(cross) < 1e-4f && dot > 0)
+            {
+                return;
+            }
+
+            var kind = style.Join switch
+            {
+                LineJoin.Round => PieceKind.Disk,
+                LineJoin.Bevel => PieceKind.Bevel,
+
+                // 1 / cos(θ / 2) past the limit is a bevel, at it still a miter; a reversal, cos 0, always is a bevel.
+                _ => MathF.Sqrt(MathF.Max(0, (1 + dot) / 2)) * style.MiterLimit >= 1 ? PieceKind.Miter : PieceKind.Bevel,
+            };
+            AddPiece(point, incoming, outgoing, kind);
+            return;
+        }
+
+        if (left)
+        {
+            Cap(point, incoming, along, startOfRun: false, style);
+        }
+        else if (right)
+        {
+            Cap(point, -outgoing, along, startOfRun: true, style);
+        }
+        else if (zero)
+        {
+            Dot(point, outgoing, style);
+        }
+    }
+
+    /// <summary>
+    /// Adds a cap at a run's end or a dash's end at a joint (design §5.1): <paramref name="outward"/> points away from the line.
+    /// At the start of a run the line must be on just after the point; at the end, just before it.
+    /// </summary>
+    private void Cap(Vector2 point, Vector2 outward, float along, bool startOfRun, in Stroke style)
+    {
+        var (left, right, zero) = DashAt(style, along);
+        if (startOfRun ? right : left)
+        {
+            AddCap(point, outward, style.Cap);
+        }
+        else if (zero && !(startOfRun ? left : right))
+        {
+            Dot(point, -outward, style);
+        }
+    }
+
+    private void Dot(Vector2 point, Vector2 direction, in Stroke style)
+    {
+        // Both caps of a dash of length 0 at one point (SVG 2 §13.5.7): a circle, or a square along the direction.
+        if (style.Cap == LineCap.Round)
+        {
+            AddPiece(point, direction, direction, PieceKind.Disk);
+        }
+        else if (style.Cap == LineCap.Square)
+        {
+            AddPiece(point, direction, direction, PieceKind.Square);
+        }
+    }
+
+    private void AddCap(Vector2 point, Vector2 outward, LineCap cap)
+    {
+        if (cap == LineCap.Round)
+        {
+            AddPiece(point, outward, outward, PieceKind.Disk);
+        }
+        else if (cap == LineCap.Square)
+        {
+            AddPiece(point, outward, outward, PieceKind.SquareCap);
+        }
+    }
+
+    private void AddPiece(Vector2 point, Vector2 incoming, Vector2 outgoing, PieceKind kind)
+    {
+        if (_pieceCount == _pieces.Length)
+        {
+            Array.Resize(ref _pieces, _pieces.Length * 2);
+        }
+
+        // Made in its slot: a record built on the stack and copied in 16-byte halves that overlap stalled on the store
+        // forwarding, half of a mitered line's recording (docs/benchmarks/r4-lines.md).
+        _pieces[_pieceCount++] = new PieceRecord(point, incoming, outgoing, kind);
+    }
+
+    /// <summary>
+    /// Returns whether a dash pattern is on just before and just after a length along the run, and whether a dash of length 0
+    /// sits exactly there (design §5.1). A solid line is on everywhere.
+    /// </summary>
+    internal static (bool Left, bool Right, bool Zero) DashAt(in Stroke style, float along)
+    {
+        if (style.Count == 0)
+        {
+            return (true, true, false);
+        }
+
+        var period = style.Ends[style.Count - 1];
+
+        // With a floor as the shader takes it (LineMask.hlsl), not % (fmodf, a quarter of a dashed line's recording).
+        var position = along + style.Offset;
+        var phase = position - (MathF.Floor(position / period) * period);
+        phase =
+            phase < 0 ? phase + period
+            : phase >= period ? phase - period
+            : phase;
+        var (left, right, zero) = (false, false, false);
+        var start = 0f;
+        for (var i = 0; i < style.Count; i += 2)
+        {
+            var end = style.Ends[i];
+            if (end == start)
+            {
+                zero |= start == phase || (phase == 0 && start == period);
+            }
+            else
+            {
+                // An interval [start, end] that ends at the period also reaches phase 0 from the left.
+                left |= (start < phase && phase <= end) || (phase == 0 && end == period);
+                right |= start <= phase && phase < end;
+            }
+
+            start = style.Ends[i + 1];
+        }
+
+        return (left, right, zero);
+    }
+}
+
+/// <summary>
+/// What recording a polyline that is not round reads of its style, read once (design §5.1): the join, the cap, the miter
+/// limit, and the dash pattern as the ends of its intervals summed from its start (no pattern: a count of 0).
+/// </summary>
+internal readonly struct Stroke
+{
+    public readonly LineJoin Join;
+    public readonly LineCap Cap;
+    public readonly float MiterLimit;
+    public readonly float Offset;
+    public readonly int Count;
+    public readonly Ends Ends;
+
+    public Stroke(in LineStyle style)
+    {
+        (Join, Cap, MiterLimit) = (style.Join, style.Cap, style.MiterLimit);
+        if (style.Dash is { } dash)
+        {
+            (Offset, Count) = (dash.Offset, dash.Count);
+            var sum = 0f;
+            for (var i = 0; i < dash.Count; i++)
+            {
+                sum += dash[i];
+                Ends[i] = sum;
+            }
+        }
+    }
+}
+
+/// <summary>The ends of up to 8 dash intervals.</summary>
+[System.Runtime.CompilerServices.InlineArray(LineDash.MaxIntervals)]
+internal struct Ends
+{
+    private float _element;
+}
+
+/// <summary>The state of a run while a polyline that is not round is recorded: its last direction and whether it has segments.</summary>
+internal struct RunState
+{
+    public Vector2 Direction;
+    public bool HasDirection;
+    public bool HasSegment;
 }
 
 /// <summary>What a recorded command draws.</summary>
@@ -436,8 +770,37 @@ internal readonly record struct PolylineRecord(
     float MinX,
     float MinY,
     float MaxX,
-    float MaxY
+    float MaxY,
+    int PieceStart = 0,
+    int PieceCount = 0
 );
+
+/// <summary>What a piece of a polyline that is not round is (design §5.1, §5.3, row R4).</summary>
+internal enum PieceKind : uint
+{
+    /// <summary>A join cut straight across the two outer corners.</summary>
+    Bevel,
+
+    /// <summary>A join carried to where the outer edges meet.</summary>
+    Miter,
+
+    /// <summary>A circle the width of the line: a round join, a round cap, or a round dot.</summary>
+    Disk,
+
+    /// <summary>A half square past the point along <see cref="PieceRecord.In"/>: a square cap.</summary>
+    SquareCap,
+
+    /// <summary>A square the width of the line centered on the point, along <see cref="PieceRecord.In"/>: a square dot.</summary>
+    Square,
+}
+
+/// <summary>
+/// One join or cap of a polyline that is not round, as the GPU reads it (design §5.3): the point, the incoming and outgoing
+/// directions of a join (for a cap, both point away from the line), and the kind. 32 bytes with 4 unused, laid out as the
+/// HLSL structure: two aligned 16-byte halves, which the copies of a record of 28 bytes were not.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Size = 32)]
+internal readonly record struct PieceRecord(Vector2 Point, Vector2 In, Vector2 Out, PieceKind Kind);
 
 /// <summary>
 /// One segment as the GPU reads it: its ends and the length along the polyline from the start of its run to its first end

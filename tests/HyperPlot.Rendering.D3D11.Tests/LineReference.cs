@@ -91,11 +91,11 @@ internal static class LineReference
             }
 
             // Dash k covers [k·P − offset, k·P − offset + On] along the path, clipped to the path.
-            var period = pattern.On + pattern.Off;
+            var (on, period) = (pattern[0], pattern.Period);
             for (var k = (int)MathF.Floor(pattern.Offset / period) - 1; (k * period) - pattern.Offset <= total; k++)
             {
                 var start = MathF.Max((k * period) - pattern.Offset, 0);
-                var end = MathF.Min((k * period) - pattern.Offset + pattern.On, total);
+                var end = MathF.Min((k * period) - pattern.Offset + on, total);
                 if (end < start)
                 {
                     continue;
