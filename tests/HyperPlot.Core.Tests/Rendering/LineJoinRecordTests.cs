@@ -176,10 +176,11 @@ public sealed class LineJoinRecordTests
     /// - A 90° turn, whose miter is √2 half widths; a reversal; a turn of 1e-5 radians; a turn whose corner point repeats.
     ///
     /// Steps:
-    /// - Record the 90° turn with limits 1.41 and 1.42, and the others with a miter join and butt caps.
+    /// - Record the 90° turn with limits 1.41, 1.42, and 1.4142137 (whose product with cos 45° is 1 in float), and the
+    ///   others with a miter join and butt caps.
     ///
     /// Expected:
-    /// - Bevel, then miter; the reversal a bevel; nothing for the turn of 1e-5; one miter from +x to +y at the repeated corner.
+    /// - Bevel, then miter, then miter at the limit; the reversal a bevel; nothing for the turn of 1e-5; one miter from +x to +y at the repeated corner.
     /// </remarks>
     [Fact]
     public void Pieces_MiterLimitReversalAndDegenerateSegments()
@@ -189,6 +190,9 @@ public sealed class LineJoinRecordTests
 
         Assert.Equal(PieceKind.Bevel, Assert.Single(Pieces(square, miter with { MiterLimit = 1.41f })).Kind);
         Assert.Equal(PieceKind.Miter, Assert.Single(Pieces(square, miter with { MiterLimit = 1.42f })).Kind);
+
+        // cos 45° · 1.4142137 is 1 exactly in float: the miter reaches the limit and stays a miter.
+        Assert.Equal(PieceKind.Miter, Assert.Single(Pieces(square, miter with { MiterLimit = 1.4142137f })).Kind);
         Assert.Equal(PieceKind.Bevel, Assert.Single(Pieces([new(0, 0), new(10, 0), new(5, 0)], miter)).Kind);
         Assert.Empty(Pieces([new(0, 0), new(10, 0), new(20, 1e-4f)], miter));
         Assert.Equal(

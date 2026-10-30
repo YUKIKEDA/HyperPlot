@@ -433,7 +433,8 @@ public sealed class RenderList
 
         if (style.Dash is { } dash)
         {
-            var valid = dash.Count >= 2 && float.IsFinite(dash.Offset) && dash.Period > 0;
+            // default(LineDash) has no interval and a period of 0; a pattern made otherwise has 2 to 8.
+            var valid = float.IsFinite(dash.Offset) && dash.Period > 0;
             for (var i = 0; valid && i < dash.Count; i++)
             {
                 valid = float.IsFinite(dash[i]) && dash[i] >= 0;
