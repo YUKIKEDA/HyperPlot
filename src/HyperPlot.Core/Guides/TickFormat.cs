@@ -53,7 +53,13 @@ internal static class TickFormat
             return Write("0", destination, ref written) && (decimals == 0 || WriteZeros('.', decimals, destination, ref written));
         }
 
-        // The digits of |M| · 10^(E + decimals), an integer since decimals ≥ −E for every label of the axis.
+        // The digits of |M| · 10^(E + decimals), an integer since decimals ≥ −E for every label of the axis. Past 38 digits
+        // they would overflow an Int128, and such a label is longer than any fixed label kept anyway.
+        if (Magnitude(number) + decimals > 37)
+        {
+            return false;
+        }
+
         var shift = number.Exponent + decimals;
         var digits = Int128.Abs(number.Mantissa);
         if (shift >= 0)

@@ -249,20 +249,22 @@ public sealed class TickTests
 
         if (low == 0)
         {
-            Assert.Contains("0.3", axis.TickLabels.ToArray().Concat(["0.3"]));
+            // A step of 0.1 or 0.2 writes one decimal, never the binary tail of 0.30000000000000004.
+            Assert.All(axis.TickLabels.ToArray(), l => Assert.True(!l.Contains('.', StringComparison.Ordinal) || l.Split('.')[1].Length == 1, l));
         }
     }
 
     /// <summary>A step of 0.1 is written 0.1, 0.2, 0.3: the decimals of the axis come from M · 10^E (design §4.6).</summary>
     /// <remarks>
     /// Preconditions:
-    /// - TickNumber 3 · 10^−1, 30 · 10^−2, and −0 written alone and with 2 decimals.
+    /// - TickNumber 3 · 10^−1, 30 · 10^−2, and −0 written alone and with 2 decimals; −1250, 0.0005, −1; 15 · 10^299.
     ///
     /// Steps:
     /// - Write them fixed.
     ///
     /// Expected:
-    /// - "0.3", "0.3", "0.30", and "0" for 0 with no sign.
+    /// - "0.3", "0.3", "0.30", and "0" for 0 with no sign; "-1250", "0.0005", "-1"; 15 · 10^299 does not fit (more than 38
+    ///   digits) and has no fixed length, without overflowing.
     /// </remarks>
     [Fact]
     public void Fixed_WritesExactly()
@@ -274,6 +276,8 @@ public sealed class TickTests
         Assert.Equal("-1250", Fixed(new TickNumber(-125, 1), 0));
         Assert.Equal("0.0005", Fixed(new TickNumber(5, -4), 4));
         Assert.Equal("-1", Fixed(new TickNumber(-1, 0), 0));
+        Assert.False(TickFormat.TryWriteFixed(new TickNumber(15, 299), 0, new char[64], out _));
+        Assert.Equal(int.MaxValue, TickFormat.FixedLength(new TickNumber(15, 299), 0));
     }
 
     /// <summary>

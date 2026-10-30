@@ -84,17 +84,19 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>
     /// Compiles a spec against the last one drawn, waits until its pyramids and X statistics are built for the columns'
-    /// current values, and returns the recorded lines over the whole target (design §4.8). Allocates nothing for the spec
-    /// drawn last once warm.
+    /// current values, lays out the guides, and returns the recorded panel, grid, lines, axes, titles, and legend (design
+    /// §4.6, §4.8); an empty list when the panel is too small. Allocates nothing for the spec drawn last once warm.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The spec has a null member or layer.</exception>
+    /// <exception cref="ArgumentNullException">The spec has a null member (its theme included) or layer.</exception>
     /// <exception cref="ArgumentException">
-    /// The spec does not check (design §4.8), or the x domain is too narrow for the width, in the scale space or once mapped
-    /// back to data units.
+    /// The spec or its theme does not check (design §4.7, §4.8), or the x domain is too narrow for the panel's width, in
+    /// the scale space or once mapped back to data units.
     /// </exception>
     /// <exception cref="InvalidOperationException">
     /// A learned domain has an end that is not finite, in data units or once the scale maps it (design §4.2), or an X column
-    /// decreases. An exception that a user's <see cref="IScale"/> throws comes out as it is.
+    /// decreases. While ticks are chosen: a time domain outside the years 1 to 9999, a tick format that returns false or a
+    /// length outside 0 to 64, or a default label past 64 characters (design §4.6). Shaping a text failed. An exception
+    /// that a user's <see cref="IScale"/> or tick format throws comes out as it is.
     /// </exception>
     internal RenderList Render(PlotSpec spec)
     {
