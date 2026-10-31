@@ -60,6 +60,33 @@ public static class Scale
         return new TransformScaleSpec(transform);
     }
 
+    /// <summary>Returns a band scale for the categories of a <see cref="CategoricalColumn"/> on x (design §4.2, row G7b).</summary>
+    /// <param name="paddingInner">The share of a step between two bands: at least 0 and at most 1.</param>
+    /// <param name="paddingOuter">The space before the first band and after the last, in steps: at least 0 and at most 1.</param>
+    /// <param name="align">How the outer space is shared between the two ends: at least 0 and at most 1.</param>
+    /// <returns>The scale.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">A value is NaN or outside [0, 1].</exception>
+    public static BandScaleSpec Band(double paddingInner = 0.1, double paddingOuter = 0.05, double align = 0.5)
+    {
+        Check(paddingInner, nameof(paddingInner));
+        Check(paddingOuter, nameof(paddingOuter));
+        Check(align, nameof(align));
+        return new BandScaleSpec
+        {
+            PaddingInner = paddingInner,
+            PaddingOuter = paddingOuter,
+            Align = align,
+        };
+
+        static void Check(double value, string name)
+        {
+            if (!(value >= 0 && value <= 1))
+            {
+                throw new ArgumentOutOfRangeException(name, value, "The value is at least 0 and at most 1.");
+            }
+        }
+    }
+
     private static void CheckPositive(double value, string name)
     {
         if (!double.IsFinite(value) || !(value > 0))

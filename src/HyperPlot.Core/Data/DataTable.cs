@@ -78,6 +78,28 @@ public sealed class DataTable
         return new ColumnRef<T>(this, index);
     }
 
+    /// <summary>Returns a reference to a categorical column by its name (design §3.1, row G7b). Names are compared ordinally.</summary>
+    /// <param name="name">The column's name.</param>
+    /// <returns>The reference.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="name"/> is null.</exception>
+    /// <exception cref="ArgumentException">No column has the name, or it is not a <see cref="CategoricalColumn"/>.</exception>
+    public CategoryRef Cat(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        var index = Array.IndexOf(_names, name);
+        if (index < 0)
+        {
+            throw new ArgumentException($"The table has no column named \"{name}\".", nameof(name));
+        }
+
+        if (_columns[index] is not CategoricalColumn)
+        {
+            throw new ArgumentException($"The column \"{name}\" is a {_columns[index].KindName}, not a CategoricalColumn.", nameof(name));
+        }
+
+        return new CategoryRef(this, index);
+    }
+
     private void CheckIndex(int index)
     {
         ArgumentOutOfRangeException.ThrowIfNegative(index);

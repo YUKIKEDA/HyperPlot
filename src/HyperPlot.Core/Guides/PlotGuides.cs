@@ -21,6 +21,7 @@ internal sealed class PlotGuides
     private readonly LabelTable _labels = new();
     private readonly Vector2[] _segment = new Vector2[2];
     private Vector2[] _curve = new Vector2[256];
+    private CategoricalColumn? _categories;
 
     internal PlotGuides(TextEngine text, float scale, int width, int height)
     {
@@ -75,8 +76,9 @@ internal sealed class PlotGuides
     /// domains nice widens. The domains are the learned ones in the scale space; nice applies to a scale that asks for it
     /// and whose domain is learned. The tick spacings go with the sides: <see cref="Theme.TickSpacingX"/> on the bottom.
     /// </summary>
-    internal void Layout(PlotSpec spec, IScale? xTransform, ScaleRange x, IScale? yTransform, ScaleRange y)
+    internal void Layout(PlotSpec spec, IScale? xTransform, ScaleRange x, IScale? yTransform, ScaleRange y, CategoricalColumn? categories)
     {
+        _categories = categories;
         var theme = spec.Theme;
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
         (Polar, ThetaBand, X.Circular, Y.Circular) = (null, 0, false, false);
@@ -253,7 +255,7 @@ internal sealed class PlotGuides
 
     private void Prepare(
         TickAxis axis,
-        ContinuousScaleSpec scale,
+        AxisScale scale,
         IScale? transform,
         ScaleRange domain,
         int length,
@@ -263,7 +265,9 @@ internal sealed class PlotGuides
         Theme theme
     )
     {
-        axis.Scale = scale;
+        var continuous = scale.Spec as ContinuousScaleSpec;
+        axis.Scale = continuous!;
+        axis.SetBand(scale.Spec as BandScaleSpec, axis == X ? _categories : null);
         axis.Transform = transform;
         axis.Domain = domain;
         axis.Length = length;
@@ -278,21 +282,17 @@ internal sealed class PlotGuides
             return;
         }
 
-        var learned = scale is TimeScaleSpec time ? time.Domain is null : scale.GivenDomain is null;
-        axis.Choose(scale.Nice && learned);
+        var learned = continuous is TimeScaleSpec time ? time.Domain is null : continuous?.GivenDomain is null;
+        axis.Choose(continuous is { Nice: true } && learned);
     }
 
     /// <summary>Returns the axis and the scale on the bottom: x, or y when flipped. Polar, the angle's.</summary>
-    private (TickAxis Axis, ContinuousScaleSpec Scale) Bottom(PlotSpec spec) =>
-        Flipped || spec.Coord is PolarCoordSpec { Theta: PolarTheta.Y }
-            ? (Y, (ContinuousScaleSpec)spec.ScaleY)
-            : (X, (ContinuousScaleSpec)spec.ScaleX);
+    private (TickAxis Axis, AxisScale Scale) Bottom(PlotSpec spec) =>
+        Flipped || spec.Coord is PolarCoordSpec { Theta: PolarTheta.Y } ? (Y, new(spec.ScaleY)) : (X, new(spec.ScaleX));
 
     /// <summary>Returns the axis and the scale on the left: y, or x when flipped. Polar, the radius's.</summary>
-    private (TickAxis Axis, ContinuousScaleSpec Scale) Side(PlotSpec spec) =>
-        Flipped || spec.Coord is PolarCoordSpec { Theta: PolarTheta.Y }
-            ? (X, (ContinuousScaleSpec)spec.ScaleX)
-            : (Y, (ContinuousScaleSpec)spec.ScaleY);
+    private (TickAxis Axis, AxisScale Scale) Side(PlotSpec spec) =>
+        Flipped || spec.Coord is PolarCoordSpec { Theta: PolarTheta.Y } ? (X, new(spec.ScaleX)) : (Y, new(spec.ScaleY));
 
     /// <summary>Returns ⌊v / 2⌋ for any sign.</summary>
     private static int Half(int value) => (int)Math.Floor(value / 2.0);
@@ -396,7 +396,7 @@ internal sealed class PlotGuides
     }
 
     /// <summary>The share of a tick along its axis, from the scale's low end: reversed, from its high end.</summary>
-    private static double Share(TickAxis axis, ContinuousScaleSpec scale, double pixel)
+    private static double Share(TickAxis axis, AxisScale scale, double pixel)
     {
         var share = axis.Length > 0 ? pixel / axis.Length : 0;
         return scale.Reverse ? 1 - share : share;
@@ -492,10 +492,10 @@ internal sealed class PlotGuides
     }
 
     /// <summary>The target's x pixel of a pixel along the bottom axis: left to right, or right to left when reversed.</summary>
-    private double HorizontalOf(ContinuousScaleSpec scale, double pixel) => Left + (scale.Reverse ? Width - pixel : pixel);
+    private double HorizontalOf(AxisScale scale, double pixel) => Left + (scale.Reverse ? Width - pixel : pixel);
 
     /// <summary>The target's y pixel of a pixel along the left axis: bottom to top, or top to bottom when reversed.</summary>
-    private double VerticalOf(ContinuousScaleSpec scale, double pixel) => Top + (scale.Reverse ? pixel : Height - pixel);
+    private double VerticalOf(AxisScale scale, double pixel) => Top + (scale.Reverse ? pixel : Height - pixel);
 
     private void RecordAxes(RenderList list, PlotSpec spec, Theme theme, int gap, int tick, int padding)
     {
@@ -667,5 +667,22 @@ internal sealed class PlotGuides
         _segment[0] = from;
         _segment[1] = to;
         list.DrawPolyline(_segment, style);
+    }
+
+    /// <summary>
+    /// An axis's scale as the guides read it (row G7b): its title, and whether its ticks run from the far end. A band scale
+    /// reverses its categories' positions itself (design §4.2), so its ticks come already in place.
+    /// </summary>
+    private readonly record struct AxisScale(ScaleSpec Spec)
+    {
+        public string? Title =>
+            Spec switch
+            {
+                ContinuousScaleSpec continuous => continuous.Title,
+                BandScaleSpec band => band.Title,
+                _ => null,
+            };
+
+        public bool Reverse => Spec is ContinuousScaleSpec { Reverse: true };
     }
 }

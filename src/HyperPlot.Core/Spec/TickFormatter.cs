@@ -52,7 +52,7 @@ public enum TimeInterval
     Nanosecond,
 }
 
-/// <summary>Copies of the continuous scales with an axis title (design §4.1).</summary>
+/// <summary>Copies of the position scales with an axis title (design §4.1).</summary>
 public static class ScaleSpecExtensions
 {
     /// <summary>Returns a copy of a scale with an axis title.</summary>
@@ -63,6 +63,17 @@ public static class ScaleSpecExtensions
     /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
     public static T WithTitle<T>(this T scale, string? title)
         where T : ContinuousScaleSpec
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        return scale with { Title = title };
+    }
+
+    /// <summary>Returns a copy of a band scale with an axis title (row G7b).</summary>
+    /// <param name="scale">The scale.</param>
+    /// <param name="title">The title; null or empty for none.</param>
+    /// <returns>The copy, with a new <see cref="SpecNode.Id"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    public static BandScaleSpec WithTitle(this BandScaleSpec scale, string? title)
     {
         ArgumentNullException.ThrowIfNull(scale);
         return scale with { Title = title };
