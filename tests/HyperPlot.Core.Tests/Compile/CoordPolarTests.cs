@@ -408,8 +408,9 @@ public sealed class CoordPolarTests
     /// Expected:
     /// - Each fill layer: the panel's rectangle, then one sector call in its fill, clipped to the panel, its trapezoids cut
     ///   in pieces of at most π / 16: 4 bars 4 wide, 0.25 radians each, 8 pieces; 4 rects 5, 10, 10, and 5 wide, 12; the
-    ///   area at most 315. A rect from −50 to 150 is cut to a full turn: 32 pieces spanning under 2π. The vertical rule's points on the line through the center at θ = 25 / 100 · 2π, from the
-    ///   center to radius 50; the horizontal rule's at radius 20 from the center, around the whole circle.
+    ///   area 300 to 315 (a trapezoid an angle pixel, each holding points). A rect from −50 to 150 is cut to a full turn:
+    ///   32 pieces spanning under 2π. The vertical rule's points on the line through the center at θ = 25 / 100 · 2π, from
+    ///   the center to radius 50; the horizontal rule's at radius 20 from the center, around the whole circle.
     /// </remarks>
     [Fact]
     public void Polar_FillsAndRules()
@@ -487,7 +488,8 @@ public sealed class CoordPolarTests
 
             if (layer is AreaLayerSpec)
             {
-                Assert.InRange(call.Count, 1, 315);
+                // Every angle pixel holds points: a trapezoid each, nearly all of the 315.
+                Assert.InRange(call.Count, 300, 315);
             }
         }
 
