@@ -479,6 +479,12 @@ internal abstract class LayerPlan
     /// <summary>Gets the numeric column that colors each element of a bar or a rect layer, or null (design §4.1, row G7c).</summary>
     protected Column? ElementColors => (Spec.FillBy ?? Spec.ColorBy) is { Column: { } column and not CategoricalColumn } ? column : null;
 
+    /// <summary>
+    /// Returns a layer's columns and, after them, its column of element colors (row G7c, PR #173's review): its versions
+    /// decide too whether the layer learns and records again.
+    /// </summary>
+    protected Column[] AndColors(params Column[] columns) => ElementColors is { } colors ? [.. columns, colors] : columns;
+
     /// <summary>Returns an element's color through the plot's color scale, or null when its value is NaN (design §4.1).</summary>
     protected Color? ElementColor(Column column, long index)
     {

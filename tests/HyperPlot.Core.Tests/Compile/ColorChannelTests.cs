@@ -687,7 +687,7 @@ public sealed class ColorChannelTests
 
         list = plan.Render(Spec(t, area with { ColorBy = null }));
         Assert.Equal(3, list.Columns.ToArray().Select(column => column.Color).Distinct().Count());
-        Assert.Equal([Palettes.Tab10[0]], list.Polylines.ToArray().Take(1).Select(p => p.Style.Color));
+        Assert.Equal([Palettes.Tab10[0]], list.Polylines.ToArray().Select(p => p.Style.Color));
     }
 
     /// <summary>
@@ -704,7 +704,7 @@ public sealed class ColorChannelTests
     /// - Render each.
     ///
     /// Expected:
-    /// - 490 bars, each in viridis at t = v / 499; rects in RdBu at 0, 0.25, 0.5, 1, and without a scale in viridis at the same
+    /// - 490 bars, each in viridis at t = v / 499; rects in RdBu at 0, 0.25, 0.5, 1, the first at 1 once the color column alone changes and is invalidated, and without a scale in viridis at the same
     ///   t over the learned [−1, 1]; 131,072 bars in view draw, and InvalidOperationException for 131,073 in view and for bars over categories of 131,073 rows.
     /// </remarks>
     [Fact]
@@ -736,28 +736,36 @@ public sealed class ColorChannelTests
 
         using var r0 = Column.Wrap(new double[] { 10, 30, 50, 70 });
         using var r1 = Column.Wrap(new double[] { 20, 40, 60, 80 });
-        using var rv = Column.Wrap(new double[] { -1, -0.5, 0, 1 });
+        var rectValues = new double[] { -1, -0.5, 0, 1 };
+        using var rv = Column.Wrap(rectValues);
         var rt = DataTable.Create().Add("a", r0).Add("b", r1).Add("v", rv).Build();
-        list = plan.Render(
-            Spec(
-                rt,
-                new RectLayerSpec
-                {
-                    XMin = rt.Col<double>("a"),
-                    XMax = rt.Col<double>("b"),
-                    YMin = rt.Col<double>("a"),
-                    YMax = rt.Col<double>("b"),
-                    ColorBy = rt.Col<double>("v"),
-                }
-            ) with
+        var diverging = Spec(
+            rt,
+            new RectLayerSpec
             {
-                ScaleColor = Scale.Diverging(scale: Scale.Linear().WithDomain(-1, 1)),
+                XMin = rt.Col<double>("a"),
+                XMax = rt.Col<double>("b"),
+                YMin = rt.Col<double>("a"),
+                YMax = rt.Col<double>("b"),
+                ColorBy = rt.Col<double>("v"),
             }
-        );
+        ) with
+        {
+            ScaleColor = Scale.Diverging(scale: Scale.Linear().WithDomain(-1, 1)),
+        };
+        list = plan.Render(diverging);
         Assert.Equal(
             new[] { 0, 0.25, 0.5, 1 }.Select(f => Premultiplied(ColorMaps.RdBu.Map(f))),
             list.Rects[1..5].ToArray().Select(rect => rect.Color)
         );
+
+        // The color column changes alone: the plan records again, in the new colors (PR #173's review).
+        rectValues[0] = 1;
+        rv.Invalidate();
+        list = plan.Render(diverging);
+        Assert.Equal(Premultiplied(ColorMaps.RdBu.Map(1)), list.Rects[1].Color);
+        rectValues[0] = -1;
+        rv.Invalidate();
 
         // Without a scale, a sequential one over the column's range: −1 at 0, 1 at 1.
         list = plan.Render(

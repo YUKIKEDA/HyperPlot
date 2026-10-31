@@ -144,4 +144,7 @@ public sealed class CategoricalColumn : Column
     /// <inheritdoc />
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>
         throw new InvalidOperationException("A categorical column is not an X of M4: the compile keeps it to a band scale's bars.");
+
+    /// <inheritdoc />
+    internal override GatherChannel MakeGather(ReadOnlySpan<long> counts) => new GatherChannel.CategoryGather(this, counts);
 }

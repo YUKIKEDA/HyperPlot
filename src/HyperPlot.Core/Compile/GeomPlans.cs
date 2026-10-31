@@ -284,7 +284,7 @@ internal sealed class BarPlan : LayerPlan
     public BarPlan(BarLayerSpec spec, PlanBuild build, RowRange rows)
         : base(spec, rows)
     {
-        SetColumns(spec.X.Column, spec.Y.Column);
+        SetColumns(AndColors(spec.X.Column, spec.Y.Column));
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
@@ -411,7 +411,7 @@ internal sealed class CategoryBarPlan : LayerPlan
     private MinMaxPyramid<double>? _maxPyramid;
 
     public CategoryBarPlan(BarLayerSpec spec, RowRange rows)
-        : base(spec, rows) => SetColumns(spec.X.Column, spec.Y.Column);
+        : base(spec, rows) => SetColumns(AndColors(spec.X.Column, spec.Y.Column));
 
     private CategoricalColumn Categories => (CategoricalColumn)Columns[0];
 
@@ -738,7 +738,7 @@ internal sealed class RulePlan : LayerPlan
 internal sealed class RectPlan : LayerPlan
 {
     public RectPlan(RectLayerSpec spec, RowRange rows)
-        : base(spec, rows) => SetColumns(spec.XMin.Column, spec.XMax.Column, spec.YMin.Column, spec.YMax.Column);
+        : base(spec, rows) => SetColumns(AndColors(spec.XMin.Column, spec.XMax.Column, spec.YMin.Column, spec.YMax.Column));
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {

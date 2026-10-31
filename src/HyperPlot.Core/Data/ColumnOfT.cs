@@ -243,6 +243,9 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     internal override CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool, RowRange rows) =>
         pool.StartCategoryExtremes(x, this, rows);
 
+    /// <inheritdoc />
+    internal override GatherChannel MakeGather(ReadOnlySpan<long> counts) => new GatherChannel.StoredGather<T>(this, counts);
+
     /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>
     internal long GetGeneration(int chunkIndex) => Volatile.Read(ref _generations[chunkIndex]);
 

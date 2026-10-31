@@ -95,20 +95,12 @@ internal abstract class GatherChannel : IDisposable
     /// <summary>Gets a category's column, or null for one not gathered.</summary>
     public abstract Column? Target(int category);
 
-    /// <summary>Returns a channel for a source column, with a column for each category of a count above 0 in <paramref name="counts"/>.</summary>
-    public static GatherChannel For(Column source, ReadOnlySpan<long> counts) =>
-        source switch
-        {
-            Column<float> c => new StoredGather<float>(c, counts),
-            Column<double> c => new StoredGather<double>(c, counts),
-            Column<int> c => new StoredGather<int>(c, counts),
-            Column<long> c => new StoredGather<long>(c, counts),
-            Column<byte> c => new StoredGather<byte>(c, counts),
-            UniformColumn { IsInteger: true } u => new UniformGather<long>(u, counts),
-            UniformColumn u => new UniformGather<double>(u, counts),
-            CategoricalColumn c => new CategoryGather(c, counts),
-            _ => throw new InvalidOperationException($"A {source.KindName} cannot be gathered."),
-        };
+    /// <summary>
+    /// Returns a channel for a source column, with a column for each category of a count above 0 in <paramref name="counts"/>.
+    /// The column makes it (a virtual method, not a switch over the element types), so that NativeAOT compiles the gathers,
+    /// pyramids, and M4 of the element types an application builds only (PR #173's review).
+    /// </summary>
+    public static GatherChannel For(Column source, ReadOnlySpan<long> counts) => source.MakeGather(counts);
 
     /// <summary>Writes a chunk's rows of the gathered categories at their positions, which it moves on.</summary>
     public abstract void Copy(int chunk, ReadOnlySpan<int> codes, Span<long> positions);
@@ -118,7 +110,7 @@ internal abstract class GatherChannel : IDisposable
 
     public abstract void Dispose();
 
-    private sealed class StoredGather<T> : GatherChannel
+    internal sealed class StoredGather<T> : GatherChannel
         where T : unmanaged, INumber<T>
     {
         private readonly Column<T> _source;
@@ -171,7 +163,7 @@ internal abstract class GatherChannel : IDisposable
         }
     }
 
-    private sealed class UniformGather<T> : GatherChannel
+    internal sealed class UniformGather<T> : GatherChannel
         where T : unmanaged, INumber<T>
     {
         private readonly UniformColumn _source;
@@ -228,7 +220,7 @@ internal abstract class GatherChannel : IDisposable
         }
     }
 
-    private sealed class CategoryGather : GatherChannel
+    internal sealed class CategoryGather : GatherChannel
     {
         private readonly CategoricalColumn _source;
         private readonly int[]?[] _codes;
@@ -298,7 +290,7 @@ internal sealed class SplitPlan : LayerPlan
     {
         // Which column splits what: the fill by FillBy (or ColorBy), a fill geom's outline by ColorBy, a line by ColorBy.
         var fillBy = IsFill(spec) ? (spec.FillBy ?? spec.ColorBy) : null;
-        var strokeBy = IsFill(spec) ? spec.ColorBy : spec.ColorBy;
+        var strokeBy = spec.ColorBy;
         var split = (fillBy ?? strokeBy)!.Value;
         _categories = (CategoricalColumn)split.Column;
         _runs = CategoryRuns.Of(_categories, build.Pool);
@@ -340,11 +332,12 @@ internal sealed class SplitPlan : LayerPlan
             Gather(build.Pool);
         }
 
+        // An area's or a band's outline goes with each category's fill only when ColorBy splits both by the same column;
+        // else it is drawn apart: split by its own column, or one line in the layer's color when only the fill is split.
         var pyramids = new List<PlotPyramid>();
-        var sameColumn = fillBy is null || strokeBy is null || fillBy.Value == strokeBy.Value;
-        var outlineApart = IsFill(spec) && Outline(spec) is not null && !sameColumn;
+        var outlineApart = OutlineApart(spec);
         var child = outlineApart ? WithoutOutline(spec) : spec;
-        AddParts(child, build, pyramids, (CategoricalColumn)(fillBy ?? strokeBy)!.Value.Column);
+        AddParts(child, build, pyramids);
         if (outlineApart && strokeBy is { } byStroke)
         {
             // The outline split by its own column (design §4.1): the outline's lines as lines of their own.
@@ -354,7 +347,7 @@ internal sealed class SplitPlan : LayerPlan
                 var line = lines[index];
                 if (byStroke.Column == _categories)
                 {
-                    AddParts(line, build, pyramids, _categories);
+                    AddParts(line, build, pyramids);
                 }
                 else
                 {
@@ -363,7 +356,7 @@ internal sealed class SplitPlan : LayerPlan
                 }
             }
         }
-        else if (IsFill(spec) && Outline(spec) is not null && strokeBy is null)
+        else if (outlineApart)
         {
             // Only the fill is split: the outline is one line in the layer's series color.
             var lines = OutlineLines(spec);
@@ -554,9 +547,16 @@ internal sealed class SplitPlan : LayerPlan
     /// <summary>Returns how a part's node is made from the layer's: its channels through a map, the outline apart or not.</summary>
     private static Func<LayerSpec, LayerSpec> MakeChild(LayerSpec first, Func<ColumnRef, ColumnRef> map)
     {
-        var apart = Outline(first) is not null && first.FillBy is not null && first.ColorBy is not null && first.FillBy != first.ColorBy;
+        var apart = OutlineApart(first);
         return layer => Remap(apart ? WithoutOutline(layer) : layer, map);
     }
+
+    /// <summary>
+    /// Returns whether a fill geom's outline is drawn apart from its categories' fills (design §4.1): it has one, and ColorBy
+    /// does not split it by the fill's own column (no ColorBy, or a FillBy of another column).
+    /// </summary>
+    private static bool OutlineApart(LayerSpec spec) =>
+        IsFill(spec) && Outline(spec) is not null && !(spec.ColorBy is { } by && (spec.FillBy ?? by) == by);
 
     /// <summary>Returns how an outline line's node is made from the layer's: the index-th line of its outline, split by a column or not.</summary>
     private static Func<LayerSpec, LayerSpec> MakeOutline(int index, ColumnRef? by) =>
@@ -582,10 +582,10 @@ internal sealed class SplitPlan : LayerPlan
     }
 
     /// <summary>Adds a part a used category of a column: a plan over its run, or over its gathered rows.</summary>
-    private void AddParts(LayerSpec spec, PlanBuild build, List<PlotPyramid> pyramids, CategoricalColumn by)
+    private void AddParts(LayerSpec spec, PlanBuild build, List<PlotPyramid> pyramids)
     {
         var runs = _runs!;
-        for (var c = 0; c < by.CategoryCount; c++)
+        for (var c = 0; c < _categories!.CategoryCount; c++)
         {
             if (runs.Count[c] == 0)
             {
@@ -632,20 +632,21 @@ internal sealed class SplitPlan : LayerPlan
             _gatheredVersions[s] = _sources[s].Version;
         }
 
+        // Each category's position at each chunk's start: its rows in the chunks before, summed once.
+        var starts = new long[runs.ChunkCounts.Length];
+        for (var k = 1; k < categories.ChunkCount; k++)
+        {
+            for (var c = 0; c < n; c++)
+            {
+                starts[(k * n) + c] = starts[((k - 1) * n) + c] + runs.ChunkCounts[((k - 1) * n) + c];
+            }
+        }
+
         pool.RunChunks(
                 categories.ChunkCount,
                 chunk =>
                 {
-                    // Each category's position at the chunk's start: its rows in the chunks before.
-                    Span<long> start = n <= 256 ? stackalloc long[n] : new long[n];
-                    for (var k = 0; k < chunk; k++)
-                    {
-                        for (var c = 0; c < n; c++)
-                        {
-                            start[c] += runs.ChunkCounts[(k * n) + c];
-                        }
-                    }
-
+                    var start = starts.AsSpan(chunk * n, n);
                     Span<long> positions = n <= 256 ? stackalloc long[n] : new long[n];
                     var codes = categories.GetCodes(chunk);
                     foreach (var gather in _gathers)
