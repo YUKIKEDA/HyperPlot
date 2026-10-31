@@ -358,12 +358,12 @@ public sealed class CategoricalTests
     ///   fit steps of 78.75 pixels (the width and 3/8 em), with the outer padding that makes the step that.
     ///
     /// Steps:
-    /// - Render each; render the 12 reversed.
+    /// - Render each; the 4 also with align 0, 0.5, and 1, and reversed; render the 12 reversed.
     ///
     /// Expected:
-    /// - 4 categories: 4 ticks at the bands' middles, labels A to D in order. 12: the labels of categories 0, k, 2k, … with k
-    ///   the least that keeps neighbors half an em apart (k · step ≥ 74.25 + 6); as many grid lines. Reversed: the first
-    ///   label is on the right. The step under 80.25 pixels: every other category is labeled, though neighbors would not
+    /// - 4 categories: 4 ticks at the middles of the bars as drawn (Issue #190: the domain's origin counts), labels A to D in
+    ///   order. 12: the labels of categories 0, k, 2k, … with k the least that keeps neighbors half an em apart
+    ///   (k · step ≥ 74.25 + 6); as many grid lines. Reversed: the first label is on the right. The step under 80.25 pixels: every other category is labeled, though neighbors would not
     ///   overlap.
     /// </remarks>
     [Fact]
@@ -376,12 +376,22 @@ public sealed class CategoricalTests
         _ = plan.Render(fewSpec);
         var axis = plan.Guides.X;
         Assert.Equal(["A", "B", "C", "D"], axis.TickLabels.ToArray());
-        var step = axis.Length / (axis.Domain.Upper - axis.Domain.Lower);
-        for (var i = 0; i < 4; i++)
+
+        // Each tick at the middle of its category's bar, as drawn (Issue #190): the panel's left plus the tick's pixel.
+        foreach (var (align, reverse) in new[] { (0.0, false), (0.5, false), (1.0, false), (0.5, true) })
         {
-            var middle = (i + 0.45 - axis.Domain.Lower) * step;
-            Assert.InRange(axis.Pixels[i], middle - 1e-9, middle + 1e-9);
+            var drawn = plan.Render(fewSpec with { ScaleX = Scale.Band(align: align) with { Reverse = reverse } });
+            var bars = drawn.Rects[1..5].ToArray();
+            for (var i = 0; i < 4; i++)
+            {
+                var middle = bars[i].X + (bars[i].Width / 2.0);
+                Assert.InRange(plan.Guides.Left + plan.Guides.X.Pixels[i], middle - 1e-3, middle + 1e-3);
+            }
         }
+
+        _ = plan.Render(fewSpec);
+        axis = plan.Guides.X;
+        var step = axis.Length / (axis.Domain.Upper - axis.Domain.Lower);
 
         using var many = Data.Create(12, 1, names: i => $"Category {i + 1:00}");
         var manySpec = many.Bars() with { Theme = Theme.Light };
@@ -391,7 +401,7 @@ public sealed class CategoricalTests
 
         // The least k whose labels, held inside the figure (row G3b), keep half an em apart: here the first one moves right.
         var labelWidth = FakeTextBackend.Advance(12) * 11;
-        var (lower, em) = (axis.Domain.Lower, axis.Em);
+        var (lower, em) = (axis.Domain.Origin + axis.Domain.Lower, axis.Em);
         var held = axis;
         var k = Enumerable
             .Range(1, 12)

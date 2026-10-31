@@ -22,13 +22,17 @@ internal static class BandTicks
         var bands = new BandAxis(count, band.PaddingInner, band.Reverse);
         var domain = axis.Domain;
         var step = axis.Length / (domain.Upper - domain.Lower);
+
+        // The domain's low end as a position: its origin and difference (design §3.6). The difference alone is off by the
+        // origin, ⌊L⌋ = −1 for the default padding: a band to the left (Issue #190).
+        var low = domain.Origin + domain.Lower;
         var least = axis.Horizontal ? 1f : axis.LineHeight;
         var first = Extent(axis, categories.Categories[0]);
         var gap = axis.Em / 2;
 
         // The least k that keeps two labels of the least size apart, and the first label and one of the least size. Held inside
         // F, the first label moves toward its neighbor by s₀ (design §4.6, row G3b).
-        var firstPixel = (bands.Position(0) + (bands.Width / 2) - domain.Lower) * step;
+        var firstPixel = (bands.Position(0) + (bands.Width / 2) - low) * step;
         var firstShift = Math.Abs(axis.Hold(firstPixel, first) - firstPixel);
         var k = (long)Math.Max(Math.Max(1, Math.Ceiling((least + gap) / step)), Math.Ceiling((((first + least) / 2) + gap + firstShift) / step));
         while (true)
@@ -41,7 +45,7 @@ internal static class BandTicks
                 var category = (int)i;
                 var label = categories.Categories[category];
                 var extent = category == 0 ? first : Extent(axis, label);
-                var pixel = (bands.Position(category) + (bands.Width / 2) - domain.Lower) * step;
+                var pixel = (bands.Position(category) + (bands.Width / 2) - low) * step;
                 var held = axis.Hold(pixel, extent);
                 var shift = Math.Abs(held - pixel);
 
