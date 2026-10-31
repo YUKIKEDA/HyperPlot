@@ -512,6 +512,14 @@ internal sealed class PlotPlan : IDisposable
                             );
                         }
                     }
+
+                    // A raster of numbers is a color column too (row G9, PR #201's review).
+                    if (layer is ImageLayerSpec { Raster: { IsRgba: false, Values: not Column<long> } timed })
+                    {
+                        throw new ArgumentException(
+                            $"The color scale's inner scale is a time scale, and the raster of layer {i} is a {timed.Values.KindName}, not a long date-time column."
+                        );
+                    }
                 }
             }
         }

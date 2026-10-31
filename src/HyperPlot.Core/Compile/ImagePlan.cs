@@ -5,8 +5,8 @@ namespace HyperPlot;
 
 /// <summary>
 /// An image (design §5.5.3, row G9): the visible tiles of the level of its raster's mipmap that puts one texel at most two
-/// a pixel, coarse ones first, each read from its slot of the residency cache, or from an ancestor's part while it is not
-/// there yet. The frame's work is the visible tiles, not the raster's size.
+/// a pixel. The top level's one tile is asked for first, then the drawn level's visible tiles from the middle out; a tile
+/// not there yet is drawn from the nearest ancestor that is, whose part it reads. The levels between are not asked for. The frame's work is the visible tiles, not the raster's size.
 /// </summary>
 internal sealed class ImagePlan : LayerPlan
 {
@@ -203,7 +203,16 @@ internal sealed class ImagePlan : LayerPlan
         instance.Low = (float)(domain.Lower + shift);
         instance.High = (float)(domain.Upper + shift);
         instance.Middle = (float)(colors.Middle - origin);
-        instance.Table = (uint)Math.Max(0, context.Images.Table(map));
+        var table = context.Images.Table(map);
+        if (table < 0)
+        {
+            // Another map in a full table would paint with the wrong colors (PR #201's review).
+            throw new InvalidOperationException(
+                $"Layer {Index} paints a raster with a color map past the {ResidencyCache.MaxColorTables} the backend holds (design §5.2)."
+            );
+        }
+
+        instance.Table = (uint)table;
         return (instance, origin);
     }
 
