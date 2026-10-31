@@ -21,8 +21,8 @@ public sealed class SectorListTests
     ///
     /// Expected:
     /// - One command of kind Sectors; 8 + 1 pieces, the first 8 from 0 to π / 2 by π / 16 with radii linear in the angle
-    ///   and the last trapezoid as given, each with its sides' directions (sin θ, −cos θ); the call's center, premultiplied color, clip, and a box that holds its pieces.
-    ///   The other calls record nothing.
+    ///   and the last trapezoid as given, each with its sides' directions (sin θ, −cos θ); the call's center, premultiplied
+    ///   color, clip, and a box that holds its pieces. The other calls record nothing.
     /// </remarks>
     [Fact]
     public void DrawSectors_CutsAndDrops()
