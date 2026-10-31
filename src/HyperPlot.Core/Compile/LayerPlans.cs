@@ -43,6 +43,7 @@ internal abstract class LayerPlan
             StepLayerSpec step => new StepPlan(step, build),
             AreaLayerSpec area => new AreaPlan(area, build),
             BandLayerSpec band => new BandPlan(band, build),
+            BarLayerSpec { X.Column: CategoricalColumn } bar => new CategoryBarPlan(bar),
             BarLayerSpec bar => new BarPlan(bar, build),
             ErrorBarLayerSpec errorBar => new ErrorBarPlan(errorBar, build),
             RuleLayerSpec rule => new RulePlan(rule),
@@ -142,6 +143,14 @@ internal abstract class LayerPlan
             for (var c = 0; c < count; c++)
             {
                 CheckReference(data, buffer[c], index, ofX ? "x channel" : "y channel");
+
+                // Categories go on x of bars only (design §4.2, row G7b).
+                if (buffer[c].Column is CategoricalColumn && !(ofX && layer is BarLayerSpec))
+                {
+                    throw new ArgumentException(
+                        $"The {(ofX ? "x" : "y")} column \"{data.GetName(buffer[c].Index)}\" of layer {index} is a CategoricalColumn; row G7b reads categories on x of bars only (a {layer.GetType().Name} here)."
+                    );
+                }
             }
         }
 
@@ -169,6 +178,13 @@ internal abstract class LayerPlan
             case BarLayerSpec b:
                 CheckStored(data, b.Y, index, "a bar's Y");
                 CheckFinite(b.Baseline, index, "Baseline");
+                if (b.X.Column is CategoricalColumn && b.Width is not null)
+                {
+                    throw new ArgumentException(
+                        $"The Width of layer {index} is {b.Width}; bars over categories are as wide as their band, so it is null."
+                    );
+                }
+
                 if (b.Width is { } w && (!double.IsFinite(w) || w <= 0))
                 {
                     throw new ArgumentException($"The Width of layer {index} is {w}; a bar's width is finite and above 0.");
@@ -285,6 +301,9 @@ internal abstract class LayerPlan
 
     /// <summary>Records the layer into the panel (design §5.5.3).</summary>
     public abstract void Record(RecordContext context);
+
+    /// <summary>Frees what the layer made for itself (a pyramid over its categories' extremes); the plan's pyramids stay with the plan.</summary>
+    public virtual void Release() { }
 
     /// <summary>Returns a spec's stroke with its color, or the series color when it has none (design §4.1).</summary>
     protected LineStyle Stroke(in StrokeSpec stroke) => stroke.Resolve(SeriesColor);

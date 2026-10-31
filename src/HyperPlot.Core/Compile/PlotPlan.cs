@@ -149,8 +149,9 @@ internal sealed class PlotPlan : IDisposable
         if (scales)
         {
             // A new transform makes new boundaries even over the same range of the scale space.
+            // A band scale has no transform: its axis is the space of category positions (design §4.2, row G7b).
             (_xTransform, _yTransform, _x) = (
-                ((ContinuousScaleSpec)spec.ScaleX).CreateTransform(),
+                (spec.ScaleX as ContinuousScaleSpec)?.CreateTransform(),
                 ((ContinuousScaleSpec)spec.ScaleY).CreateTransform(),
                 ScaleRange.None
             );
@@ -181,7 +182,7 @@ internal sealed class PlotPlan : IDisposable
         if (extract)
         {
             // A user's geom learns only when an axis learns: with both domains given, nothing would read its ranges.
-            if (Learns((ContinuousScaleSpec)spec.ScaleX) || Learns((ContinuousScaleSpec)spec.ScaleY))
+            if ((spec.ScaleX is ContinuousScaleSpec x && Learns(x)) || Learns((ContinuousScaleSpec)spec.ScaleY))
             {
                 foreach (var layer in _layers)
                 {
@@ -189,14 +190,16 @@ internal sealed class PlotPlan : IDisposable
                 }
             }
 
-            _learnedX = Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true);
+            _learnedX = spec.ScaleX is BandScaleSpec band
+                ? BandAxis.Domain(band, BandColumn(spec)?.CategoryCount ?? 0)
+                : Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true);
             _learnedY = Learn(spec, (ContinuousScaleSpec)spec.ScaleY, _yTransform, ofX: false);
         }
 
         if (extract || looks)
         {
             // The layout chooses the ticks, which nice may widen the domains to (design §4.6, §4.8).
-            _guides.Layout(spec, _xTransform, _learnedX, _yTransform, _learnedY);
+            _guides.Layout(spec, _xTransform, _learnedX, _yTransform, _learnedY, BandColumn(spec));
             Layouts++;
             if (_guides.Empty)
             {
@@ -247,6 +250,11 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _pyramids.Clear();
+        foreach (var layer in _layers)
+        {
+            layer.Release();
+        }
+
         _layers = [];
         _batch.Clear();
         _spec = null;
@@ -277,9 +285,32 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX)
     {
+        if (ofX && scale is BandScaleSpec band)
+        {
+            CheckBand(plot, band, previous);
+            return;
+        }
+
         if (scale is not ContinuousScaleSpec continuous)
         {
-            throw new ArgumentException($"The {name} is a {scale.GetType().Name}; row G2 compiles its position scales only.");
+            throw new ArgumentException(
+                $"The {name} is a {scale.GetType().Name}; the plot compiles row G2's position scales, and a band scale on x only."
+            );
+        }
+
+        // A continuous scale reads numbers: a categorical column needs a band scale (design §4.2, row G7b).
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            var count = LayerPlan.AxisChannels(plot.Layers[i], ofX, _channels);
+            for (var c = 0; c < count; c++)
+            {
+                if (_channels[c].Column is CategoricalColumn)
+                {
+                    throw new ArgumentException(
+                        $"The {(ofX ? "x" : "y")} column \"{plot.Data.GetName(_channels[c].Index)}\" of layer {i} is a CategoricalColumn, and the {name} is a {scale.GetType().Name}; categories go on a band scale on x (Scale.Band)."
+                    );
+                }
+            }
         }
 
         // A node drawn last time was checked then: it is immutable, and a user's Forward runs once a node (design §4.2).
@@ -386,12 +417,72 @@ internal sealed class PlotPlan : IDisposable
         before.Id != after.Id && before is PolarCoordSpec b && after is PolarCoordSpec a && (!b.Start.Equals(a.Start) || b.Clockwise != a.Clockwise);
 
     /// <summary>
+    /// Throws unless a band scale's values are in range and every layer's x is a categorical column with the same categories
+    /// (design §4.2, row G7b). A layer without an x channel (a horizontal rule, a user's geom) may be there.
+    /// </summary>
+    private void CheckBand(PlotSpec plot, BandScaleSpec band, ScaleSpec? previous)
+    {
+        if (previous is null || previous.Id != band.Id)
+        {
+            band.Validate();
+        }
+
+        CategoricalColumn? first = null;
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            var count = LayerPlan.AxisChannels(plot.Layers[i], ofX: true, _channels);
+            for (var c = 0; c < count; c++)
+            {
+                var reference = _channels[c];
+                if (reference.Column is not CategoricalColumn categories)
+                {
+                    throw new ArgumentException(
+                        $"The x column \"{plot.Data.GetName(reference.Index)}\" of layer {i} is a {reference.Column.KindName}, and the ScaleX is a band scale, which reads a CategoricalColumn."
+                    );
+                }
+
+                first ??= categories;
+                if (!first.SameCategories(categories))
+                {
+                    throw new ArgumentException(
+                        $"The x column \"{plot.Data.GetName(reference.Index)}\" of layer {i} has other categories than the first layer's; the layers of a band scale share one order of categories."
+                    );
+                }
+            }
+        }
+    }
+
+    /// <summary>Returns the categorical column of the plot's x, the first layer's that has one; null when no layer reads x.</summary>
+    private CategoricalColumn? BandColumn(PlotSpec spec)
+    {
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            var count = LayerPlan.AxisChannels(spec.Layers[i], ofX: true, _channels);
+            if (count > 0 && _channels[0].Column is CategoricalColumn categories)
+            {
+                return categories;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Returns whether two scales map data the same way (design §4.8): the same node, or the same kind with the same domain,
     /// zero, nice, and constants. Reverse, clamp, the title, and the format are left out: they change the layout and the
     /// recording only (design §4.8). Allocates nothing.
     /// </summary>
     private static bool SameMapping(ScaleSpec before, ScaleSpec after) =>
-        before.Id == after.Id || (((ContinuousScaleSpec)before).Nice == ((ContinuousScaleSpec)after).Nice && SameKind(before, after));
+        before.Id == after.Id
+        || (before, after) switch
+        {
+            // A band's paddings and alignment move its bands: the "scale" stage (design §4.8, row G7b).
+            (BandScaleSpec b, BandScaleSpec a) => b.PaddingInner.Equals(a.PaddingInner)
+                && b.PaddingOuter.Equals(a.PaddingOuter)
+                && b.Align.Equals(a.Align),
+            (ContinuousScaleSpec b, ContinuousScaleSpec a) => b.Nice == a.Nice && SameKind(before, after),
+            _ => false,
+        };
 
     private static bool SameKind(ScaleSpec before, ScaleSpec after) =>
         (before, after) switch
@@ -411,7 +502,18 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private static bool OptionsChanged(ScaleSpec before, ScaleSpec after)
     {
-        var (b, a) = ((ContinuousScaleSpec)before, (ContinuousScaleSpec)after);
+        if (before is BandScaleSpec band)
+        {
+            return after is not BandScaleSpec other
+                || band.Reverse != other.Reverse
+                || !string.Equals(band.Title, other.Title, StringComparison.Ordinal);
+        }
+
+        if (before is not ContinuousScaleSpec b || after is not ContinuousScaleSpec a)
+        {
+            return true;
+        }
+
         return b.Reverse != a.Reverse
             || b.Clamp != a.Clamp
             || !string.Equals(b.Title, a.Title, StringComparison.Ordinal)
@@ -625,6 +727,11 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
+        foreach (var old in _layers)
+        {
+            old.Release();
+        }
+
         _layers = layers;
 
         PlotPyramid Pyramid(Column y)
@@ -679,14 +786,22 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private void Record(PlotSpec spec, bool flipped)
     {
-        var (xScale, yScale) = ((ContinuousScaleSpec)spec.ScaleX, (ContinuousScaleSpec)spec.ScaleY);
+        var yScale = (ContinuousScaleSpec)spec.ScaleY;
+
+        // A band axis increases with the positions of its categories, which hold its reverse (design §4.2, row G7b).
+        var (xReverse, xClamp, band) = spec.ScaleX switch
+        {
+            BandScaleSpec b => (false, false, (BandAxis?)new BandAxis(BandColumn(spec)?.CategoryCount ?? 0, b.PaddingInner, b.Reverse)),
+            ContinuousScaleSpec c => (c.Reverse, c.Clamp, null),
+            _ => (false, false, null),
+        };
         _list.Clear();
         _guides.RecordBehind(_list, spec);
         var (left, top, width, height) = (_guides.Left, _guides.Top, _guides.Width, _guides.Height);
         if (_guides.Polar is { } polar)
         {
             // The stretched space (design §4.4): each axis from 0 over its pixels, increasing with its data unless reversed.
-            var polarX = new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, 0, polar.AlongSize);
+            var polarX = new GeomFrame.Axis(_xTransform, _x, xReverse, xClamp, 0, polar.AlongSize, band);
             var polarY = new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
             _context.Begin(polarX, polarY, _boundaries, _scale, flipped: false, (left, top, width, height), polar);
             RecordLayers(spec.Theme.Palette);
@@ -695,8 +810,8 @@ internal sealed class PlotPlan : IDisposable
         }
 
         var x = flipped
-            ? new GeomFrame.Axis(_xTransform, _x, !xScale.Reverse, xScale.Clamp, top, height)
-            : new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, left, width);
+            ? new GeomFrame.Axis(_xTransform, _x, !xReverse, xClamp, top, height, band)
+            : new GeomFrame.Axis(_xTransform, _x, xReverse, xClamp, left, width, band);
         var y = flipped
             ? new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, left, width)
             : new GeomFrame.Axis(_yTransform, _y, !yScale.Reverse, yScale.Clamp, top, height);

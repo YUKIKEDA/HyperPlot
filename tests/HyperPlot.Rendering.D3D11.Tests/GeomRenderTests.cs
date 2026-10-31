@@ -288,6 +288,47 @@ public sealed class GeomRenderTests
         Check(spec, pool, "coord-polar-donut.png");
     }
 
+    /// <summary>
+    /// Bars over categories (§10.1 scene 13, row G7b): a band scale with 12 categories, several rows in some, negative values,
+    /// and labels too wide for every band, shown every second category.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 36 rows over 12 categories named "Category 01" to "Category 12" (3 rows each, one of them missing in category 7,
+    ///   NaN in category 9), seeded values from −4 to 8; the fake text backend; Theme.Light; Scale.Band().
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/categorical-bar.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void CategoricalBar_MatchesBaseline()
+    {
+        var names = new string?[36];
+        var values = new double[36];
+        var random = new Random(41);
+        for (var i = 0; i < 36; i++)
+        {
+            var category = i / 3;
+            names[i] = category == 6 && i % 3 == 2 ? null : $"Category {category + 1:00}";
+            values[i] = category == 8 && i % 3 == 0 ? double.NaN : Math.Round((random.NextDouble() * 12) - 4, 2);
+        }
+
+        using var pool = new PlotWorkerPool(2);
+        using var y = Column.Wrap(values);
+        var table = DataTable.Create().Add("group", Column.Categorical(names)).Add("y", y).Build();
+        var spec = Plot.Create(table)
+            .Bar(table.Cat("group"), table.Col<double>("y"), 0, b => b.Fill(new Color(31, 119, 180, 220)).Label("value"))
+            .ScaleX(Scale.Band().WithTitle("Group"))
+            .ScaleY(Scale.Linear().WithTitle("Value"))
+            .Title("Categories")
+            .Build();
+
+        Check(spec, pool, "categorical-bar.png");
+    }
+
     private static void Check(PlotSpec spec, PlotWorkerPool pool, string baseline)
     {
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));

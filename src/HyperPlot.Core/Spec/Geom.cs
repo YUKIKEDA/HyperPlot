@@ -184,8 +184,8 @@ public sealed class GeomFrame
     /// </summary>
     /// <param name="value">The value, in data units.</param>
     /// <returns>The pixel.</returns>
-    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public double PixelX(double value) => Along(Active()._x, value, ofX: true);
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>, or x is a band scale (read it with <see cref="BandX(int)"/>).</exception>
+    public double PixelX(double value) => Along(Numeric(Active()._x), value, ofX: true);
 
     /// <summary>
     /// Returns the target's pixel along the y axis of a y value: vertical, or horizontal when <see cref="Flipped"/>. NaN
@@ -205,7 +205,7 @@ public sealed class GeomFrame
     /// <param name="y">The y value, in data units.</param>
     /// <param name="pixelX">The target's horizontal pixel.</param>
     /// <param name="pixelY">The target's vertical pixel.</param>
-    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>, or x is a band scale (read it with <see cref="BandX(int)"/>).</exception>
     public void Map(double x, double y, out double pixelX, out double pixelY)
     {
         var alongX = PixelX(x);
@@ -224,14 +224,41 @@ public sealed class GeomFrame
     /// <summary>Returns the target's pixel along the x axis of a long x value, exactly from the domain's origin (design §3.6).</summary>
     /// <param name="value">The value, in data units.</param>
     /// <returns>The pixel.</returns>
-    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public double PixelX(long value) => Along(Active()._x, value, ofX: true);
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>, or x is a band scale (read it with <see cref="BandX(int)"/>).</exception>
+    public double PixelX(long value) => Along(Numeric(Active()._x), value, ofX: true);
 
     /// <summary>Returns the target's pixel along the y axis of a long y value, exactly from the domain's origin.</summary>
     /// <param name="value">The value, in data units.</param>
     /// <returns>The pixel.</returns>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
     public double PixelY(long value) => Along(Active()._y, value, ofX: false);
+
+    /// <summary>
+    /// Returns the target's pixel along the x axis where a category's band starts (design §4.2, row G7b): horizontal, vertical
+    /// when <see cref="Flipped"/>, or of the stretched space when <see cref="Polar"/>, as <see cref="PixelX(double)"/>.
+    /// </summary>
+    /// <param name="category">The category's number: at least 0 and below the column's category count.</param>
+    /// <returns>The pixel.</returns>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>, or x is not a band scale.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="category"/> is not one of the categories.</exception>
+    public double BandX(int category)
+    {
+        var band = Band();
+        ArgumentOutOfRangeException.ThrowIfNegative(category);
+        ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(category, band.Count);
+        return Along(_x, band.Position(category), ofX: true);
+    }
+
+    /// <summary>Gets the width of a category's band in the target's pixels (design §4.2, row G7b).</summary>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>, or x is not a band scale.</exception>
+    public double BandWidth
+    {
+        get
+        {
+            var band = Band();
+            return Math.Abs(Along(_x, band.Width, ofX: true) - Along(_x, 0, ofX: true));
+        }
+    }
 
     /// <summary>Opens the frame for one <see cref="IGeom.Record"/>.</summary>
     internal void Open(
@@ -284,6 +311,13 @@ public sealed class GeomFrame
     private double Along(in Axis axis, long value, bool ofX) =>
         axis.Transform is null ? Pixel(axis, ScaleSpace.Difference(value, axis.Domain.Origin), ofX) : Along(axis, (double)value, ofX);
 
+    /// <summary>Returns an axis that is not a band one: a band's categories are read with <see cref="BandX(int)"/>.</summary>
+    private static Axis Numeric(in Axis axis) =>
+        axis.Band is null ? axis : throw new InvalidOperationException("x is a band scale: read a category's pixels with BandX and BandWidth.");
+
+    private BandAxis Band() =>
+        Active()._x.Band ?? throw new InvalidOperationException("x is not a band scale: BandX and BandWidth read a band scale's categories.");
+
     private GeomFrame Active() =>
         _active ? this : throw new InvalidOperationException("A GeomFrame is used only inside IGeom.Record, while the plot records.");
 
@@ -292,5 +326,13 @@ public sealed class GeomFrame
     /// <c>Descending</c> is whether its pixels decrease as its data increases: a vertical axis not reversed, or a horizontal
     /// one reversed. <c>Offset</c> and <c>Size</c> are the panel's left and width, or its top and height for a vertical axis.
     /// </summary>
-    internal readonly record struct Axis(IScale? Transform, ScaleRange Domain, bool Descending, bool Clamp, int Offset, int Size);
+    internal readonly record struct Axis(
+        IScale? Transform,
+        ScaleRange Domain,
+        bool Descending,
+        bool Clamp,
+        int Offset,
+        int Size,
+        BandAxis? Band = null
+    );
 }

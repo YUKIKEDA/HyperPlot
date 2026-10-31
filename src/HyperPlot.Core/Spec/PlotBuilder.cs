@@ -175,6 +175,43 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>
+    /// Adds a bar layer over categories (design §4.2, §5.5.3, row G7b): for each category, bars a band wide from the baseline
+    /// to the greatest and to the least y of its rows. Put a band scale on x (<see cref="Scale.Band"/>).
+    /// </summary>
+    /// <typeparam name="TY">The element type of the Y column.</typeparam>
+    /// <param name="x">The categorical X column.</param>
+    /// <param name="y">The Y column: a stored <see cref="Column{T}"/>.</param>
+    /// <param name="baseline">The y the bars start at, in data units: finite.</param>
+    /// <param name="configure">Sets the fill and the label; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">
+    /// A reference is <see langword="default"/> or names another table, or <paramref name="y"/> is not a <see cref="Column{T}"/>.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="baseline"/> is not finite.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Bar<TY>(CategoryRef x, ColumnRef<TY> y, double baseline = 0, Action<FillBuilder>? configure = null)
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x.ToColumnRef(), nameof(x));
+        CheckStored(y, nameof(y), "a bar's Y");
+        CheckFinite(baseline, nameof(baseline));
+        var fill = new FillBuilder();
+        configure?.Invoke(fill);
+        _layers.Add(
+            new BarLayerSpec
+            {
+                X = x.ToColumnRef(),
+                Y = y,
+                Baseline = baseline,
+                Fill = fill.FillColor,
+                Label = fill.LabelText,
+            }
+        );
+        return this;
+    }
+
     /// <summary>Adds a bar layer: bars from a baseline to y (design §5.5.3).</summary>
     /// <typeparam name="TX">The element type of the X column.</typeparam>
     /// <typeparam name="TY">The element type of the Y column.</typeparam>

@@ -191,6 +191,26 @@ public abstract class Column
     /// </exception>
     public static UniformColumn UniformInteger(long start, long step, long length) => new(start, step, length);
 
+    /// <summary>
+    /// Makes a column of categories from their names (design §3.1, §4.2, row G7b): the categories are the names, sorted in
+    /// ordinal order, and a null value is missing.
+    /// </summary>
+    /// <param name="values">The names, one an element; null for a missing value.</param>
+    /// <returns>The column.</returns>
+    /// <exception cref="ArgumentException">A value is empty.</exception>
+    public static CategoricalColumn Categorical(ReadOnlySpan<string?> values) => CategoricalColumn.Create(values, null);
+
+    /// <summary>
+    /// Makes a column of categories in a given order (design §3.1, §4.2, row G7b): every value that is not null is one of
+    /// <paramref name="categories"/>, which may hold names no value uses.
+    /// </summary>
+    /// <param name="values">The names, one an element; null for a missing value.</param>
+    /// <param name="categories">The categories in their order: none null, empty, or there twice.</param>
+    /// <returns>The column.</returns>
+    /// <exception cref="ArgumentException">A category is null, empty, or there twice, or a value is not one of them.</exception>
+    public static CategoricalColumn Categorical(ReadOnlySpan<string?> values, ReadOnlySpan<string> categories) =>
+        CategoricalColumn.Create(values, categories.ToArray());
+
     /// <summary>Gets what kind of column this is, for messages: <c>UniformColumn</c> or <c>Column&lt;Single&gt;</c>.</summary>
     internal abstract string KindName { get; }
 
@@ -220,6 +240,13 @@ public abstract class Column
 
     /// <summary>Returns whether the column is non-decreasing without NaN, from its statistics; a uniform column always is.</summary>
     internal abstract bool IsNonDecreasing(PlotWorkerPool pool);
+
+    /// <summary>
+    /// Starts the pass that finds each category's least and greatest value of this column as Y (design §5.5.3, row G7b);
+    /// only a <see cref="Column{T}"/> has values to read.
+    /// </summary>
+    internal virtual CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool) =>
+        throw new InvalidOperationException($"A {KindName} is not a Y column of bars.");
 
     /// <summary>Adds a series with this column as X to a batch (design §5.5.1).</summary>
     internal abstract int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination)

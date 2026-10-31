@@ -374,6 +374,143 @@ internal sealed class BarPlan : LayerPlan
     }
 }
 
+/// <summary>
+/// Bars over categories (design §5.5.3, row G7b): for each category, from the baseline to the greatest and to the least y of
+/// its rows, a band wide. The extremes come from the workers, a pass a version of the Y column, with a pyramid over each
+/// so that bands under a pixel join a pixel column at a time from the pyramid's levels: the frame's work is bounded by
+/// the categories, and by the pixels when they are more.
+/// </summary>
+internal sealed class CategoryBarPlan : LayerPlan
+{
+    private CategoryExtremes? _extremes;
+    private Column<double>? _minColumn;
+    private Column<double>? _maxColumn;
+    private MinMaxPyramid<double>? _minPyramid;
+    private MinMaxPyramid<double>? _maxPyramid;
+
+    public CategoryBarPlan(BarLayerSpec spec)
+        : base(spec) => SetColumns(spec.X.Column, spec.Y.Column);
+
+    private CategoricalColumn Categories => (CategoricalColumn)Columns[0];
+
+    public override void WaitForIndexes(PlotWorkerPool pool)
+    {
+        var y = Columns[1];
+        if (_extremes is { } done && done.Version == y.Version)
+        {
+            return;
+        }
+
+        Release();
+        var extremes = y.StartCategoryExtremes(Categories, pool);
+        extremes.Completion.GetAwaiter().GetResult();
+        if (extremes.Min.Length > 0)
+        {
+            (_minColumn, _maxColumn) = (Column.Wrap(extremes.Min), Column.Wrap(extremes.Max));
+            (_minPyramid, _maxPyramid) = (pool.BuildPyramid(_minColumn), pool.BuildPyramid(_maxColumn));
+            _minPyramid.WhenComplete().GetAwaiter().GetResult();
+            _maxPyramid.WhenComplete().GetAwaiter().GetResult();
+        }
+
+        _extremes = extremes;
+    }
+
+    public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
+    {
+        // x is the band's: its domain comes from the categories (design §4.2).
+        if (ofX)
+        {
+            return;
+        }
+
+        var bar = (BarLayerSpec)Spec;
+        sink.AddColumn(bar.Y.Column, data.GetName(bar.Y.Index));
+        sink.AddBaseline(bar.Baseline);
+    }
+
+    public override void Record(RecordContext context)
+    {
+        var bar = (BarLayerSpec)Spec;
+        if (_extremes is not { } extremes || context.X.Band is not { } band)
+        {
+            return;
+        }
+
+        var baseline = context.BaselinePixel(bar.Baseline);
+        var fill = FillOf(bar.Fill, translucent: false);
+        var origin = context.XOrigin;
+
+        // A band's pixels are linear in its position: pixel(j) = a · j + b.
+        var b = context.PixelX(0 - origin);
+        var a = context.PixelX(1 - origin) - b;
+        if (Math.Abs(a * band.Width) >= 1)
+        {
+            for (var category = 0; category < band.Count; category++)
+            {
+                var j = band.Position(category);
+                Bars(context, (a * j) + b, (a * (j + band.Width)) + b, extremes.Min[category], extremes.Max[category], baseline, fill);
+            }
+
+            return;
+        }
+
+        // Bands under a pixel: the categories whose band starts in a pixel column, from the pyramids' levels.
+        var axis = context.X;
+        for (var c = 0; c < axis.Size; c++)
+        {
+            var column = axis.Offset + c;
+            var (first, last) =
+                a > 0
+                    ? (Math.Ceiling((column - b) / a), Math.Ceiling((column + 1 - b) / a) - 1)
+                    : (Math.Floor((column + 1 - b) / a) + 1, Math.Floor((column - b) / a));
+            var (from, to) = ((long)Math.Max(first, 0), (long)Math.Min(last, band.Count - 1));
+            if (from > to)
+            {
+                continue;
+            }
+
+            // Positions from..to are categories from..to, or the reverse, a run either way.
+            var start = band.Reverse ? band.Count - 1 - to : from;
+            var low = _minPyramid!.GetMinMax(start, to - from + 1);
+            var high = _maxPyramid!.GetMinMax(start, to - from + 1);
+            if (low.Count > 0)
+            {
+                Bars(context, column, column + 1, low.Min, high.Max, baseline, fill);
+            }
+        }
+    }
+
+    public override void Release()
+    {
+        _minPyramid?.Dispose();
+        _maxPyramid?.Dispose();
+        _minColumn?.Dispose();
+        _maxColumn?.Dispose();
+        (_minPyramid, _maxPyramid, _minColumn, _maxColumn, _extremes) = (null, null, null, null, null);
+    }
+
+    /// <summary>Records a category's bars between two x pixels: from the baseline to its greatest y and to its least.</summary>
+    private static void Bars(RecordContext context, double left, double right, double min, double max, double baseline, Color fill)
+    {
+        if (double.IsNaN(min))
+        {
+            return;
+        }
+
+        var (one, other) = (context.PixelY(max - context.YOrigin), context.PixelY(min - context.YOrigin));
+        var (top, bottom) = (Math.Min(one, other), Math.Max(one, other));
+        if (top < baseline)
+        {
+            context.DrawRect(left, right, top, baseline, fill);
+        }
+
+        if (bottom > baseline)
+        {
+            context.DrawRect(left, right, bottom, baseline, fill);
+        }
+    }
+}
+
 /// <summary>Error bars: a bar and two caps each up to 4W of them, else a line a pixel column from M4 (design §5.5.3).</summary>
 internal sealed class ErrorBarPlan : LayerPlan
 {

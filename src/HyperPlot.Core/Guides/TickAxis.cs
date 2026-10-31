@@ -21,8 +21,14 @@ internal sealed class TickAxis
     private TimeInterval[] _boundaries = new TimeInterval[16];
     private int _count;
 
-    /// <summary>Gets or sets the scale.</summary>
+    /// <summary>Gets or sets the scale: a continuous one, or null when the axis is a band (<see cref="Band"/>).</summary>
     public ContinuousScaleSpec Scale { get; set; } = null!;
+
+    /// <summary>Gets the band scale when the axis is one (row G7b), else null.</summary>
+    public BandScaleSpec? Band { get; private set; }
+
+    /// <summary>Gets the categories a band axis shows, else null.</summary>
+    public CategoricalColumn? Categories { get; private set; }
 
     /// <summary>Gets or sets the scale's transform, or null for linear and time.</summary>
     public IScale? Transform { get; set; }
@@ -85,6 +91,12 @@ internal sealed class TickAxis
     {
         _count = 0;
         FinalDomain = Domain;
+        if (Band is { } band)
+        {
+            BandTicks.Choose(this, band);
+            return;
+        }
+
         switch (Scale)
         {
             case TimeScaleSpec time:
@@ -149,6 +161,18 @@ internal sealed class TickAxis
 
     /// <summary>Returns a difference from the domain's origin's pixel along the axis.</summary>
     internal double PixelOfDifference(double d, in ScaleRange domain) => (d - domain.Lower) / (domain.Upper - domain.Lower) * Length;
+
+    /// <summary>Makes the axis a band one over a column's categories, or a continuous one when <paramref name="band"/> is null.</summary>
+    internal void SetBand(BandScaleSpec? band, CategoricalColumn? categories) => (Band, Categories) = (band, band is null ? null : categories);
+
+    /// <summary>Adds a labeled tick of a band axis to the candidate set: its label and its extent along the axis, measured.</summary>
+    internal void AddLabel(string label, double pixel, float extent)
+    {
+        Grow();
+        _labels[_count] = label;
+        _extents[_count] = extent;
+        _pixels[_count++] = pixel;
+    }
 
     /// <summary>Starts a candidate set of ticks: the next adds go into the scratch slots.</summary>
     internal void ClearCandidate() => _count = 0;

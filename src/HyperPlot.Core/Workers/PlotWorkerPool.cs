@@ -140,6 +140,32 @@ public sealed class PlotWorkerPool : IDisposable
     }
 
     /// <summary>
+    /// Starts the pass that finds each category's least and greatest y (design §5.5.3, row G7b): a chunk of the Y column a
+    /// worker turn, at the version the column has now. A Y column of no chunk ends at once.
+    /// </summary>
+    internal CategoryExtremes StartCategoryExtremes<T>(CategoricalColumn x, Column<T> y)
+        where T : unmanaged, INumber<T>
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var result = new CategoryExtremes(x.CategoryCount, y.Version);
+        if (y.ChunkCount == 0)
+        {
+            result.Source.TrySetResult();
+            return result;
+        }
+
+        var work = new CategoryExtremesWork<T>(this, x, y, result);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _works = [.. _works, work];
+        }
+
+        Wake();
+        return result;
+    }
+
+    /// <summary>
     /// Extracts M4 for every series of a batch between the same boundaries, the series spread over the workers and the
     /// calling thread, and returns when all have ended (design §5.5.1, §8.1). The workers take these jobs before pyramid
     /// chunks, and the caller takes jobs too, so the wait is at most one chunk a worker is building. Allocates nothing.
