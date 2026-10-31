@@ -195,41 +195,44 @@ public sealed class TextEngineTests
     }
 
     /// <summary>
-    /// The cache keeps 4,096 texts and lets go of the one used longest ago when the 4,097th comes (design §5.6).
+    /// The cache keeps 8,192 texts and lets go of the one used longest ago when the 8,193rd comes (design §5.6): 4,096 data
+    /// labels of row G8 and the guides' texts fit.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - An engine over the fake backend.
     ///
     /// Steps:
-    /// - Measure "0" to "4095"; measure "0" again, so that "1" becomes the oldest; measure "4096"; then measure "0", "2",
+    /// - Measure "0" to "8191"; measure "0" again, so that "1" becomes the oldest; measure "8192"; then measure "0", "2",
     ///   and "1".
     ///
     /// Expected:
-    /// - 4,096 texts after the first pass; "4096" shapes and the count stays 4,096; "0" and "2" are still there, and "1"
+    /// - 8,192 texts after the first pass; "8192" shapes and the count stays 8,192; "0" and "2" are still there, and "1"
     ///   shapes again.
     /// </remarks>
     [Fact]
-    public void Cache_Text4097_LetsGoOfTheOldest()
+    public void Cache_Text8193_LetsGoOfTheOldest()
     {
+        const int capacity = 8192;
+        Assert.Equal(capacity, TextEngine.CacheCapacity);
         var fake = new FakeTextBackend();
         var engine = new TextEngine(fake);
-        for (var i = 0; i < 4096; i++)
+        for (var i = 0; i < capacity; i++)
         {
             _ = engine.Measure(i.ToString(System.Globalization.CultureInfo.InvariantCulture), Style);
         }
 
-        Assert.Equal(4096, engine.CacheCount);
+        Assert.Equal(capacity, engine.CacheCount);
         _ = engine.Measure("0", Style);
-        _ = engine.Measure("4096", Style);
-        Assert.Equal(4096, engine.CacheCount);
-        Assert.Equal(4097, fake.Shaped.Count);
+        _ = engine.Measure("8192", Style);
+        Assert.Equal(capacity, engine.CacheCount);
+        Assert.Equal(capacity + 1, fake.Shaped.Count);
 
         _ = engine.Measure("0", Style);
         _ = engine.Measure("2", Style);
-        Assert.Equal(4097, fake.Shaped.Count);
+        Assert.Equal(capacity + 1, fake.Shaped.Count);
         _ = engine.Measure("1", Style);
-        Assert.Equal(4098, fake.Shaped.Count);
+        Assert.Equal(capacity + 2, fake.Shaped.Count);
         Assert.Equal("1", fake.Shaped[^1].Text);
     }
 

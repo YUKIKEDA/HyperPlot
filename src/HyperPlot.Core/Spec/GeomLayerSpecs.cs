@@ -179,3 +179,50 @@ public sealed record CustomLayerSpec : LayerSpec
     /// </summary>
     public IGeom Geom { get; }
 }
+
+/// <summary>
+/// A label a row at the point of two columns (design §4.1, §5.5.3, row G8): a category's name or a number written by a
+/// format. The text layers of a plot draw at most 4,096 rows together.
+/// </summary>
+public sealed record TextLayerSpec : LayerSpec
+{
+    /// <summary>Gets the column of the points' x: numbers, or categories put at the middle of their band. Unordered.</summary>
+    public required ColumnRef X { get; init; }
+
+    /// <summary>Gets the column of the points' y: numbers.</summary>
+    public required ColumnRef Y { get; init; }
+
+    /// <summary>
+    /// Gets the column of the labels: categories, whose names are drawn, or numbers, written by <see cref="Format"/>. Integer
+    /// columns are written as doubles: a long past 2^53 is rounded, and a long time is written as a number.
+    /// </summary>
+    public required ColumnRef Text { get; init; }
+
+    /// <summary>
+    /// Gets the format of numeric labels, or null for "G6" in the invariant culture; categories take none. A format is the
+    /// same while it is the same delegate: pass a static lambda or a method group, since a new delegate each frame writes
+    /// every label again each frame.
+    /// </summary>
+    public TickFormatter? Format { get; init; }
+
+    /// <summary>Gets the labels' color, or null for the layer's series color (design §4.1).</summary>
+    public Color? Color { get; init; }
+
+    /// <summary>Gets the labels' size in DIPs: finite, above 0, and at most 512; 12 by default.</summary>
+    public float Size { get; init; } = 12;
+
+    /// <summary>Gets the point of the label's box put at its point, across: its center by default.</summary>
+    public TextAlign Horizontal { get; init; } = TextAlign.Center;
+
+    /// <summary>Gets the point of the label's box put at its point, down: its middle by default.</summary>
+    public TextBaseline Vertical { get; init; } = TextBaseline.Middle;
+
+    /// <summary>Gets how far the label moves right of its point, in DIPs: finite.</summary>
+    public float OffsetX { get; init; }
+
+    /// <summary>Gets how far the label moves up from its point, in DIPs: finite.</summary>
+    public float OffsetY { get; init; }
+
+    /// <summary>Gets the label's rotation.</summary>
+    public TextRotation Rotation { get; init; }
+}

@@ -311,6 +311,12 @@ internal sealed class SplitPlan : LayerPlan
             }
         }
 
+        // A text layer's labels go with its points (row G8).
+        if (spec is TextLayerSpec { Text.Column: var labels } && !sources.Contains(labels))
+        {
+            sources.Add(labels);
+        }
+
         _sources = [.. sources];
         SetColumns([.. sources, _categories]);
 
@@ -452,6 +458,7 @@ internal sealed class SplitPlan : LayerPlan
         foreach (var part in _parts)
         {
             part.Plan.SeriesColor = part.Category >= 0 ? palette.Series(part.Category) : SeriesColor;
+            part.Plan.Index = Index;
             part.Plan.Colors = Colors;
             if (part.Plan is SplitPlan inner)
             {
@@ -493,6 +500,14 @@ internal sealed class SplitPlan : LayerPlan
             (RuleLayerSpec b, RuleLayerSpec a) => b.Style == a.Style,
             (RectLayerSpec b, RectLayerSpec a) => b.Fill == a.Fill,
             (SegmentLayerSpec b, SegmentLayerSpec a) => b.Style == a.Style,
+            (TextLayerSpec b, TextLayerSpec a) => b.Color == a.Color
+                && b.Size.Equals(a.Size)
+                && b.Horizontal == a.Horizontal
+                && b.Vertical == a.Vertical
+                && b.OffsetX.Equals(a.OffsetX)
+                && b.OffsetY.Equals(a.OffsetY)
+                && b.Rotation == a.Rotation
+                && ReferenceEquals(b.Format, a.Format),
             _ => false,
         };
 
@@ -578,6 +593,7 @@ internal sealed class SplitPlan : LayerPlan
             RuleLayerSpec r => r with { X = r.X.IsDefault ? r.X : map(r.X), Y = r.Y.IsDefault ? r.Y : map(r.Y) },
             RectLayerSpec r => r with { XMin = map(r.XMin), XMax = map(r.XMax), YMin = map(r.YMin), YMax = map(r.YMax) },
             SegmentLayerSpec s => s with { X = map(s.X), Y = map(s.Y), XEnd = map(s.XEnd), YEnd = map(s.YEnd) },
+            TextLayerSpec t => t with { X = map(t.X), Y = map(t.Y), Text = map(t.Text) },
             _ => throw new InvalidOperationException($"A {spec.GetType().Name} is not split by categories."),
         };
     }

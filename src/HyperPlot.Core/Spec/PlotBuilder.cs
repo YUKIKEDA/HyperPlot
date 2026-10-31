@@ -463,6 +463,66 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Adds a text layer: a number a row at the point (x, y), written by a format (design §5.5.3, row G8).</summary>
+    /// <typeparam name="TX">The element type of the X column.</typeparam>
+    /// <typeparam name="TY">The element type of the Y column.</typeparam>
+    /// <typeparam name="TL">The element type of the label column.</typeparam>
+    /// <param name="x">The X column.</param>
+    /// <param name="y">The Y column.</param>
+    /// <param name="text">The column of the numbers written as labels.</param>
+    /// <param name="configure">Sets the looks, the format, and the label; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The configure gives a size, an offset, an alignment, or a rotation out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Text<TX, TY, TL>(ColumnRef<TX> x, ColumnRef<TY> y, ColumnRef<TL> text, Action<TextBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+        where TL : unmanaged, INumber<TL> => AddText(x, y, text, configure);
+
+    /// <summary>Adds a text layer: a category's name a row at the point (x, y) (design §5.5.3, row G8).</summary>
+    /// <typeparam name="TX">The element type of the X column.</typeparam>
+    /// <typeparam name="TY">The element type of the Y column.</typeparam>
+    /// <param name="x">The X column.</param>
+    /// <param name="y">The Y column.</param>
+    /// <param name="text">The categorical column of the names drawn.</param>
+    /// <param name="configure">Sets the looks and the label; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table, or the configure gives a format.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The configure gives a size, an offset, an alignment, or a rotation out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Text<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, CategoryRef text, Action<TextBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY> => AddText(x, y, text.ToColumnRef(), configure);
+
+    /// <summary>Adds a text layer over categories of x: a number a row at the middle of its category's band (design §5.5.3, row G8).</summary>
+    /// <typeparam name="TY">The element type of the Y column.</typeparam>
+    /// <typeparam name="TL">The element type of the label column.</typeparam>
+    /// <param name="x">The categorical X column.</param>
+    /// <param name="y">The Y column.</param>
+    /// <param name="text">The column of the numbers written as labels.</param>
+    /// <param name="configure">Sets the looks, the format, and the label; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The configure gives a size, an offset, an alignment, or a rotation out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Text<TY, TL>(CategoryRef x, ColumnRef<TY> y, ColumnRef<TL> text, Action<TextBuilder>? configure = null)
+        where TY : unmanaged, INumber<TY>
+        where TL : unmanaged, INumber<TL> => AddText(x.ToColumnRef(), y, text, configure);
+
+    /// <summary>Adds a text layer over categories of x: a category's name a row at the middle of its band (design §5.5.3, row G8).</summary>
+    /// <typeparam name="TY">The element type of the Y column.</typeparam>
+    /// <param name="x">The categorical X column.</param>
+    /// <param name="y">The Y column.</param>
+    /// <param name="text">The categorical column of the names drawn.</param>
+    /// <param name="configure">Sets the looks and the label; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table, or the configure gives a format.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The configure gives a size, an offset, an alignment, or a rotation out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Text<TY>(CategoryRef x, ColumnRef<TY> y, CategoryRef text, Action<TextBuilder>? configure = null)
+        where TY : unmanaged, INumber<TY> => AddText(x.ToColumnRef(), y, text.ToColumnRef(), configure);
+
     /// <summary>Sets the scale of x.</summary>
     /// <param name="scale">The scale.</param>
     /// <returns>This builder.</returns>
@@ -560,6 +620,40 @@ public sealed class PlotBuilder
             Coord = _coord ?? HyperPlot.Coord.Cartesian(),
             ScaleColor = _scaleColor,
         };
+    }
+
+    private PlotBuilder AddText(ColumnRef x, ColumnRef y, ColumnRef text, Action<TextBuilder>? configure)
+    {
+        ThrowIfBuilt();
+        CheckReference(x, nameof(x));
+        CheckReference(y, nameof(y));
+        CheckReference(text, nameof(text));
+        var looks = new TextBuilder();
+        configure?.Invoke(looks);
+        if (text.Column is CategoricalColumn && looks.FormatValue is not null)
+        {
+            throw new ArgumentException("The labels are categories, whose names are drawn as they are; a format writes numbers.", nameof(configure));
+        }
+
+        _layers.Add(
+            new TextLayerSpec
+            {
+                X = x,
+                Y = y,
+                Text = text,
+                Format = looks.FormatValue,
+                Color = looks.ColorValue,
+                Size = looks.SizeValue,
+                Horizontal = looks.HorizontalValue,
+                Vertical = looks.VerticalValue,
+                OffsetX = looks.OffsetValue.X,
+                OffsetY = looks.OffsetValue.Y,
+                Rotation = looks.RotationValue,
+                Label = looks.LabelText,
+                ColorBy = Channel(looks.ColorByRef),
+            }
+        );
+        return this;
     }
 
     private static void CheckFinite(double value, string name)

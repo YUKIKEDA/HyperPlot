@@ -22,6 +22,12 @@ internal abstract class LayerPlan
     /// </summary>
     public const long MaxCategoryCells = 1L << 24;
 
+    /// <summary>
+    /// The most rows the text layers of a plot draw together (design §5.5.3, row G8): 4,096 labels of 8 characters are about
+    /// 1.6 MB of glyph records a frame, and they fit the shaping cache beside the guides' texts.
+    /// </summary>
+    public const int MaxTextRows = 4_096;
+
     private Column[] _columns = [];
     private LayerSpec _spec;
 
@@ -57,6 +63,9 @@ internal abstract class LayerPlan
     /// </summary>
     public Color SeriesColor { get; set; }
 
+    /// <summary>Gets or sets the layer's position in the spec, set before each recording: messages name it (row G8).</summary>
+    public int Index { get; set; }
+
     /// <summary>Gets or sets the plot's color scale, set before each recording; null when no layer has a color channel (row G7c).</summary>
     public ColorScale? Colors { get; set; }
 
@@ -84,6 +93,7 @@ internal abstract class LayerPlan
             RuleLayerSpec rule => new RulePlan(rule, rows),
             RectLayerSpec rect => new RectPlan(rect, rows),
             SegmentLayerSpec segment => new SegmentPlan(segment, rows),
+            TextLayerSpec text => new TextPlan(text, rows),
             _ => new CustomPlan((CustomLayerSpec)spec),
         };
 
@@ -117,6 +127,9 @@ internal abstract class LayerPlan
             case SegmentLayerSpec s:
                 (into[0], into[1]) = ofX ? (s.X, s.XEnd) : (s.Y, s.YEnd);
                 return 2;
+            case TextLayerSpec t:
+                into[0] = ofX ? t.X : t.Y;
+                return 1;
             case RuleLayerSpec r:
                 var channel = ofX ? r.X : r.Y;
                 into[0] = channel;
@@ -154,6 +167,7 @@ internal abstract class LayerPlan
             case ErrorBarLayerSpec:
             case RectLayerSpec:
             case SegmentLayerSpec:
+            case TextLayerSpec:
             case CustomLayerSpec:
                 break;
             case RuleLayerSpec rule:
@@ -179,11 +193,11 @@ internal abstract class LayerPlan
             {
                 CheckReference(data, buffer[c], index, ofX ? "x channel" : "y channel");
 
-                // Categories go on x of bars only (design §4.2, row G7b).
-                if (buffer[c].Column is CategoricalColumn && !(ofX && layer is BarLayerSpec))
+                // Categories go on x of bars and of text only (design §4.2, rows G7b and G8).
+                if (buffer[c].Column is CategoricalColumn && !(ofX && layer is BarLayerSpec or TextLayerSpec))
                 {
                     throw new ArgumentException(
-                        $"The {(ofX ? "x" : "y")} column \"{data.GetName(buffer[c].Index)}\" of layer {index} is a CategoricalColumn; row G7b reads categories on x of bars only (a {layer.GetType().Name} here)."
+                        $"The {(ofX ? "x" : "y")} column \"{data.GetName(buffer[c].Index)}\" of layer {index} is a CategoricalColumn; categories go on x of bars and of text only (a {layer.GetType().Name} here)."
                     );
                 }
             }
@@ -240,6 +254,9 @@ internal abstract class LayerPlan
                 break;
             case SegmentLayerSpec s:
                 CheckCount(s.X.Column.Length, index);
+                break;
+            case TextLayerSpec t:
+                ValidateText(data, t, index);
                 break;
             case CustomLayerSpec c when c.Geom is null:
                 throw new ArgumentNullException(nameof(layer), $"The Geom of layer {index} is null.");
@@ -333,6 +350,7 @@ internal abstract class LayerPlan
             StepLayerSpec s => s.ColorBy is not null && s.Style.Color is not null ? "Style.Color and ColorBy" : null,
             RuleLayerSpec r => r.ColorBy is not null && r.Style.Color is not null ? "Style.Color and ColorBy" : null,
             SegmentLayerSpec s => s.ColorBy is not null && s.Style.Color is not null ? "Style.Color and ColorBy" : null,
+            TextLayerSpec t => t.ColorBy is not null && t.Color is not null ? "Color and ColorBy" : null,
             ErrorBarLayerSpec e => e.ColorBy is not null && e.Style.Color is not null ? "Style.Color and ColorBy" : null,
             AreaLayerSpec a => Fill(a.Fill, a.FillBy, a.ColorBy) ?? Outline(a.Outline, a.ColorBy),
             BandLayerSpec b => Fill(b.Fill, b.FillBy, b.ColorBy) ?? Outline(b.Outline, b.ColorBy),
@@ -371,6 +389,12 @@ internal abstract class LayerPlan
         if (before is CustomLayerSpec custom)
         {
             return !ReferenceEquals(custom.Geom, ((CustomLayerSpec)after).Geom);
+        }
+
+        // A text layer reads its labels' column too (row G8).
+        if (before is TextLayerSpec text && text.Text != ((TextLayerSpec)after).Text)
+        {
+            return true;
         }
 
         // A color column splits the layer or colors its elements (design §4.8, row G7c): another one, or a split layer's
@@ -537,6 +561,43 @@ internal abstract class LayerPlan
         }
     }
 
+    /// <summary>
+    /// Throws unless a text layer's labels and looks are ones row G8 draws (design §4.1): a label column of the table (whose
+    /// columns are of one length), a format only for numbers, and a size, offsets, alignments, and a rotation in range. The
+    /// names in the messages are made only to throw: the check runs on every Render.
+    /// </summary>
+    private static void ValidateText(DataTable data, TextLayerSpec text, int index)
+    {
+        CheckReference(data, text.Text, index, "text channel");
+        if (text.Text.Column is CategoricalColumn && text.Format is not null)
+        {
+            throw new ArgumentException(
+                $"The labels of layer {index} are categories, whose names are drawn as they are, and it has a Format; a format writes numbers."
+            );
+        }
+
+        if (!TextBuilder.IsSize(text.Size))
+        {
+            TextBuilder.CheckSize(text.Size, $"Layers[{index}].Size");
+        }
+
+        if (!float.IsFinite(text.OffsetX) || !float.IsFinite(text.OffsetY))
+        {
+            TextBuilder.CheckOffset(text.OffsetX, $"Layers[{index}].OffsetX");
+            TextBuilder.CheckOffset(text.OffsetY, $"Layers[{index}].OffsetY");
+        }
+
+        if (!TextBuilder.IsAlign(text.Horizontal, text.Vertical))
+        {
+            TextBuilder.CheckAlign(text.Horizontal, text.Vertical, $"Layers[{index}].Horizontal");
+        }
+
+        if (!TextBuilder.IsRotation(text.Rotation))
+        {
+            TextBuilder.CheckRotation(text.Rotation, $"Layers[{index}].Rotation");
+        }
+    }
+
     private static void CheckCount(long count, int layer)
     {
         if (count > MaxElements)
@@ -688,6 +749,12 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public PlotGuides Guides => guides;
 
     public GeomFrame Frame => frame;
+
+    /// <summary>Gets the text engine the guides measure with (row G8): a text layer measures its labels with it.</summary>
+    public TextEngine Text => guides.Text;
+
+    /// <summary>Gets or sets the spec's theme, set before each recording (row G8): a text layer's font and locale.</summary>
+    public Theme Theme { get; set; } = Theme.Light;
 
     public GeomFrame.Axis X { get; private set; }
 

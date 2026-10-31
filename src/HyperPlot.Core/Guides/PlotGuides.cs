@@ -14,6 +14,9 @@ namespace HyperPlot;
 /// <remarks>One thread at a time uses the guides, the plan's. Allocates only for labels and shapes not seen before.</remarks>
 internal sealed class PlotGuides
 {
+    /// <summary>The legend's sample of a text layer (design §5.5.3, row G8).</summary>
+    private const string SampleText = "a";
+
     private readonly TextEngine _text;
     private readonly float _scale;
     private readonly int _width;
@@ -23,6 +26,9 @@ internal sealed class PlotGuides
     private Vector2[] _curve = new Vector2[256];
     private CategoricalColumn? _categories;
     private ColorScale? _color;
+
+    /// <summary>Gets the text engine the guides measure with.</summary>
+    internal TextEngine Text => _text;
 
     internal PlotGuides(TextEngine text, float scale, int width, int height)
     {
@@ -747,21 +753,7 @@ internal sealed class PlotGuides
 
             // The sample takes the color the layer is drawn in: the spec's, or the series color (design §4.1, row G7a).
             var series = theme.Palette.Series(i);
-            float row;
-            if (Fill(layer, series, out var fill))
-            {
-                // A fill geom's sample is a square of the row's height in its fill (design §4.6, row G4).
-                row = lineHeight;
-                list.DrawRect(x, y, row, row, fill);
-            }
-            else
-            {
-                var sample = Scaled(Stroke(layer, series));
-                row = MathF.Max(lineHeight, sample.Width);
-                var center = y + (row / 2);
-                Line(list, new Vector2(x, center), new Vector2(x + swatch, center), sample);
-            }
-
+            var row = Sample(list, layer, series, x, y, swatch, lineHeight, style);
             var middle = y + (row / 2);
             list.DrawText(label, new Vector2(x + swatch + gap, middle), style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle });
             y += row;
@@ -809,20 +801,7 @@ internal sealed class PlotGuides
 
         for (var c = 0; c < categories.CategoryCount; c++)
         {
-            var series = color.Palette.Series(c);
-            float row;
-            if (Fill(first!, series, out var fill))
-            {
-                row = lineHeight;
-                list.DrawRect(x, y, row, row, fill);
-            }
-            else
-            {
-                var sample = Scaled(Stroke(first!, series));
-                row = MathF.Max(lineHeight, sample.Width);
-                Line(list, new Vector2(x, y + (row / 2)), new Vector2(x + swatch, y + (row / 2)), sample);
-            }
-
+            var row = Sample(list, first!, color.Palette.Series(c), x, y, swatch, lineHeight, style);
             list.DrawText(
                 categories.Categories[c],
                 new Vector2(x + swatch + gap, y + (row / 2)),
@@ -891,6 +870,32 @@ internal sealed class PlotGuides
                 list.DrawText(labels[i], new Vector2(x + thickness + tick + gap, at), tickStyle);
             }
         }
+    }
+
+    /// <summary>
+    /// Records a layer's sample at the start of a legend row and returns the row's height (design §4.6, §5.5.3): a fill
+    /// geom's square of the row's height in its fill (row G4), a text layer's "a" in its color at the legend's size in the
+    /// middle of the swatch (row G8), else a line of the swatch's length in the layer's stroke.
+    /// </summary>
+    private float Sample(RenderList list, LayerSpec layer, Color series, float x, float y, int swatch, float lineHeight, in TextStyle style)
+    {
+        if (layer is TextLayerSpec text)
+        {
+            var sample = style with { Color = text.Color ?? series, Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle };
+            list.DrawText(SampleText, new Vector2(x + ((swatch - _text.Measure(SampleText, sample).Width) / 2), y + (lineHeight / 2)), sample);
+            return lineHeight;
+        }
+
+        if (Fill(layer, series, out var fill))
+        {
+            list.DrawRect(x, y, lineHeight, lineHeight, fill);
+            return lineHeight;
+        }
+
+        var stroke = Scaled(Stroke(layer, series));
+        var row = MathF.Max(lineHeight, stroke.Width);
+        Line(list, new Vector2(x, y + (row / 2)), new Vector2(x + swatch, y + (row / 2)), stroke);
+        return row;
     }
 
     /// <summary>

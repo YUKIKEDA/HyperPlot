@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Numerics;
 using HyperPlot.Rendering;
 
@@ -133,6 +134,7 @@ internal sealed class PlotPlan : IDisposable
         }
 
         spec.Theme.Validate(_scale);
+        CheckTextSizes(spec);
         (spec.Coord as PolarCoordSpec)?.Validate();
         var previous = _spec;
 
@@ -280,6 +282,54 @@ internal sealed class PlotPlan : IDisposable
         _spec = null;
     }
 
+    /// <summary>
+    /// Throws when the text layers of a plot have more than 4,096 rows together (design §5.5.3, row G8): the frame's glyph
+    /// records and the shaping cache, which the plot holds one of, bound them all. Reads the columns' lengths only.
+    /// </summary>
+    private static void CheckTextRows(PlotSpec plot)
+    {
+        var total = 0L;
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            total += plot.Layers[i] is TextLayerSpec text ? text.X.Column.Length : 0;
+        }
+
+        if (total <= LayerPlan.MaxTextRows)
+        {
+            return;
+        }
+
+        var counts = new System.Text.StringBuilder();
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            if (plot.Layers[i] is TextLayerSpec text)
+            {
+                _ = counts.Append(counts.Length > 0 ? ", " : string.Empty).Append(CultureInfo.InvariantCulture, $"layer {i} {text.X.Column.Length}");
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"The text layers have {total} rows together ({counts}); a plot draws at most {LayerPlan.MaxTextRows} labels (design §5.5.3). Many points are drawn as a scatter (row R3)."
+        );
+    }
+
+    /// <summary>
+    /// Throws when a text layer's size at the target's scale passes 512 pixels (design §4.1, row G8), as the theme's text
+    /// sizes are checked: before the learning.
+    /// </summary>
+    private void CheckTextSizes(PlotSpec plot)
+    {
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            if (plot.Layers[i] is TextLayerSpec text && text.Size * _scale > TextEngine.MaxSize)
+            {
+                throw new ArgumentException(
+                    $"The Size of layer {i} is {text.Size}; a text size is at most {TextEngine.MaxSize} pixels at the scale {_scale}."
+                );
+            }
+        }
+    }
+
     /// <summary>Throws unless the spec is one that rows G1 to G4 compile (design §4.8). Reads no data but column lengths.</summary>
     private void Validate(PlotSpec plot)
     {
@@ -294,6 +344,7 @@ internal sealed class PlotPlan : IDisposable
             LayerPlan.Validate(plot.Data, layer, i, _channels);
         }
 
+        CheckTextRows(plot);
         CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true);
         CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false);
         CheckColor(plot);
@@ -953,6 +1004,7 @@ internal sealed class PlotPlan : IDisposable
             _ => (false, false, null),
         };
         _list.Clear();
+        _context.Theme = spec.Theme;
         _guides.RecordBehind(_list, spec);
         var (left, top, width, height) = (_guides.Left, _guides.Top, _guides.Width, _guides.Height);
         if (_guides.Polar is { } polar)
@@ -989,6 +1041,7 @@ internal sealed class PlotPlan : IDisposable
             // The series color of the layer's position (design §4.1, row G7a).
             var layer = _layers[i];
             layer.SeriesColor = palette.Series(i);
+            layer.Index = i;
             layer.Colors = Color;
             layer.Record(_context);
             _context.Flush();
