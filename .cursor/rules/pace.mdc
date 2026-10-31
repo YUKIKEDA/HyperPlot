@@ -50,6 +50,8 @@ A benchmark, a NativeAOT publish, a profile, or the generation of a billion-poin
 
 A CI run started for an experiment (`gh workflow run`, `gh run rerun`) is a long run too: while it runs, go on with work that does not need its result, on another branch. Do not wait on rounds of reruns with the next row's research undone.
 
+So is a PR's own CI. Watch it in the background and go on with the next work (the next row's facts, the Grill round) in the same turn; read its result before reporting. A PR that changes only rules or docs is never waited on in the foreground: after the chore PR of PR #181's retrospective, the agent waited on its CI before the G8 Grill, and the owner called it wasted time.
+
 Before a long run, a short one: run the script on one case, and look at the output of a background run within its first minute.
 
 A scratch variant (a source file swapped for a measurement) is built on its own worktree, never in the tree the gate runs in. A publish with `-r` still builds the referenced libraries into the tree's shared `obj/`, and a source put back with `Copy-Item` keeps its old time (`.cursor/rules/powershell-shell.mdc`), so the gate can then test the variant instead of the source.
