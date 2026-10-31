@@ -133,7 +133,21 @@ internal sealed class PlotGuides
         Top = figureTop + titleBand;
         Height = figureBottom - bottomBand - Top;
         var legendBand = LegendBand(spec, theme, gap, tick, Height, tickStyle, lineHeight);
-        Prepare(side, sideScale, sideTransform, sideDomain, Height, theme.TickSpacingY, tickStyle, lineHeight, theme);
+
+        // The left axis runs up from the panel's bottom, down when reversed: below it the bottom band, above it the title's.
+        var (below, above) = (figureBottom - (Top + Height), Top - figureTop);
+        Prepare(
+            side,
+            sideScale,
+            sideTransform,
+            sideDomain,
+            Height,
+            theme.TickSpacingY,
+            tickStyle,
+            lineHeight,
+            theme,
+            room: sideScale.Reverse ? (above, below) : (below, above)
+        );
         var sideBand = 0;
         if (theme.ShowAxes)
         {
@@ -153,7 +167,20 @@ internal sealed class PlotGuides
             return;
         }
 
-        Prepare(bottom, bottomScale, bottomTransform, bottomDomain, Width, theme.TickSpacingX, tickStyle, lineHeight, theme);
+        // The bottom axis runs right from the panel's left, left when reversed: the left band before it, the legend's after.
+        var (before, after) = (Left - figureLeft, figureRight - (Left + Width));
+        Prepare(
+            bottom,
+            bottomScale,
+            bottomTransform,
+            bottomDomain,
+            Width,
+            theme.TickSpacingX,
+            tickStyle,
+            lineHeight,
+            theme,
+            room: bottomScale.Reverse ? (after, before) : (before, after)
+        );
     }
 
     /// <summary>Records what goes behind the data (design §4.6): the panel and the grid.</summary>
@@ -228,6 +255,21 @@ internal sealed class PlotGuides
         }
 
         RecordLegend(list, spec, theme, gap);
+    }
+
+    /// <summary>
+    /// Returns where a label's center goes on the target (design §4.6, row G3b): its tick's place put on pixels when it does
+    /// not cross F, else its place held inside F, so that its box ends at F's edge.
+    /// </summary>
+    private float Place(bool horizontal, AxisScale scale, TickAxis axis, int index, float tick)
+    {
+        var center = axis.LabelCenter(index);
+        if (center == axis.Pixels[index])
+        {
+            return tick;
+        }
+
+        return (float)(horizontal ? HorizontalOf(scale, center) : VerticalOf(scale, center));
     }
 
     /// <summary>Returns a line style with its width and dashes in DIPs turned to pixels.</summary>
@@ -342,9 +384,12 @@ internal sealed class PlotGuides
         in TextStyle style,
         float lineHeight,
         Theme theme,
-        bool legend = false
+        bool legend = false,
+        (double Before, double After)? room = null
     )
     {
+        // The room from the axis's ends to the figure's edge, which its end labels are held inside (design §4.6, row G3b).
+        (axis.Before, axis.After) = room ?? (double.PositiveInfinity, double.PositiveInfinity);
         var continuous = scale.Spec as ContinuousScaleSpec;
         axis.Scale = continuous!;
         axis.SetBand(scale.Spec as BandScaleSpec, axis == X ? _categories : null);
@@ -613,7 +658,7 @@ internal sealed class PlotGuides
             {
                 list.DrawText(
                     bottomLabels[i],
-                    new Vector2(at - (bottom.Extents[i] / 2), Top + Height + tick + gap),
+                    new Vector2(Place(horizontal: true, bottomScale, bottom, i, at) - (bottom.Extents[i] / 2), Top + Height + tick + gap),
                     labelStyle with
                     {
                         Horizontal = TextAlign.Left,
@@ -633,7 +678,7 @@ internal sealed class PlotGuides
             {
                 list.DrawText(
                     sideLabels[i],
-                    new Vector2(Left - tick - gap - _text.Measure(sideLabels[i], labelStyle).Width, at),
+                    new Vector2(Left - tick - gap - _text.Measure(sideLabels[i], labelStyle).Width, Place(horizontal: false, sideScale, side, i, at)),
                     labelStyle with
                     {
                         Horizontal = TextAlign.Left,
