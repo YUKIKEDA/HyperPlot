@@ -354,15 +354,17 @@ public sealed class CategoricalTests
     /// <remarks>
     /// Preconditions:
     /// - A 640 × 360 target with the light theme and the fake text backend; bars over 12 categories named "Category 01" to
-    ///   "Category 12" (11 characters, 74.25 pixels at 12 px), and over 4 named "A" to "D".
+    ///   "Category 12" (11 characters, 74.25 pixels at 12 px), over 4 named "A" to "D", and over as many of those names as
+    ///   fit steps of 78.75 pixels (the width and 3/8 em), with the outer padding that makes the step that.
     ///
     /// Steps:
     /// - Render each; render the 12 reversed.
     ///
     /// Expected:
     /// - 4 categories: 4 ticks at the bands' middles, labels A to D in order. 12: the labels of categories 0, k, 2k, … with k
-    ///   the least that keeps neighbors apart (k · step > 74.25); as many grid lines. Reversed: the first label is on the
-    ///   right.
+    ///   the least that keeps neighbors half an em apart (k · step ≥ 74.25 + 6); as many grid lines. Reversed: the first
+    ///   label is on the right. The step under 80.25 pixels: every other category is labeled, though neighbors would not
+    ///   overlap.
     /// </remarks>
     [Fact]
     public void Axis_TicksInTheMiddle_ThinnedWhenTheyOverlap()
@@ -386,7 +388,7 @@ public sealed class CategoricalTests
         var list = plan.Render(manySpec);
         axis = plan.Guides.X;
         step = axis.Length / (axis.Domain.Upper - axis.Domain.Lower);
-        var k = (int)Math.Floor(FakeTextBackend.Advance(12) * 11 / step) + 1;
+        var k = (int)Math.Ceiling(((FakeTextBackend.Advance(12) * 11) + (axis.Em / 2)) / step);
         Assert.Equal(Enumerable.Range(0, 12).Where(i => i % k == 0).Select(i => $"Category {i + 1:00}"), axis.TickLabels.ToArray());
 
         // The grid's x lines come first, then y's; after the two axis lines, x's ticks (GuideLayoutTests).
@@ -408,6 +410,18 @@ public sealed class CategoricalTests
 
         _ = plan.Render(manySpec with { ScaleX = Scale.Band() with { Reverse = true } });
         Assert.True(plan.Guides.X.Pixels[0] > plan.Guides.X.Pixels[1]);
+
+        // With a step between the label's width and the width plus half an em, neighbors would not overlap but stand
+        // closer than the gap: every other category is labeled.
+        var width = FakeTextBackend.Advance(12) * 11;
+        var steps = axis.Length / (width + (axis.Em * 3 / 8));
+        var n = (int)Math.Floor(steps);
+        using var close = Data.Create(n, 1, names: i => $"Category {i + 1:00}");
+        _ = plan.Render(close.Bars() with { Theme = Theme.Light, ScaleX = Scale.Band(paddingOuter: (steps - n + 0.1) / 2) });
+        axis = plan.Guides.X;
+        step = axis.Length / (axis.Domain.Upper - axis.Domain.Lower);
+        Assert.InRange(step, width + 0.1, width + (axis.Em / 2) - 0.1);
+        Assert.Equal(Enumerable.Range(0, n).Where(i => i % 2 == 0).Select(i => $"Category {i + 1:00}"), axis.TickLabels.ToArray());
     }
 
     /// <summary>
@@ -423,8 +437,8 @@ public sealed class CategoricalTests
     /// - Render; count the names shaped; render twice again and count the bytes.
     ///
     /// Expected:
-    /// - The names shaped at most the labels shown plus 2 a k that overlapped (here none past the first k, since the names
-    ///   have one length); 0 bytes on the redraws.
+    /// - The names shaped at most the labels shown plus 2 a k cut short (with names of one length, k₀ takes the neighbor
+    ///   of the first label at its least size, so one k is cut short); 0 bytes on the redraws.
     /// </remarks>
     [Fact]
     public void Axis_ManyCategories_MeasuresTheShownLabels()
@@ -437,7 +451,7 @@ public sealed class CategoricalTests
 
         _ = plan.Render(spec);
         var shapedNames = backend.Shaped.Count(s => s.Text.StartsWith('n'));
-        Assert.InRange(shapedNames, 1, plan.Guides.X.Count + 2);
+        Assert.InRange(shapedNames, plan.Guides.X.Count, plan.Guides.X.Count + 2);
 
         _ = plan.Render(spec);
         var before = GC.GetAllocatedBytesForCurrentThread();

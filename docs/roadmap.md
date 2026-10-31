@@ -58,6 +58,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G7a | 名前つきの色（`Colors`、CSS の 148 色）とパレット（`Palette`・`Palettes` の質的な 7 つ）、テーマが決める系列の既定の色（`Theme.Palette`、tab10）、仕様の色の null（`StrokeSpec`・`Color?` の `Fill`）、`GeomFrame.SeriesColor`（§4.1・§4.7）。時間の計測はしない（色はコンパイルで決まり、フレームの道は変わらない。確保 0 はテストで見る） | done | [#153](https://github.com/YUKIKEDA/HyperPlot/issues/153)（設計）、[#157](https://github.com/YUKIKEDA/HyperPlot/issues/157) |
 | G7b | カテゴリの列 `CategoricalColumn`（`Column.Categorical`、`CategoryRef`、§3.1）、band のスケール（`Scale.Band`、§4.2）とその軸（カテゴリごとの目盛り、重なれば k 個おきのラベル、§4.6）、カテゴリの x の bar（カテゴリごとの最小・最大をワーカーが版ごとに作る、画素より多いカテゴリは画素列ごと、§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。ワーカーの最小・最大（1e8 行、カテゴリ 10 と 1e5）と 1 フレームの時間（カテゴリ 50 と 1e5） | done | [#159](https://github.com/YUKIKEDA/HyperPlot/issues/159)（設計）、[#163](https://github.com/YUKIKEDA/HyperPlot/issues/163) |
 | G7c | 列で色を分けるチャネル（`color`・`fill`）、ordinal・sequential・diverging の色のスケールと連続の色の写像（§4.2・§5.2）、連続のカラーバーの凡例（§4.6）。カテゴリで分けるのは G7b の列を使う | not-started | |
+| G3b | 軸の端のラベルを描画先の内に収める配置（最初と最後のラベルのはみ出しを帯に取る、flip と polar を含む、§4.6）。行 G7b の band の軸の長い名前で見つかった | not-started | [#165](https://github.com/YUKIKEDA/HyperPlot/issues/165) |
 | G8 | text の Geom（データの文字列のラベル、`CategoricalColumn` と文字列の列を使う、§5.5.3） | not-started | |
 | G9 | image の Geom（ラスタのデータの型、タイルとミップマップ、`DrawImage`、§5.5.3） | not-started | |
 | G5 | Stat と Position（カテゴリの x の errorbar・rule を、並べ（dodge）と一緒に。行 G7b から、§4.2） | not-started | |

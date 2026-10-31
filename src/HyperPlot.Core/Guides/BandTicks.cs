@@ -2,9 +2,9 @@ namespace HyperPlot;
 
 /// <summary>
 /// The ticks of a band axis (design §4.6, row G7b): one in the middle of a category's band, labeled with its name, on the
-/// categories whose number is a multiple of k. k starts at the least that keeps the labels' known lower size apart, and
-/// grows past an overlapping pair to the least that would keep that pair apart, so that the labels measured are bounded
-/// by the axis's pixels, not by the categories.
+/// categories whose number is a multiple of k. Two labels side by side keep a gap of at least half an em (PR #164). k
+/// starts at the least that keeps the labels' known lower size apart, and grows past an overlapping pair to the least that
+/// would keep that pair apart, so that the labels measured are bounded by the axis's pixels, not by the categories.
 /// </summary>
 internal static class BandTicks
 {
@@ -24,9 +24,10 @@ internal static class BandTicks
         var step = axis.Length / (domain.Upper - domain.Lower);
         var least = axis.Horizontal ? 1f : axis.LineHeight;
         var first = Extent(axis, categories.Categories[0]);
+        var gap = axis.Em / 2;
 
         // The least k that keeps two labels of the least size apart, and the first label and one of the least size.
-        var k = (long)Math.Max(Math.Max(1, Math.Ceiling(least / step)), Math.Floor((first + least) / 2 / step) + 1);
+        var k = (long)Math.Max(Math.Max(1, Math.Ceiling((least + gap) / step)), Math.Ceiling((((first + least) / 2) + gap) / step));
         while (true)
         {
             axis.ClearCandidate();
@@ -38,7 +39,7 @@ internal static class BandTicks
                 var label = categories.Categories[category];
                 var extent = category == 0 ? first : Extent(axis, label);
                 var center = bands.Position(category) + (bands.Width / 2) - domain.Lower;
-                if (axis.Count > 0 && (k * step) - ((extent + previous) / 2.0) <= 0)
+                if (axis.Count > 0 && (k * step) - ((extent + previous) / 2.0) < gap)
                 {
                     (overlap, sum) = (true, (extent + previous) / 2.0);
                     break;
@@ -54,7 +55,7 @@ internal static class BandTicks
             }
 
             // The pair k apart overlapped: the next k keeps it apart.
-            k = Math.Max(k + 1, (long)Math.Floor(sum / step) + 1);
+            k = Math.Max(k + 1, (long)Math.Ceiling((sum + gap) / step));
         }
     }
 
