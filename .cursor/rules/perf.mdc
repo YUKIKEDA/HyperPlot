@@ -24,6 +24,7 @@ These rules come from the shape of Cysharp's R3, ZLinq, ZString, MemoryPack, and
 ## Allocation
 
 - The frame path does not allocate in steady state. The Zero-Alloc tests (design §10) assert it; an allowed exception needs an Issue and a design entry.
+- A check that runs on every Render builds the strings of its message only when it throws: an interpolated parameter name (`$"Layers[{index}].Size"`) allocates even when the value is good. PR #189's validation of a text layer allocated 296 B a redraw that way, until each check tested the value first.
 - No LINQ, `params` arrays, `string` concatenation or interpolation into `string`, boxing (`object` parameters, non-generic interfaces on structs, `Enum.HasFlag` on old paths, `foreach` over an interface), or lambdas that capture on the frame path. A `static` lambda is fine: its delegate is cached. The checks and the learning of the compile that run on every `Render` are the frame path too: PR #173's color learning, and the time scale's check since row G2, went over `PlotSpec.Layers` (an `IReadOnlyList`) with `foreach` and allocated 32 bytes a `Render`; they loop by index.
 - `foreach` over a `List<T>` field goes through `CollectionsMarshal.AsSpan`; over a `Dictionary` it uses the struct enumerator directly, never `IEnumerable<T>`.
 - A cache or pool that grows on demand has a hard upper bound and a counter of the requests it refused at the bound. Its steady-state limit is not enough: a caller that never starts a new frame, or a viewport that keeps zooming into new levels, would grow it without end.
