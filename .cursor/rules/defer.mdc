@@ -15,7 +15,7 @@ Before a design PR is called ready, list every row its text names (`rg -n '行 [
 
 A recommendation to drop or defer work is not argued from what its result would be. "The measurement will not change the decision" is a result nobody has; the work exists to find it out. What may be put to the owner is what the work costs and what it is for.
 
-A row that is `done` did everything its design section gives it. Before a row is closed, search `docs/design.ja.md` for its ID and title.
+A row that is `done` did everything its design section gives it. Before a row is closed, search `docs/design.ja.md` for its ID and title, and settle each sentence that sends work to it ("measured in row X's implementation PR"): do the work, or write why not and drop the sentence. PR #150 set G11 `done` while §5.1 still said the error on curved edges would be measured in G11's implementation PR; the review found it.
 
 Not allowed:
 
