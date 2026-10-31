@@ -448,10 +448,12 @@ public sealed class CategoricalTests
     /// - Render; count the names shaped; render twice again and count the bytes.
     ///
     /// Expected:
-    /// - The names shaped at most three passes of the labels shown, plus 3, far below the 100,000 categories: with names of
+    /// - The names shaped at most three times the labels shown, plus 3, far below the 100,000 categories: with names of
     ///   one length, k₀ takes the neighbor of the first label at its least size, so one k is cut short at its first pair;
     ///   the last label, held inside the figure since row G3b, can cut one more k short at the last pair, after a pass of a
-    ///   smaller k (here 2, 12, and the 9 shown: 21). 0 bytes on the redraws.
+    ///   smaller k (here 2, 12, and the 9 shown: 21, the first label shaped once of its three). The bound allows each of the
+    ///   three terms (the two k cut short and the k chosen) the labels shown plus 1 in sum (design §10, row G7b). 0 bytes on
+    ///   the redraws.
     /// </remarks>
     [Fact]
     public void Axis_ManyCategories_MeasuresTheShownLabels()
