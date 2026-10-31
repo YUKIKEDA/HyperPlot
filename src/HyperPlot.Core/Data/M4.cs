@@ -159,8 +159,53 @@ public static class M4
         }
 
         var source = new ColumnX<TX>(x, origin.X);
-        var result = Run(ref source, y, origin.Y, boundaries, destination, options.Gaps);
+        var result = Run(ref source, y, origin.Y, boundaries, destination, options.Gaps, RowRange.All);
         return statsReady ? result : new M4Result(result.Count, isProvisional: true);
+    }
+
+    /// <summary>
+    /// Extracts the M4 points of the rows [start, end) of a series, as if the rows outside were not there (design §5.5.1, row
+    /// G7c): the series of a category whose rows lie in one run. Checks nothing the public form checks; allocates nothing.
+    /// </summary>
+    internal static M4Result Extract<TX, TY>(
+        Column<TX> x,
+        MinMaxPyramid<TY> y,
+        ScaleOrigin origin,
+        ReadOnlySpan<double> boundaries,
+        Span<M4Point> destination,
+        M4Options options,
+        RowRange rows
+    )
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+    {
+        Validate(x, y, boundaries, destination);
+        var statsReady = x.TryIsNonDecreasing(out var nonDecreasing);
+        if (statsReady && !nonDecreasing)
+        {
+            throw new InvalidOperationException("The X column must be non-decreasing and hold no NaN.");
+        }
+
+        var source = new ColumnX<TX>(x, origin.X);
+        var result = Run(ref source, y, origin.Y, boundaries, destination, options.Gaps, rows);
+        return statsReady ? result : new M4Result(result.Count, isProvisional: true);
+    }
+
+    /// <summary>Extracts the M4 points of the rows [start, end) of a series whose X is evenly spaced (row G7c).</summary>
+    internal static M4Result Extract<TY>(
+        UniformColumn x,
+        MinMaxPyramid<TY> y,
+        ScaleOrigin origin,
+        ReadOnlySpan<double> boundaries,
+        Span<M4Point> destination,
+        M4Options options,
+        RowRange rows
+    )
+        where TY : unmanaged, INumber<TY>
+    {
+        Validate(x, y, boundaries, destination);
+        var source = new UniformX(x, origin.X);
+        return Run(ref source, y, origin.Y, boundaries, destination, options.Gaps, rows);
     }
 
     /// <summary>Extracts the M4 points of a series whose X is evenly spaced. Does not allocate.</summary>
@@ -192,7 +237,7 @@ public static class M4
         ArgumentNullException.ThrowIfNull(y);
         Validate(x, y, boundaries, destination);
         var source = new UniformX(x, origin.X);
-        return Run(ref source, y, origin.Y, boundaries, destination, options.Gaps);
+        return Run(ref source, y, origin.Y, boundaries, destination, options.Gaps, RowRange.All);
     }
 
     /// <summary>Throws unless there are at least 2 boundaries, finite and strictly increasing (design §5.5.1).</summary>
@@ -234,20 +279,24 @@ public static class M4
         long yOrigin,
         ReadOnlySpan<double> boundaries,
         Span<M4Point> destination,
-        M4Gaps gaps
+        M4Gaps gaps,
+        RowRange rows
     )
         where TSource : struct, IXSource
         where TY : unmanaged, INumber<TY>
     {
         var column = y.Column;
-        var length = column.Length;
+
+        // The rows of the series: the whole column, or one run of it (row G7c). X is non-decreasing over the whole column,
+        // so a boundary's position inside the run is its position in the column, held to the run.
+        var (low, length) = (rows.Start, Math.Min(rows.End, column.Length));
         var writer = new Writer(destination, gaps);
         var provisional = false;
-        var start = x.LowerBound(boundaries[0]);
-        if (start > 0)
+        var start = Math.Clamp(x.LowerBound(boundaries[0]), low, length);
+        if (start > low)
         {
-            var before = gaps == M4Gaps.Break ? start - 1 : Known(y.FindNumber(0, start, fromEnd: true, ref provisional), start - 1);
-            if (before >= 0)
+            var before = gaps == M4Gaps.Break ? start - 1 : Known(y.FindNumber(low, start, fromEnd: true, ref provisional), start - 1);
+            if (before >= low)
             {
                 writer.Emit(before, x.ValueAt(before), ScaleSpace.Difference(column.GetValue(before), yOrigin), M4Roles.Before);
             }
@@ -256,7 +305,7 @@ public static class M4
         Span<Candidate> candidates = stackalloc Candidate[4];
         for (var k = 1; k < boundaries.Length; k++)
         {
-            var end = x.LowerBound(boundaries[k]);
+            var end = Math.Clamp(x.LowerBound(boundaries[k]), low, length);
             var count = end - start;
             if (count > 0 && count <= 4)
             {

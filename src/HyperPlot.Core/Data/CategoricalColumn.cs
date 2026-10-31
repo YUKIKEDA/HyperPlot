@@ -10,6 +10,9 @@ public sealed class CategoricalColumn : Column
     private readonly int[] _codes;
     private readonly string[] _categories;
 
+    /// <summary>Where each category's rows lie, found once (row G7c): the column never changes.</summary>
+    internal CategoryRuns? Runs;
+
     private CategoricalColumn(int[] codes, string[] categories)
         : base(codes.Length) => (_codes, _categories) = (codes, categories);
 
@@ -42,6 +45,9 @@ public sealed class CategoricalColumn : Column
         var start = (long)chunkIndex << ChunkShift;
         return _codes.AsSpan((int)start, GetChunkLength(chunkIndex));
     }
+
+    /// <summary>Returns a column of other codes over the same categories (row G7c): a category's gathered rows.</summary>
+    internal CategoricalColumn WithCodes(int[] codes) => new(codes, _categories);
 
     /// <summary>Returns whether another column has the same categories in the same order (design §4.2).</summary>
     internal bool SameCategories(CategoricalColumn other) => ReferenceEquals(this, other) || _categories.AsSpan().SequenceEqual(other._categories);
@@ -136,6 +142,9 @@ public sealed class CategoricalColumn : Column
     internal override bool IsNonDecreasing(PlotWorkerPool pool) => false;
 
     /// <inheritdoc />
-    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) =>
+    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>
         throw new InvalidOperationException("A categorical column is not an X of M4: the compile keeps it to a band scale's bars.");
+
+    /// <inheritdoc />
+    internal override GatherChannel MakeGather(ReadOnlySpan<long> counts) => new GatherChannel.CategoryGather(this, counts);
 }

@@ -9,11 +9,11 @@ internal sealed class LinePlan : LayerPlan
     private readonly int _series;
     private readonly M4Point[] _output;
 
-    public LinePlan(LineLayerSpec spec, PlanBuild build)
-        : base(spec)
+    public LinePlan(LineLayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         SetColumns(spec.X.Column, spec.Y.Column);
-        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column);
+        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
@@ -39,11 +39,11 @@ internal sealed class StepPlan : LayerPlan
     private readonly int _series;
     private readonly M4Point[] _output;
 
-    public StepPlan(StepLayerSpec spec, PlanBuild build)
-        : base(spec)
+    public StepPlan(StepLayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         SetColumns(spec.X.Column, spec.Y.Column);
-        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column);
+        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
@@ -101,11 +101,11 @@ internal sealed class AreaPlan : LayerPlan
     private readonly M4Point[] _output;
     private readonly ColumnEnvelope _envelope = new();
 
-    public AreaPlan(AreaLayerSpec spec, PlanBuild build)
-        : base(spec)
+    public AreaPlan(AreaLayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         SetColumns(spec.X.Column, spec.Y.Column);
-        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column);
+        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
@@ -191,12 +191,12 @@ internal sealed class BandPlan : LayerPlan
     private readonly ColumnEnvelope _low = new();
     private readonly ColumnEnvelope _high = new();
 
-    public BandPlan(BandLayerSpec spec, PlanBuild build)
-        : base(spec)
+    public BandPlan(BandLayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         SetColumns(spec.X.Column, spec.YMin.Column, spec.YMax.Column);
-        (_lowSeries, _lowOutput) = build.AddSeries(spec.X.Column, spec.YMin.Column);
-        (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.YMax.Column);
+        (_lowSeries, _lowOutput) = build.AddSeries(spec.X.Column, spec.YMin.Column, rows);
+        (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.YMax.Column, rows);
     }
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
@@ -281,11 +281,11 @@ internal sealed class BarPlan : LayerPlan
     private readonly M4Point[] _output;
     private readonly ColumnEnvelope _envelope = new();
 
-    public BarPlan(BarLayerSpec spec, PlanBuild build)
-        : base(spec)
+    public BarPlan(BarLayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
-        SetColumns(spec.X.Column, spec.Y.Column);
-        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column);
+        SetColumns(AndColors(spec.X.Column, spec.Y.Column));
+        (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
     /// <summary>Gets the width the bars are drawn with, in data units: read from the X's statistics, so after the wait.</summary>
@@ -335,10 +335,32 @@ internal sealed class BarPlan : LayerPlan
         var y = bar.Y.Column;
         var boundaries = context.Boundaries;
         var half = Width / 2;
-        var first = x.LowerBound(boundaries[0] - half, context.XOrigin);
-        var end = x.LowerBound(boundaries[^1] + half, context.XOrigin);
+        var first = Rows.Hold(x.LowerBound(boundaries[0] - half, context.XOrigin), x.Length);
+        var end = Rows.Hold(x.LowerBound(boundaries[^1] + half, context.XOrigin), x.Length);
         var baseline = context.BaselinePixel(bar.Baseline);
         var barFill = FillOf(bar.Fill, translucent: false);
+        if (ElementColors is { } colors)
+        {
+            // A color per bar cannot join a pixel column (design §4.1, row G7c): each bar, up to the cap.
+            if (end - first > MaxElements)
+            {
+                throw new InvalidOperationException(
+                    $"{end - first} bars are in view, colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3 draws more as a density."
+                );
+            }
+
+            for (var i = first; i < end; i++)
+            {
+                if (ElementColor(colors, i) is { } color)
+                {
+                    var d = x.DifferenceAt(i, context.XOrigin);
+                    context.DrawRect(context.PixelX(d - half), context.PixelX(d + half), context.ElementY(y, i), baseline, color);
+                }
+            }
+
+            return;
+        }
+
         if (end - first <= 4L * context.X.Size)
         {
             for (var i = first; i < end; i++)
@@ -388,8 +410,8 @@ internal sealed class CategoryBarPlan : LayerPlan
     private MinMaxPyramid<double>? _minPyramid;
     private MinMaxPyramid<double>? _maxPyramid;
 
-    public CategoryBarPlan(BarLayerSpec spec)
-        : base(spec) => SetColumns(spec.X.Column, spec.Y.Column);
+    public CategoryBarPlan(BarLayerSpec spec, RowRange rows)
+        : base(spec, rows) => SetColumns(AndColors(spec.X.Column, spec.Y.Column));
 
     private CategoricalColumn Categories => (CategoricalColumn)Columns[0];
 
@@ -402,7 +424,7 @@ internal sealed class CategoryBarPlan : LayerPlan
         }
 
         Release();
-        var extremes = y.StartCategoryExtremes(Categories, pool);
+        var extremes = y.StartCategoryExtremes(Categories, pool, Rows);
         extremes.Completion.GetAwaiter().GetResult();
         if (extremes.Min.Length > 0)
         {
@@ -443,6 +465,30 @@ internal sealed class CategoryBarPlan : LayerPlan
         // A band's pixels are linear in its position: pixel(j) = a · j + b.
         var b = context.PixelX(0 - origin);
         var a = context.PixelX(1 - origin) - b;
+        if (ElementColors is { } colors)
+        {
+            // Colored by a number, a bar a row in the rows' order (design §4.1, row G7c): the compile holds them to the cap.
+            var x = Categories;
+            var y = Columns[1];
+            for (var i = Rows.Start; i < Rows.EndIn(x.Length); i++)
+            {
+                var code = x.GetCode(i);
+                if (code < 0 || ElementColor(colors, i) is not { } color)
+                {
+                    continue;
+                }
+
+                var j = band.Position(code);
+                var top = context.ElementY(y, i);
+                if (!double.IsNaN(top))
+                {
+                    context.DrawRect((a * j) + b, (a * (j + band.Width)) + b, top, baseline, color);
+                }
+            }
+
+            return;
+        }
+
         if (Math.Abs(a * band.Width) >= 1)
         {
             for (var category = 0; category < band.Count; category++)
@@ -521,12 +567,12 @@ internal sealed class ErrorBarPlan : LayerPlan
     private readonly ColumnEnvelope _low = new();
     private readonly ColumnEnvelope _high = new();
 
-    public ErrorBarPlan(ErrorBarLayerSpec spec, PlanBuild build)
-        : base(spec)
+    public ErrorBarPlan(ErrorBarLayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         SetColumns(spec.X.Column, spec.YMin.Column, spec.YMax.Column);
-        (_lowSeries, _lowOutput) = build.AddSeries(spec.X.Column, spec.YMin.Column);
-        (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.YMax.Column);
+        (_lowSeries, _lowOutput) = build.AddSeries(spec.X.Column, spec.YMin.Column, rows);
+        (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.YMax.Column, rows);
     }
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
@@ -548,8 +594,8 @@ internal sealed class ErrorBarPlan : LayerPlan
     {
         var bars = (ErrorBarLayerSpec)Spec;
         var x = bars.X.Column;
-        var first = x.LowerBound(context.Boundaries[0], context.XOrigin);
-        var end = x.LowerBound(context.Boundaries[^1], context.XOrigin);
+        var first = Rows.Hold(x.LowerBound(context.Boundaries[0], context.XOrigin), x.Length);
+        var end = Rows.Hold(x.LowerBound(context.Boundaries[^1], context.XOrigin), x.Length);
         if (end - first <= 4L * context.X.Size)
         {
             var half = bars.CapWidth * context.Scale / 2;
@@ -616,8 +662,8 @@ internal sealed class ErrorBarPlan : LayerPlan
 /// </summary>
 internal sealed class RulePlan : LayerPlan
 {
-    public RulePlan(RuleLayerSpec spec)
-        : base(spec) => SetColumns(Channel(spec).Column);
+    public RulePlan(RuleLayerSpec spec, RowRange rows)
+        : base(spec, rows) => SetColumns(Channel(spec).Column);
 
     private static ColumnRef Channel(RuleLayerSpec rule) => rule.X.IsDefault ? rule.Y : rule.X;
 
@@ -652,8 +698,8 @@ internal sealed class RulePlan : LayerPlan
         var across = vertical ? context.Y : context.X;
         var origin = vertical ? context.XOrigin : context.YOrigin;
         ReadOnlySpan<double> boundaries = vertical ? context.Boundaries : context.YBoundaries();
-        var first = column.LowerBound(boundaries[0], origin);
-        var end = column.LowerBound(boundaries[^1], origin);
+        var first = Rows.Hold(column.LowerBound(boundaries[0], origin), column.Length);
+        var end = Rows.Hold(column.LowerBound(boundaries[^1], origin), column.Length);
         var (from, to) = ((float)across.Offset, (float)(across.Offset + across.Size));
         var many = end - first > 4L * axis.Size;
         var buffer = context.Points(3 * (int)(many ? axis.Size : end - first));
@@ -672,7 +718,7 @@ internal sealed class RulePlan : LayerPlan
             var start = first;
             for (var k = 0; k < axis.Size; k++)
             {
-                var next = column.LowerBound(boundaries[k + 1], origin);
+                var next = Rows.Hold(column.LowerBound(boundaries[k + 1], origin), column.Length);
                 if (next > start)
                 {
                     // The boundaries run with the data; a descending axis runs the pixels the other way.
@@ -691,8 +737,8 @@ internal sealed class RulePlan : LayerPlan
 /// <summary>Rectangles: every element, up to 131,072 (design §5.5.3).</summary>
 internal sealed class RectPlan : LayerPlan
 {
-    public RectPlan(RectLayerSpec spec)
-        : base(spec) => SetColumns(spec.XMin.Column, spec.XMax.Column, spec.YMin.Column, spec.YMax.Column);
+    public RectPlan(RectLayerSpec spec, RowRange rows)
+        : base(spec, rows) => SetColumns(AndColors(spec.XMin.Column, spec.XMax.Column, spec.YMin.Column, spec.YMax.Column));
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -709,10 +755,20 @@ internal sealed class RectPlan : LayerPlan
         var xs1 = context.ElementPixels(rect.XMax.Column, ofX: true, 1);
         var ys0 = context.ElementPixels(rect.YMin.Column, ofX: false, 2);
         var ys1 = context.ElementPixels(rect.YMax.Column, ofX: false, 3);
-        for (var i = 0; i < xs0.Length; i++)
+        for (var i = (int)Rows.Start; i < Rows.EndIn(xs0.Length); i++)
         {
             // Corners mapped one by one: the smaller is the top left whatever the scales' directions. A corner that does
             // not map draws nothing.
+            if (ElementColors is { } colors)
+            {
+                if (ElementColor(colors, i) is { } color)
+                {
+                    context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], color);
+                }
+
+                continue;
+            }
+
             context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], FillOf(rect.Fill, translucent: false));
         }
     }
@@ -721,8 +777,8 @@ internal sealed class RectPlan : LayerPlan
 /// <summary>Segments: every element, up to 131,072, as one polyline broken by NaN (design §5.5.3).</summary>
 internal sealed class SegmentPlan : LayerPlan
 {
-    public SegmentPlan(SegmentLayerSpec spec)
-        : base(spec) => SetColumns(spec.X.Column, spec.Y.Column, spec.XEnd.Column, spec.YEnd.Column);
+    public SegmentPlan(SegmentLayerSpec spec, RowRange rows)
+        : base(spec, rows) => SetColumns(spec.X.Column, spec.Y.Column, spec.XEnd.Column, spec.YEnd.Column);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -741,7 +797,7 @@ internal sealed class SegmentPlan : LayerPlan
         var ys1 = context.ElementPixels(segment.YEnd.Column, ofX: false, 3);
         var buffer = context.Points(3 * xs0.Length);
         var count = 0;
-        for (var i = 0; i < xs0.Length; i++)
+        for (var i = (int)Rows.Start; i < Rows.EndIn(xs0.Length); i++)
         {
             // An end that does not map is NaN, which breaks the polyline on both sides: the segment draws nothing.
             count = ErrorBarPlan.Segment(buffer, count, (float)xs0[i], (float)ys0[i], (float)xs1[i], (float)ys1[i]);

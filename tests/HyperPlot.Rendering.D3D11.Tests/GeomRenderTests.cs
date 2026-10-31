@@ -329,6 +329,109 @@ public sealed class GeomRenderTests
         Check(spec, pool, "categorical-bar.png");
     }
 
+    /// <summary>
+    /// Layers split by categories (§10.1 scene 14, row G7c): a line whose three categories are mixed row by row (gathered),
+    /// bars whose categories lie in runs (drawn over their runs), and the ordinal scale's title and category rows in the
+    /// legend.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300 rows: an evenly spaced X; a line's Y, a sine shifted by its category, with category i mod 3 of "a", "b", "c";
+    ///   a bar's Y, with category ⌊i / 100⌋; the fake text backend; Theme.Light; an ordinal scale titled "Sensor".
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/color-categorical.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void CategoricalColor_MatchesBaseline()
+    {
+        string[] categories = ["a", "b", "c"];
+        var mixed = new string?[300];
+        var runs = new string?[300];
+        var line = new float[300];
+        var bars = new float[300];
+        for (var i = 0; i < 300; i++)
+        {
+            (mixed[i], runs[i]) = (categories[i % 3], categories[i / 100]);
+            line[i] = (float)(Math.Sin(i / 20.0) + ((i % 3) * 1.5));
+            bars[i] = (float)(1 + Math.Abs(Math.Cos(i / 37.0)));
+        }
+
+        using var pool = new PlotWorkerPool(2);
+        using var lineY = Column.Wrap(line);
+        using var barY = Column.Wrap(bars);
+        var table = DataTable
+            .Create()
+            .Add("t", Column.Uniform(0, 1, 300))
+            .Add("y", lineY)
+            .Add("level", barY)
+            .Add("sensor", Column.Categorical(mixed, categories))
+            .Add("phase", Column.Categorical(runs, categories))
+            .Build();
+        var spec = Plot.Create(table)
+            .Bar(table.Col<double>("t"), table.Col<float>("level"), configure: b => b.ColorBy(table.Cat("phase")))
+            .Line(table.Col<double>("t"), table.Col<float>("y"), l => l.ColorBy(table.Cat("sensor")).Width(1.5f))
+            .ScaleColor(Scale.Ordinal().WithTitle("Sensor"))
+            .ScaleX(Scale.Linear().WithTitle("Time"))
+            .ScaleY(Scale.Linear().WithTitle("Value"))
+            .Title("Split by category")
+            .Build();
+
+        Check(spec, pool, "color-categorical.png");
+    }
+
+    /// <summary>
+    /// A continuous color (§10.1 scene 15, row G7c): a grid of rects colored by a number through viridis, and the color bar
+    /// with its title and ticks.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A 20 × 12 grid of unit rects, each colored by sin(x / 3) · cos(y / 2) · 10; the fake text backend; Theme.Light; a
+    ///   sequential scale titled "Value".
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/color-continuous.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void ContinuousColor_MatchesBaseline()
+    {
+        const int Columns = 20;
+        const int Rows = 12;
+        var (x0, y0, value) = (new double[Columns * Rows], new double[Columns * Rows], new double[Columns * Rows]);
+        for (var i = 0; i < value.Length; i++)
+        {
+            (x0[i], y0[i]) = (i % Columns, i / Columns);
+            value[i] = Math.Sin(x0[i] / 3) * Math.Cos(y0[i] / 2) * 10;
+        }
+
+        using var pool = new PlotWorkerPool(2);
+        using var xMin = Column.Wrap(x0);
+        using var xMax = Column.Wrap(x0.Select(v => v + 1).ToArray());
+        using var yMin = Column.Wrap(y0);
+        using var yMax = Column.Wrap(y0.Select(v => v + 1).ToArray());
+        using var v = Column.Wrap(value);
+        var table = DataTable.Create().Add("x0", xMin).Add("x1", xMax).Add("y0", yMin).Add("y1", yMax).Add("v", v).Build();
+        var spec = Plot.Create(table)
+            .Rect(
+                table.Col<double>("x0"),
+                table.Col<double>("x1"),
+                table.Col<double>("y0"),
+                table.Col<double>("y1"),
+                r => r.ColorBy(table.Col<double>("v"))
+            )
+            .ScaleColor(Scale.Sequential(ColorMaps.Viridis, Scale.Linear().WithTitle("Value")))
+            .Title("Continuous color")
+            .Build();
+
+        Check(spec, pool, "color-continuous.png");
+    }
+
     private static void Check(PlotSpec spec, PlotWorkerPool pool, string baseline)
     {
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));

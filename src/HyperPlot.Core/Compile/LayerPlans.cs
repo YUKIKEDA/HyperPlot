@@ -13,12 +13,40 @@ internal abstract class LayerPlan
     /// <summary>The most elements a segment or a rect layer draws (design §5.5.3): 2^17, 4 MB of rectangle records.</summary>
     public const int MaxElements = 131_072;
 
+    /// <summary>The most categories a color channel splits a layer into (design §4.1, row G7c).</summary>
+    public const int MaxCategories = 256;
+
+    /// <summary>
+    /// The most cells of the extremes of bars over categories split by color (design §5.5.3, row G7c): 2^24, two arrays of
+    /// 128 MB.
+    /// </summary>
+    public const long MaxCategoryCells = 1L << 24;
+
     private Column[] _columns = [];
+    private LayerSpec _spec;
 
-    protected LayerPlan(LayerSpec spec) => Spec = spec;
+    protected LayerPlan(LayerSpec spec)
+        : this(spec, RowRange.All) { }
 
-    /// <summary>Gets or sets the layer's node: a new node of the same columns is taken without building again.</summary>
-    public LayerSpec Spec { get; set; }
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LayerPlan"/> class over a run of its columns' rows (row G7c): the series
+    /// of one category.
+    /// </summary>
+    protected LayerPlan(LayerSpec spec, RowRange rows) => (_spec, Rows) = (spec, rows);
+
+    /// <summary>Gets the rows the layer draws: all of them, or the run of one category (design §5.5.3, row G7c).</summary>
+    public RowRange Rows { get; }
+
+    /// <summary>Gets the layer's node: a new node of the same columns is taken without building again.</summary>
+    public LayerSpec Spec => _spec;
+
+    /// <summary>Takes a new node of the same columns: its looks, baselines, and widths (design §4.8).</summary>
+    public void Take(LayerSpec spec)
+    {
+        var before = _spec;
+        _spec = spec;
+        OnSpecChanged(before, spec);
+    }
 
     /// <summary>Gets the columns the layer reads; their versions decide whether it is extracted again.</summary>
     public ReadOnlySpan<Column> Columns => _columns;
@@ -29,6 +57,9 @@ internal abstract class LayerPlan
     /// </summary>
     public Color SeriesColor { get; set; }
 
+    /// <summary>Gets or sets the plot's color scale, set before each recording; null when no layer has a color channel (row G7c).</summary>
+    public ColorScale? Colors { get; set; }
+
     /// <summary>Gets the versions of <see cref="Columns"/> this Render read before its wait.</summary>
     public long[] Seen { get; private set; } = [];
 
@@ -37,18 +68,22 @@ internal abstract class LayerPlan
 
     /// <summary>Makes the plan of a layer: its pyramids and series join the plan's.</summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build) =>
+        SplitPlan.Splits(spec) ? new SplitPlan(spec, build) : Create(spec, build, RowRange.All);
+
+    /// <summary>Makes the plan of a layer over a run of its columns' rows (row G7c): the series of one category.</summary>
+    public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows) =>
         spec switch
         {
-            LineLayerSpec line => new LinePlan(line, build),
-            StepLayerSpec step => new StepPlan(step, build),
-            AreaLayerSpec area => new AreaPlan(area, build),
-            BandLayerSpec band => new BandPlan(band, build),
-            BarLayerSpec { X.Column: CategoricalColumn } bar => new CategoryBarPlan(bar),
-            BarLayerSpec bar => new BarPlan(bar, build),
-            ErrorBarLayerSpec errorBar => new ErrorBarPlan(errorBar, build),
-            RuleLayerSpec rule => new RulePlan(rule),
-            RectLayerSpec rect => new RectPlan(rect),
-            SegmentLayerSpec segment => new SegmentPlan(segment),
+            LineLayerSpec line => new LinePlan(line, build, rows),
+            StepLayerSpec step => new StepPlan(step, build, rows),
+            AreaLayerSpec area => new AreaPlan(area, build, rows),
+            BandLayerSpec band => new BandPlan(band, build, rows),
+            BarLayerSpec { X.Column: CategoricalColumn } bar => new CategoryBarPlan(bar, rows),
+            BarLayerSpec bar => new BarPlan(bar, build, rows),
+            ErrorBarLayerSpec errorBar => new ErrorBarPlan(errorBar, build, rows),
+            RuleLayerSpec rule => new RulePlan(rule, rows),
+            RectLayerSpec rect => new RectPlan(rect, rows),
+            SegmentLayerSpec segment => new SegmentPlan(segment, rows),
             _ => new CustomPlan((CustomLayerSpec)spec),
         };
 
@@ -211,6 +246,115 @@ internal abstract class LayerPlan
             default:
                 break;
         }
+
+        ValidateColor(data, layer, index, buffer);
+    }
+
+    /// <summary>
+    /// Throws unless a layer's color channels are ones row G7c draws (design §4.1): a column of the table as long as the
+    /// layer's elements; categories on any geom but a user's, at most 256 of them; numbers on bars and rects only; and no
+    /// constant color beside the channel that colors the same thing.
+    /// </summary>
+    private static void ValidateColor(DataTable data, LayerSpec layer, int index, Span<ColumnRef> buffer)
+    {
+        if (layer.ColorBy is null && layer.FillBy is null)
+        {
+            return;
+        }
+
+        if (layer is CustomLayerSpec)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a CustomLayerSpec with a color channel; a user's geom reads its own columns and is not split (design §4.1)."
+            );
+        }
+
+        var fill = layer is AreaLayerSpec or BandLayerSpec or BarLayerSpec or RectLayerSpec;
+        if (layer.FillBy is not null && !fill)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a {layer.GetType().Name} with a FillBy; only the fill geoms (area, band, bar, rect) have a fill."
+            );
+        }
+
+        var count = AxisChannels(layer, ofX: true, buffer);
+        var elements = (count > 0 ? buffer[0] : buffer[AxisChannels(layer, ofX: false, buffer) - 1]).Column.Length;
+        foreach (var (channel, name) in (ReadOnlySpan<(ColumnRef?, string)>)[(layer.ColorBy, "ColorBy"), (layer.FillBy, "FillBy")])
+        {
+            if (channel is not { } reference)
+            {
+                continue;
+            }
+
+            CheckReference(data, reference, index, name);
+            var column = reference.Column;
+            if (column.Length != elements)
+            {
+                throw new ArgumentException(
+                    $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {column.Length} elements and the layer {elements}; a color column is as long as the layer's."
+                );
+            }
+
+            if (column is CategoricalColumn categories)
+            {
+                if (categories.CategoryCount > MaxCategories)
+                {
+                    throw new ArgumentException(
+                        $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {categories.CategoryCount} categories; a layer is split into at most {MaxCategories} (design §4.1). Data of more categories is drawn as a density (row R3)."
+                    );
+                }
+
+                if (layer is BarLayerSpec { X.Column: CategoricalColumn x } && (long)categories.CategoryCount * x.CategoryCount > MaxCategoryCells)
+                {
+                    throw new ArgumentException(
+                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the extremes of bars over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3)."
+                    );
+                }
+            }
+            else if (layer is BarLayerSpec { X.Column: CategoricalColumn } && column.Length > MaxElements)
+            {
+                // Bars over categories colored by numbers are a bar a row (design §4.1): their rows are counted here.
+                throw new InvalidOperationException(
+                    $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3 draws more as a density."
+                );
+            }
+            else if (layer is not (BarLayerSpec or RectLayerSpec))
+            {
+                throw new ArgumentException(
+                    $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} is a {column.KindName}; a {layer.GetType().Name} is colored by categories only (design §4.1). Numbers color the elements of bars and rects."
+                );
+            }
+        }
+
+        // A constant beside the channel that colors the same thing (design §4.1).
+        var conflict = layer switch
+        {
+            LineLayerSpec l => l.ColorBy is not null && l.Style.Color is not null ? "Style.Color and ColorBy" : null,
+            StepLayerSpec s => s.ColorBy is not null && s.Style.Color is not null ? "Style.Color and ColorBy" : null,
+            RuleLayerSpec r => r.ColorBy is not null && r.Style.Color is not null ? "Style.Color and ColorBy" : null,
+            SegmentLayerSpec s => s.ColorBy is not null && s.Style.Color is not null ? "Style.Color and ColorBy" : null,
+            ErrorBarLayerSpec e => e.ColorBy is not null && e.Style.Color is not null ? "Style.Color and ColorBy" : null,
+            AreaLayerSpec a => Fill(a.Fill, a.FillBy, a.ColorBy) ?? Outline(a.Outline, a.ColorBy),
+            BandLayerSpec b => Fill(b.Fill, b.FillBy, b.ColorBy) ?? Outline(b.Outline, b.ColorBy),
+            BarLayerSpec b => Fill(b.Fill, b.FillBy, b.ColorBy),
+            RectLayerSpec r => Fill(r.Fill, r.FillBy, r.ColorBy),
+            _ => null,
+        };
+        if (conflict is not null)
+        {
+            throw new ArgumentException(
+                $"Layer {index} has both {conflict}; a constant color and a channel do not color the same thing (design §4.1)."
+            );
+        }
+
+        static string? Fill(Color? fill, ColumnRef? fillBy, ColumnRef? colorBy) =>
+            fill is null ? null
+            : fillBy is not null ? "Fill and FillBy"
+            : colorBy is not null ? "Fill and ColorBy"
+            : null;
+
+        static string? Outline(StrokeSpec? outline, ColumnRef? colorBy) =>
+            outline is { Color: not null } && colorBy is not null ? "Outline's color and ColorBy" : null;
     }
 
     /// <summary>
@@ -227,6 +371,27 @@ internal abstract class LayerPlan
         if (before is CustomLayerSpec custom)
         {
             return !ReferenceEquals(custom.Geom, ((CustomLayerSpec)after).Geom);
+        }
+
+        // A color column splits the layer or colors its elements (design §4.8, row G7c): another one, or a split layer's
+        // outline coming or going, makes its parts again.
+        if (before.ColorBy != after.ColorBy || before.FillBy != after.FillBy)
+        {
+            return true;
+        }
+
+        if (SplitPlan.Splits(after))
+        {
+            var outlineChanged = (before, after) switch
+            {
+                (AreaLayerSpec old, AreaLayerSpec next) => (old.Outline is null) != (next.Outline is null),
+                (BandLayerSpec old, BandLayerSpec next) => (old.Outline is null) != (next.Outline is null),
+                _ => false,
+            };
+            if (outlineChanged)
+            {
+                return true;
+            }
         }
 
         foreach (var ofX in (ReadOnlySpan<bool>)[true, false])
@@ -290,6 +455,9 @@ internal abstract class LayerPlan
         return false;
     }
 
+    /// <summary>Takes a new node of the same columns (row G7c): a split layer passes it on to its parts.</summary>
+    protected virtual void OnSpecChanged(LayerSpec before, LayerSpec after) { }
+
     /// <summary>Waits until the statistics the layer's searches need are there, and checks its sorted columns' order.</summary>
     public virtual void WaitForIndexes(PlotWorkerPool pool) { }
 
@@ -307,6 +475,22 @@ internal abstract class LayerPlan
 
     /// <summary>Returns a spec's stroke with its color, or the series color when it has none (design §4.1).</summary>
     protected LineStyle Stroke(in StrokeSpec stroke) => stroke.Resolve(SeriesColor);
+
+    /// <summary>Gets the numeric column that colors each element of a bar or a rect layer, or null (design §4.1, row G7c).</summary>
+    protected Column? ElementColors => (Spec.FillBy ?? Spec.ColorBy) is { Column: { } column and not CategoricalColumn } ? column : null;
+
+    /// <summary>
+    /// Returns a layer's columns and, after them, its column of element colors (row G7c, PR #173's review): its versions
+    /// decide too whether the layer learns and records again.
+    /// </summary>
+    protected Column[] AndColors(params Column[] columns) => ElementColors is { } colors ? [.. columns, colors] : columns;
+
+    /// <summary>Returns an element's color through the plot's color scale, or null when its value is NaN (design §4.1).</summary>
+    protected Color? ElementColor(Column column, long index)
+    {
+        var value = column.DifferenceAt(index, 0);
+        return double.IsNaN(value) ? null : Colors!.Of(value);
+    }
 
     /// <summary>
     /// Returns a spec's fill, or the series color when it has none (design §4.1): at alpha 128 for an area or a band, which
@@ -365,13 +549,22 @@ internal abstract class LayerPlan
 }
 
 /// <summary>What a layer's plan needs from the plan while it is made: the shared pyramids and the M4 batch.</summary>
-internal sealed class PlanBuild(Func<Column, PlotPyramid> pyramid, M4Batch batch, int capacity)
+internal sealed class PlanBuild(Func<Column, PlotPyramid> pyramid, Func<Column, PlotPyramid?> held, M4Batch batch, int capacity, PlotWorkerPool pool)
 {
+    /// <summary>Gets the workers that split layers find their categories' runs and gather their rows on (row G7c).</summary>
+    public PlotWorkerPool Pool => pool;
+
+    /// <summary>Returns the pyramid the plan holds over a column, or null (row G7c).</summary>
+    public PlotPyramid? Held(Column column) => held(column);
+
     /// <summary>Adds a series of an X column over a Y column's pyramid, and returns its number and its output.</summary>
-    public (int Series, M4Point[] Output) AddSeries(Column x, Column y)
+    public (int Series, M4Point[] Output) AddSeries(Column x, Column y) => AddSeries(x, y, RowRange.All);
+
+    /// <summary>Adds a series of a run of rows (row G7c): the series of a category whose rows lie in one run.</summary>
+    public (int Series, M4Point[] Output) AddSeries(Column x, Column y, RowRange rows)
     {
         var output = new M4Point[capacity];
-        return (pyramid(y).AddTo(batch, x, output), output);
+        return (pyramid(y).AddTo(batch, x, output, rows), output);
     }
 }
 

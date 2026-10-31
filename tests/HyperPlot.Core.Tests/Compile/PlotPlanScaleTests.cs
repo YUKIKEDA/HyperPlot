@@ -441,11 +441,12 @@ public sealed class PlotPlanScaleTests
 
     /// <summary>
     /// Once warm, drawing the same spec again and switching a transformed x between two domains allocate nothing, for log,
-    /// symlog, and pow (design §4.2, §4.8, invariant 3).
+    /// symlog, and pow, and for a time scale, whose columns the compile checks on every Render (design §4.2, §4.8, invariant 3).
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - For each of log, symlog, and pow: a plan that rendered an x of the kind over two domains given, twice each.
+    /// - For each of log, symlog, pow, and time (in seconds, over a long column): a plan that rendered an x of the kind over
+    ///   two domains given, twice each.
     ///
     /// Steps:
     /// - Count the bytes this thread allocates over 20 Render calls of one of the specs, then over 20 that alternate the two.
@@ -459,12 +460,23 @@ public sealed class PlotPlanScaleTests
         using var pool = new PlotWorkerPool(1);
         using var y = Column.Wrap(Enumerable.Range(1, Length).Select(i => (float)Math.Sin(i * 1e-3)).ToArray());
         var spec = Spec(Column.Uniform(1, 1, Length), y);
+        var time = Spec(Column.UniformInteger(1, 1, Length), y);
         foreach (
             var zooms in new PlotSpec[][]
             {
                 [spec with { ScaleX = Scale.Log().WithDomain(10, 1000) }, spec with { ScaleX = Scale.Log().WithDomain(100, 40_000) }],
                 [spec with { ScaleX = Scale.Symlog(2).WithDomain(10, 1000) }, spec with { ScaleX = Scale.Symlog(2).WithDomain(100, 40_000) }],
                 [spec with { ScaleX = Scale.Pow(0.5).WithDomain(10, 1000) }, spec with { ScaleX = Scale.Pow(0.5).WithDomain(100, 40_000) }],
+                [
+                    time with
+                    {
+                        ScaleX = Scale.Time(TimeUnit.Seconds).WithDomain(10, 1000),
+                    },
+                    time with
+                    {
+                        ScaleX = Scale.Time(TimeUnit.Seconds).WithDomain(100, 40_000),
+                    },
+                ],
             }
         )
         {

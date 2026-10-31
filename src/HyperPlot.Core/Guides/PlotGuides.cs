@@ -22,6 +22,7 @@ internal sealed class PlotGuides
     private readonly Vector2[] _segment = new Vector2[2];
     private Vector2[] _curve = new Vector2[256];
     private CategoricalColumn? _categories;
+    private ColorScale? _color;
 
     internal PlotGuides(TextEngine text, float scale, int width, int height)
     {
@@ -30,7 +31,15 @@ internal sealed class PlotGuides
         X.Labels = _labels;
         Y.Text = text;
         Y.Labels = _labels;
+        ColorBar.Text = text;
+        ColorBar.Labels = _labels;
     }
+
+    /// <summary>Gets the ticks of the color bar (row G7c): along its length, from the domain's low end at the bottom.</summary>
+    internal TickAxis ColorBar { get; } = new();
+
+    /// <summary>Gets the color bar's length in pixels, Lc (design §4.6); 0 without a continuous color scale.</summary>
+    internal int ColorBarLength { get; private set; }
 
     /// <summary>Gets the ticks of x.</summary>
     internal TickAxis X { get; } = new();
@@ -76,9 +85,18 @@ internal sealed class PlotGuides
     /// domains nice widens. The domains are the learned ones in the scale space; nice applies to a scale that asks for it
     /// and whose domain is learned. The tick spacings go with the sides: <see cref="Theme.TickSpacingX"/> on the bottom.
     /// </summary>
-    internal void Layout(PlotSpec spec, IScale? xTransform, ScaleRange x, IScale? yTransform, ScaleRange y, CategoricalColumn? categories)
+    internal void Layout(
+        PlotSpec spec,
+        IScale? xTransform,
+        ScaleRange x,
+        IScale? yTransform,
+        ScaleRange y,
+        CategoricalColumn? categories,
+        ColorScale? color = null
+    )
     {
         _categories = categories;
+        _color = color;
         var theme = spec.Theme;
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
         (Polar, ThetaBand, X.Circular, Y.Circular) = (null, 0, false, false);
@@ -100,13 +118,6 @@ internal sealed class PlotGuides
         var (figureRight, figureBottom) = (_width - padding, _height - padding);
 
         var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
-        var legendBand = 0;
-        var legendWidth = LegendWidth(spec, theme);
-        if (legendWidth > 0)
-        {
-            legendBand = Ceiling(Round(theme.LegendSwatch) + gap + legendWidth) + gap;
-        }
-
         var tickStyle = Style(theme, theme.TickLabelSize);
         var titleStyle = Style(theme, theme.AxisTitleSize);
         var lineHeight = _text.Measure("0", tickStyle).Height;
@@ -117,8 +128,11 @@ internal sealed class PlotGuides
             bottomBand = tick + gap + Ceiling(lineHeight) + (HasText(bottomScale.Title) ? gap + Ceiling(titleHeight) : 0);
         }
 
+        // The bottom band does not depend on ticks, so the panel's height is known before the legend: the color bar's length
+        // comes from it, and its ticks' labels from that (design §4.6, row G7c).
         Top = figureTop + titleBand;
         Height = figureBottom - bottomBand - Top;
+        var legendBand = LegendBand(spec, theme, gap, tick, Height, tickStyle, lineHeight);
         Prepare(side, sideScale, sideTransform, sideDomain, Height, theme.TickSpacingY, tickStyle, lineHeight, theme);
         var sideBand = 0;
         if (theme.ShowAxes)
@@ -238,19 +252,84 @@ internal sealed class PlotGuides
             theme.Locale
         );
 
-    private float LegendWidth(PlotSpec spec, Theme theme)
+    /// <summary>
+    /// Returns the legend's band on the right (design §4.6): the swatch, a gap, and the widest label of the layers' rows and
+    /// the color rows, or the color bar's width with its ticks' labels, the wider, and a gap; 0 without a legend.
+    /// </summary>
+    private int LegendBand(PlotSpec spec, Theme theme, int gap, int tick, int panelHeight, in TextStyle tickStyle, float lineHeight)
     {
         var widest = 0f;
         var style = Style(theme, theme.LegendSize);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            if (spec.Layers[i].Label is { Length: > 0 } label)
+            if (spec.Layers[i].Label is { Length: > 0 } label && !SplitPlan.Splits(spec.Layers[i]))
             {
                 widest = MathF.Max(widest, _text.Measure(label, style).Width);
             }
         }
 
-        return widest;
+        ColorBarLength = 0;
+        var bar = 0;
+        if (_color is { } color && Categories(spec) is { } categories)
+        {
+            // The categories' rows, and the scale's title above them (design §4.6, row G7c).
+            widest = TitleWidth(((OrdinalScaleSpec)color.Spec).Title, style, widest);
+            for (var c = 0; c < categories.CategoryCount; c++)
+            {
+                widest = MathF.Max(widest, _text.Measure(categories.Categories[c], style).Width);
+            }
+        }
+        else if (_color is { Inner: { } inner } continuous)
+        {
+            // The color bar: as long as the panel, held between half its length and its length (Vega's 100 to 200).
+            ColorBarLength = Math.Clamp(panelHeight, Round(theme.ColorBarLength / 2), Math.Max(1, Round(theme.ColorBarLength)));
+            Prepare(
+                ColorBar,
+                new AxisScale(inner),
+                continuous.Transform,
+                continuous.Domain,
+                ColorBarLength,
+                theme.TickSpacingY,
+                tickStyle,
+                lineHeight,
+                theme,
+                legend: true
+            );
+            continuous.Domain = ColorBar.FinalDomain;
+            var labels = 0f;
+            foreach (var label in ColorBar.TickLabels)
+            {
+                labels = label.Length == 0 ? labels : MathF.Max(labels, _text.Measure(label, tickStyle).Width);
+            }
+
+            bar = Math.Max(Round(theme.ColorBarThickness) + tick + gap + Ceiling(labels), Ceiling(TitleWidth(inner.Title, style, 0)));
+        }
+
+        var rows = widest > 0 ? Ceiling(Round(theme.LegendSwatch) + gap + widest) : 0;
+        var band = Math.Max(rows, bar);
+        return band > 0 ? band + gap : 0;
+    }
+
+    private float TitleWidth(string? title, in TextStyle style, float widest) =>
+        HasText(title) ? MathF.Max(widest, _text.Measure(title!, style).Width) : widest;
+
+    /// <summary>Returns the categories the legend lists: the ordinal scale's, when a layer is split by them; else null.</summary>
+    private CategoricalColumn? Categories(PlotSpec spec)
+    {
+        if (_color is not { Categorical: true, Categories: { } categories })
+        {
+            return null;
+        }
+
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (SplitPlan.Splits(spec.Layers[i]))
+            {
+                return categories;
+            }
+        }
+
+        return null;
     }
 
     private void Prepare(
@@ -262,7 +341,8 @@ internal sealed class PlotGuides
         float spacing,
         in TextStyle style,
         float lineHeight,
-        Theme theme
+        Theme theme,
+        bool legend = false
     )
     {
         var continuous = scale.Spec as ContinuousScaleSpec;
@@ -275,7 +355,9 @@ internal sealed class PlotGuides
         axis.Style = style;
         axis.LineHeight = lineHeight;
         axis.Em = style.Size;
-        if (length < 1 || !(theme.ShowAxes || theme.ShowGrid))
+
+        // The color bar is the legend's (row G7c): its ticks stand whether the axes and the grid are shown or not.
+        if (length < 1 || !(legend || theme.ShowAxes || theme.ShowGrid))
         {
             axis.ClearCandidate();
             axis.SetFinalDomain(domain);
@@ -316,8 +398,15 @@ internal sealed class PlotGuides
         var (figureLeft, figureTop) = (padding, padding);
         var (figureRight, figureBottom) = (_width - padding, _height - padding);
         var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
-        var legendWidth = LegendWidth(spec, theme);
-        var legendBand = legendWidth > 0 ? Ceiling(Round(theme.LegendSwatch) + gap + legendWidth) + gap : 0;
+        var legendBand = LegendBand(
+            spec,
+            theme,
+            gap,
+            tick,
+            figureBottom - figureTop - titleBand,
+            Style(theme, theme.TickLabelSize),
+            _text.Measure("0", Style(theme, theme.TickLabelSize)).Height
+        );
         var tickStyle = Style(theme, theme.TickLabelSize);
         var titleStyle = Style(theme, theme.AxisTitleSize);
         var lineHeight = _text.Measure("0", tickStyle).Height;
@@ -605,8 +694,9 @@ internal sealed class PlotGuides
         {
             // An index, not foreach: the interface's enumerator would be boxed on every recording.
             var layer = spec.Layers[i];
-            if (layer.Label is not { Length: > 0 } label)
+            if (layer.Label is not { Length: > 0 } label || SplitPlan.Splits(layer))
             {
+                // A split layer's rows are its categories' (design §4.6, row G7c).
                 continue;
             }
 
@@ -630,6 +720,131 @@ internal sealed class PlotGuides
             var middle = y + (row / 2);
             list.DrawText(label, new Vector2(x + swatch + gap, middle), style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle });
             y += row;
+        }
+
+        if (Categories(spec) is { } categories)
+        {
+            RecordCategories(list, spec, theme, categories, x, y, swatch, gap, lineHeight, style);
+        }
+        else if (_color is { Inner: { } inner } && ColorBarLength > 0)
+        {
+            RecordColorBar(list, theme, inner, x, y, gap, lineHeight, style);
+        }
+    }
+
+    /// <summary>
+    /// Records the rows of the categories (design §4.6, row G7c): the ordinal scale's title, then a swatch and a name a
+    /// category, in their numbers' order. The swatch is the first split layer's, in the category's color.
+    /// </summary>
+    private void RecordCategories(
+        RenderList list,
+        PlotSpec spec,
+        Theme theme,
+        CategoricalColumn categories,
+        float x,
+        float y,
+        int swatch,
+        int gap,
+        float lineHeight,
+        in TextStyle style
+    )
+    {
+        var color = _color!;
+        if (((OrdinalScaleSpec)color.Spec).Title is { Length: > 0 } title)
+        {
+            list.DrawText(title, new Vector2(x, y + (lineHeight / 2)), style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle });
+            y += lineHeight;
+        }
+
+        LayerSpec? first = null;
+        for (var i = 0; i < spec.Layers.Count && first is null; i++)
+        {
+            first = SplitPlan.Splits(spec.Layers[i]) ? spec.Layers[i] : null;
+        }
+
+        for (var c = 0; c < categories.CategoryCount; c++)
+        {
+            var series = color.Palette.Series(c);
+            float row;
+            if (Fill(first!, series, out var fill))
+            {
+                row = lineHeight;
+                list.DrawRect(x, y, row, row, fill);
+            }
+            else
+            {
+                var sample = Scaled(Stroke(first!, series));
+                row = MathF.Max(lineHeight, sample.Width);
+                Line(list, new Vector2(x, y + (row / 2)), new Vector2(x + swatch, y + (row / 2)), sample);
+            }
+
+            list.DrawText(
+                categories.Categories[c],
+                new Vector2(x + swatch + gap, y + (row / 2)),
+                style with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Middle,
+                }
+            );
+            y += row;
+        }
+    }
+
+    /// <summary>
+    /// Records the color bar (design §4.6, row G7c): its title, then a bar of Lc rows of a pixel, each in the color of its
+    /// center's value, the domain's low end at the bottom; ticks on its right, and their labels.
+    /// </summary>
+    private void RecordColorBar(
+        RenderList list,
+        Theme theme,
+        ContinuousScaleSpec inner,
+        float x,
+        float y,
+        int gap,
+        float lineHeight,
+        in TextStyle style
+    )
+    {
+        var color = _color!;
+        if (HasText(inner.Title))
+        {
+            list.DrawText(
+                inner.Title!,
+                new Vector2(x, y + (lineHeight / 2)),
+                style with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Middle,
+                }
+            );
+            y += lineHeight;
+        }
+
+        var length = ColorBarLength;
+        var thickness = Round(theme.ColorBarThickness);
+        var (low, high) = (color.Domain.Origin + color.Domain.Lower, color.Domain.Origin + color.Domain.Upper);
+        for (var r = 0; r < length; r++)
+        {
+            // Row r from the bottom, at its center's value of the scale's space.
+            var s = low + ((high - low) * (r + 0.5) / length);
+            list.DrawRect(x, y + length - r - 1, thickness, 1, color.Map!.Map(color.Position(s)));
+        }
+
+        var tick = Round(theme.TickLength);
+        var tickStyle = Style(theme, theme.TickLabelSize) with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle };
+        var stroke = new LineStyle(theme.AxisColor, theme.TickWidth * _scale);
+        var width = Round(theme.TickWidth);
+        var pixels = ColorBar.Pixels;
+        var labels = ColorBar.TickLabels;
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            var at = Snap(y + length - pixels[i], width);
+            Line(list, new Vector2(x + thickness, at), new Vector2(x + thickness + tick, at), stroke);
+            if (labels[i].Length > 0)
+            {
+                list.DrawText(labels[i], new Vector2(x + thickness + tick + gap, at), tickStyle);
+            }
         }
     }
 

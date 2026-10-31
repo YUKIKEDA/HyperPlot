@@ -87,6 +87,34 @@ public static class Scale
         }
     }
 
+    /// <summary>Returns an ordinal color scale: category i takes the palette's color at i mod n (design §4.2, row G7c).</summary>
+    /// <param name="palette">The palette; null takes the theme's.</param>
+    /// <returns>The scale.</returns>
+    public static OrdinalScaleSpec Ordinal(Palette? palette = null) => new() { Palette = palette };
+
+    /// <summary>Returns a sequential color scale (design §4.2, row G7c).</summary>
+    /// <param name="map">The color map; null takes <see cref="ColorMaps.Viridis"/>.</param>
+    /// <param name="scale">The continuous scale of the transform and the domain; null takes <see cref="Linear"/>.</param>
+    /// <returns>The scale.</returns>
+    public static SequentialScaleSpec Sequential(ColorMap? map = null, ContinuousScaleSpec? scale = null) =>
+        new(map ?? ColorMaps.Viridis, scale ?? Linear());
+
+    /// <summary>Returns a diverging color scale (design §4.2, row G7c).</summary>
+    /// <param name="map">The color map; null takes <see cref="ColorMaps.RdBu"/>.</param>
+    /// <param name="mid">The middle in data units, finite; null takes the middle of the domain.</param>
+    /// <param name="scale">The continuous scale of the transform and the domain; null takes <see cref="Linear"/>.</param>
+    /// <returns>The scale.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="mid"/> is not finite.</exception>
+    public static DivergingScaleSpec Diverging(ColorMap? map = null, double? mid = null, ContinuousScaleSpec? scale = null)
+    {
+        if (mid is { } value && !double.IsFinite(value))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mid), value, "The middle must be finite.");
+        }
+
+        return new(map ?? ColorMaps.RdBu, scale ?? Linear()) { Mid = mid };
+    }
+
     private static void CheckPositive(double value, string name)
     {
         if (!double.IsFinite(value) || !(value > 0))

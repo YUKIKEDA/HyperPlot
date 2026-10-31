@@ -139,11 +139,31 @@ public sealed class PlotWorkerPool : IDisposable
         return work.Completion;
     }
 
+    /// <summary>Runs a pass over chunks on the workers (row G7c) and returns the task of its end; no chunks end at once.</summary>
+    internal Task RunChunks(int chunks, Action<int> build)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (chunks == 0)
+        {
+            return Task.CompletedTask;
+        }
+
+        var work = new ChunkWork(this, chunks, build);
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            _works = [.. _works, work];
+        }
+
+        Wake();
+        return work.Completion;
+    }
+
     /// <summary>
     /// Starts the pass that finds each category's least and greatest y (design §5.5.3, row G7b): a chunk of the Y column a
     /// worker turn, at the version the column has now. A Y column of no chunk ends at once.
     /// </summary>
-    internal CategoryExtremes StartCategoryExtremes<T>(CategoricalColumn x, Column<T> y)
+    internal CategoryExtremes StartCategoryExtremes<T>(CategoricalColumn x, Column<T> y, RowRange rows)
         where T : unmanaged, INumber<T>
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -154,7 +174,7 @@ public sealed class PlotWorkerPool : IDisposable
             return result;
         }
 
-        var work = new CategoryExtremesWork<T>(this, x, y, result);
+        var work = new CategoryExtremesWork<T>(this, x, y, result, rows);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);

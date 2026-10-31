@@ -58,12 +58,13 @@ internal sealed class CategoryExtremesWork<T> : PoolWork
     private readonly CategoricalColumn _x;
     private readonly Column<T> _y;
     private readonly CategoryExtremes _result;
+    private readonly RowRange _rows;
     private int _next;
     private int _remaining;
 
-    internal CategoryExtremesWork(PlotWorkerPool pool, CategoricalColumn x, Column<T> y, CategoryExtremes result)
+    internal CategoryExtremesWork(PlotWorkerPool pool, CategoricalColumn x, Column<T> y, CategoryExtremes result, RowRange rows)
     {
-        (_pool, _x, _y, _result) = (pool, x, y, result);
+        (_pool, _x, _y, _result, _rows) = (pool, x, y, result, rows);
         _remaining = y.ChunkCount;
     }
 
@@ -93,7 +94,14 @@ internal sealed class CategoryExtremesWork<T> : PoolWork
             high.Fill(double.NaN);
             var codes = _x.GetCodes(chunk);
             var values = _y.GetChunk(chunk);
-            for (var i = 0; i < values.Length; i++)
+
+            // The rows of the chunk inside the layer's run (row G7c): all of them unless split by color.
+            var start = (long)chunk << Column.ChunkShift;
+            var (from, to) = (
+                (int)Math.Clamp(_rows.Start - start, 0, values.Length),
+                (int)Math.Clamp(_rows.EndIn(_y.Length) - start, 0, values.Length)
+            );
+            for (var i = from; i < to; i++)
             {
                 var code = codes[i];
                 var value = double.CreateTruncating(values[i]);
