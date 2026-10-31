@@ -61,7 +61,7 @@ public sealed class GeomRenderTests
                 x,
                 table.Col<double>("area"),
                 0,
-                a => a.Fill(new Color(44, 160, 44, 110)).Outline(new LineStyle(new Color(20, 100, 20, 255), 1.5f)).Label("area")
+                a => a.Fill(new Color(44, 160, 44, 110)).Outline(new StrokeSpec(new Color(20, 100, 20, 255), 1.5f)).Label("area")
             )
             .Bar(x, table.Col<double>("bar"), 0, 3, b => b.Fill(new Color(214, 39, 40, 200)).Label("bar"))
             .Rect(

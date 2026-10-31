@@ -7,8 +7,12 @@ namespace HyperPlot.Tests;
 /// <summary>The learning and the recording of row G4's geoms (design §4.2, §5.5.3, §10 G4 row).</summary>
 public sealed class GeomPlanTests
 {
-    private static readonly LineStyle Black = new(new Color(0, 0, 0, 255), 1);
-    private static readonly Color Fill = new(0, 0, 0, 128);
+    // A layer whose spec gives no color takes the first series color (design §4.1, row G7a): its strokes, an area's fill at
+    // alpha 128, and a bar's fill opaque.
+    private static readonly Color Series = Palettes.Tab10[0];
+    private static readonly LineStyle Stroke = new(Series, 1);
+    private static readonly Color AreaFill = Series with { A = 128 };
+    private static readonly Color BarFill = Series;
     private static readonly double[] EdgeXs = [0.5, 3.5];
     private static readonly double[] RuleXs = [10.5, 30.25];
     private static readonly double[] GapXs = [0.5, 1.5, 2.5, 3.5];
@@ -161,7 +165,7 @@ public sealed class GeomPlanTests
                 )
             );
             var expected = Expected();
-            expected.DrawPolyline(points, Black);
+            expected.DrawPolyline(points, Stroke);
             AssertSameList(expected, actual);
         }
     }
@@ -283,7 +287,7 @@ public sealed class GeomPlanTests
         using var x = Column.Wrap(EdgeXs);
         using var y = Column.Wrap(new double[] { 20, 50 });
         var table = DataTable.Create().Add("x", x).Add("y", y).Build();
-        var outline = new LineStyle(new Color(200, 0, 0, 255), 2);
+        var outline = new StrokeSpec(new Color(200, 0, 0, 255), 2);
         var area = new AreaLayerSpec
         {
             X = table.Col<double>("x"),
@@ -295,9 +299,9 @@ public sealed class GeomPlanTests
         var expected = Expected();
         expected.DrawColumns(
             [new(0.5f, 1, 75, 75, 100, 100), new(1, 2, 75, 65, 100, 100), new(2, 3, 65, 55, 100, 100), new(3, 3.5f, 50, 50, 100, 100)],
-            Fill
+            AreaFill
         );
-        expected.DrawPolyline([new(0.5f, 80), new(3.5f, 50)], outline);
+        expected.DrawPolyline([new(0.5f, 80), new(3.5f, 50)], outline.Resolve(default));
         AssertSameList(expected, plan.Render(Spec(table, area)));
 
         Assert.Equal(
@@ -484,10 +488,10 @@ public sealed class GeomPlanTests
         var fewTable = DataTable.Create().Add("x", Column.Uniform(10, 20, 4)).Add("y", few).Build();
         using var plan = TestPlans.Create(pool, Size, Size);
         var expected = Expected();
-        expected.DrawRect(1, 70, 18, 20, Fill);
-        expected.DrawRect(21, 90, 18, 5, Fill);
-        expected.DrawRect(41, 50, 18, 40, Fill);
-        expected.DrawRect(61, 90, 18, 0, Fill);
+        expected.DrawRect(1, 70, 18, 20, BarFill);
+        expected.DrawRect(21, 90, 18, 5, BarFill);
+        expected.DrawRect(41, 50, 18, 40, BarFill);
+        expected.DrawRect(61, 90, 18, 0, BarFill);
         AssertSameList(
             expected,
             plan.Render(
@@ -512,12 +516,12 @@ public sealed class GeomPlanTests
             var inside = values[(c * 8)..((c + 1) * 8)];
             if (inside.Max() > 50)
             {
-                columns.DrawRect(c, (float)(100 - inside.Max()), 1, (float)(inside.Max() - 50), Fill);
+                columns.DrawRect(c, (float)(100 - inside.Max()), 1, (float)(inside.Max() - 50), BarFill);
             }
 
             if (inside.Min() < 50)
             {
-                columns.DrawRect(c, 50, 1, (float)(50 - inside.Min()), Fill);
+                columns.DrawRect(c, 50, 1, (float)(50 - inside.Min()), BarFill);
             }
         }
 
@@ -638,11 +642,11 @@ public sealed class GeomPlanTests
                 new(53, 30),
                 nan,
             ],
-            Black
+            Stroke
         );
         AssertSameList(capped, plan.Render(Spec(table, layer)));
         var bare = Expected();
-        bare.DrawPolyline([new(20, 90), new(20, 70), nan, new(50, 60), new(50, 30), nan], Black);
+        bare.DrawPolyline([new(20, 90), new(20, 70), nan, new(50, 60), new(50, 30), nan], Stroke);
         AssertSameList(bare, plan.Render(Spec(table, layer with { CapWidth = 0 })));
         using var scaled = new PlotPlan(pool, Size, Size, new TextEngine(new FakeTextBackend()), 1.5f);
         var wide = Expected();
@@ -667,7 +671,7 @@ public sealed class GeomPlanTests
                 new(54.5f, 30),
                 nan,
             ],
-            Black with
+            Stroke with
             {
                 Width = 1.5f,
             }
@@ -737,10 +741,10 @@ public sealed class GeomPlanTests
         using var plan = TestPlans.Create(pool, Size, Size);
 
         var vertical = Expected();
-        vertical.DrawPolyline([new(10.5f, 0), new(10.5f, 100), nan, new(30.25f, 0), new(30.25f, 100), nan], Black);
+        vertical.DrawPolyline([new(10.5f, 0), new(10.5f, 100), nan, new(30.25f, 0), new(30.25f, 100), nan], Stroke);
         AssertSameList(vertical, plan.Render(Spec(table, new RuleLayerSpec { X = table.Col<double>("few") })));
         var horizontal = Expected();
-        horizontal.DrawPolyline([new(0, 80), new(100, 80), nan, new(0, 40), new(100, 40), nan], Black);
+        horizontal.DrawPolyline([new(0, 80), new(100, 80), nan, new(0, 40), new(100, 40), nan], Stroke);
         AssertSameList(horizontal, plan.Render(Spec(table, new RuleLayerSpec { Y = table.Col<double>("fy") })));
 
         var columns = SegmentsOf(plan.Render(Spec(manyTable, new RuleLayerSpec { X = manyTable.Col<double>("many") })), 0);

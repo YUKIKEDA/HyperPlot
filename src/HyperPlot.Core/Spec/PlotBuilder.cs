@@ -49,7 +49,7 @@ public sealed class PlotBuilder
 
         var style = new LineBuilder();
         configure?.Invoke(style);
-        RenderList.ValidateStyle(style.Style);
+        RenderList.ValidateStyle(style.Style.Resolve(default));
         _layers.Add(
             new LineLayerSpec
             {
@@ -506,7 +506,7 @@ public sealed class PlotBuilder
     {
         var style = new LineBuilder();
         configure?.Invoke(style);
-        RenderList.ValidateStyle(style.Style);
+        RenderList.ValidateStyle(style.Style.Resolve(default));
         return style;
     }
 
@@ -516,7 +516,7 @@ public sealed class PlotBuilder
         configure?.Invoke(area);
         if (area.OutlineStyle is { } outline)
         {
-            RenderList.ValidateStyle(outline);
+            RenderList.ValidateStyle(outline.Resolve(default));
         }
 
         return area;

@@ -617,7 +617,7 @@ public sealed class PlotPlanScaleTests
 
         // The plan clips its data to the panel, here the whole target (row G3, design §4.8).
         list.SetClip(0, 0, Width, Height);
-        list.DrawPolyline(polyline.ToArray(), new LineStyle(new Color(0, 0, 0, 255), 1));
+        list.DrawPolyline(polyline.ToArray(), new LineStyle(Palettes.Tab10[0], 1));
         return list;
     }
 

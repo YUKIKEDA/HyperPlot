@@ -24,7 +24,7 @@ public sealed class GeomBuilderTests
     {
         var table = Table();
         var (t, a, b, c) = (table.Col<double>("t"), table.Col<float>("a"), table.Col<float>("b"), table.Col<float>("c"));
-        var outline = new LineStyle(Red, 2);
+        var outline = new StrokeSpec(Red, 2);
         var geom = new NoGeom();
 
         var plot = Plot.Create(table)
@@ -44,9 +44,9 @@ public sealed class GeomBuilderTests
         var step = Assert.IsType<StepLayerSpec>(plot.Layers[0]);
         Assert.Equal((t.ToColumnRef(), a.ToColumnRef(), StepMode.Middle, Red), (step.X, step.Y, step.Mode, step.Style.Color));
         var area = Assert.IsType<AreaLayerSpec>(plot.Layers[1]);
-        Assert.Equal((2d, Red, (LineStyle?)outline), (area.Baseline, area.Fill, area.Outline));
+        Assert.Equal((2d, Red, (StrokeSpec?)outline), (area.Baseline, area.Fill, area.Outline));
         var band = Assert.IsType<BandLayerSpec>(plot.Layers[2]);
-        Assert.Equal((a.ToColumnRef(), b.ToColumnRef(), Red, (LineStyle?)outline), (band.YMin, band.YMax, band.Fill, band.Outline));
+        Assert.Equal((a.ToColumnRef(), b.ToColumnRef(), Red, (StrokeSpec?)outline), (band.YMin, band.YMax, band.Fill, band.Outline));
         var bar = Assert.IsType<BarLayerSpec>(plot.Layers[3]);
         Assert.Equal((-1d, (double?)0.5, Red), (bar.Baseline, bar.Width, bar.Fill));
         var rect = Assert.IsType<RectLayerSpec>(plot.Layers[4]);
@@ -76,14 +76,14 @@ public sealed class GeomBuilderTests
             .ErrorBar(t, a, b)
             .Custom(geom)
             .Build();
-        var black = new LineStyle(new Color(0, 0, 0, 255), 1);
-        var half = new Color(0, 0, 0, 128);
+        var black = new StrokeSpec(null);
+        var half = (Color?)null;
         var s = (StepLayerSpec)defaults.Layers[0];
         Assert.Equal((StepMode.After, black), (s.Mode, s.Style));
         var ar = (AreaLayerSpec)defaults.Layers[1];
-        Assert.Equal((0d, half, (LineStyle?)null), (ar.Baseline, ar.Fill, ar.Outline));
+        Assert.Equal((0d, half, (StrokeSpec?)null), (ar.Baseline, ar.Fill, ar.Outline));
         var bd = (BandLayerSpec)defaults.Layers[2];
-        Assert.Equal((half, (LineStyle?)null), (bd.Fill, bd.Outline));
+        Assert.Equal((half, (StrokeSpec?)null), (bd.Fill, bd.Outline));
         var br = (BarLayerSpec)defaults.Layers[3];
         Assert.Equal((0d, (double?)null, half), (br.Baseline, br.Width, br.Fill));
         Assert.Equal(half, ((RectLayerSpec)defaults.Layers[4]).Fill);
@@ -186,7 +186,9 @@ public sealed class GeomBuilderTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Plot.Create(table).VRule(t, l => l.Width(-1)));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Plot.Create(table).Segment(a, a, b, b, l => l.Width(-1)));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Plot.Create(table).ErrorBar(t, a, b, configure: l => l.Width(-1)));
-        _ = Assert.Throws<ArgumentOutOfRangeException>(() => Plot.Create(table).Area(t, a, configure: f => f.Outline(new LineStyle(Red, float.NaN))));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() =>
+            Plot.Create(table).Area(t, a, configure: f => f.Outline(new StrokeSpec(Red, float.NaN)))
+        );
         _ = Assert.Throws<ArgumentNullException>(() => Plot.Create(table).Custom(null!));
         _ = Assert.Throws<ArgumentNullException>(() => new CustomLayerSpec(null!));
     }

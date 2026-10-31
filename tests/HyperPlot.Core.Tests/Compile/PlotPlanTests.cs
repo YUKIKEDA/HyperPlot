@@ -792,7 +792,7 @@ public sealed class PlotPlanTests
 
             // The plan clips its data to the panel, here the whole target (row G3, design §4.8).
             list.SetClip(0, 0, Width, Height);
-            var styles = Spec().Layers.Cast<LineLayerSpec>().Select(l => l.Style).ToArray();
+            var styles = Spec().Layers.Cast<LineLayerSpec>().Select(l => l.Style.Resolve(default)).ToArray();
             for (var s = 0; s < 2; s++)
             {
                 var points = new List<Vector2>();

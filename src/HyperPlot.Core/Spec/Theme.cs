@@ -100,6 +100,12 @@ public sealed record Theme
     /// <summary>Gets a value indicating whether the grid lines are drawn at the ticks.</summary>
     public bool ShowGrid { get; init; } = true;
 
+    /// <summary>
+    /// Gets the series colors (design §4.1, §4.7, row G7a): a layer whose spec gives no color takes the color at its position,
+    /// around the palette. <see cref="Palettes.Tab10"/> in both themes.
+    /// </summary>
+    public Palette Palette { get; init; } = Palettes.Tab10;
+
     /// <summary>Throws unless every member is in range for a renderer of a scale (design §4.7).</summary>
     internal void Validate(float scale)
     {

@@ -279,7 +279,8 @@ public sealed class GeomCustomTests
     /// - Render.
     ///
     /// Expected:
-    /// - The last rect is square, in the area's fill; after the data, polylines in the step's stroke and in black 1 wide.
+    /// - The last rect is square, in the area's fill; after the data, polylines in the step's stroke and in the third series
+    ///   color 1 wide (the user's geom is layer 2, row G7a).
     /// </remarks>
     [Fact]
     public void Legend_SamplesByKind()
@@ -303,7 +304,7 @@ public sealed class GeomCustomTests
         var square = list.Rects[^1];
         Assert.Equal(probe.Rects[0].Color, square.Color);
         Assert.True(square.Width > 0 && square.Width == square.Height);
-        Assert.Equal([stroke, stroke, new LineStyle(new Color(0, 0, 0, 255), 1)], list.Polylines.ToArray().Select(p => p.Style));
+        Assert.Equal([stroke, stroke, new LineStyle(Palettes.Tab10[2], 1)], list.Polylines.ToArray().Select(p => p.Style));
     }
 
     /// <summary>
@@ -355,9 +356,9 @@ public sealed class GeomCustomTests
         Step(With(1, bar = bar with { Width = 3 }), (0, 1, 1));
         Step(With(1, bar = bar with { Baseline = -2 }), (0, 1, 1));
         Step(With(0, area = area with { Fill = new Color(1, 2, 3, 4) }), (0, 0, 1));
-        Step(With(0, area = area with { Outline = new LineStyle(new Color(1, 2, 3, 4), 2) }), (0, 0, 1));
+        Step(With(0, area = area with { Outline = new StrokeSpec(new Color(1, 2, 3, 4), 2) }), (0, 0, 1));
         Step(With(2, step = step with { Mode = StepMode.Before }), (0, 0, 1));
-        Step(With(2, step with { Style = new LineStyle(new Color(1, 2, 3, 4), 2) }), (0, 0, 1));
+        Step(With(2, step with { Style = new StrokeSpec(new Color(1, 2, 3, 4), 2) }), (0, 0, 1));
         Step(With(3, errorBar = errorBar with { CapWidth = 2 }), (0, 0, 1));
         Step(With(1, bar = bar with { Label = "b2" }), (0, 0, 1));
         Step(With(0, area with { Y = rz }), (0, 1, 1));
@@ -418,14 +419,14 @@ public sealed class GeomCustomTests
             {
                 X = rx,
                 Y = ry,
-                Outline = new LineStyle(new Color(0, 0, 0, 255), 1),
+                Outline = new StrokeSpec(new Color(0, 0, 0, 255), 1),
             },
             new BandLayerSpec
             {
                 X = rx,
                 YMin = ry,
                 YMax = rz,
-                Outline = new LineStyle(new Color(0, 0, 0, 255), 1),
+                Outline = new StrokeSpec(new Color(0, 0, 0, 255), 1),
             },
             new BarLayerSpec
             {

@@ -19,7 +19,6 @@ internal sealed class PlotGuides
     private readonly int _width;
     private readonly int _height;
     private readonly LabelTable _labels = new();
-    private static readonly LineStyle CustomSample = new(new Color(0, 0, 0, 255), 1);
     private readonly Vector2[] _segment = new Vector2[2];
     private Vector2[] _curve = new Vector2[256];
 
@@ -611,8 +610,10 @@ internal sealed class PlotGuides
                 continue;
             }
 
+            // The sample takes the color the layer is drawn in: the spec's, or the series color (design §4.1, row G7a).
+            var series = theme.Palette.Series(i);
             float row;
-            if (Fill(layer) is { } fill)
+            if (Fill(layer, series, out var fill))
             {
                 // A fill geom's sample is a square of the row's height in its fill (design §4.6, row G4).
                 row = lineHeight;
@@ -620,7 +621,7 @@ internal sealed class PlotGuides
             }
             else
             {
-                var sample = Scaled(Stroke(layer));
+                var sample = Scaled(Stroke(layer, series));
                 row = MathF.Max(lineHeight, sample.Width);
                 var center = y + (row / 2);
                 Line(list, new Vector2(x, center), new Vector2(x + swatch, center), sample);
@@ -632,27 +633,33 @@ internal sealed class PlotGuides
         }
     }
 
-    /// <summary>Returns the fill of a fill geom (area, band, bar, rect), or null for a geom drawn with lines.</summary>
-    private static Color? Fill(LayerSpec layer) =>
-        layer switch
+    /// <summary>
+    /// Returns whether a layer is a fill geom (area, band, bar, rect), and its fill as drawn: the spec's, or the series color,
+    /// at alpha 128 for an area or a band (design §4.1).
+    /// </summary>
+    private static bool Fill(LayerSpec layer, Color series, out Color fill)
+    {
+        (var found, fill) = layer switch
         {
-            AreaLayerSpec a => a.Fill,
-            BandLayerSpec b => b.Fill,
-            BarLayerSpec b => b.Fill,
-            RectLayerSpec r => r.Fill,
-            _ => null,
+            AreaLayerSpec a => (true, a.Fill ?? series with { A = 128 }),
+            BandLayerSpec b => (true, b.Fill ?? series with { A = 128 }),
+            BarLayerSpec b => (true, b.Fill ?? series),
+            RectLayerSpec r => (true, r.Fill ?? series),
+            _ => (false, default),
         };
+        return found;
+    }
 
-    /// <summary>Returns the stroke of a line geom's sample: its style, or black 1 wide for a user's geom.</summary>
-    private static LineStyle Stroke(LayerSpec layer) =>
+    /// <summary>Returns the stroke of a line geom's sample as drawn, or the series color 1 wide for a user's geom (design §4.1).</summary>
+    private static LineStyle Stroke(LayerSpec layer, Color series) =>
         layer switch
         {
-            LineLayerSpec l => l.Style,
-            StepLayerSpec s => s.Style,
-            RuleLayerSpec r => r.Style,
-            SegmentLayerSpec s => s.Style,
-            ErrorBarLayerSpec e => e.Style,
-            _ => CustomSample,
+            LineLayerSpec l => l.Style.Resolve(series),
+            StepLayerSpec s => s.Style.Resolve(series),
+            RuleLayerSpec r => r.Style.Resolve(series),
+            SegmentLayerSpec s => s.Style.Resolve(series),
+            ErrorBarLayerSpec e => e.Style.Resolve(series),
+            _ => new LineStyle(series, 1),
         };
 
     private void Line(RenderList list, Vector2 from, Vector2 to, in LineStyle style)

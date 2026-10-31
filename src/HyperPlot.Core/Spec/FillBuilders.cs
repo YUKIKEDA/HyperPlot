@@ -7,11 +7,11 @@ public sealed class AreaBuilder
 {
     internal AreaBuilder() { }
 
-    /// <summary>Gets the fill set so far.</summary>
-    internal Color FillColor { get; private set; } = new(0, 0, 0, 128);
+    /// <summary>Gets the fill set so far: null for the layer's series color (design §4.1).</summary>
+    internal Color? FillColor { get; private set; }
 
     /// <summary>Gets the outline set so far.</summary>
-    internal LineStyle? OutlineStyle { get; private set; }
+    internal StrokeSpec? OutlineStyle { get; private set; }
 
     /// <summary>Gets the label set so far.</summary>
     internal string? LabelText { get; private set; }
@@ -26,9 +26,9 @@ public sealed class AreaBuilder
     }
 
     /// <summary>Sets the outline.</summary>
-    /// <param name="outline">The stroke in DIPs, or null for none.</param>
+    /// <param name="outline">The stroke in DIPs, or null for none. Without a color, it takes the layer's series color.</param>
     /// <returns>This builder.</returns>
-    public AreaBuilder Outline(LineStyle? outline)
+    public AreaBuilder Outline(StrokeSpec? outline)
     {
         OutlineStyle = outline;
         return this;
@@ -49,8 +49,8 @@ public sealed class FillBuilder
 {
     internal FillBuilder() { }
 
-    /// <summary>Gets the fill set so far.</summary>
-    internal Color FillColor { get; private set; } = new(0, 0, 0, 128);
+    /// <summary>Gets the fill set so far: null for the layer's series color (design §4.1).</summary>
+    internal Color? FillColor { get; private set; }
 
     /// <summary>Gets the label set so far.</summary>
     internal string? LabelText { get; private set; }
