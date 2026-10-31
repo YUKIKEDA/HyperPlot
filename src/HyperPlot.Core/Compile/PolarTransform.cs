@@ -8,7 +8,8 @@ namespace HyperPlot;
 /// outer circle and radius pixels c from 0 to R − r0, to the target's physical pixels. θ = σ · (Start + a / L · 2π), with σ
 /// 1 clockwise and −1 otherwise, measured from 12 o'clock clockwise on the target, and r = r0 + c; the point is
 /// center + r · (sin θ, −cos θ). Layers compute along × across as in cartesian (x pixels along, y pixels across); the angle
-/// is x when theta is x, and y otherwise.
+/// is x when theta is x, and y otherwise. A radius pixel below 0 lies inside the inner edge, outside the radius's domain:
+/// lines are cut where c is 0, fills are cut at c = 0, and a point there maps to NaN (design §4.4).
 /// </summary>
 internal readonly struct PolarTransform
 {
@@ -87,8 +88,12 @@ internal readonly struct PolarTransform
         return new Vector2((float)(CenterX + (r * Math.Sin(theta))), (float)(CenterY - (r * Math.Cos(theta))));
     }
 
-    /// <summary>Returns the target's point of an along × across point (x pixel, y pixel).</summary>
-    public Vector2 Map(double along, double across) => ThetaIsX ? Point(along, across) : Point(across, along);
+    /// <summary>Returns the target's point of an along × across point (x pixel, y pixel); NaN inside the inner edge (c &lt; 0).</summary>
+    public Vector2 Map(double along, double across)
+    {
+        var (a, c) = ThetaIsX ? (along, across) : (across, along);
+        return c >= 0 ? Point(a, c) : new Vector2(float.NaN);
+    }
 
     /// <summary>
     /// Returns the number of pieces a segment from (a0, c0) to (a1, c1) is cut into (design §4.4): n = max(1,
@@ -106,8 +111,10 @@ internal readonly struct PolarTransform
 
     /// <summary>
     /// Writes a polyline of along × across points as target points, each segment cut into <see cref="Pieces"/> pieces of
-    /// equal steps in the stretched space; a point that is not finite breaks the line and is written as NaN. Grows the output
-    /// to twice its size when it is short, and returns the number of points written.
+    /// equal steps in the stretched space; a point that is not finite breaks the line and is written as NaN. The parts with
+    /// a radius pixel below 0 are left out: a segment that crosses c = 0 is cut there, exactly, since c runs linearly along
+    /// it, and the line breaks (design §4.4). Grows the output to twice its size when it is short, and returns the number of
+    /// points written.
     /// </summary>
     public int Polyline(ReadOnlySpan<Vector2> points, ref Vector2[] output)
     {
@@ -123,17 +130,33 @@ internal readonly struct PolarTransform
                 continue;
             }
 
-            if (has)
+            if (!has)
             {
-                var n = Pieces(lastA, lastC, a, c);
-                for (var k = 1; k < n; k++)
+                if (c >= 0)
                 {
-                    var t = (double)k / n;
-                    Put(ref output, ref count, Point(lastA + ((a - lastA) * t), lastC + ((c - lastC) * t)));
+                    Put(ref output, ref count, Point(a, c));
+                }
+            }
+            else if (lastC >= 0 && c >= 0)
+            {
+                Follow(lastA, lastC, a, c, ref output, ref count);
+            }
+            else if (lastC >= 0 || c >= 0)
+            {
+                // The segment crosses the inner edge: c = 0 at the share t of its length.
+                var cut = lastA + ((a - lastA) * (lastC / (lastC - c)));
+                if (lastC >= 0)
+                {
+                    Follow(lastA, lastC, cut, 0, ref output, ref count);
+                    Put(ref output, ref count, new Vector2(float.NaN));
+                }
+                else
+                {
+                    Put(ref output, ref count, Point(cut, 0));
+                    Follow(cut, 0, a, c, ref output, ref count);
                 }
             }
 
-            Put(ref output, ref count, Point(a, c));
             (lastA, lastC, has) = (a, c, true);
         }
 
@@ -159,7 +182,8 @@ internal readonly struct PolarTransform
 
     /// <summary>
     /// Writes the polar trapezoid of a rectangle of the stretched space between two x pixels and two y pixels, in either
-    /// order; returns false when a value is not finite. An angle span past a full turn is cut to one.
+    /// order; returns false when a value is not finite or the rectangle lies inside the inner edge. An angle span past a full
+    /// turn is cut to one, and radius pixels below 0 to 0.
     /// </summary>
     public bool Rect(double x0, double x1, double y0, double y1, out SectorTrapezoid sector)
     {
@@ -171,34 +195,67 @@ internal readonly struct PolarTransform
 
         var (a0, a1, c0, c1) = ThetaIsX ? (x0, x1, y0, y1) : (y0, y1, x0, x1);
         (a0, a1) = (Math.Min(a0, a1), Math.Max(a0, a1));
-        (c0, c1) = (Math.Min(c0, c1), Math.Max(c0, c1));
+        (c0, c1) = (Math.Max(0, Math.Min(c0, c1)), Math.Max(c0, c1));
+        if (!(c1 > 0))
+        {
+            return false;
+        }
+
         sector = Sector(a0, Math.Min(a1, a0 + FullTurn), c1, c1, c0, c0);
         return true;
     }
 
     /// <summary>
     /// Writes the polar trapezoids of a column trapezoid of the stretched space (sides along x, edges in y) and returns how
-    /// many: one when x is the angle; when y is, the region cut where its edges cross and then into slabs between its
-    /// corners' angles, whose radii run linearly in the angle (at most 6).
+    /// many, the part inside the inner edge (c &lt; 0) left out. When x is the angle: up to three, cut where an edge crosses
+    /// c = 0, each edge raised to 0 where it is below. When y is: the sides raised to c = 0, the region cut where its edges
+    /// cross and then into slabs between its corners' angles, whose radii run linearly in the angle (at most 6).
     /// </summary>
     public int Columns(in ColumnTrapezoid column, Span<SectorTrapezoid> output)
     {
+        var (c0, c1) = ((double)column.Left, (double)column.Right);
+        var (e0, e1, f0, f1) = ((double)column.TopLeft, (double)column.TopRight, (double)column.BottomLeft, (double)column.BottomRight);
         if (ThetaIsX)
         {
-            output[0] = Sector(
-                column.Left,
-                Math.Min(column.Right, column.Left + FullTurn),
-                column.TopLeft,
-                column.TopRight,
-                column.BottomLeft,
-                column.BottomRight
-            );
-            return 1;
+            // Between the cuts, each edge keeps one sign, so raising it to 0 keeps it straight.
+            Span<double> cuts = [c0, Cross(c0, c1, e0, e1), Cross(c0, c1, f0, f1), Math.Min(c1, c0 + FullTurn)];
+            cuts[1..3].Sort();
+            var count = 0;
+            for (var i = 0; i < 3; i++)
+            {
+                var (from, to) = (cuts[i], cuts[i + 1]);
+                if (!(to > from))
+                {
+                    continue;
+                }
+
+                var (s, u) = ((from - c0) / (c1 - c0), (to - c0) / (c1 - c0));
+                var (top0, top1) = (Math.Max(0, e0 + ((e1 - e0) * s)), Math.Max(0, e0 + ((e1 - e0) * u)));
+                var (bottom0, bottom1) = (Math.Max(0, f0 + ((f1 - f0) * s)), Math.Max(0, f0 + ((f1 - f0) * u)));
+                if (top0 == bottom0 && top1 == bottom1)
+                {
+                    continue;
+                }
+
+                output[count++] = Sector(from, to, top0, top1, bottom0, bottom1);
+            }
+
+            return count;
+        }
+
+        // The sides along the radius: the part below c = 0 left out.
+        if (!(c1 > 0))
+        {
+            return 0;
+        }
+
+        if (c0 < 0)
+        {
+            var t0 = -c0 / (c1 - c0);
+            (e0, f0, c0) = (e0 + ((e1 - e0) * t0), f0 + ((f1 - f0) * t0), 0);
         }
 
         // The edges as functions of the radius pixel; split where they cross, so that each part has one edge below.
-        var (c0, c1) = ((double)column.Left, (double)column.Right);
-        var (e0, e1, f0, f1) = ((double)column.TopLeft, (double)column.TopRight, (double)column.BottomLeft, (double)column.BottomRight);
         var (d0, d1) = (e0 - f0, e1 - f1);
         if ((d0 < 0 && d1 > 0) || (d0 > 0 && d1 < 0))
         {
@@ -209,6 +266,19 @@ internal readonly struct PolarTransform
         }
 
         return d0 + d1 <= 0 ? Part(c0, c1, e0, e1, f0, f1, output) : Part(c0, c1, f0, f1, e0, e1, output);
+    }
+
+    /// <summary>Writes the pieces' points of the curve from (a0, c0), already written, to (a1, c1).</summary>
+    private void Follow(double a0, double c0, double a1, double c1, ref Vector2[] output, ref int count)
+    {
+        var n = Pieces(a0, c0, a1, c1);
+        for (var k = 1; k < n; k++)
+        {
+            var t = (double)k / n;
+            Put(ref output, ref count, Point(a0 + ((a1 - a0) * t), c0 + ((c1 - c0) * t)));
+        }
+
+        Put(ref output, ref count, Point(a1, c1));
     }
 
     private static void Put(ref Vector2[] output, ref int count, Vector2 point)
@@ -279,6 +349,13 @@ internal readonly struct PolarTransform
             }
         }
     }
+
+    /// <summary>
+    /// Returns the angle pixel inside (a0, a1) where an edge from v0 to v1 crosses c = 0, or a0 when it does not cross
+    /// there (a cut at a0 adds nothing).
+    /// </summary>
+    private static double Cross(double a0, double a1, double v0, double v1) =>
+        (v0 < 0) != (v1 < 0) && v0 != v1 ? a0 + ((a1 - a0) * (v0 / (v0 - v1))) : a0;
 
     /// <summary>The polar trapezoid over angle pixels a0 to a1 (a0 ≤ a1) with its outer and inner radius pixels at each end.</summary>
     private SectorTrapezoid Sector(double a0, double a1, double outer0, double outer1, double inner0, double inner1)

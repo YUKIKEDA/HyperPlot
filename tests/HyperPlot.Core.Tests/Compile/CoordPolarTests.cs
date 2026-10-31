@@ -698,6 +698,146 @@ public sealed class CoordPolarTests
     }
 
     /// <summary>
+    /// A radius pixel below 0, inside the inner edge, is outside the radius's domain (design §4.4, PR #150's review): a line
+    /// is cut where it crosses the inner edge and does not pass the center, a fill stops at the inner edge, and a user's
+    /// geom maps such a point to NaN.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A 100 × 100 target without guides, domains [0, 100], R = 50: a line through (20, 50), (30, −50), (40, 50), and
+    ///   (50, 150); a rect from y −50 to 50; an area of baseline −50 over 800 points. Polar transforms of R = 540 with r0 0
+    ///   and 216, theta X and Y; column trapezoids whose edges cross c = 0 or whose sides lie below it.
+    ///
+    /// Steps:
+    /// - Render the layers with InnerRadius 0 and 0.4; write the trapezoids; test 4,000 seeded points of each against the
+    ///   region above c = 0 and against the polar trapezoids; map points below c = 0.
+    ///
+    /// Expected:
+    /// - The line: every point at least r0 from the center, and every point right of it (its angles are 72° to 180°: before
+    ///   the cut, the point at −50 was drawn left of the center); points on the inner edge where it is cut, and with the
+    ///   hole a break between them. The rect's and the area's trapezoids: no radius below r0. A point inside the region above c = 0
+    ///   is in a trapezoid and one outside is in none, within 1e-3 pixels of an edge. Map gives NaN below c = 0.
+    /// </remarks>
+    [Fact]
+    public void Polar_InnerEdge_CutsLinesAndFills()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var y = Column.Wrap(new double[] { 50, -50, 50, 150 });
+        using var low = Column.Wrap(new double[] { -50 });
+        using var high = Column.Wrap(new double[] { 50 });
+        using var left = Column.Wrap(new double[] { 40 });
+        using var right = Column.Wrap(new double[] { 60 });
+        using var a = Column.Wrap(Enumerable.Range(0, 800).Select(i => 30 + (40 * Math.Sin(i * 0.05))).ToArray());
+        var table = DataTable.Create().Add("x", Column.Uniform(20, 10, 4)).Add("y", y).Build();
+        var rects = DataTable.Create().Add("lo", low).Add("hi", high).Add("left", left).Add("right", right).Build();
+        var area = DataTable.Create().Add("x", Column.Uniform(0, 0.125, 800)).Add("a", a).Build();
+        using var plan = TestPlans.Create(pool, Size, Size);
+        var center = new Vector2(50, 50);
+        foreach (var inner in new[] { 0, 0.4 })
+        {
+            var r0 = (float)Math.Floor(inner * 50);
+            var coord = Coord.Polar(innerRadius: inner);
+            var list = plan.Render(Spec(table, new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") }) with { Coord = coord });
+            var points = list.Segments.ToArray().SelectMany(s => new[] { s.Start, s.End }).ToArray();
+            Assert.All(points, p => Assert.True((p - center).Length() >= r0 - 1e-3 && p.X >= center.X - 1e-3, $"{p} with r0 {r0}."));
+            Assert.Contains(points, p => Math.Abs((p - center).Length() - r0) < 1e-3);
+
+            // With a hole, the break shows: the line leaves the inner edge at one angle and comes back at another. Without
+            // one, both cuts are the center.
+            var segments = list.Segments.ToArray();
+            Assert.Equal(inner > 0, Enumerable.Range(1, segments.Length - 1).Any(i => segments[i].Start != segments[i - 1].End));
+
+            var rect = new RectLayerSpec
+            {
+                XMin = rects.Col<double>("left"),
+                XMax = rects.Col<double>("right"),
+                YMin = rects.Col<double>("lo"),
+                YMax = rects.Col<double>("hi"),
+            };
+            var under = new AreaLayerSpec
+            {
+                X = area.Col<double>("x"),
+                Y = area.Col<double>("a"),
+                Baseline = -50,
+            };
+            foreach (var (data, layer) in new (DataTable, LayerSpec)[] { (rects, rect), (area, under) })
+            {
+                var fills = plan.Render(Spec(data, layer) with { Coord = coord }).Sectors.ToArray();
+                Assert.NotEmpty(fills);
+                Assert.All(
+                    fills,
+                    s => Assert.True(Math.Min(Math.Min(s.InnerFrom, s.InnerTo), Math.Min(s.OuterFrom, s.OuterTo)) >= r0 - 1e-3, $"{s}")
+                );
+            }
+        }
+
+        var random = new Random(17);
+        var output = new SectorTrapezoid[6];
+        ColumnTrapezoid[] columns =
+        [
+            new(100, 103, -200, 300, 250, 250),
+            new(200, 203, -100, -50, 300, -80),
+            new(300, 302, -100, -50, -20, -10),
+            new(-40, 30, 500, 900, 1200, 1100),
+            new(-40, -5, 500, 900, 1200, 1100),
+        ];
+        foreach (var theta in new[] { PolarTheta.X, PolarTheta.Y })
+        {
+            foreach (var inner in new[] { 0, 216 })
+            {
+                var polar = new PolarTransform(960, 540, 540, inner, Coord.Polar(theta, 0.2));
+
+                // The radius is y with theta X and x with theta Y: below 0 it maps to NaN, the angle may be anything.
+                var (inside, outside) = theta == PolarTheta.X ? (polar.Map(-1, 10), polar.Map(10, -1)) : (polar.Map(10, -1), polar.Map(-1, 10));
+                Assert.True(float.IsFinite(inside.X) && float.IsNaN(outside.X) && float.IsNaN(outside.Y));
+                foreach (var column in columns)
+                {
+                    var count = polar.Columns(column, output);
+                    for (var k = 0; k < 4000; k++)
+                    {
+                        var along = column.Left + (random.NextDouble() * (column.Right - column.Left));
+                        var t = (along - column.Left) / (column.Right - column.Left);
+                        var top = column.TopLeft + ((column.TopRight - column.TopLeft) * t);
+                        var bottom = column.BottomLeft + ((column.BottomRight - column.BottomLeft) * t);
+                        var across = Math.Min(top, bottom) - 50 + (random.NextDouble() * (Math.Abs(top - bottom) + 100));
+                        var (pa, pc) = theta == PolarTheta.X ? (along, across) : (across, along);
+                        var inRegion = across >= Math.Min(top, bottom) && across <= Math.Max(top, bottom) && pc >= 0;
+                        var (topSlope, bottomSlope) = (
+                            (column.TopRight - column.TopLeft) / (column.Right - column.Left),
+                            (column.BottomRight - column.BottomLeft) / (column.Right - column.Left)
+                        );
+                        var nearEdge =
+                            Math.Abs(across - top) / Math.Sqrt(1 + (topSlope * topSlope)) < 1e-3
+                            || Math.Abs(across - bottom) / Math.Sqrt(1 + (bottomSlope * bottomSlope)) < 1e-3
+                            || Math.Abs(pc) < 1e-3;
+                        var inSectors = output[..count].Any(s => InSector(s, polar.Theta(pa), polar.RadiusOf(pc)));
+                        Assert.True(
+                            inRegion == inSectors || nearEdge,
+                            $"Column {column}, theta {theta}, r0 {inner}: (along {along}, across {across})."
+                        );
+                    }
+                }
+            }
+        }
+
+        static bool InSector(SectorTrapezoid s, double angle, double r)
+        {
+            var span = (double)s.To - s.From;
+            var t = angle - s.From;
+            t -= 2 * Math.PI * Math.Floor(t / (2 * Math.PI));
+            if (t > span + 1e-6)
+            {
+                return false;
+            }
+
+            var share = Math.Min(1, t / span);
+            var outer = s.OuterFrom + ((s.OuterTo - s.OuterFrom) * share);
+            var inner = s.InnerFrom + ((s.InnerTo - s.InnerFrom) * share);
+            return r >= Math.Min(inner, outer) - 1e-3 && r <= Math.Max(inner, outer) + 1e-3;
+        }
+    }
+
+    /// <summary>
     /// Once warm, a polar spec drawn again allocates nothing, its geoms, the pieces of its lines, its fills, and its guides
     /// included (design §4.8).
     /// </summary>

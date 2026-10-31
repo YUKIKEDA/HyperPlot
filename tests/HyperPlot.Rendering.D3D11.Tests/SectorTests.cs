@@ -181,6 +181,128 @@ public sealed class SectorTests
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
     }
 
+    /// <summary>
+    /// On a curved edge, the 32 samples a pixel (design §5.3) differ from the area the pixel shares with a disk by at most
+    /// 0.112, the bound of design §5.3 for the arcs of polar trapezoids (a radial side is straight: 0.111, row R4).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Disks of radius 0.5 to 600, each at 64 seeded centers inside a pixel.
+    ///
+    /// Steps:
+    /// - For each pixel the circle crosses, count the samples inside the disk and take the exact area of the disk and the
+    ///   pixel's square (the integral of the disk's height over the square, in closed form).
+    ///
+    /// Expected:
+    /// - The areas of all the pixels add up to the disk's (the reference checks itself); the largest difference within 0.01
+    ///   of 0.112.
+    /// </remarks>
+    [Fact]
+    public void Samples_DifferFromTheAreaOfACircle()
+    {
+        var random = new Random(23);
+        var worst = 0.0;
+        var at = string.Empty;
+        foreach (var radius in new[] { 0.5, 1, 1.5, 2, 3, 5, 8, 13, 20, 40, 80, 160, 320, 600 })
+        {
+            for (var n = 0; n < 64; n++)
+            {
+                var (cx, cy) = (random.NextDouble(), random.NextDouble());
+                var extent = (int)Math.Ceiling(radius) + 1;
+                if (n == 0)
+                {
+                    // The reference itself: the areas of all the pixels add up to the disk's.
+                    var total = 0.0;
+                    for (var py = -extent; py <= extent; py++)
+                    {
+                        for (var px = -extent; px <= extent; px++)
+                        {
+                            total += DiskArea(cx, cy, radius, px, py);
+                        }
+                    }
+
+                    Assert.Equal(Math.PI * radius * radius, total, 1e-6 * radius * radius);
+                }
+
+                for (var py = -extent; py <= extent; py++)
+                {
+                    for (var px = -extent; px <= extent; px++)
+                    {
+                        // Only the pixels the circle crosses: a corner inside and one outside.
+                        var near = Math.Sqrt(
+                            Math.Pow(Math.Max(0, Math.Max(px - cx, cx - (px + 1))), 2) + Math.Pow(Math.Max(0, Math.Max(py - cy, cy - (py + 1))), 2)
+                        );
+                        var far = Math.Sqrt(
+                            Math.Pow(Math.Max(Math.Abs(px - cx), Math.Abs(px + 1 - cx)), 2)
+                                + Math.Pow(Math.Max(Math.Abs(py - cy), Math.Abs(py + 1 - cy)), 2)
+                        );
+                        if (!(near < radius && far > radius))
+                        {
+                            continue;
+                        }
+
+                        var count = JoinReference.Samples.Count(s => Math.Pow(px + s.X - cx, 2) + Math.Pow(py + s.Y - cy, 2) <= radius * radius);
+                        var difference = Math.Abs((count / 32.0) - DiskArea(cx, cy, radius, px, py));
+                        if (difference > worst)
+                        {
+                            (worst, at) = (difference, $"radius {radius}, center ({cx}, {cy}), pixel ({px}, {py})");
+                        }
+                    }
+                }
+            }
+        }
+
+        Assert.True(Math.Abs(worst - 0.112) <= 0.01, $"The largest difference is {worst:F4}, at {at}.");
+    }
+
+    /// <summary>
+    /// Returns the area of the disk of a center and a radius inside the unit square at (x0, y0): the integral over x of the
+    /// disk's height inside the square, in pieces between the x where the circle meets the square's sides, each in closed
+    /// form through G(u) = (u √(r² − u²) + r² asin(u / r)) / 2.
+    /// </summary>
+    private static double DiskArea(double cx, double cy, double r, int x0, int y0)
+    {
+        var (x1, y1) = (x0 + 1.0, y0 + 1.0);
+        var cuts = new List<double> { x0, x1, cx - r, cx + r };
+        foreach (var y in new double[] { y0, y1 })
+        {
+            if (Math.Abs(y - cy) <= r)
+            {
+                var w = Math.Sqrt((r * r) - ((y - cy) * (y - cy)));
+                cuts.Add(cx - w);
+                cuts.Add(cx + w);
+            }
+        }
+
+        var xs = cuts.Where(x => x >= x0 && x <= x1).Order().ToArray();
+        var area = 0.0;
+        for (var i = 0; i + 1 < xs.Length; i++)
+        {
+            var (a, b) = (xs[i], xs[i + 1]);
+            var m = (a + b) / 2;
+            if (!(b > a) || Math.Abs(m - cx) >= r)
+            {
+                continue;
+            }
+
+            var s = Math.Sqrt((r * r) - ((m - cx) * (m - cx)));
+            if (Math.Min(y1, cy + s) <= Math.Max(y0, cy - s))
+            {
+                continue;
+            }
+
+            // The height between the bound below and the one above: the square's side or the circle's arc.
+            var arc = G(b - cx, r) - G(a - cx, r);
+            var top = cy + s < y1 ? (cy * (b - a)) + arc : y1 * (b - a);
+            var bottom = cy - s > y0 ? (cy * (b - a)) - arc : y0 * (b - a);
+            area += top - bottom;
+        }
+
+        return area;
+
+        static double G(double u, double r) => ((u * Math.Sqrt(Math.Max(0, (r * r) - (u * u)))) + (r * r * Math.Asin(Math.Clamp(u / r, -1, 1)))) / 2;
+    }
+
     private static byte[] Check(params (SectorTrapezoid[] Sectors, Color Color, (int X, int Y, int W, int H)? Clip)[] calls)
     {
         var actual = Draw(calls);
