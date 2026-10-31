@@ -426,7 +426,9 @@ internal sealed class RangeSink
 /// What every layer records with (design §4.4, §5.5.3): the list, the batch's results, the cartesian mapping of each axis,
 /// the boundaries of the pixel columns, and work buffers kept from frame to frame. A layer computes along × across: x
 /// pixels along the x axis and y pixels along the y axis, whichever side each runs on; the drawing methods here swap
-/// them into the target's (horizontal, vertical) when the coordinate system is flipped (row G10).
+/// them into the target's (horizontal, vertical) when the coordinate system is flipped (row G10), and map them from the
+/// stretched space to the circle when it is polar (row G11): a line cut into pieces that follow the curve, and the fills
+/// of a layer as polar trapezoids of one shape.
 /// </summary>
 internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList list, GeomFrame frame)
 {
@@ -444,6 +446,10 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     private double[] _mapped = new double[64];
     private Vector2[] _points = new Vector2[64];
     private ColumnTrapezoid[] _trapezoids = new ColumnTrapezoid[64];
+    private Vector2[] _polarPoints = new Vector2[256];
+    private SectorTrapezoid[] _sectors = new SectorTrapezoid[64];
+    private int _pendingSectors;
+    private Color _pendingFill;
     private double[] _yBoundaries = [];
     private ScaleRange _yBoundaryDomain = ScaleRange.None;
     private IScale? _yBoundaryTransform;
@@ -474,26 +480,48 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Gets a value indicating whether x runs on the vertical side and y on the horizontal one (row G10).</summary>
     public bool Flipped { get; private set; }
 
-    /// <summary>Gets the panel's cartesian transform (design §4.4).</summary>
+    /// <summary>Gets the panel's cartesian transform (design §4.4): of the stretched space when polar.</summary>
     public CartesianTransform Transform { get; private set; }
 
-    public void Begin(in GeomFrame.Axis x, in GeomFrame.Axis y, double[] boundaries, float scale, bool flipped)
+    /// <summary>Gets the panel's rectangle, in whole pixels, whatever the coordinate system.</summary>
+    public (int Left, int Top, int Width, int Height) Panel { get; private set; }
+
+    /// <summary>Gets a value indicating whether the coordinate system is polar (row G11): then <see cref="X"/> and <see cref="Y"/> are of the stretched space.</summary>
+    public bool Polar { get; private set; }
+
+    /// <summary>Gets the polar transform, when <see cref="Polar"/>.</summary>
+    public PolarTransform PolarMap { get; private set; }
+
+    public void Begin(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        double[] boundaries,
+        float scale,
+        bool flipped,
+        (int Left, int Top, int Width, int Height) panel,
+        PolarTransform? polar
+    )
     {
         (X, Y, Boundaries, Scale, Flipped, Transform) = (x, y, boundaries, scale, flipped, CartesianTransform.Create(x, y));
+        (Panel, Polar, PolarMap, _pendingSectors) = (panel, polar.HasValue, polar.GetValueOrDefault(), 0);
         XOrigin = x.Transform is null ? x.Domain.Origin : 0;
         YOrigin = y.Transform is null ? y.Domain.Origin : 0;
     }
 
     /// <summary>Sets the panel's clip back, after a layer that may have changed it.</summary>
-    public void ClipToPanel()
+    public void ClipToPanel() => list.SetClip(Panel.Left, Panel.Top, Panel.Width, Panel.Height);
+
+    /// <summary>
+    /// Records the polar trapezoids of the rectangles drawn since the last flush as one shape (design §5.1): a layer's fills
+    /// are one call, so that bars that touch leave no seam. Called after each layer; a layer's rectangles share its fill, and
+    /// a layer that draws rectangles draws no line.
+    /// </summary>
+    public void Flush()
     {
-        if (Flipped)
+        if (_pendingSectors > 0)
         {
-            list.SetClip(Y.Offset, X.Offset, Y.Size, X.Size);
-        }
-        else
-        {
-            list.SetClip(X.Offset, Y.Offset, X.Size, Y.Size);
+            list.DrawSectors(_sectors.AsSpan(0, _pendingSectors), Center, _pendingFill);
+            _pendingSectors = 0;
         }
     }
 
@@ -503,6 +531,13 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// </summary>
     public void DrawPolyline(Span<Vector2> points, in LineStyle style)
     {
+        if (Polar)
+        {
+            var count = PolarMap.Polyline(points, ref _polarPoints);
+            list.DrawPolyline(_polarPoints.AsSpan(0, count), guides.Scaled(style));
+            return;
+        }
+
         if (Flipped)
         {
             foreach (ref var point in points)
@@ -517,6 +552,18 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Records a rectangle between two x pixels and two y pixels, in either order; nothing when one is not finite.</summary>
     public void DrawRect(double x0, double x1, double y0, double y1, Color fill)
     {
+        if (Polar)
+        {
+            if (PolarMap.Rect(x0, x1, y0, y1, out var sector))
+            {
+                Ensure(ref _sectors, _pendingSectors + 1);
+                _sectors[_pendingSectors++] = sector;
+                _pendingFill = fill;
+            }
+
+            return;
+        }
+
         if (!double.IsFinite(x0) || !double.IsFinite(x1) || !double.IsFinite(y0) || !double.IsFinite(y1))
         {
             return;
@@ -533,9 +580,30 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         }
     }
 
-    /// <summary>Records trapezoids whose sides are x pixels and whose edges are y pixels: horizontal ones when flipped.</summary>
-    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color fill) =>
-        list.DrawColumns(columns, fill, Flipped ? ColumnAxis.Horizontal : ColumnAxis.Vertical);
+    /// <summary>
+    /// Records trapezoids whose sides are x pixels and whose edges are y pixels: horizontal ones when flipped, and one shape of
+    /// polar trapezoids when polar.
+    /// </summary>
+    public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color fill)
+    {
+        if (!Polar)
+        {
+            list.DrawColumns(columns, fill, Flipped ? ColumnAxis.Horizontal : ColumnAxis.Vertical);
+            return;
+        }
+
+        // The buffer of the rectangles is free: an area or a band draws no rectangle.
+        Ensure(ref _sectors, 6 * columns.Length);
+        var count = 0;
+        foreach (ref readonly var column in columns)
+        {
+            count += PolarMap.Columns(column, _sectors.AsSpan(count));
+        }
+
+        list.DrawSectors(_sectors.AsSpan(0, count), Center, fill);
+    }
+
+    private Vector2 Center => new((float)PolarMap.CenterX, (float)PolarMap.CenterY);
 
     /// <summary>Returns the x pixel of a difference from <see cref="XOrigin"/>, through the transform; NaN when it does not map.</summary>
     public double PixelX(double d) => Pixel(X, d, ofX: true);

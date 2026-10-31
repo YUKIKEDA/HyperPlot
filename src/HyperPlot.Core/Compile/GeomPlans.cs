@@ -643,7 +643,7 @@ internal sealed class CustomPlan : LayerPlan
 
     public override void Record(RecordContext context)
     {
-        context.Frame.Open(context.X, context.Y, context.Scale, context.Flipped);
+        context.Frame.Open(context.X, context.Y, context.Scale, context.Flipped, context.Panel, context.Polar ? context.PolarMap : null);
         try
         {
             ((CustomLayerSpec)Spec).Geom.Record(context.Frame, context.List);

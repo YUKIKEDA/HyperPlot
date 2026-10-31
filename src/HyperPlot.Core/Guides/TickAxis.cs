@@ -39,6 +39,13 @@ internal sealed class TickAxis
     /// <summary>Gets or sets a value indicating whether a label's extent along the axis is its width (x) or the line height (y).</summary>
     public bool Horizontal { get; set; }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether the axis runs around a circle (the angle of a polar coordinate system, row
+    /// G11): a label's extent along it is the larger of its width and the line height, and the gap from the last label back
+    /// to the first counts too, unless the last tick lies within a pixel of the first (design §4.6).
+    /// </summary>
+    public bool Circular { get; set; }
+
     /// <summary>Gets or sets the line height of the labels, their extent along a vertical axis.</summary>
     public float LineHeight { get; set; }
 
@@ -233,6 +240,7 @@ internal sealed class TickAxis
         {
             _extents[i] =
                 _labels[i].Length == 0 ? 0
+                : Circular ? Math.Max(Text.Measure(_labels[i], Style).Width, LineHeight)
                 : Horizontal ? Text.Measure(_labels[i], Style).Width
                 : LineHeight;
         }
@@ -240,15 +248,29 @@ internal sealed class TickAxis
         var worst = 1.0;
         for (var i = 1; i < _count; i++)
         {
-            var gap = Math.Abs(_pixels[i] - _pixels[i - 1]) - ((_extents[i] + _extents[i - 1]) / 2.0);
-            var value =
-                gap >= 1.5 * Em ? 1
-                : gap > 0 ? 2 - (1.5 * Em / gap)
-                : double.NegativeInfinity;
-            worst = Math.Min(worst, value);
+            worst = Math.Min(worst, Overlap(Math.Abs(_pixels[i] - _pixels[i - 1]), i, i - 1));
+        }
+
+        if (Circular && _count > 1 && !WrapsToFirst())
+        {
+            worst = Math.Min(worst, Overlap(Length - Math.Abs(_pixels[_count - 1] - _pixels[0]), 0, _count - 1));
         }
 
         return worst;
+    }
+
+    /// <summary>
+    /// Returns whether the last tick of a circular axis lies within a pixel of the first around the circle, so that its label
+    /// and line are not drawn (design §4.6): a domain whose ends meet.
+    /// </summary>
+    internal bool WrapsToFirst() => Circular && _count > 1 && Length - Math.Abs(_pixels[_count - 1] - _pixels[0]) <= 1;
+
+    private double Overlap(double distance, int i, int j)
+    {
+        var gap = distance - ((_extents[i] + _extents[j]) / 2.0);
+        return gap >= 1.5 * Em ? 1
+            : gap > 0 ? 2 - (1.5 * Em / gap)
+            : double.NegativeInfinity;
     }
 
     private static Int128 FloorDivide(Int128 a, Int128 b)

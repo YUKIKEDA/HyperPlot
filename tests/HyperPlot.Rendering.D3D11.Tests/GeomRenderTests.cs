@@ -210,6 +210,84 @@ public sealed class GeomRenderTests
         Check(spec, pool, "coord-flip.png");
     }
 
+    /// <summary>
+    /// The polar coordinate system with x as the angle (§10.1 scene 12, row G11): an area, bars of a rose, and a line around
+    /// the circle, with the angle's ticks around it and the radius's axis on its left.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 100 evenly spaced x from 0 to 99; a seeded area and line; 12 bars whose other elements are NaN; the fake text
+    ///   backend; Theme.Light; Coord.Polar().
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/coord-polar.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void Polar_MatchesBaseline()
+    {
+        var line = Enumerable.Range(0, Points).Select(i => 6 + (2 * Math.Sin(i * 0.19))).ToArray();
+        var area = Enumerable.Range(0, Points).Select(i => 2 + Math.Cos(i * 0.12)).ToArray();
+        var bars = Enumerable.Range(0, Points).Select(i => i % 8 == 4 ? 3 + ((0.37 * i) % 4) : double.NaN).ToArray();
+        using var pool = new PlotWorkerPool(2);
+        using var lineColumn = Column.Wrap(line);
+        using var areaColumn = Column.Wrap(area);
+        using var barColumn = Column.Wrap(bars);
+        var table = DataTable
+            .Create()
+            .Add("x", Column.Uniform(0, 1, Points))
+            .Add("line", lineColumn)
+            .Add("area", areaColumn)
+            .Add("bar", barColumn)
+            .Build();
+        var x = table.Col<double>("x");
+        var spec = Plot.Create(table)
+            .Area(x, table.Col<double>("area"), 0, a => a.Fill(new Color(44, 160, 44, 110)).Label("area"))
+            .Bar(x, table.Col<double>("bar"), 0, 6, b => b.Fill(new Color(214, 39, 40, 160)).Label("bar"))
+            .Line(x, table.Col<double>("line"), l => l.Color(new Color(31, 119, 180, 255)).Width(1.5f).Label("line"))
+            .ScaleY(Scale.Linear().WithDomain(0, 10).WithTitle("Value"))
+            .ScaleX(Scale.Linear().WithDomain(0, 100).WithTitle("x"))
+            .Coord(Coord.Polar())
+            .Title("Polar")
+            .Build();
+
+        Check(spec, pool, "coord-polar.png");
+    }
+
+    /// <summary>
+    /// The polar coordinate system with y as the angle and a hole (§10.1 scene 12, row G11): bars become parts of rings of a
+    /// donut.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 5 bars at x 1 to 5 with y from 20 to 90; the fake text backend; Theme.Light; Coord.Polar(PolarTheta.Y,
+    ///   innerRadius: 0.4), the y domain [0, 100].
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/coord-polar-donut.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void PolarDonut_MatchesBaseline()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var values = Column.Wrap(new[] { 35.0, 90, 20, 62, 48 });
+        var table = DataTable.Create().Add("x", Column.Uniform(1, 1, 5)).Add("y", values).Build();
+        var spec = Plot.Create(table)
+            .Bar(table.Col<double>("x"), table.Col<double>("y"), 0, 0.8, b => b.Fill(new Color(31, 119, 180, 220)).Label("share"))
+            .ScaleY(Scale.Linear().WithDomain(0, 100).WithTitle("Percent"))
+            .ScaleX(Scale.Linear().WithTitle("Group"))
+            .Coord(Coord.Polar(PolarTheta.Y, innerRadius: 0.4))
+            .Title("Donut")
+            .Build();
+
+        Check(spec, pool, "coord-polar-donut.png");
+    }
+
     private static void Check(PlotSpec spec, PlotWorkerPool pool, string baseline)
     {
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));

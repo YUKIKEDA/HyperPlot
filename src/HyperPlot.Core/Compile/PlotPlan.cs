@@ -55,8 +55,9 @@ internal sealed class PlotPlan : IDisposable
         _guides = new PlotGuides(text, scale, width, height);
         _context = new RecordContext(_guides, _batch, _list, new GeomFrame());
 
-        // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10).
-        _capacity = M4.MaxPointCount(Math.Max(width, height));
+        // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10), and polar over the
+        // outer circle, ⌈2πR⌉ with R at most half the smaller side (row G11).
+        _capacity = M4.MaxPointCount(Math.Max(Math.Max(width, height), PolarTransform.Turn((Math.Min(width, height) / 2) + 1)));
     }
 
     /// <summary>Gets the number of pyramids built, for the tests of the diff (design §4.8).</summary>
@@ -116,6 +117,7 @@ internal sealed class PlotPlan : IDisposable
         }
 
         spec.Theme.Validate(_scale);
+        (spec.Coord as PolarCoordSpec)?.Validate();
         var previous = _spec;
 
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
@@ -123,12 +125,13 @@ internal sealed class PlotPlan : IDisposable
         var data = previous is null || DataChanged(previous, spec);
         var flipped = Flipped(spec);
 
-        // A flip changes the axes' lengths, which nice and the boundaries depend on: the "scale" stage (design §4.8).
+        // A flip, a polar system, its theta, and its hole change the axes' lengths, which nice and the boundaries depend on:
+        // the "scale" stage (design §4.8). Its start and direction only lay out and record again.
         var scales =
             previous is null
             || !SameMapping(previous.ScaleX, spec.ScaleX)
             || !SameMapping(previous.ScaleY, spec.ScaleY)
-            || Flipped(previous) != flipped;
+            || CoordMappingChanged(previous.Coord, spec.Coord);
         var ranges = data || RangesChanged(previous!, spec);
         var looks =
             data
@@ -136,7 +139,8 @@ internal sealed class PlotPlan : IDisposable
             || OptionsChanged(previous!.ScaleX, spec.ScaleX)
             || OptionsChanged(previous!.ScaleY, spec.ScaleY)
             || !string.Equals(previous.Title, spec.Title, StringComparison.Ordinal)
-            || !previous.Theme.Equals(spec.Theme);
+            || !previous.Theme.Equals(spec.Theme)
+            || CoordLooksChanged(previous.Coord, spec.Coord);
         if (scales)
         {
             // A new transform makes new boundaries even over the same range of the scale space.
@@ -200,7 +204,10 @@ internal sealed class PlotPlan : IDisposable
 
             var x = _guides.X.FinalDomain;
             _y = _guides.Y.FinalDomain;
-            var along = flipped ? _guides.Height : _guides.Width;
+            var along =
+                _guides.Polar is { } polar ? polar.AlongSize
+                : flipped ? _guides.Height
+                : _guides.Width;
             var boundaries = x != _x || _boundaries.Length != along + 1;
             if (boundaries)
             {
@@ -355,6 +362,23 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>Returns whether a spec's coordinate system swaps x and y (row G10).</summary>
     private static bool Flipped(PlotSpec spec) => spec.Coord is CartesianCoordSpec { Flip: true };
+
+    /// <summary>
+    /// Returns whether a change of coordinate system changes the axes' lengths (design §4.8): its kind, a flip, a polar
+    /// theta, or a polar hole. The same node, or equal values, change nothing.
+    /// </summary>
+    private static bool CoordMappingChanged(CoordSpec before, CoordSpec after) =>
+        before.Id != after.Id
+        && (before, after) switch
+        {
+            (CartesianCoordSpec b, CartesianCoordSpec a) => b.Flip != a.Flip,
+            (PolarCoordSpec b, PolarCoordSpec a) => b.Theta != a.Theta || !b.InnerRadius.Equals(a.InnerRadius),
+            _ => true,
+        };
+
+    /// <summary>Returns whether a polar system's start or direction changed, which only lays out and records again (design §4.8).</summary>
+    private static bool CoordLooksChanged(CoordSpec before, CoordSpec after) =>
+        before.Id != after.Id && before is PolarCoordSpec b && after is PolarCoordSpec a && (!b.Start.Equals(a.Start) || b.Clockwise != a.Clockwise);
 
     /// <summary>
     /// Returns whether two scales map data the same way (design §4.8): the same node, or the same kind with the same domain,
@@ -654,19 +678,36 @@ internal sealed class PlotPlan : IDisposable
         _list.Clear();
         _guides.RecordBehind(_list, spec);
         var (left, top, width, height) = (_guides.Left, _guides.Top, _guides.Width, _guides.Height);
+        if (_guides.Polar is { } polar)
+        {
+            // The stretched space (design §4.4): each axis from 0 over its pixels, increasing with its data unless reversed.
+            var polarX = new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, 0, polar.AlongSize);
+            var polarY = new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
+            _context.Begin(polarX, polarY, _boundaries, _scale, flipped: false, (left, top, width, height), polar);
+            RecordLayers();
+            _guides.RecordOver(_list, spec);
+            return;
+        }
+
         var x = flipped
             ? new GeomFrame.Axis(_xTransform, _x, !xScale.Reverse, xScale.Clamp, top, height)
             : new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, left, width);
         var y = flipped
             ? new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, left, width)
             : new GeomFrame.Axis(_yTransform, _y, !yScale.Reverse, yScale.Clamp, top, height);
-        _context.Begin(x, y, _boundaries, _scale, flipped);
+        _context.Begin(x, y, _boundaries, _scale, flipped, (left, top, width, height), null);
+        RecordLayers();
+        _guides.RecordOver(_list, spec);
+    }
+
+    /// <summary>Records each layer in order inside the panel's clip; a polar layer's fills go out as one shape after it.</summary>
+    private void RecordLayers()
+    {
         _context.ClipToPanel();
         foreach (var layer in _layers)
         {
             layer.Record(_context);
+            _context.Flush();
         }
-
-        _guides.RecordOver(_list, spec);
     }
 }

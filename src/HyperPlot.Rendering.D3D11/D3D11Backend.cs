@@ -26,6 +26,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly D3D11GlyphPipeline _glyphs;
     private readonly D3D11RectPipeline _rects;
     private readonly D3D11ColumnPipeline _columns;
+    private readonly D3D11SectorPipeline _sectors;
     private readonly DWriteTextBackend? _directWrite;
     private readonly D3D11FrameTimer _timer;
     private long[] _open = new long[8];
@@ -45,6 +46,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _glyphs = new D3D11GlyphPipeline(this);
         _rects = new D3D11RectPipeline(this);
         _columns = new D3D11ColumnPipeline(this);
+        _sectors = new D3D11SectorPipeline(this);
         _timer = new D3D11FrameTimer(this);
         if (text is null)
         {
@@ -108,6 +110,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     internal D3D11RectPipeline Rects => _rects;
 
     internal D3D11ColumnPipeline Columns => _columns;
+
+    /// <summary>Gets the polar trapezoids' pipeline, for the tests of its buffer.</summary>
+    internal D3D11SectorPipeline Sectors => _sectors;
 
     /// <summary>Gets the DirectWrite text backend, or null when a test gave the backend a text engine of its own.</summary>
     internal DWriteTextBackend? DirectWrite => _directWrite;
@@ -193,7 +198,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _lines.Upload(list);
         _rects.Upload(list.Rects);
         _columns.Upload(list.Columns);
+        _sectors.Upload(list.Sectors);
         var polylines = list.Polylines;
+        var sectorCalls = list.SectorCalls;
         DrawStepKind? bound = null;
         foreach (ref readonly var step in steps)
         {
@@ -211,6 +218,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                         break;
                     case DrawStepKind.Rects:
                         _rects.Bind(own);
+                        break;
+                    case DrawStepKind.Sectors:
+                        _sectors.Bind(own);
                         break;
                     default:
                         _columns.Bind(own);
@@ -230,6 +240,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     break;
                 case DrawStepKind.Rects:
                     _rects.Draw(own, step);
+                    break;
+                case DrawStepKind.Sectors:
+                    _sectors.Draw(own, sectorCalls[step.Index]);
                     break;
                 default:
                     _columns.Draw(own, step);
@@ -256,6 +269,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                 break;
             case DrawStepKind.Columns:
                 _columns.Unbind();
+                break;
+            case DrawStepKind.Sectors:
+                _sectors.Unbind();
                 break;
             default:
                 break;
@@ -413,6 +429,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             _glyphs.Make();
             _rects.Make();
             _columns.Make();
+            _sectors.Make();
             _timer.Make();
         }
         catch (InvalidOperationException)
@@ -462,6 +479,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private void ReleaseDevice()
     {
         _timer.Release();
+        _sectors.Release();
         _columns.Release();
         _rects.Release();
         _glyphs.Release();
