@@ -12,8 +12,8 @@ public sealed record LineLayerSpec : LayerSpec
     public required ColumnRef Y { get; init; }
 
     /// <summary>
-    /// Gets the stroke: by default black (0, 0, 0, 255), 1 wide, solid. The width and the dash lengths are in DIPs, times the
-    /// renderer's scale (design §4.6).
+    /// Gets the stroke: by default the layer's series color from the theme's palette (design §4.1), 1 wide, solid. The width
+    /// and the dash lengths are in DIPs, times the renderer's scale (design §4.6).
     /// </summary>
-    public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
+    public StrokeSpec Style { get; init; } = new(null);
 }

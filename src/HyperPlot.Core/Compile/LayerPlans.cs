@@ -23,6 +23,12 @@ internal abstract class LayerPlan
     /// <summary>Gets the columns the layer reads; their versions decide whether it is extracted again.</summary>
     public ReadOnlySpan<Column> Columns => _columns;
 
+    /// <summary>
+    /// Gets or sets the layer's series color: the theme's palette at the layer's position (design §4.1), set before each
+    /// recording. A stroke or a fill the spec leaves without a color takes it.
+    /// </summary>
+    public Color SeriesColor { get; set; }
+
     /// <summary>Gets the versions of <see cref="Columns"/> this Render read before its wait.</summary>
     public long[] Seen { get; private set; } = [];
 
@@ -279,6 +285,15 @@ internal abstract class LayerPlan
 
     /// <summary>Records the layer into the panel (design §5.5.3).</summary>
     public abstract void Record(RecordContext context);
+
+    /// <summary>Returns a spec's stroke with its color, or the series color when it has none (design §4.1).</summary>
+    protected LineStyle Stroke(in StrokeSpec stroke) => stroke.Resolve(SeriesColor);
+
+    /// <summary>
+    /// Returns a spec's fill, or the series color when it has none (design §4.1): at alpha 128 for an area or a band, which
+    /// lie over other layers, opaque for bars and rects.
+    /// </summary>
+    protected Color FillOf(Color? fill, bool translucent) => fill ?? (translucent ? SeriesColor with { A = 128 } : SeriesColor);
 
     protected void SetColumns(params Column[] columns)
     {

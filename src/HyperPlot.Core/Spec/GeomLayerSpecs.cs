@@ -24,8 +24,8 @@ public sealed record StepLayerSpec : LayerSpec
     /// <summary>Gets the Y column: a <see cref="Column{T}"/>. NaN breaks the line.</summary>
     public required ColumnRef Y { get; init; }
 
-    /// <summary>Gets the stroke, in DIPs: by default black, 1 wide, solid.</summary>
-    public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
+    /// <summary>Gets the stroke, in DIPs: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
+    public StrokeSpec Style { get; init; } = new(null);
 
     /// <summary>Gets where the line turns between two points: <see cref="StepMode.After"/> by default.</summary>
     public StepMode Mode { get; init; }
@@ -40,14 +40,14 @@ public sealed record AreaLayerSpec : LayerSpec
     /// <summary>Gets the Y column: a <see cref="Column{T}"/>.</summary>
     public required ColumnRef Y { get; init; }
 
-    /// <summary>Gets the fill: black at half alpha (0, 0, 0, 128) until row G7's palette.</summary>
-    public Color Fill { get; init; } = new(0, 0, 0, 128);
+    /// <summary>Gets the fill, or null for the layer's series color at alpha 128 (design §4.1): it lies over other layers.</summary>
+    public Color? Fill { get; init; }
 
     /// <summary>Gets the y the fill reaches, in data units: finite, 0 by default. Mapped outside the panel, it is the panel's edge.</summary>
     public double Baseline { get; init; }
 
-    /// <summary>Gets the line along y, in DIPs, or null for none.</summary>
-    public LineStyle? Outline { get; init; }
+    /// <summary>Gets the line along y, in DIPs, or null for none. Without a color, it takes the layer's series color, opaque.</summary>
+    public StrokeSpec? Outline { get; init; }
 }
 
 /// <summary>The region between two columns, filled (design §4.1, §5.5.3).</summary>
@@ -62,11 +62,11 @@ public sealed record BandLayerSpec : LayerSpec
     /// <summary>Gets the upper column: a <see cref="Column{T}"/>.</summary>
     public required ColumnRef YMax { get; init; }
 
-    /// <summary>Gets the fill: black at half alpha until row G7's palette.</summary>
-    public Color Fill { get; init; } = new(0, 0, 0, 128);
+    /// <summary>Gets the fill, or null for the layer's series color at alpha 128 (design §4.1): it lies over other layers.</summary>
+    public Color? Fill { get; init; }
 
-    /// <summary>Gets the lines along both columns, in DIPs, or null for none.</summary>
-    public LineStyle? Outline { get; init; }
+    /// <summary>Gets the lines along both columns, in DIPs, or null for none. Without a color, they take the series color, opaque.</summary>
+    public StrokeSpec? Outline { get; init; }
 }
 
 /// <summary>Bars from a baseline to the values of a column (design §4.1, §5.5.3).</summary>
@@ -78,8 +78,8 @@ public sealed record BarLayerSpec : LayerSpec
     /// <summary>Gets the Y column: a <see cref="Column{T}"/>.</summary>
     public required ColumnRef Y { get; init; }
 
-    /// <summary>Gets the fill: black at half alpha until row G7's palette.</summary>
-    public Color Fill { get; init; } = new(0, 0, 0, 128);
+    /// <summary>Gets the fill, or null for the layer's series color, opaque (design §4.1).</summary>
+    public Color? Fill { get; init; }
 
     /// <summary>Gets the y the bars start at, in data units: finite, 0 by default.</summary>
     public double Baseline { get; init; }
@@ -106,8 +106,8 @@ public sealed record RectLayerSpec : LayerSpec
     /// <summary>Gets the column of the upper edges.</summary>
     public required ColumnRef YMax { get; init; }
 
-    /// <summary>Gets the fill: black at half alpha until row G7's palette.</summary>
-    public Color Fill { get; init; } = new(0, 0, 0, 128);
+    /// <summary>Gets the fill, or null for the layer's series color, opaque (design §4.1).</summary>
+    public Color? Fill { get; init; }
 }
 
 /// <summary>Vertical lines at the values of an x column, or horizontal ones at a y column (design §4.1, §5.5.3).</summary>
@@ -119,8 +119,8 @@ public sealed record RuleLayerSpec : LayerSpec
     /// <summary>Gets the column of the horizontal lines' y, non-decreasing; exactly one of X and Y is not default.</summary>
     public ColumnRef Y { get; init; }
 
-    /// <summary>Gets the stroke, in DIPs: by default black, 1 wide, solid.</summary>
-    public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
+    /// <summary>Gets the stroke, in DIPs: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
+    public StrokeSpec Style { get; init; } = new(null);
 }
 
 /// <summary>Segments from (X, Y) to (XEnd, YEnd) (design §4.1, §5.5.3).</summary>
@@ -138,8 +138,8 @@ public sealed record SegmentLayerSpec : LayerSpec
     /// <summary>Gets the column of the ends' y.</summary>
     public required ColumnRef YEnd { get; init; }
 
-    /// <summary>Gets the stroke, in DIPs: by default black, 1 wide, solid.</summary>
-    public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
+    /// <summary>Gets the stroke, in DIPs: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
+    public StrokeSpec Style { get; init; } = new(null);
 }
 
 /// <summary>Vertical bars from YMin to YMax at each x, with caps (design §4.1, §5.5.3).</summary>
@@ -154,8 +154,8 @@ public sealed record ErrorBarLayerSpec : LayerSpec
     /// <summary>Gets the upper column: a <see cref="Column{T}"/>.</summary>
     public required ColumnRef YMax { get; init; }
 
-    /// <summary>Gets the stroke, in DIPs: by default black, 1 wide, solid.</summary>
-    public LineStyle Style { get; init; } = new(new Color(0, 0, 0, 255), 1);
+    /// <summary>Gets the stroke, in DIPs: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
+    public StrokeSpec Style { get; init; } = new(null);
 
     /// <summary>Gets the width of the caps in DIPs: finite and at least 0, 6 by default; 0 draws none.</summary>
     public float CapWidth { get; init; } = 6;

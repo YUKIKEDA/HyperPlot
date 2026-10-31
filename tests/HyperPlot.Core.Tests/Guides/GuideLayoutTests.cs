@@ -420,8 +420,8 @@ public sealed class GuideLayoutTests : IDisposable
             .Build();
         using var one = Plan(1);
         using var half = Plan(1.5f);
-        Assert.Equal(new LineStyle(new Color(0, 0, 0, 255), 2, new LineDash(6, 3, 1)), one.Render(spec).Polylines[0].Style);
-        Assert.Equal(new LineStyle(new Color(0, 0, 0, 255), 3, new LineDash(9, 4.5f, 1.5f)), half.Render(spec).Polylines[0].Style);
+        Assert.Equal(new LineStyle(Palettes.Tab10[0], 2, new LineDash(6, 3, 1)), one.Render(spec).Polylines[0].Style);
+        Assert.Equal(new LineStyle(Palettes.Tab10[0], 3, new LineDash(9, 4.5f, 1.5f)), half.Render(spec).Polylines[0].Style);
 
         // Row R4: every interval and the offset scale; the join, the cap, and the miter limit (a ratio) do not.
         var patterned = Plot.Create(_table)
@@ -432,7 +432,7 @@ public sealed class GuideLayoutTests : IDisposable
             )
             .Theme(TestPlans.Bare)
             .Build();
-        var expected = new LineStyle(new Color(0, 0, 0, 255), 3, LineDash.Of(6, 3, 1.5f, 3, 4.5f, 1.5f, 1.5f, 1.5f) with { Offset = 3 })
+        var expected = new LineStyle(Palettes.Tab10[0], 3, LineDash.Of(6, 3, 1.5f, 3, 4.5f, 1.5f, 1.5f, 1.5f) with { Offset = 3 })
         {
             Join = LineJoin.Miter,
             Cap = LineCap.Square,

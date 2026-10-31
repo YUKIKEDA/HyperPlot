@@ -162,7 +162,7 @@ public sealed class PlotRenderTests
                 renderer.Clear(White);
                 renderer.Render(plot);
                 first = Read(renderer);
-                var thicker = plot with { Layers = [((LineLayerSpec)plot.Layers[0]) with { Style = new LineStyle(new Color(0, 0, 0, 255), 2) }] };
+                var thicker = plot with { Layers = [((LineLayerSpec)plot.Layers[0]) with { Style = new StrokeSpec(new Color(0, 0, 0, 255), 2) }] };
                 renderer.Clear(White);
                 renderer.Render(thicker);
                 second = Read(renderer);

@@ -10,8 +10,8 @@ public sealed class LineBuilder
 {
     internal LineBuilder() { }
 
-    /// <summary>Gets the stroke set so far: by default black, 1 pixel wide, solid.</summary>
-    internal LineStyle Style { get; private set; } = new(new Color(0, 0, 0, 255), 1);
+    /// <summary>Gets the stroke set so far: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
+    internal StrokeSpec Style { get; private set; } = new(null);
 
     /// <summary>Sets the color.</summary>
     /// <param name="color">The color.</param>

@@ -130,6 +130,7 @@ public sealed class GeomFrame
     private float _scale;
     private bool _flipped;
     private bool _isPolar;
+    private Color _series;
     private bool _active;
 
     internal GeomFrame() { }
@@ -165,6 +166,13 @@ public sealed class GeomFrame
     /// </summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
     public bool Polar => Active()._isPolar;
+
+    /// <summary>
+    /// Gets the layer's series color (design §4.1, row G7a): the theme's palette at the layer's position, the color the
+    /// built-in geoms take when the spec gives none. The legend draws a user's geom's sample in it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
+    public Color SeriesColor => Active()._series;
 
     /// <summary>Gets the scale from DIPs to physical pixels.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
@@ -226,8 +234,17 @@ public sealed class GeomFrame
     public double PixelY(long value) => Along(Active()._y, value, ofX: false);
 
     /// <summary>Opens the frame for one <see cref="IGeom.Record"/>.</summary>
-    internal void Open(in Axis x, in Axis y, float scale, bool flipped, (int Left, int Top, int Width, int Height) panel, PolarTransform? polar)
+    internal void Open(
+        in Axis x,
+        in Axis y,
+        float scale,
+        bool flipped,
+        (int Left, int Top, int Width, int Height) panel,
+        PolarTransform? polar,
+        Color series
+    )
     {
+        _series = series;
         (_x, _y, _transform, _scale, _flipped, _active) = (x, y, CartesianTransform.Create(x, y), scale, flipped, true);
         (_panel, _isPolar, _polar) = (panel, polar.HasValue, polar.GetValueOrDefault());
     }

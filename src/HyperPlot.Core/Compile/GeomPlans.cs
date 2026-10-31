@@ -29,7 +29,7 @@ internal sealed class LinePlan : LayerPlan
     {
         var points = _output.AsSpan(0, context.Batch.GetResult(_series).Count);
         _ = context.MapSeries(points, out var xs, out var ys);
-        context.Polyline(points, xs, ys, ((LineLayerSpec)Spec).Style);
+        context.Polyline(points, xs, ys, Stroke(((LineLayerSpec)Spec).Style));
     }
 }
 
@@ -90,7 +90,7 @@ internal sealed class StepPlan : LayerPlan
             buffer[count++] = new Vector2((float)xs[i], (float)ys[i]);
         }
 
-        context.DrawPolyline(buffer[..count], step.Style);
+        context.DrawPolyline(buffer[..count], Stroke(step.Style));
     }
 }
 
@@ -138,10 +138,10 @@ internal sealed class AreaPlan : LayerPlan
             }
         }
 
-        context.DrawColumns(trapezoids[..count], area.Fill);
+        context.DrawColumns(trapezoids[..count], FillOf(area.Fill, translucent: true));
         if (area.Outline is { } outline)
         {
-            context.Polyline(points, xs, ys, outline);
+            context.Polyline(points, xs, ys, Stroke(outline));
         }
     }
 
@@ -262,14 +262,14 @@ internal sealed class BandPlan : LayerPlan
             trapezoids[count++] = new ColumnTrapezoid((float)from, (float)to, (float)low, (float)low, (float)high, (float)high);
         }
 
-        context.DrawColumns(trapezoids[..count], band.Fill);
+        context.DrawColumns(trapezoids[..count], FillOf(band.Fill, translucent: true));
         if (band.Outline is { } outline)
         {
             // Over the fill; the mapped buffer holds one series at a time, so each is mapped again.
             _ = context.MapSeries(lowPoints, out lowXs, out lowYs);
-            context.Polyline(lowPoints, lowXs, lowYs, outline);
+            context.Polyline(lowPoints, lowXs, lowYs, Stroke(outline));
             _ = context.MapSeries(highPoints, out highXs, out highYs);
-            context.Polyline(highPoints, highXs, highYs, outline);
+            context.Polyline(highPoints, highXs, highYs, Stroke(outline));
         }
     }
 }
@@ -338,6 +338,7 @@ internal sealed class BarPlan : LayerPlan
         var first = x.LowerBound(boundaries[0] - half, context.XOrigin);
         var end = x.LowerBound(boundaries[^1] + half, context.XOrigin);
         var baseline = context.BaselinePixel(bar.Baseline);
+        var barFill = FillOf(bar.Fill, translucent: false);
         if (end - first <= 4L * context.X.Size)
         {
             for (var i = first; i < end; i++)
@@ -346,7 +347,7 @@ internal sealed class BarPlan : LayerPlan
                 var left = context.PixelX(d - half);
                 var right = context.PixelX(d + half);
                 var top = context.ElementY(y, i);
-                context.DrawRect(left, right, top, baseline, bar.Fill);
+                context.DrawRect(left, right, top, baseline, barFill);
             }
 
             return;
@@ -362,12 +363,12 @@ internal sealed class BarPlan : LayerPlan
             var column = _envelope.Offset + c;
             if (_envelope.Low[c] < baseline)
             {
-                context.DrawRect(column, column + 1, _envelope.Low[c], baseline, bar.Fill);
+                context.DrawRect(column, column + 1, _envelope.Low[c], baseline, barFill);
             }
 
             if (_envelope.High[c] > baseline)
             {
-                context.DrawRect(column, column + 1, _envelope.High[c], baseline, bar.Fill);
+                context.DrawRect(column, column + 1, _envelope.High[c], baseline, barFill);
             }
         }
     }
@@ -430,7 +431,7 @@ internal sealed class ErrorBarPlan : LayerPlan
                 }
             }
 
-            context.DrawPolyline(buffer[..count], bars.Style);
+            context.DrawPolyline(buffer[..count], Stroke(bars.Style));
             return;
         }
 
@@ -452,7 +453,7 @@ internal sealed class ErrorBarPlan : LayerPlan
             n = Segment(lines, n, center, (float)top, center, (float)bottom);
         }
 
-        context.DrawPolyline(lines[..n], bars.Style);
+        context.DrawPolyline(lines[..n], Stroke(bars.Style));
     }
 
     /// <summary>Adds a segment and a break after it to a polyline that holds many (design §5.5.3).</summary>
@@ -546,7 +547,7 @@ internal sealed class RulePlan : LayerPlan
             }
         }
 
-        context.DrawPolyline(buffer[..count], rule.Style);
+        context.DrawPolyline(buffer[..count], Stroke(rule.Style));
     }
 }
 
@@ -575,7 +576,7 @@ internal sealed class RectPlan : LayerPlan
         {
             // Corners mapped one by one: the smaller is the top left whatever the scales' directions. A corner that does
             // not map draws nothing.
-            context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], rect.Fill);
+            context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], FillOf(rect.Fill, translucent: false));
         }
     }
 }
@@ -609,7 +610,7 @@ internal sealed class SegmentPlan : LayerPlan
             count = ErrorBarPlan.Segment(buffer, count, (float)xs0[i], (float)ys0[i], (float)xs1[i], (float)ys1[i]);
         }
 
-        context.DrawPolyline(buffer[..count], segment.Style);
+        context.DrawPolyline(buffer[..count], Stroke(segment.Style));
     }
 }
 
@@ -643,7 +644,7 @@ internal sealed class CustomPlan : LayerPlan
 
     public override void Record(RecordContext context)
     {
-        context.Frame.Open(context.X, context.Y, context.Scale, context.Flipped, context.Panel, context.Polar ? context.PolarMap : null);
+        context.Frame.Open(context.X, context.Y, context.Scale, context.Flipped, context.Panel, context.Polar ? context.PolarMap : null, SeriesColor);
         try
         {
             ((CustomLayerSpec)Spec).Geom.Record(context.Frame, context.List);

@@ -48,8 +48,8 @@ public sealed class PlotBuilderTests
         Assert.Equal(2, plot.Layers.Count);
         Assert.Equal((table.Col<double>("t").ToColumnRef(), table.Col<float>("a").ToColumnRef()), (first.X, first.Y));
         Assert.Equal(table.Col<double>("b").ToColumnRef(), second.Y);
-        Assert.Equal(new LineStyle(new Color(1, 2, 3, 4), 2.5f, dash), first.Style);
-        Assert.Equal(new LineStyle(new Color(0, 0, 0, 255), 1), second.Style);
+        Assert.Equal(new StrokeSpec(new Color(1, 2, 3, 4), 2.5f, dash), first.Style);
+        Assert.Equal(new StrokeSpec(null), second.Style);
         Assert.Same(y, plot.ScaleY);
         Assert.Null(Assert.IsType<LinearScaleSpec>(plot.ScaleX).Domain);
         Assert.Empty(empty.Layers);

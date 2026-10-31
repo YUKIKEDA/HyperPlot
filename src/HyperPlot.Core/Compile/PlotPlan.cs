@@ -92,7 +92,7 @@ internal sealed class PlotPlan : IDisposable
     /// current values, lays out the guides, and returns the recorded panel, grid, lines, axes, titles, and legend (design
     /// §4.6, §4.8); an empty list when the panel is too small. Allocates nothing for the spec drawn last once warm.
     /// </summary>
-    /// <exception cref="ArgumentNullException">The spec has a null member (its theme and coordinate system included) or layer.</exception>
+    /// <exception cref="ArgumentNullException">The spec has a null member (its theme, its theme's palette, and its coordinate system included) or layer.</exception>
     /// <exception cref="ArgumentException">
     /// The spec or its theme does not check (design §4.7, §4.8), or the x domain is too narrow for the panel's width, in
     /// the scale space or once mapped back to data units.
@@ -114,6 +114,11 @@ internal sealed class PlotPlan : IDisposable
         if (spec.Coord is null)
         {
             throw new ArgumentNullException(nameof(spec), "The spec's Coord must not be null.");
+        }
+
+        if (spec.Theme.Palette is null)
+        {
+            throw new ArgumentNullException(nameof(spec), "The theme's Palette must not be null.");
         }
 
         spec.Theme.Validate(_scale);
@@ -684,7 +689,7 @@ internal sealed class PlotPlan : IDisposable
             var polarX = new GeomFrame.Axis(_xTransform, _x, xScale.Reverse, xScale.Clamp, 0, polar.AlongSize);
             var polarY = new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
             _context.Begin(polarX, polarY, _boundaries, _scale, flipped: false, (left, top, width, height), polar);
-            RecordLayers();
+            RecordLayers(spec.Theme.Palette);
             _guides.RecordOver(_list, spec);
             return;
         }
@@ -696,16 +701,22 @@ internal sealed class PlotPlan : IDisposable
             ? new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, left, width)
             : new GeomFrame.Axis(_yTransform, _y, !yScale.Reverse, yScale.Clamp, top, height);
         _context.Begin(x, y, _boundaries, _scale, flipped, (left, top, width, height), null);
-        RecordLayers();
+        RecordLayers(spec.Theme.Palette);
         _guides.RecordOver(_list, spec);
     }
 
-    /// <summary>Records each layer in order inside the panel's clip; a polar layer's fills go out as one shape after it.</summary>
-    private void RecordLayers()
+    /// <summary>
+    /// Records each layer in order inside the panel's clip, in its series color where its spec gives none; a polar layer's fills
+    /// go out as one shape after it.
+    /// </summary>
+    private void RecordLayers(Palette palette)
     {
         _context.ClipToPanel();
-        foreach (var layer in _layers)
+        for (var i = 0; i < _layers.Length; i++)
         {
+            // The series color of the layer's position (design §4.1, row G7a).
+            var layer = _layers[i];
+            layer.SeriesColor = palette.Series(i);
             layer.Record(_context);
             _context.Flush();
         }
