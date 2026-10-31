@@ -115,7 +115,8 @@ public sealed class GeomRanges
 /// physical pixels, through the scale's transform, clamp, and reverse, in double. The plot keeps one and reuses it; it
 /// can be used only inside <see cref="IGeom.Record"/>. x and y have a method each; 3D adds z the same way (invariant 12).
 /// <see cref="PixelX(double)"/> and <see cref="PixelY(double)"/> return the pixel along each data axis, which a flipped
-/// coordinate system puts on the other side (<see cref="Flipped"/>); <see cref="Map(double, double, out double, out double)"/> returns a point of the target.
+/// coordinate system puts on the other side (<see cref="Flipped"/>) and a polar one in its stretched space
+/// (<see cref="Polar"/>); <see cref="Map(double, double, out double, out double)"/> returns a point of the target.
 /// </summary>
 public sealed class GeomFrame
 {
@@ -124,27 +125,30 @@ public sealed class GeomFrame
     private Axis _x;
     private Axis _y;
     private CartesianTransform _transform;
+    private PolarTransform _polar;
+    private (int Left, int Top, int Width, int Height) _panel;
     private float _scale;
     private bool _flipped;
+    private bool _isPolar;
     private bool _active;
 
     internal GeomFrame() { }
 
-    /// <summary>Gets the panel's left edge, in whole physical pixels, flipped or not.</summary>
+    /// <summary>Gets the panel's left edge, in whole physical pixels, whatever the coordinate system.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Left => Active()._flipped ? _y.Offset : _x.Offset;
+    public int Left => Active()._panel.Left;
 
     /// <summary>Gets the panel's top edge.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Top => Active()._flipped ? _x.Offset : _y.Offset;
+    public int Top => Active()._panel.Top;
 
     /// <summary>Gets the panel's width.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Width => Active()._flipped ? _y.Size : _x.Size;
+    public int Width => Active()._panel.Width;
 
     /// <summary>Gets the panel's height.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
-    public int Height => Active()._flipped ? _x.Size : _y.Size;
+    public int Height => Active()._panel.Height;
 
     /// <summary>
     /// Gets a value indicating whether the coordinate system is flipped (design §4.4, row G10): then
@@ -152,6 +156,15 @@ public sealed class GeomFrame
     /// </summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
     public bool Flipped => Active()._flipped;
+
+    /// <summary>
+    /// Gets a value indicating whether the coordinate system is polar (design §4.4, row G11): then <see cref="PixelX(double)"/>
+    /// and <see cref="PixelY(double)"/> return pixels of the stretched space (the angle along the outer circle and the
+    /// radius out from the inner one, for whichever data axis each is), and <see cref="Map(double, double, out double, out double)"/>
+    /// returns the target's point. A straight line between two mapped points is a chord; a geom that wants the curve cuts it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
+    public bool Polar => Active()._isPolar;
 
     /// <summary>Gets the scale from DIPs to physical pixels.</summary>
     /// <exception cref="InvalidOperationException">Used outside <see cref="IGeom.Record"/>.</exception>
@@ -176,8 +189,9 @@ public sealed class GeomFrame
     public double PixelY(double value) => Along(Active()._y, value, ofX: false);
 
     /// <summary>
-    /// Maps a data point to the target's point (horizontal, vertical), flipped or not: <see cref="PixelX(double)"/> and
-    /// <see cref="PixelY(double)"/>, swapped when <see cref="Flipped"/>. A coordinate is NaN when it does not map.
+    /// Maps a data point to the target's point (horizontal, vertical), whatever the coordinate system:
+    /// <see cref="PixelX(double)"/> and <see cref="PixelY(double)"/>, swapped when <see cref="Flipped"/>, and taken around
+    /// the circle when <see cref="Polar"/>. A coordinate is NaN when it does not map.
     /// </summary>
     /// <param name="x">The x value, in data units.</param>
     /// <param name="y">The y value, in data units.</param>
@@ -188,6 +202,13 @@ public sealed class GeomFrame
     {
         var alongX = PixelX(x);
         var alongY = PixelY(y);
+        if (_isPolar)
+        {
+            var point = double.IsFinite(alongX) && double.IsFinite(alongY) ? _polar.Map(alongX, alongY) : new System.Numerics.Vector2(float.NaN);
+            (pixelX, pixelY) = (point.X, point.Y);
+            return;
+        }
+
         pixelX = _flipped ? alongY : alongX;
         pixelY = _flipped ? alongX : alongY;
     }
@@ -205,9 +226,10 @@ public sealed class GeomFrame
     public double PixelY(long value) => Along(Active()._y, value, ofX: false);
 
     /// <summary>Opens the frame for one <see cref="IGeom.Record"/>.</summary>
-    internal void Open(in Axis x, in Axis y, float scale, bool flipped)
+    internal void Open(in Axis x, in Axis y, float scale, bool flipped, (int Left, int Top, int Width, int Height) panel, PolarTransform? polar)
     {
         (_x, _y, _transform, _scale, _flipped, _active) = (x, y, CartesianTransform.Create(x, y), scale, flipped, true);
+        (_panel, _isPolar, _polar) = (panel, polar.HasValue, polar.GetValueOrDefault());
     }
 
     /// <summary>Closes the frame after <see cref="IGeom.Record"/>.</summary>

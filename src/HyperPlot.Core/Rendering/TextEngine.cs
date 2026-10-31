@@ -130,6 +130,11 @@ public sealed class TextEngine
             {
                 AddRun(DrawStepKind.Columns, command.Index, list.ColumnClips[command.Index]);
             }
+            else if (command.Kind == RenderCommandKind.Sectors)
+            {
+                // Each call is its own shape (design §5.1): never joined with the call before.
+                AddStep(new DrawStep(DrawStepKind.Sectors, command.Index, 1, 0, list.SectorCalls[command.Index].Clip));
+            }
             else if (!TryPlace(texts[command.Index], width, height))
             {
                 ThrowAtlasFull(list, i);
@@ -376,11 +381,14 @@ internal enum DrawStepKind : byte
 
     /// <summary>Column trapezoids under one clip: a range of <see cref="RenderList.Columns"/>.</summary>
     Columns,
+
+    /// <summary>One call of polar trapezoids, drawn as one shape: the index is into <see cref="RenderList.SectorCalls"/> (row G11).</summary>
+    Sectors,
 }
 
 /// <summary>One step of a backend's <c>Draw</c>, in the order of the list's commands.</summary>
 /// <param name="Kind">What it draws.</param>
-/// <param name="Index">The polyline, the first glyph record, or the first rectangle.</param>
+/// <param name="Index">The polyline, the first glyph record, the first rectangle or trapezoid, or the sector call.</param>
 /// <param name="Count">The number of glyph records or rectangles; 1 for a polyline.</param>
 /// <param name="Page">The atlas page of the glyphs.</param>
 /// <param name="Clip">The clip of the glyphs or of the polyline.</param>

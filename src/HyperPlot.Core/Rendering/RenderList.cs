@@ -19,12 +19,16 @@ public sealed class RenderList
     private ClipRect[] _rectClips = new ClipRect[4];
     private ColumnInstance[] _columns = new ColumnInstance[16];
     private ClipRect[] _columnClips = new ClipRect[16];
+    private SectorInstance[] _sectors = new SectorInstance[16];
+    private SectorCall[] _sectorCalls = new SectorCall[4];
     private int _polylineCount;
     private int _segmentCount;
     private int _pieceCount;
     private int _textCount;
     private int _rectCount;
     private int _columnCount;
+    private int _sectorCount;
+    private int _sectorCallCount;
     private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
@@ -52,7 +56,13 @@ public sealed class RenderList
     /// <summary>Gets the clip of each recorded column trapezoid.</summary>
     internal ReadOnlySpan<ClipRect> ColumnClips => _columnClips.AsSpan(0, _columnCount);
 
-    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, or a column trapezoid.</summary>
+    /// <summary>Gets the pieces of every recorded sector call, as the GPU reads them; each call names its range (row G11).</summary>
+    internal ReadOnlySpan<SectorInstance> Sectors => _sectors.AsSpan(0, _sectorCount);
+
+    /// <summary>Gets the recorded sector calls, in order: each is one shape (design §5.1, row G11).</summary>
+    internal ReadOnlySpan<SectorCall> SectorCalls => _sectorCalls.AsSpan(0, _sectorCallCount);
+
+    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, or a sector call.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
@@ -64,6 +74,8 @@ public sealed class RenderList
         _textCount = 0;
         _rectCount = 0;
         _columnCount = 0;
+        _sectorCount = 0;
+        _sectorCallCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
     }
@@ -384,6 +396,146 @@ public sealed class RenderList
                 premultiplied
             );
             _columnClips[_columnCount++] = _clip;
+        }
+    }
+
+    /// <summary>
+    /// Records polar trapezoids around a center, filled with one color as one shape, in physical pixels (design §5.1, row
+    /// G11): each covers the angles from From to To and, at each angle, the radii between its inner and outer edges, the
+    /// values at From and To joined linearly in the angle. Angles are radians from 12 o'clock, clockwise on the target (the
+    /// point at angle θ and radius r is center + r · (sin θ, −cos θ)). A pixel is covered by the share of its 32 samples
+    /// that lie in any of the trapezoids, so trapezoids that share an edge leave no seam, and one that overlaps another is
+    /// painted once. A trapezoid with a value that is not finite, with From at or past To, or wider than a full turn draws
+    /// nothing; so does a center that is not finite. Each call is its own shape: two calls that overlap are both painted.
+    /// </summary>
+    /// <param name="sectors">The trapezoids.</param>
+    /// <param name="center">The center, in physical pixels.</param>
+    /// <param name="color">The color.</param>
+    public void DrawSectors(ReadOnlySpan<SectorTrapezoid> sectors, Vector2 center, Color color)
+    {
+        if (!float.IsFinite(center.X) || !float.IsFinite(center.Y))
+        {
+            return;
+        }
+
+        var first = _sectorCount;
+        var min = new Vector2(float.PositiveInfinity);
+        var max = new Vector2(float.NegativeInfinity);
+        Span<Vector2> corners = stackalloc Vector2[4];
+        foreach (var sector in sectors)
+        {
+            var finite =
+                float.IsFinite(sector.From)
+                && float.IsFinite(sector.To)
+                && float.IsFinite(sector.OuterFrom)
+                && float.IsFinite(sector.OuterTo)
+                && float.IsFinite(sector.InnerFrom)
+                && float.IsFinite(sector.InnerTo);
+            var span = sector.To - sector.From;
+            if (!finite || !(span > 0) || span > 2 * MathF.PI)
+            {
+                continue;
+            }
+
+            // Pieces of at most π / 16, so that each is drawn as a quad close to it (design §5.3); the union of the samples
+            // makes the cuts invisible.
+            var count = Math.Max(1, (int)MathF.Ceiling(span / MaxSectorAngle));
+            for (var j = 0; j < count; j++)
+            {
+                var (s, e) = ((float)j / count, (float)(j + 1) / count);
+                var (from, to) = (j == 0 ? sector.From : sector.From + (span * s), j == count - 1 ? sector.To : sector.From + (span * e));
+                var piece = new SectorInstance(
+                    from,
+                    to,
+                    Lerp(sector.OuterFrom, sector.OuterTo, s),
+                    j == count - 1 ? sector.OuterTo : Lerp(sector.OuterFrom, sector.OuterTo, e),
+                    Lerp(sector.InnerFrom, sector.InnerTo, s),
+                    j == count - 1 ? sector.InnerTo : Lerp(sector.InnerFrom, sector.InnerTo, e),
+                    Direction(from),
+                    Direction(to),
+                    0,
+                    0
+                );
+                if (_sectorCount == _sectors.Length)
+                {
+                    Array.Resize(ref _sectors, _sectors.Length * 2);
+                }
+
+                _sectors[_sectorCount++] = piece;
+                SectorQuad(piece, center, SectorMargin + 1, corners);
+                foreach (var corner in corners)
+                {
+                    (min, max) = (Vector2.Min(min, corner), Vector2.Max(max, corner));
+                }
+            }
+        }
+
+        if (_sectorCount == first)
+        {
+            return;
+        }
+
+        if (_sectorCallCount == _sectorCalls.Length)
+        {
+            Array.Resize(ref _sectorCalls, _sectorCalls.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.Sectors, _sectorCallCount));
+        _sectorCalls[_sectorCallCount++] = new SectorCall(
+            first,
+            _sectorCount - first,
+            center,
+            new Vector4(
+                Premultiplied.Multiply(color.R, color.A) / 255f,
+                Premultiplied.Multiply(color.G, color.A) / 255f,
+                Premultiplied.Multiply(color.B, color.A) / 255f,
+                color.A / 255f
+            ),
+            _clip,
+            min,
+            max
+        );
+
+        static float Lerp(float a, float b, float t) => a + ((b - a) * t);
+    }
+
+    /// <summary>
+    /// Returns the direction of an angle, (sin θ, −cos θ), in double rounded to float: the GPU's sine and cosine err by more
+    /// than a sample's distance from a side (WARP put a sample 0.006 pixels outside one inside it).
+    /// </summary>
+    internal static Vector2 Direction(float angle) => new((float)Math.Sin(angle), (float)-Math.Cos(angle));
+
+    /// <summary>The widest piece a polar trapezoid is cut into: π / 16 (design §5.3).</summary>
+    internal const float MaxSectorAngle = MathF.PI / 16;
+
+    /// <summary>How far a piece's quad reaches past it, in pixels: past the √2 / 2 a sample lies from its pixel's center.</summary>
+    internal const float SectorMargin = 1;
+
+    /// <summary>
+    /// Writes the quad Sectors.hlsl draws for a piece, in the order of its triangle strip (design §5.3): the piece's wedge
+    /// between its sides' rays, cut by the line that touches its outer radius and the chord of its inner one, every side
+    /// pushed out by <paramref name="margin"/>. A piece of at most π / 16 lies inside it.
+    /// </summary>
+    internal static void SectorQuad(in SectorInstance piece, Vector2 center, float margin, Span<Vector2> corners)
+    {
+        var low = MathF.Max(0, MathF.Min(MathF.Min(piece.OuterFrom, piece.OuterTo), MathF.Min(piece.InnerFrom, piece.InnerTo)));
+        var high = MathF.Max(0, MathF.Max(MathF.Max(piece.OuterFrom, piece.OuterTo), MathF.Max(piece.InnerFrom, piece.InnerTo)));
+
+        // The middle direction halves the piece; the sides' normals are the directions turned a quarter back.
+        var axis = Vector2.Normalize(piece.Start + piece.End);
+        var from = new Vector2(-piece.Start.Y, piece.Start.X);
+        var to = new Vector2(-piece.End.Y, piece.End.X);
+        var (near, far) = ((low * Vector2.Dot(axis, piece.Start)) - margin, high + margin);
+        corners[0] = center + Meet(from, -margin, axis, near);
+        corners[1] = center + Meet(from, -margin, axis, far);
+        corners[2] = center + Meet(to, margin, axis, near);
+        corners[3] = center + Meet(to, margin, axis, far);
+
+        // The point p with dot(p, a) = s and dot(p, b) = q.
+        static Vector2 Meet(Vector2 a, float s, Vector2 b, float q)
+        {
+            var determinant = (a.X * b.Y) - (a.Y * b.X);
+            return new Vector2(((s * b.Y) - (a.Y * q)) / determinant, ((a.X * q) - (b.X * s)) / determinant);
         }
     }
 
@@ -719,6 +871,9 @@ internal enum RenderCommandKind : byte
 
     /// <summary>A filled column trapezoid: the index is into <see cref="RenderList.Columns"/>.</summary>
     Columns,
+
+    /// <summary>One shape of polar trapezoids: the index is into <see cref="RenderList.SectorCalls"/> (row G11).</summary>
+    Sectors,
 }
 
 /// <summary>One recorded command: its kind and the index of its record.</summary>
@@ -776,6 +931,44 @@ internal readonly record struct ColumnInstance(
     float Unused,
     Vector4 Color
 );
+
+/// <summary>
+/// One trapezoid of a polar coordinate system (design §5.1, row G11): the angles it covers, in radians from 12 o'clock and
+/// clockwise on the target, and its outer and inner radii at those angles, in physical pixels. Between From and To each
+/// edge's radius runs linearly in the angle; which edge is inner does not matter.
+/// </summary>
+/// <param name="From">The first angle.</param>
+/// <param name="To">The last angle, past <paramref name="From"/> by at most a full turn.</param>
+/// <param name="OuterFrom">The outer radius at <paramref name="From"/>.</param>
+/// <param name="OuterTo">The outer radius at <paramref name="To"/>.</param>
+/// <param name="InnerFrom">The inner radius at <paramref name="From"/>.</param>
+/// <param name="InnerTo">The inner radius at <paramref name="To"/>.</param>
+public readonly record struct SectorTrapezoid(float From, float To, float OuterFrom, float OuterTo, float InnerFrom, float InnerTo);
+
+/// <summary>
+/// One piece of a polar trapezoid as the GPU reads it (design §5.3): a trapezoid of at most π / 16, the directions of its
+/// sides, (sin θ, −cos θ) made on the CPU in double, and two unused floats. 48 bytes, laid out as the HLSL structure of
+/// Sectors.hlsl.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly record struct SectorInstance(
+    float From,
+    float To,
+    float OuterFrom,
+    float OuterTo,
+    float InnerFrom,
+    float InnerTo,
+    Vector2 Start,
+    Vector2 End,
+    float Unused0,
+    float Unused1
+);
+
+/// <summary>
+/// One recorded call of <see cref="RenderList.DrawSectors"/>: its range of pieces, its center, its premultiplied color, its
+/// clip, and the box of its pieces' quads, which the color pass covers (design §5.3).
+/// </summary>
+internal readonly record struct SectorCall(int Start, int Count, Vector2 Center, Vector4 Color, ClipRect Clip, Vector2 Min, Vector2 Max);
 
 /// <summary>A rectangle of whole pixels, edges included on the left and top and excluded on the right and bottom.</summary>
 internal readonly record struct ClipRect(long Left, long Top, long Right, long Bottom)
