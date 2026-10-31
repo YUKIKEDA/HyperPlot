@@ -26,27 +26,34 @@ internal static class BandTicks
         var first = Extent(axis, categories.Categories[0]);
         var gap = axis.Em / 2;
 
-        // The least k that keeps two labels of the least size apart, and the first label and one of the least size.
-        var k = (long)Math.Max(Math.Max(1, Math.Ceiling((least + gap) / step)), Math.Ceiling((((first + least) / 2) + gap) / step));
+        // The least k that keeps two labels of the least size apart, and the first label and one of the least size. Held inside
+        // F, the first label moves toward its neighbor by s₀ (design §4.6, row G3b).
+        var firstPixel = (bands.Position(0) + (bands.Width / 2) - domain.Lower) * step;
+        var firstShift = Math.Abs(axis.Hold(firstPixel, first) - firstPixel);
+        var k = (long)Math.Max(Math.Max(1, Math.Ceiling((least + gap) / step)), Math.Ceiling((((first + least) / 2) + gap + firstShift) / step));
         while (true)
         {
             axis.ClearCandidate();
             var (overlap, sum) = (false, 0.0);
-            var previous = 0f;
+            var (previous, previousHeld, previousShift) = (0f, 0.0, 0.0);
             for (long i = 0; i < count; i += Math.Min(k, count))
             {
                 var category = (int)i;
                 var label = categories.Categories[category];
                 var extent = category == 0 ? first : Extent(axis, label);
-                var center = bands.Position(category) + (bands.Width / 2) - domain.Lower;
-                if (axis.Count > 0 && (k * step) - ((extent + previous) / 2.0) < gap)
+                var pixel = (bands.Position(category) + (bands.Width / 2) - domain.Lower) * step;
+                var held = axis.Hold(pixel, extent);
+                var shift = Math.Abs(held - pixel);
+
+                // The boxes as drawn, held inside F: an end label that moves comes nearer its neighbor.
+                if (axis.Count > 0 && Math.Abs(held - previousHeld) - ((extent + previous) / 2.0) < gap)
                 {
-                    (overlap, sum) = (true, (extent + previous) / 2.0);
+                    (overlap, sum) = (true, ((extent + previous) / 2.0) + shift + previousShift);
                     break;
                 }
 
-                axis.AddLabel(label, center * step, extent);
-                previous = extent;
+                axis.AddLabel(label, pixel, extent);
+                (previous, previousHeld, previousShift) = (extent, held, shift);
             }
 
             if (!overlap || k >= count)
@@ -54,7 +61,7 @@ internal static class BandTicks
                 return;
             }
 
-            // The pair k apart overlapped: the next k keeps it apart.
+            // The pair k apart came too near: the next k keeps a pair of its sizes and shifts apart.
             k = Math.Max(k + 1, (long)Math.Ceiling((sum + gap) / step));
         }
     }

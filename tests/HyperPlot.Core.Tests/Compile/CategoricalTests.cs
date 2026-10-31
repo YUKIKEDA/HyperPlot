@@ -388,7 +388,18 @@ public sealed class CategoricalTests
         var list = plan.Render(manySpec);
         axis = plan.Guides.X;
         step = axis.Length / (axis.Domain.Upper - axis.Domain.Lower);
-        var k = (int)Math.Ceiling(((FakeTextBackend.Advance(12) * 11) + (axis.Em / 2)) / step);
+
+        // The least k whose labels, held inside the figure (row G3b), keep half an em apart: here the first one moves right.
+        var labelWidth = FakeTextBackend.Advance(12) * 11;
+        var (lower, em) = (axis.Domain.Lower, axis.Em);
+        var held = axis;
+        var k = Enumerable
+            .Range(1, 12)
+            .First(n =>
+            {
+                var centers = Enumerable.Range(0, 12).Where(i => i % n == 0).Select(i => held.Hold((i + 0.45 - lower) * step, labelWidth)).ToArray();
+                return centers.Zip(centers.Skip(1)).All(pair => Math.Abs(pair.Second - pair.First) - labelWidth >= em / 2);
+            });
         Assert.Equal(Enumerable.Range(0, 12).Where(i => i % k == 0).Select(i => $"Category {i + 1:00}"), axis.TickLabels.ToArray());
 
         // The grid's x lines come first, then y's; after the two axis lines, x's ticks (GuideLayoutTests).
@@ -437,8 +448,10 @@ public sealed class CategoricalTests
     /// - Render; count the names shaped; render twice again and count the bytes.
     ///
     /// Expected:
-    /// - The names shaped at most the labels shown plus 2 a k cut short (with names of one length, k₀ takes the neighbor
-    ///   of the first label at its least size, so one k is cut short); 0 bytes on the redraws.
+    /// - The names shaped at most three passes of the labels shown, plus 3, far below the 100,000 categories: with names of
+    ///   one length, k₀ takes the neighbor of the first label at its least size, so one k is cut short at its first pair;
+    ///   the last label, held inside the figure since row G3b, can cut one more k short at the last pair, after a pass of a
+    ///   smaller k (here 2, 12, and the 9 shown: 21). 0 bytes on the redraws.
     /// </remarks>
     [Fact]
     public void Axis_ManyCategories_MeasuresTheShownLabels()
@@ -451,7 +464,7 @@ public sealed class CategoricalTests
 
         _ = plan.Render(spec);
         var shapedNames = backend.Shaped.Count(s => s.Text.StartsWith('n'));
-        Assert.InRange(shapedNames, plan.Guides.X.Count, plan.Guides.X.Count + 2);
+        Assert.InRange(shapedNames, plan.Guides.X.Count, (3 * plan.Guides.X.Count) + 3);
 
         _ = plan.Render(spec);
         var before = GC.GetAllocatedBytesForCurrentThread();

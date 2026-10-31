@@ -39,6 +39,15 @@ internal sealed class TickAxis
     /// <summary>Gets or sets the axis length in pixels.</summary>
     public double Length { get; set; }
 
+    /// <summary>
+    /// Gets or sets the room before the axis's low end (pixel 0) up to the figure's edge F, in pixels (design §4.6, row G3b):
+    /// a label's box past it is held inside. Infinite for an axis whose labels are not held (polar, the color bar).
+    /// </summary>
+    public double Before { get; set; } = double.PositiveInfinity;
+
+    /// <summary>Gets or sets the room after the axis's high end (pixel <see cref="Length"/>) up to F, in pixels.</summary>
+    public double After { get; set; } = double.PositiveInfinity;
+
     /// <summary>Gets or sets the target spacing of the ticks in pixels: 1 / ρt.</summary>
     public double Spacing { get; set; }
 
@@ -159,6 +168,27 @@ internal sealed class TickAxis
         return (d - domain.Lower) / (domain.Upper - domain.Lower) * Length;
     }
 
+    /// <summary>
+    /// Returns where a label's center goes along the axis (design §4.6, row G3b): its tick's pixel, or moved inward just
+    /// enough that its box [p − e / 2, p + e / 2] stays inside [−<see cref="Before"/>, <see cref="Length"/> + <see cref="After"/>].
+    /// A box wider than that range starts at its low end.
+    /// </summary>
+    internal double Hold(double pixel, double extent)
+    {
+        var (low, high) = (-Before, Length + After);
+        if (extent >= high - low)
+        {
+            return low + (extent / 2);
+        }
+
+        return pixel - (extent / 2) < low ? low + (extent / 2)
+            : pixel + (extent / 2) > high ? high - (extent / 2)
+            : pixel;
+    }
+
+    /// <summary>Returns where the label of a tick in a slot goes along the axis: its pixel, held inside F.</summary>
+    internal double LabelCenter(int index) => Hold(_pixels[index], _extents[index]);
+
     /// <summary>Returns a difference from the domain's origin's pixel along the axis.</summary>
     internal double PixelOfDifference(double d, in ScaleRange domain) => (d - domain.Lower) / (domain.Upper - domain.Lower) * Length;
 
@@ -272,7 +302,8 @@ internal sealed class TickAxis
         var worst = 1.0;
         for (var i = 1; i < _count; i++)
         {
-            worst = Math.Min(worst, Overlap(Math.Abs(_pixels[i] - _pixels[i - 1]), i, i - 1));
+            // The boxes as drawn: held inside F (design §4.6, row G3b).
+            worst = Math.Min(worst, Overlap(Math.Abs(LabelCenter(i) - LabelCenter(i - 1)), i, i - 1));
         }
 
         if (Circular && _count > 1 && !WrapsToFirst())
