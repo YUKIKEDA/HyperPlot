@@ -54,6 +54,7 @@ Labels have the form `<axis>:<value>`. The only axis today is `type`.
 - The NativeAOT publish check runs where the Issue names it (`.cursor/rules/aot.mdc`).
 - Benchmarks are not a gate. The Zero-Alloc tests are (`.cursor/rules/bench.mdc`).
 - After each merge, read `main`'s CI. A red `main` gets its own Issue and PR before the next merge.
+- Two open PRs that touch the same golden baseline, or where one changes what the other's baseline draws, say in both bodies which merges first. The later one is brought onto `main` after the first merges, its baseline redrawn, and pushed before the owner is asked to merge it. PR #189's scene 16 was redrawn over PR #191's fix only in the working tree; #189 merged with the old image and `main` went red (#192, #193).
 
 ## Forbidden
 
