@@ -576,10 +576,11 @@ public sealed class TextGeomTests : IDisposable
     /// <summary>A change of the looks lays out and records again, and extracts nothing (design §4.8).</summary>
     /// <remarks>
     /// Preconditions:
-    /// - A drawn text layer.
+    /// - A drawn text layer labeled "p" in the legend, so that the legend's band is there before and after.
     ///
     /// Steps:
-    /// - Render nodes that change the color, the size, the alignment, the offset, and the rotation, one at a time. The label is left out: a legend that comes or goes changes the panel.
+    /// - Render nodes that change the color, the size, the alignment, the offset, the rotation, and the label to "q" (as wide
+    ///   with the fake backend), one at a time.
     ///
     /// Expected:
     /// - Each adds 1 layout, 0 extractions, and 1 recording.
@@ -589,11 +590,15 @@ public sealed class TextGeomTests : IDisposable
     {
         using var plan = Plan();
         var table = Table([10, 20], [10, 20], ["a", "b"]);
-        var layer = Layer(table, table.Cat("k").ToColumnRef());
+        var layer = Layer(table, table.Cat("k").ToColumnRef()) with { Label = "p" };
         _ = plan.Render(GeomTesting.Spec(table, layer));
         foreach (
             var changed in new[]
             {
+                layer with
+                {
+                    Label = "q",
+                },
                 layer with
                 {
                     Color = Colors.Red,

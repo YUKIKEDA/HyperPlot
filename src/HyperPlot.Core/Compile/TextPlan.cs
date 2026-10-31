@@ -170,7 +170,12 @@ internal sealed class TextPlan : LayerPlan
     {
         var column = text.Text.Column;
         var format = text.Format;
-        if (_labelsVersion == column.Version && ReferenceEquals(_labelsFormat, format) && _labels.Length == end - start)
+
+        // The version is read before the values (PR #189's review), as the plan reads its columns' before the wait: an
+        // Invalidate that comes while the labels are written leaves the version kept behind the column's, and the next
+        // Render writes them again.
+        var version = column.Version;
+        if (_labelsVersion == version && ReferenceEquals(_labelsFormat, format) && _labels.Length == end - start)
         {
             return;
         }
@@ -205,7 +210,7 @@ internal sealed class TextPlan : LayerPlan
             _labels[i - start] = written == 0 ? string.Empty : new string(buffer[..written]);
         }
 
-        (_labelsVersion, _labelsFormat) = (column.Version, format);
+        (_labelsVersion, _labelsFormat) = (version, format);
         Writes++;
     }
 }
