@@ -99,7 +99,8 @@ public sealed class SectorTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A call of trapezoids with NaN, ∞, From = To, From > To, and a span of 7; a call clipped to (10, 12, 30, 20).
+    /// - A call of trapezoids with NaN, ∞, From = To, From > To, and a span of 7; a ring from 0.1 to 6.2 between radii 4
+    ///   and 28 clipped to (10, 12, 30, 20), which cuts it on all four sides.
     ///
     /// Steps:
     /// - Draw them; read back.
@@ -121,7 +122,7 @@ public sealed class SectorTests
         ];
         var nothing = Draw((skipped, new Color(0, 0, 0, 255), null));
         Assert.All(nothing.Chunk(4), p => Assert.Equal([Background.R, Background.G, Background.B, Background.A], p));
-        _ = Check((skipped, new Color(0, 0, 0, 255), null), ([new(0.2f, 4.0f, 28, 28, 4, 4)], new Color(200, 20, 20, 255), (10, 12, 30, 20)));
+        _ = Check((skipped, new Color(0, 0, 0, 255), null), ([new(0.1f, 6.2f, 28, 28, 4, 4)], new Color(200, 20, 20, 255), (10, 12, 30, 20)));
     }
 
     /// <summary>

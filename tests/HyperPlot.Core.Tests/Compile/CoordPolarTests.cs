@@ -51,7 +51,7 @@ public sealed class CoordPolarTests
             (polar with { Start = double.NaN }, "Start"),
             (polar with { InnerRadius = 1 }, "InnerRadius"),
             (polar with { InnerRadius = -0.5 }, "InnerRadius"),
-            (polar with { Theta = (PolarTheta)5 }, "Theta"),
+            (polar with { Theta = (PolarTheta)2 }, "Theta"),
         };
         foreach (var (coord, member) in bad)
         {
@@ -666,14 +666,14 @@ public sealed class CoordPolarTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A 640 × 40 target with the light theme; a 200 × 100 target without guides, a line through y = 150 over the domain
-    ///   [0, 100].
+    /// - A 640 × 40 target with the light theme (a ring below 0); a 100 × 1 target without guides (a ring of 0); a 200 × 100
+    ///   target without guides, a line through y = 150 over the domain [0, 100].
     ///
     /// Steps:
     /// - Render a line polar on each.
     ///
     /// Expected:
-    /// - No command on the small target. On the wide one, the line's clip the panel (0, 0, 200, 100), and a point 75 from
+    /// - No command on the small targets. On the wide one, the line's clip the panel (0, 0, 200, 100), and a point 75 from
     ///   the center: past R = 50, inside the panel.
     /// </remarks>
     [Fact]
@@ -685,6 +685,10 @@ public sealed class CoordPolarTests
         var line = new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") };
         using var small = new PlotPlan(pool, 640, 40, new TextEngine(new FakeTextBackend()), 1);
         Assert.Empty(small.Render(Spec(table, line) with { Theme = Theme.Light, Coord = Coord.Polar() }).Commands.ToArray());
+
+        // A ring of exactly 0: a panel 1 pixel high without guides, R = ⌊1 / 2⌋ = 0.
+        using var flat = TestPlans.Create(pool, 100, 1);
+        Assert.Empty(flat.Render(Spec(table, line) with { Coord = Coord.Polar() }).Commands.ToArray());
 
         using var wide = TestPlans.Create(pool, 200, 100);
         var list = wide.Render(Spec(table, line) with { Coord = Coord.Polar() });
