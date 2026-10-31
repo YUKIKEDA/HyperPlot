@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** G7c（G7b は #163 の PR で済み）
-- **ブランチ:** `docs/168-g7c-color`（設計）
-- **Issue:** [#168](https://github.com/YUKIKEDA/HyperPlot/issues/168)（設計）
+- **作業中:** G3b（G7c は #172 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -57,7 +57,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G11 | polar（要件 G-7）: `PolarCoordSpec`、伸ばした空間で M4 と G4 の Geom を使い記録の段で写す道（線は弦とのずれ 0.25 画素以下の小片）、極座標の台形の命令 `DrawSectors`、角度と半径の軸と目盛り、円のグリッド（§4.4）。polar（theta = x）と cartesian の 1 フレームの時間の計測（NativeAOT の Release、1,920 × 1,080、交互に 3 回、1e9 点の線（S2 の場面）と 1e7 点の area と bar、小片の数と `DrawSectors` の GPU 時間） | done | [#145](https://github.com/YUKIKEDA/HyperPlot/issues/145)（設計）、[#149](https://github.com/YUKIKEDA/HyperPlot/issues/149) |
 | G7a | 名前つきの色（`Colors`、CSS の 148 色）とパレット（`Palette`・`Palettes` の質的な 7 つ）、テーマが決める系列の既定の色（`Theme.Palette`、tab10）、仕様の色の null（`StrokeSpec`・`Color?` の `Fill`）、`GeomFrame.SeriesColor`（§4.1・§4.7）。時間の計測はしない（色はコンパイルで決まり、フレームの道は変わらない。確保 0 はテストで見る） | done | [#153](https://github.com/YUKIKEDA/HyperPlot/issues/153)（設計）、[#157](https://github.com/YUKIKEDA/HyperPlot/issues/157) |
 | G7b | カテゴリの列 `CategoricalColumn`（`Column.Categorical`、`CategoryRef`、§3.1）、band のスケール（`Scale.Band`、§4.2）とその軸（カテゴリごとの目盛り、重なれば k 個おきのラベル、§4.6）、カテゴリの x の bar（カテゴリごとの最小・最大をワーカーが版ごとに作る、画素より多いカテゴリは画素列ごと、§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。ワーカーの最小・最大（1e8 行、カテゴリ 10 と 1e5）と 1 フレームの時間（カテゴリ 50 と 1e5） | done | [#159](https://github.com/YUKIKEDA/HyperPlot/issues/159)（設計）、[#163](https://github.com/YUKIKEDA/HyperPlot/issues/163) |
-| G7c | 列で色を分けるチャネル（`ColorBy`・`FillBy`）、ordinal・sequential・diverging の色のスケールと 12 の連続の色の写像（§4.1・§4.2）、カテゴリ名の凡例と連続のカラーバー（§4.6）。カテゴリは層を系列に分け（区間の道と集める道、§5.5.3）、数の列は bar と rect の要素ごとの色。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。分けるワーカーの仕事（1e8 行、8 カテゴリ、区間に並ぶ場合と混ざる場合）と 1 フレームの時間（1e8 行の線を 8 と 256 カテゴリで分けた場合、連続の色の rect 131,072 個） | in-progress | [#168](https://github.com/YUKIKEDA/HyperPlot/issues/168)（設計） |
+| G7c | 列で色を分けるチャネル（`ColorBy`・`FillBy`）、ordinal・sequential・diverging の色のスケールと 12 の連続の色の写像（§4.1・§4.2）、カテゴリ名の凡例と連続のカラーバー（§4.6）。カテゴリは層を系列に分け（区間の道と集める道、§5.5.3）、数の列は bar と rect の要素ごとの色。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。分けるワーカーの仕事（1e8 行、8 カテゴリ、区間に並ぶ場合と混ざる場合）と 1 フレームの時間（1e8 行の線を 8 と 256 カテゴリで分けた場合、連続の色の rect 131,072 個） | done | [#168](https://github.com/YUKIKEDA/HyperPlot/issues/168)（設計）、[#172](https://github.com/YUKIKEDA/HyperPlot/issues/172) |
 | G3b | 軸の端のラベルを描画先の内に収める配置（最初と最後のラベルのはみ出しを帯に取る、flip と polar を含む、§4.6）。行 G7b の band の軸の長い名前で見つかった | not-started | [#165](https://github.com/YUKIKEDA/HyperPlot/issues/165) |
 | G8 | text の Geom（データの文字列のラベル、`CategoricalColumn` と文字列の列を使う、§5.5.3） | not-started | |
 | G9 | image の Geom（ラスタのデータの型、タイルとミップマップ、`DrawImage`、§5.5.3） | not-started | |

@@ -47,7 +47,7 @@ public sealed class M4Batch
         ArgumentNullException.ThrowIfNull(x);
         ArgumentNullException.ThrowIfNull(y);
         ArgumentNullException.ThrowIfNull(destination);
-        _jobs.Add(new ColumnJob<TX, TY>(x, y, destination, options));
+        _jobs.Add(new ColumnJob<TX, TY>(x, y, destination, options, RowRange.All));
         return _jobs.Count - 1;
     }
 
@@ -65,7 +65,24 @@ public sealed class M4Batch
         ArgumentNullException.ThrowIfNull(x);
         ArgumentNullException.ThrowIfNull(y);
         ArgumentNullException.ThrowIfNull(destination);
-        _jobs.Add(new UniformJob<TY>(x, y, destination, options));
+        _jobs.Add(new UniformJob<TY>(x, y, destination, options, RowRange.All));
+        return _jobs.Count - 1;
+    }
+
+    /// <summary>Registers a series of a run of rows of a stored X (row G7c); the plan's checks stand for the public ones.</summary>
+    internal int AddRun<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+    {
+        _jobs.Add(new ColumnJob<TX, TY>(x, y, destination, default, rows));
+        return _jobs.Count - 1;
+    }
+
+    /// <summary>Registers a series of a run of rows of an evenly spaced X (row G7c).</summary>
+    internal int AddRun<TY>(UniformColumn x, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows)
+        where TY : unmanaged, INumber<TY>
+    {
+        _jobs.Add(new UniformJob<TY>(x, y, destination, default, rows));
         return _jobs.Count - 1;
     }
 
@@ -179,16 +196,22 @@ public sealed class M4Batch
         protected abstract M4Result Extract(ScaleOrigin origin, double[] boundaries);
     }
 
-    private sealed class ColumnJob<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options) : Job
+    private sealed class ColumnJob<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options, RowRange rows) : Job
         where TX : unmanaged, INumber<TX>
         where TY : unmanaged, INumber<TY>
     {
-        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) => M4.Extract(x, y, origin, boundaries, destination, options);
+        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) =>
+            rows == RowRange.All
+                ? M4.Extract(x, y, origin, boundaries, destination, options)
+                : M4.Extract(x, y, origin, boundaries, destination, options, rows);
     }
 
-    private sealed class UniformJob<TY>(UniformColumn x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options) : Job
+    private sealed class UniformJob<TY>(UniformColumn x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options, RowRange rows) : Job
         where TY : unmanaged, INumber<TY>
     {
-        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) => M4.Extract(x, y, origin, boundaries, destination, options);
+        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) =>
+            rows == RowRange.All
+                ? M4.Extract(x, y, origin, boundaries, destination, options)
+                : M4.Extract(x, y, origin, boundaries, destination, options, rows);
     }
 }

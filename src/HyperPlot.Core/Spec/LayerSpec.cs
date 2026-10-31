@@ -11,4 +11,29 @@ public abstract record LayerSpec : SpecNode
 
     /// <summary>Gets the legend's label; null or empty leaves the layer out of the legend (design §4.6).</summary>
     public string? Label { get; init; }
+
+    /// <summary>
+    /// Gets the column whose values color the layer (design §4.1, row G7c): the stroke of a line geom, the fill and the outline
+    /// of a fill geom. A <see cref="CategoricalColumn"/> (through <see cref="CategoryRef.ToColumnRef"/>) splits the layer into
+    /// a series a category; a numeric column colors each element of a bar or a rect. Null colors nothing.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A split layer draws each category as a series: a frame's work is the number of series times the pixels, about
+    /// 0.17 ms of CPU a series over 1,920 pixel columns on the reference machine. Past about 12 series a frame takes more
+    /// than requirement P-1's 8 ms; at most 256 categories split a layer.
+    /// </para>
+    /// <para>
+    /// The rows of a category that lie in one run are drawn over the layer's own columns. The rows of the others are
+    /// gathered into native columns of their own, once, and again when a column changes: as much memory as the layer's
+    /// columns for those rows (design §5.5.3).
+    /// </para>
+    /// </remarks>
+    public ColumnRef? ColorBy { get; init; }
+
+    /// <summary>
+    /// Gets the column whose values color the fill only, before <see cref="ColorBy"/> (design §4.1, row G7c). Only the fill
+    /// geoms take it. Null leaves the fill to <see cref="ColorBy"/>.
+    /// </summary>
+    public ColumnRef? FillBy { get; init; }
 }

@@ -193,7 +193,8 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => TryIsNonDecreasing(out _) ? null : pool.PrecomputeStats(this);
 
     /// <inheritdoc />
-    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
+    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>
+        batch.AddRun(this, y, destination, rows);
 
     /// <inheritdoc />
     internal override double DifferenceAt(long index, long origin) => ScaleSpace.Difference(GetValue(index), origin);
@@ -239,7 +240,8 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     PlotPyramid IPyramidColumn.BuildPlotPyramid(PlotWorkerPool pool) => new PlotPyramid<T>(pool.BuildPyramid(this));
 
     /// <inheritdoc />
-    internal override CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool) => pool.StartCategoryExtremes(x, this);
+    internal override CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool, RowRange rows) =>
+        pool.StartCategoryExtremes(x, this, rows);
 
     /// <summary>Returns a chunk's generation, which <see cref="Invalidate(long, long)"/> raises (design §3.2).</summary>
     internal long GetGeneration(int chunkIndex) => Volatile.Read(ref _generations[chunkIndex]);

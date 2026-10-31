@@ -19,6 +19,11 @@ internal sealed class PlotPlan : IDisposable
     private readonly RenderList _list = new();
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
+    private readonly ColorScale _color = new();
+
+    // The default color scales (design §4.2, row G7c), made once: a spec without one draws without allocating.
+    private static readonly OrdinalScaleSpec DefaultOrdinal = Scale.Ordinal();
+    private static readonly SequentialScaleSpec DefaultSequential = Scale.Sequential();
     private readonly int _capacity;
 
     // The channels of a layer's node and of the one before it, for the checks and the diff (design §4.8).
@@ -71,6 +76,12 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>Gets the number of times the guides were laid out, for the tests of the diff (design §4.8).</summary>
     internal int Layouts { get; private set; }
+
+    /// <summary>Gets the color scale of the last spec drawn, or null when no layer has a color channel. Tests only.</summary>
+    internal ColorScale? Color { get; private set; }
+
+    /// <summary>Gets the layers' plans. Tests only.</summary>
+    internal IReadOnlyList<LayerPlan> Layers => _layers;
 
     /// <summary>Gets the layout of the guides. Tests only.</summary>
     internal PlotGuides Guides => _guides;
@@ -145,7 +156,8 @@ internal sealed class PlotPlan : IDisposable
             || OptionsChanged(previous!.ScaleY, spec.ScaleY)
             || !string.Equals(previous.Title, spec.Title, StringComparison.Ordinal)
             || !previous.Theme.Equals(spec.Theme)
-            || CoordLooksChanged(previous.Coord, spec.Coord);
+            || CoordLooksChanged(previous.Coord, spec.Coord)
+            || previous.ScaleColor?.Id != spec.ScaleColor?.Id;
         if (scales)
         {
             // A new transform makes new boundaries even over the same range of the scale space.
@@ -166,7 +178,7 @@ internal sealed class PlotPlan : IDisposable
             // The layers name the same columns; take the new nodes for their looks, baselines, and widths.
             for (var i = 0; i < _layers.Length; i++)
             {
-                _layers[i].Spec = spec.Layers[i];
+                _layers[i].Take(spec.Layers[i]);
             }
         }
 
@@ -198,8 +210,16 @@ internal sealed class PlotPlan : IDisposable
 
         if (extract || looks)
         {
+            // The color domain: its columns' ranges, or the one given (design §4.2, row G7c). The color bar's ticks widen it
+            // with nice, and a diverging middle is checked against the final one.
+            if (Color is { Inner: not null })
+            {
+                LearnColor(spec);
+            }
+
             // The layout chooses the ticks, which nice may widen the domains to (design §4.6, §4.8).
-            _guides.Layout(spec, _xTransform, _learnedX, _yTransform, _learnedY, BandColumn(spec));
+            _guides.Layout(spec, _xTransform, _learnedX, _yTransform, _learnedY, BandColumn(spec), Color);
+            Color?.CheckMiddle();
             Layouts++;
             if (_guides.Empty)
             {
@@ -276,6 +296,136 @@ internal sealed class PlotPlan : IDisposable
 
         CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true);
         CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false);
+        CheckColor(plot);
+    }
+
+    /// <summary>
+    /// Throws unless the layers' color columns and the color scale go together (design §4.2, row G7c): all categories of one
+    /// order on an ordinal scale, or all numbers on a sequential or diverging one; and takes the scale for the drawing.
+    /// </summary>
+    private void CheckColor(PlotSpec plot)
+    {
+        Color = null;
+        CategoricalColumn? categories = null;
+        string? number = null;
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            foreach (var channel in (ReadOnlySpan<ColumnRef?>)[plot.Layers[i].ColorBy, plot.Layers[i].FillBy])
+            {
+                if (channel is not { } reference)
+                {
+                    continue;
+                }
+
+                if (reference.Column is CategoricalColumn column)
+                {
+                    categories ??= column;
+                    if (!categories.SameCategories(column))
+                    {
+                        throw new ArgumentException(
+                            $"The color column \"{plot.Data.GetName(reference.Index)}\" of layer {i} has other categories than the first color column; the layers share one order of categories (design §4.2)."
+                        );
+                    }
+                }
+                else
+                {
+                    number ??= plot.Data.GetName(reference.Index);
+                }
+            }
+        }
+
+        if (categories is null && number is null)
+        {
+            return;
+        }
+
+        var scale = plot.ScaleColor ?? (categories is not null ? DefaultOrdinal : DefaultSequential);
+        switch (scale)
+        {
+            case OrdinalScaleSpec when number is not null:
+                throw new ArgumentException(
+                    $"The ScaleColor is an ordinal scale, and the color column \"{number}\" holds numbers; numbers take a sequential or a diverging scale."
+                );
+            case SequentialScaleSpec or DivergingScaleSpec when categories is not null:
+                throw new ArgumentException(
+                    $"The ScaleColor is a {scale.GetType().Name}, and the color columns hold categories; categories take an ordinal scale."
+                );
+            case SequentialScaleSpec { Map: null } or DivergingScaleSpec { Map: null }:
+                throw new ArgumentNullException(nameof(plot), "The color scale's Map must not be null.");
+            case SequentialScaleSpec { Scale: null } or DivergingScaleSpec { Scale: null }:
+                throw new ArgumentNullException(nameof(plot), "The color scale's Scale must not be null.");
+            case DivergingScaleSpec { Mid: { } mid } when !double.IsFinite(mid):
+                throw new ArgumentException($"The diverging color scale's Mid is {mid}; it is finite.");
+            default:
+                break;
+        }
+
+        _color.Set(scale, plot.Theme?.Palette ?? Palettes.Tab10, categories);
+        if (_color.Inner is { } inner)
+        {
+            if (_spec?.ScaleColor is not { } before || before.Id != scale.Id)
+            {
+                inner.CheckGivenDomain();
+            }
+
+            if (inner is TimeScaleSpec)
+            {
+                for (var i = 0; i < plot.Layers.Count; i++)
+                {
+                    var layer = plot.Layers[i];
+                    foreach (var channel in (ReadOnlySpan<ColumnRef?>)[layer.ColorBy, layer.FillBy])
+                    {
+                        if (channel is { Column: not (Column<long> or UniformColumn { IsInteger: true }) } reference)
+                        {
+                            throw new ArgumentException(
+                                $"The color scale's inner scale is a time scale, and the color column \"{plot.Data.GetName(reference.Index)}\" is a {reference.Column.KindName}, not a long date-time column."
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        Color = _color;
+    }
+
+    /// <summary>
+    /// Learns the color domain (design §4.2, row G7c): the inner scale's given one, or the union of the ranges of the layers'
+    /// numeric color columns, by the rules of a position scale.
+    /// </summary>
+    private void LearnColor(PlotSpec spec)
+    {
+        var inner = _color.Inner!;
+        if (inner is TimeScaleSpec { Domain: { } time })
+        {
+            _color.Domain = ScaleRange.FromInteger(time.Min, time.Max);
+            return;
+        }
+
+        if (inner.GivenDomain is { } domain)
+        {
+            _color.Domain = _color.Transform is null
+                ? ScaleRange.FromDouble(domain.Min, domain.Max)
+                : Mapped(_color.Transform, domain.Min, domain.Max, string.Empty, string.Empty);
+            return;
+        }
+
+        _sink.Reset();
+
+        // An index, not foreach: the interface's enumerator would be boxed on every layout.
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            var layer = spec.Layers[i];
+            foreach (var channel in (ReadOnlySpan<ColumnRef?>)[layer.ColorBy, layer.FillBy])
+            {
+                if (channel is { } reference)
+                {
+                    _sink.AddColumn(reference.Column, spec.Data.GetName(reference.Index));
+                }
+            }
+        }
+
+        _color.Domain = FromSink(inner, _color.Transform);
     }
 
     /// <summary>
@@ -554,6 +704,12 @@ internal sealed class PlotPlan : IDisposable
             AddBaseline(transform, _sink.BaselineMax);
         }
 
+        return FromSink(scale, transform);
+    }
+
+    /// <summary>Returns the domain of the ranges in the sink (design §4.2): none, one value, or a range, mapped or in data units.</summary>
+    private ScaleRange FromSink(ContinuousScaleSpec scale, IScale? transform)
+    {
         var (integerMin, integerMax, min, max) = (_sink.IntegerMin, _sink.IntegerMax, _sink.Min, _sink.Max);
         var (minName, maxName, found, integer) = (_sink.MinName, _sink.MaxName, _sink.Found, _sink.Integer);
         if (!found)
@@ -711,7 +867,7 @@ internal sealed class PlotPlan : IDisposable
     {
         _batch.Clear();
         var used = new HashSet<Column>();
-        var build = new PlanBuild(Pyramid, _batch, _capacity);
+        var build = new PlanBuild(Pyramid, column => _pyramids.GetValueOrDefault(column), _batch, _capacity, _pool);
         var layers = new LayerPlan[spec.Layers.Count];
         for (var i = 0; i < layers.Length; i++)
         {
@@ -832,6 +988,7 @@ internal sealed class PlotPlan : IDisposable
             // The series color of the layer's position (design §4.1, row G7a).
             var layer = _layers[i];
             layer.SeriesColor = palette.Series(i);
+            layer.Colors = Color;
             layer.Record(_context);
             _context.Flush();
         }

@@ -78,4 +78,18 @@ public static class ScaleSpecExtensions
         ArgumentNullException.ThrowIfNull(scale);
         return scale with { Title = title };
     }
+
+    /// <summary>
+    /// Returns a copy of an ordinal color scale with a legend title (row G7c). A sequential or diverging scale takes its title
+    /// from its inner continuous scale.
+    /// </summary>
+    /// <param name="scale">The scale.</param>
+    /// <param name="title">The title; null or empty for none.</param>
+    /// <returns>The copy, with a new <see cref="SpecNode.Id"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    public static OrdinalScaleSpec WithTitle(this OrdinalScaleSpec scale, string? title)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        return scale with { Title = title };
+    }
 }

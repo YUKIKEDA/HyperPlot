@@ -26,4 +26,10 @@ public sealed record PlotSpec : SpecNode
 
     /// <summary>Gets the coordinate system: <see cref="HyperPlot.Coord.Cartesian(bool)"/> without flip by default (design §4.4).</summary>
     public CoordSpec Coord { get; init; } = HyperPlot.Coord.Cartesian();
+
+    /// <summary>
+    /// Gets the color scale that the layers' <see cref="LayerSpec.ColorBy"/> and <see cref="LayerSpec.FillBy"/> share (design
+    /// §4.2, row G7c). Null takes an ordinal scale for categories and a sequential one for numbers.
+    /// </summary>
+    public ColorScaleSpec? ScaleColor { get; init; }
 }

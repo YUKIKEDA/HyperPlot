@@ -106,6 +106,15 @@ public sealed record Theme
     /// </summary>
     public Palette Palette { get; init; } = Palettes.Tab10;
 
+    /// <summary>Gets the thickness of a color bar in DIPs (design §4.6, row G7c): 16, as Vega's gradient.</summary>
+    public float ColorBarThickness { get; init; } = 16;
+
+    /// <summary>
+    /// Gets the most a color bar is long in DIPs (design §4.6, row G7c): 200, as Vega's gradient. It is the panel's height
+    /// held between half of this and this.
+    /// </summary>
+    public float ColorBarLength { get; init; } = 200;
+
     /// <summary>Throws unless every member is in range for a renderer of a scale (design §4.7).</summary>
     internal void Validate(float scale)
     {
@@ -122,6 +131,8 @@ public sealed record Theme
         CheckLength(LegendSwatch, nameof(LegendSwatch));
         CheckSpacing(TickSpacingX, nameof(TickSpacingX));
         CheckSpacing(TickSpacingY, nameof(TickSpacingY));
+        CheckPositive(ColorBarThickness, nameof(ColorBarThickness));
+        CheckPositive(ColorBarLength, nameof(ColorBarLength));
         if (string.IsNullOrEmpty(FontFamily))
         {
             throw new ArgumentException("The theme's FontFamily is null or empty.");
@@ -148,6 +159,14 @@ public sealed record Theme
         if (!float.IsFinite(length) || length < 0)
         {
             throw new ArgumentException($"The theme's {name} is {length}; a width or a length is finite and at least 0.");
+        }
+    }
+
+    private static void CheckPositive(float value, string name)
+    {
+        if (!float.IsFinite(value) || value <= 0)
+        {
+            throw new ArgumentException($"The theme's {name} is {value}; it is finite and above 0.");
         }
     }
 

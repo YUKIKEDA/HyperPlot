@@ -13,6 +13,18 @@ public sealed class LineBuilder
     /// <summary>Gets the stroke set so far: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
     internal StrokeSpec Style { get; private set; } = new(null);
 
+    /// <summary>Gets the column set so far to split the layer by (row G7c).</summary>
+    internal ColumnRef? ColorByRef { get; private set; }
+
+    /// <summary>Splits the layer into a series a category, each in the color scale's color (design §4.1, row G7c).</summary>
+    /// <param name="category">The categorical column of the plot's table.</param>
+    /// <returns>This builder.</returns>
+    public LineBuilder ColorBy(CategoryRef category)
+    {
+        ColorByRef = category.ToColumnRef();
+        return this;
+    }
+
     /// <summary>Sets the color.</summary>
     /// <param name="color">The color.</param>
     /// <returns>This builder.</returns>

@@ -16,6 +16,7 @@ public sealed class PlotBuilder
     private string? _title;
     private Theme? _theme;
     private CoordSpec? _coord;
+    private ColorScaleSpec? _scaleColor;
     private bool _built;
 
     internal PlotBuilder(DataTable data) => _data = data;
@@ -57,6 +58,7 @@ public sealed class PlotBuilder
                 Y = y,
                 Style = style.Style,
                 Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
             }
         );
         return this;
@@ -97,6 +99,7 @@ public sealed class PlotBuilder
                 Style = style.Style,
                 Mode = mode,
                 Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
             }
         );
         return this;
@@ -134,6 +137,8 @@ public sealed class PlotBuilder
                 Fill = area.FillColor,
                 Outline = area.OutlineStyle,
                 Label = area.LabelText,
+                ColorBy = Channel(area.ColorByRef),
+                FillBy = Channel(area.FillByRef),
             }
         );
         return this;
@@ -170,6 +175,8 @@ public sealed class PlotBuilder
                 Fill = area.FillColor,
                 Outline = area.OutlineStyle,
                 Label = area.LabelText,
+                ColorBy = Channel(area.ColorByRef),
+                FillBy = Channel(area.FillByRef),
             }
         );
         return this;
@@ -207,6 +214,7 @@ public sealed class PlotBuilder
                 Baseline = baseline,
                 Fill = fill.FillColor,
                 Label = fill.LabelText,
+                ColorBy = Channel(fill.ColorByRef),
             }
         );
         return this;
@@ -250,6 +258,7 @@ public sealed class PlotBuilder
                 Width = width,
                 Fill = fill.FillColor,
                 Label = fill.LabelText,
+                ColorBy = Channel(fill.ColorByRef),
             }
         );
         return this;
@@ -292,6 +301,7 @@ public sealed class PlotBuilder
                 YMax = yMax,
                 Fill = fill.FillColor,
                 Label = fill.LabelText,
+                ColorBy = Channel(fill.ColorByRef),
             }
         );
         return this;
@@ -316,6 +326,7 @@ public sealed class PlotBuilder
                 X = x,
                 Style = style.Style,
                 Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
             }
         );
         return this;
@@ -340,6 +351,7 @@ public sealed class PlotBuilder
                 Y = y,
                 Style = style.Style,
                 Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
             }
         );
         return this;
@@ -381,6 +393,7 @@ public sealed class PlotBuilder
                 YEnd = yEnd,
                 Style = style.Style,
                 Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
             }
         );
         return this;
@@ -430,6 +443,7 @@ public sealed class PlotBuilder
                 CapWidth = capWidth,
                 Style = style.Style,
                 Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
             }
         );
         return this;
@@ -512,6 +526,22 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets the color scale that the layers' <see cref="LayerSpec.ColorBy"/> and <see cref="LayerSpec.FillBy"/> share (design
+    /// §4.2, row G7c). Without one, the compile takes an ordinal scale for categories and a sequential one for numbers.
+    /// </summary>
+    /// <param name="scale">The scale.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder ScaleColor(ColorScaleSpec scale)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        ThrowIfBuilt();
+        _scaleColor = scale;
+        return this;
+    }
+
     /// <summary>Makes the spec. A plot of no layers draws nothing. The builder cannot be used afterwards.</summary>
     /// <returns>The spec.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Build"/> was called before.</exception>
@@ -528,6 +558,7 @@ public sealed class PlotBuilder
             Title = _title,
             Theme = _theme ?? HyperPlot.Theme.Light,
             Coord = _coord ?? HyperPlot.Coord.Cartesian(),
+            ScaleColor = _scaleColor,
         };
     }
 
@@ -570,6 +601,17 @@ public sealed class PlotBuilder
                 name
             );
         }
+    }
+
+    /// <summary>Checks a color channel set in a configure (row G7c): the same checks as a channel's.</summary>
+    private ColumnRef? Channel(ColumnRef? reference)
+    {
+        if (reference is { } channel)
+        {
+            CheckReference(channel, "configure");
+        }
+
+        return reference;
     }
 
     private void CheckReference(ColumnRef reference, string name)

@@ -24,7 +24,7 @@ internal abstract class PlotPyramid : IDisposable
     public abstract Task WhenComplete();
 
     /// <summary>Adds a series over this pyramid, with <paramref name="x"/> as its X, to a batch.</summary>
-    public abstract int AddTo(M4Batch batch, Column x, M4Point[] destination);
+    public abstract int AddTo(M4Batch batch, Column x, M4Point[] destination, RowRange rows);
 
     /// <inheritdoc />
     public abstract void Dispose();
@@ -48,7 +48,7 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
     public override Task WhenComplete() => pyramid.WhenComplete();
 
     /// <inheritdoc />
-    public override int AddTo(M4Batch batch, Column x, M4Point[] destination) => x.AddSeries(batch, pyramid, destination);
+    public override int AddTo(M4Batch batch, Column x, M4Point[] destination, RowRange rows) => x.AddSeries(batch, pyramid, destination, rows);
 
     /// <inheritdoc />
     public override void Dispose() => pyramid.Dispose();

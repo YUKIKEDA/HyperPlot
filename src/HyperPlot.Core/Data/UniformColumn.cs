@@ -137,5 +137,6 @@ public sealed class UniformColumn : Column
     internal override bool IsNonDecreasing(PlotWorkerPool pool) => true;
 
     /// <inheritdoc />
-    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination) => batch.Add(this, y, destination);
+    internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>
+        batch.AddRun(this, y, destination, rows);
 }
