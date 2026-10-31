@@ -12,6 +12,7 @@
 | 散布の密度（C3・R3） | datashader の文書（Pipeline: aggregation と shading） | 集計と色の写像を分ける構成、eq_hist |
 | GoG（G1〜G6） | Wilkinson. *The Grammar of Graphics*. 2005。Wickham. *ggplot2: Elegant Graphics for Data Analysis* 3e。Vega-Lite の仕様（encoding、scale、selection / param、facet、concat） | 仕様モデル、チャネル、Stat と Position、selection |
 | 目盛り（G3） | Talbot, Lin, Hanrahan. "An Extension of Wilkinson's Algorithm for Positioning Tick Labels on Axes." InfoVis 2010 | 線形の目盛りの選び方 |
+| 色とパレット（G7a） | matplotlib の `lib/matplotlib/_cm.py`（`_tab10_data`）と `mpl-data/matplotlibrc`（`axes.prop_cycle`）、d3-scale-chromatic の `src/categorical/*.js`、R の `src/library/grDevices/R/colorstuff.R`（`palette.colors` の Okabe-Ito）、CSS Color Module Level 4 の `css-color-4/Overview.bs`（`named-color-table`） | パレットと名前つきの色の値、既定の色の巡回（設計 §4.1） |
 | プロットの種類の拡充（要件 G-14。行は種類を足すたびに作る） | Plotly の文書（Python と JavaScript の figure reference の trace の一覧）、matplotlib の gallery、ggplot2 の reference の geom の一覧 | 次に足す種類の候補。足す前に、その種類の属性を読んだページを Issue に書く |
 | 大規模のプロットの製品 | SciChart の文書（Resampling、Performance tips）。ScottPlot の文書（SignalPlot、DataStreamer） | 利用者が期待する機能と API の形。速さの主張は製品の文書であり、読んだページを書いてから比べる |
 | WPF の組み込み（W1） | Microsoft Learn: `D3DImage`、「WPF and Direct3D9 Interoperation」。D3D11 の `GetSharedHandle` と D3D9Ex の `CreateTexture` の共有 | 共有テクスチャ、フロントバッファの喪失、ソフトウェア描画 |
