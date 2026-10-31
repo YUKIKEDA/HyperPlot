@@ -74,6 +74,7 @@ public void Build_ChunkBoundaryInsideBucket_KeepsMinimumAndMaximumOfBothChunks()
 ## What a test checks
 
 - A test stands for the whole design statement (`.cursor/rules/spec-checks.mdc`).
+- A test of values outside a domain covers both ends, below and above, and so does the design statement it checks. PR #150 drew a polar line past the outer circle and left the inner side undecided: a radius below 0 was drawn across the center, on the opposite side; the review found it, and the owner set the inner edge as the cut.
 - The expected value of a subtle result (which points M4 keeps, a tick set, an interpolated color, a density cell's count) comes from an independent reference, not from reasoning: the raw data drawn or counted on the CPU, a reference implementation's output (the paper's algorithm, a library the design names), a golden image produced by an earlier reviewed run. Do not compare a function with a re-implementation of itself.
 - Before the design takes an outside implementation as the reference for a value, make one case with it and check that it really computed that value: a reference that drops an input it does not support silently tests its default.
 - A row checked against an outside reference also makes cases of its feature with each feature of an earlier row that changes the same values (a log scale with the pyramid, an append with a zoom, NaN with density), before the PR. A Risk line that names the combinations as unchecked does not replace them.
