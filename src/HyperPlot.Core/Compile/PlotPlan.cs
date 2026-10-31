@@ -474,9 +474,10 @@ internal sealed class PlotPlan : IDisposable
             return;
         }
 
-        foreach (var layer in plot.Layers)
+        // An index, not foreach: the interface's enumerator would be boxed on every Render.
+        for (var i = 0; i < plot.Layers.Count; i++)
         {
-            var count = LayerPlan.AxisChannels(layer, ofX, _channels);
+            var count = LayerPlan.AxisChannels(plot.Layers[i], ofX, _channels);
             for (var c = 0; c < count; c++)
             {
                 var reference = _channels[c];
