@@ -1,3 +1,4 @@
+using System.Globalization;
 using HyperPlot.Testing;
 using HyperPlot.Tests;
 
@@ -430,6 +431,58 @@ public sealed class GeomRenderTests
             .Build();
 
         Check(spec, pool, "color-continuous.png");
+    }
+
+    /// <summary>
+    /// Text labels (§10.1 scene 16, row G8): bars over 6 categories with their values above them, and their categories' names
+    /// inside them, turned and colored by the category.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 6 categories "Alpha" to "Zeta" with seeded values from 2 to 10 and a column of their halves; the fake text backend;
+    ///   Theme.Light; a band x and a y domain of [0, 1.2 times the greatest value], so that the tallest bar's label stays in
+    ///   the panel.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360 bars, values above them (bottom-aligned, 4 DIPs up, "N0"), and names at half their height
+    ///   (clockwise, colored by the category); compare with <c>Golden/text-labels.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void TextLabels_MatchBaseline()
+    {
+        string?[] names = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"];
+        var random = new Random(16);
+        var values = names.Select(_ => Math.Round(2 + (random.NextDouble() * 8), 1)).ToArray();
+        using var pool = new PlotWorkerPool(2);
+        using var y = Column.Wrap(values);
+        using var half = Column.Wrap(values.Select(v => v / 2).ToArray());
+        var table = DataTable.Create().Add("name", Column.Categorical(names)).Add("y", y).Add("half", half).Build();
+        var spec = Plot.Create(table)
+            .Bar(table.Cat("name"), table.Col<double>("y"), 0, b => b.Fill(new Color(200, 200, 200, 255)))
+            .Text(
+                table.Cat("name"),
+                table.Col<double>("y"),
+                table.Col<double>("y"),
+                t =>
+                    t.Align(TextAlign.Center, TextBaseline.Bottom)
+                        .Offset(0, 4)
+                        .Format(static (v, d, out n) => v.TryFormat(d, out n, "N0", CultureInfo.InvariantCulture))
+            )
+            .Text(
+                table.Cat("name"),
+                table.Col<double>("half"),
+                table.Cat("name"),
+                t => t.Rotation(TextRotation.Clockwise90).ColorBy(table.Cat("name"))
+            )
+            .ScaleX(Scale.Band().WithTitle("Name"))
+            .ScaleY(Scale.Linear().WithDomain(0, values.Max() * 1.2).WithTitle("Value"))
+            .Title("Text labels")
+            .Build();
+
+        Check(spec, pool, "text-labels.png");
     }
 
     private static void Check(PlotSpec spec, PlotWorkerPool pool, string baseline)

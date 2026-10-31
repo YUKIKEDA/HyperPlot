@@ -18,7 +18,7 @@ public sealed class TextEngine
     internal const float MaxSize = 512;
 
     /// <summary>The most texts the cache keeps.</summary>
-    internal const int CacheCapacity = 4096;
+    internal const int CacheCapacity = 8192;
 
     private readonly Dictionary<ShapeKey, LinkedListNode<CacheEntry>> _cache = [];
     private readonly LinkedList<CacheEntry> _order = new();
