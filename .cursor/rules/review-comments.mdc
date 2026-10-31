@@ -13,11 +13,13 @@ A finding that is tried and not adopted is answered with the measurement or the 
 
 Before acting on a finding or declining it, check its claim against the code of that head: run the reproduction, or read the lines it names. A finding can be right about the reader's difficulty and wrong about the fact.
 
+A fix a finding proposes (a formula, a bound, a count) is derived again before it goes into the design or the code. PR #146's finding proposed ⌈|Δθ| √(r / 2ε)⌉ pieces for a polar segment; the term 2|Δr||Δθ| of a segment whose radius and angle both change was missing, and one piece of a segment with Δθ = 0.1 and Δr = 540 would have been 0.89 pixels off where 0.25 was the bound.
+
 A finding that asks to change a decision the owner made is not declined by citing the rule that records the decision. Reply with what the decision was and what the finding shows, and ask the owner (`.cursor/rules/consent.mdc`).
 
 A review the owner asks for is posted on the pull request, in the same turn, without waiting for an ask to post it. A review shown only in the conversation is not seen by anyone else, and the pull request does not show that it was reviewed. A re-review after fixes is posted the same way.
 
-Before calling a PR ready, and whenever the owner asks for the next step, read the reviews and inline comments of every open PR (`gh pr view <n> --json reviews,comments` and `gh api repos/{owner}/{repo}/pulls/<n>/comments`).
+Before calling a PR ready, before reporting that a PR waits for review, and whenever the owner asks for the next step, read the reviews and inline comments of every open PR (`gh pr view <n> --json reviews,comments` and `gh api repos/{owner}/{repo}/pulls/<n>/comments`). PR #146's report said that its checks had passed and that it waited for review; a review with two findings was already on it, and the owner had to point to it.
 
 A reply that says a finding was fixed is checked against the pushed diff first (`git show <sha>` holds the change). In PR #100 an edit of `PlotPlan.Render`'s XML was lost to a later edit, and the reply said it was done.
 
