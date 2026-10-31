@@ -13,7 +13,7 @@ Apps that use HyperPlot may ship as NativeAOT; development runs on the JIT (desi
 - No `[DynamicallyAccessedMembers]`, `[RequiresUnreferencedCode]`, `[RequiresDynamicCode]`, or `[UnconditionalSuppressMessage]` to silence an analyzer. If one seems needed, the design is wrong for AOT; raise it on the Issue.
 - Serialization, if any (a spec read from JSON, a column file's header), uses source-generated serializers (System.Text.Json source generation or similar), never reflection-based ones.
 - Interop uses `LibraryImport` and unmanaged function pointers, not `DllImport` with runtime marshalling or `ComImport` RCWs (`.cursor/rules/interop.mdc`).
-- Generic virtual methods and generic interfaces instantiated over many value types grow the binary (a column type per element type, a mark per encoding). When one is added on a public type, the PR reports the size of the NativeAOT sample before and after.
+- Generic virtual methods and generic interfaces instantiated over many value types grow the binary (a column type per element type, a mark per encoding). When one is added on a public type, the PR reports the size of the NativeAOT sample before and after. A switch that names each element type to make a generic object (`Column<float> c => new X<float>(c)` to `Column<byte>`) compiles every type's chain (its pyramids, its M4) into every application, built or not; a virtual method on the generic type (`Column<T>` returns `new X<T>(this)`) compiles only the types an application builds. PR #173's gathers grew `SpecPlot` by about 121 KB the first way and 13 KB the second.
 - A Source Generator ships inside the package that uses it (`analyzers/dotnet/cs`), not as a separate package.
 
 ## The check
