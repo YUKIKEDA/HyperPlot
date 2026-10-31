@@ -245,11 +245,11 @@ public abstract class Column
     /// Starts the pass that finds each category's least and greatest value of this column as Y (design §5.5.3, row G7b);
     /// only a <see cref="Column{T}"/> has values to read.
     /// </summary>
-    /// <summary>Returns the gather of the rows of a split layer's categories that do not lie in one run (design §5.5.3, row G7c).</summary>
-    internal abstract GatherChannel MakeGather(ReadOnlySpan<long> counts);
-
     internal virtual CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool, RowRange rows) =>
         throw new InvalidOperationException($"A {KindName} is not a Y column of bars.");
+
+    /// <summary>Returns the gather of the rows of a split layer's categories that do not lie in one run (design §5.5.3, row G7c).</summary>
+    internal abstract GatherChannel MakeGather(ReadOnlySpan<long> counts);
 
     /// <summary>Adds a series with this column as X to a batch (design §5.5.1).</summary>
     internal abstract int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows)

@@ -284,6 +284,7 @@ internal sealed class SplitPlan : LayerPlan
     private readonly PlotPyramid[] _gatheredPyramids = [];
     private readonly CategoryRuns? _runs;
     private readonly CategoricalColumn? _categories;
+    private long[] _starts = [];
 
     public SplitPlan(LayerSpec spec, PlanBuild build)
         : base(spec)
@@ -632,13 +633,18 @@ internal sealed class SplitPlan : LayerPlan
             _gatheredVersions[s] = _sources[s].Version;
         }
 
-        // Each category's position at each chunk's start: its rows in the chunks before, summed once.
-        var starts = new long[runs.ChunkCounts.Length];
-        for (var k = 1; k < categories.ChunkCount; k++)
+        // Each category's position at each chunk's start: its rows in the chunks before. The counts never change, so the sums
+        // are made once, by the first pass.
+        var starts = _starts;
+        if (starts.Length != runs.ChunkCounts.Length)
         {
-            for (var c = 0; c < n; c++)
+            starts = _starts = new long[runs.ChunkCounts.Length];
+            for (var k = 1; k < categories.ChunkCount; k++)
             {
-                starts[(k * n) + c] = starts[((k - 1) * n) + c] + runs.ChunkCounts[((k - 1) * n) + c];
+                for (var c = 0; c < n; c++)
+                {
+                    starts[(k * n) + c] = starts[((k - 1) * n) + c] + runs.ChunkCounts[((k - 1) * n) + c];
+                }
             }
         }
 
