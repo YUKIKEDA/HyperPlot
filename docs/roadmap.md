@@ -19,8 +19,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 
 - **フェーズ:** B（GoG）
 - **作業中:** G9（G8 は #188 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **ブランチ:** `docs/196-g9-image`（設計）
+- **Issue:** [#196](https://github.com/YUKIKEDA/HyperPlot/issues/196)（設計）
 
 ## ツールチェーン
 
@@ -60,7 +60,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G7c | 列で色を分けるチャネル（`ColorBy`・`FillBy`）、ordinal・sequential・diverging の色のスケールと 12 の連続の色の写像（§4.1・§4.2）、カテゴリ名の凡例と連続のカラーバー（§4.6）。カテゴリは層を系列に分け（区間の道と集める道、§5.5.3）、数の列は bar と rect の要素ごとの色。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。分けるワーカーの仕事（1e8 行、8 カテゴリ、区間に並ぶ場合と混ざる場合）と 1 フレームの時間（1e8 行の線を 8 と 256 カテゴリで分けた場合、連続の色の rect 131,072 個） | done | [#168](https://github.com/YUKIKEDA/HyperPlot/issues/168)（設計）、[#172](https://github.com/YUKIKEDA/HyperPlot/issues/172) |
 | G3b | 軸の端のラベルを描画先の内に収める配置（F を越えるラベルだけ内側へ寄せ、重なりは寄せた後の箱で測る。下と左の軸、flip と polar の半径の軸を含む、§4.6）。行 G7b の band の軸の長い名前で見つかった。時間の計測はしない（配置の段の数え方は変わらず、確保 0 はテストで見る） | done | [#165](https://github.com/YUKIKEDA/HyperPlot/issues/165)、[#176](https://github.com/YUKIKEDA/HyperPlot/issues/176)（設計）、[#180](https://github.com/YUKIKEDA/HyperPlot/issues/180) |
 | G8 | text の Geom（データのラベル: `CategoricalColumn` の名前か、数の列を書式で書いた文字列。プロットの text の層の行の総和 4,096 まで、重なりは避けない、整形のキャッシュの上限を 8,192 に、§4.1・§5.5.3）と、4,096 個のラベルの 1 フレームの CPU と GPU の時間の計測（NativeAOT の Release、1,920 × 1,080） | done | [#184](https://github.com/YUKIKEDA/HyperPlot/issues/184)（設計）、[#188](https://github.com/YUKIKEDA/HyperPlot/issues/188) |
-| G9 | image の Geom（ラスタのデータの型、タイルとミップマップ、`DrawImage`、§5.5.3） | not-started | |
+| G9 | image の Geom（ラスタの型 `Raster<T>` と RGBA、2 × 2 の平均のミップマップと 256 × 256 のタイル、`DrawImage`、常駐キャッシュ `ResidencyCache` と喪失の後の作り直し、1 フレーム 4 MB の転送と粗い段の仮の描画、§3.7・§5.2・§5.5.3）と、2 万 × 2 万の `float` のラスタ（メモリマップ）のミップマップを作る時間とパン・ズームの 1 フレームの時間と転送量の計測（NativeAOT の Release、1,920 × 1,080） | in-progress | [#196](https://github.com/YUKIKEDA/HyperPlot/issues/196)（設計） |
 | G5 | Stat と Position（カテゴリの x の errorbar・rule を、並べ（dodge）と一緒に。行 G7b から、§4.2。色で分けた bar と area の積み上げを既定にするか（行 G7c から、§4.1）） | not-started | |
 | G6 | ファセットと複数のプロット、二次軸（要件 G-9）と上や右に置く軸（§4.6） | not-started | |
 | **C: インタラクションと WPF** | | | |
@@ -71,7 +71,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | I4 | 注釈と計測、注記（要件 G-10、§4.6） | not-started | |
 | **D: 散布の大規模化とストリーミング** | | | |
 | C3 | 空間タイル索引（Morton 順の並べ直し、四分木の表） | not-started | |
-| R3 | 密度タイルと生の点の切り替え、常駐キャッシュ（`ResidencyCache`）と喪失の後の作り直し、point の Geom（`DrawMarkers`、polar では頂点シェーダで写す、§4.4）、point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、GPU で写す `RenderList.SetTransform`（§5.1）と座標系の 4×4 の変換の公開の契約（不変条件 12、Issue #136）、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1） | not-started | |
+| R3 | 密度タイルと生の点の切り替え、生の点のチャンクと密度タイルを行 G9 の常駐キャッシュ（`ResidencyCache`）に置くこと、point の Geom（`DrawMarkers`、polar では頂点シェーダで写す、§4.4）、point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、GPU で写す `RenderList.SetTransform`（§5.1）と座標系の 4×4 の変換の公開の契約（不変条件 12、Issue #136）、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1） | not-started | |
 | C4 | ストリーミングとリングバッファ | not-started | |
 | **E: XylemUI と公開** | | | |
 | X1 | XylemUI のホスト | not-started | |

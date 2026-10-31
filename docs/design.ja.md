@@ -366,6 +366,39 @@ CPU の `double` でも同じことが起きる。2026 年の .NET のティッ�
 - GPU には「原点からの差」を float32 で送る。原点はチャンク（またはタイル）ごとに CPU が `long` で持ち、フレームごとに「チャンクの原点 − ビューの原点」を `Int128` で正確に引いて `double` にし、ビューの下端の差を引いた値を定数として渡す
 - M4 の経路（§5.5.1）では、CPU が原点からの差から画素の座標まで倍精度で計算してから頂点を作るので、float32 の問題は起きない
 
+### 3.7 ラスタ（行 G9）
+
+ラスタは、行優先の 2 次元の格子である（Issue #196）。中身は §3.1 の `Column<T>` で持ち、管理・ネイティブ・メモリマップの 3 つの置き方と、写さずに包む口（要件 D-3）と `Invalidate` をそのまま使う。
+
+```csharp
+public abstract class Raster                            // 行 G9。行優先の 2 次元の格子（Issue #196）
+{
+    public int Width { get; }
+    public int Height { get; }
+    public bool IsRgba { get; }                         // Rgba で作ったラスタ（1 画素 4 バイト）
+    public Column Values { get; }                       // 包んだ列
+    public void Invalidate(int firstRow, int rowCount); // 書き換えた行。Values.Invalidate へ渡す
+    public static Raster<T> Of<T>(Column<T> values, int width) where T : unmanaged, INumber<T>;   // 数のラスタ
+    public static Raster<byte> Rgba(Column<byte> values, int width);                                // RGBA の画像
+}
+
+public sealed class Raster<T> : Raster where T : unmanaged, INumber<T>
+{
+    public new Column<T> Values { get; }
+}
+```
+
+- **大きさ**: 幅と高さは 1 以上の `int`。数のラスタは列の長さが幅 × 高さ、RGBA は 4 × 幅 × 高さで、割り切れなければ、または高さが `int` に入らなければ、長さと幅を書いた `ArgumentException`。`values` が null なら `ArgumentNullException`、幅が 1 未満なら `ArgumentOutOfRangeException`。要素の総数は `long` で、1 辺が D3D11 のテクスチャの上限（16,384）を超えるラスタも、下のタイルに分けて描く
+- **値**: 数のラスタは §3.1 の 5 つの値の型（`float`・`double`・`int`・`long`・`byte`）。`float`・`double` の NaN は欠けで、描かない（透明）。RGBA は 1 画素 4 バイト（R・G・B・A）で、アルファは前乗算しない値（`Color` と同じ）。GPU へ送るときに前乗算する
+- **書き換え**: `Invalidate(firstRow, rowCount)` は、その行の要素の範囲を `Values.Invalidate` へ渡す。行が範囲の外なら `ArgumentOutOfRangeException`。列の `Invalidate` を直接呼んでもよい（下のミップマップはチャンクの世代で書き換えた行を知る）
+- **持ち主**: ラスタは列を包むだけで、`IDisposable` ではない。列の寿命は利用者が持つ（`DataTable` と同じ、§3.1）
+- **タイルとミップマップ**（`RasterPyramid`、internal）: 段 0 は元のラスタそのもので、写さない。段 ℓ（ℓ ≥ 1）は、段 ℓ − 1 の 2 × 2 の画素の平均で、幅と高さは ⌈前の段 / 2⌉（端の 1 画素はそのまま）。最上の段は幅と高さがどちらも 256 以下になる段である。どの段も 256 × 256 のタイルに分け、GPU へはタイルの単位で送る（§5.5.3）
+  - **平均**: `float`・`double` は NaN を除いた平均で、4 つとも NaN なら NaN。整数の型は平均を最も近い整数に丸める（ちょうど半分は 0 から遠い方。4 つの和はあふれない幅で取り、`long` は 128 ビット）。どの段もラスタと同じ型で持つので、段 1 から上の合計は元の約 1/3（1/4 + 1/16 + … < 1/3）である。RGBA は前乗算した 4 つの値の平均を前乗算のまま持つ（前乗算しない平均は、透明な画素の色を混ぜて縁を暗くする）
+  - **メモリ**: 段 1 から上は、ネイティブのメモリ（§3.2 のネイティブのストレージと同じ `NativeMemory.AlignedAlloc`）に持つ。2 万 × 2 万の `float`（1.6 GB）で約 530 MB である。元の約 33 % で、要件 P-8（LOD の索引は元の 10 % 以下）の例外として要件に書く（オーナーの決定、Issue #196）。10 % に収める形（段 1 を持たず元の段から読む）は、2 倍に縮めた表示で 4 倍のデータを送ることになり、1 フレームの転送の予算（§5.5.3）を超える（`design-decisions.md`）。RAM に載らないほど大きいラスタのミップマップをファイルに置く形は、行 G9 では作らない
+  - **作る仕事**: ワーカーが、タイルの行ごとに段 1 を作り、続けて上の段を作る（O(N)、要件 N-8）。計画がラスタごとに 1 つ持ち、同じラスタを使う層で共有する（ピラミッドと同じ、§4.8）
+  - **作り直し**: 列のチャンクの世代（§3.2）を段ごとに覚え、変わったチャンクにかかる行のタイルと、その上の段の対応するタイルだけを作り直す。どの行が変わったかはチャンクの単位で分かるので、`Invalidate(firstRow, rowCount)` は、その行を含むチャンクの行の分を作り直す
+  - **版**: ミップマップは作ったときの列の版を持ち、古い版の段は暫定の表示として描く（不変条件 4）
+
 ## 4. GoG 層
 
 ### 4.1 仕様モデル
@@ -543,6 +576,21 @@ public sealed record TextLayerSpec : LayerSpec
     public float OffsetX { get; init; }                 // 基準点からのずらし、DIP。右が正。有限
     public float OffsetY { get; init; }                 // 上が正。有限
     public TextRotation Rotation { get; init; }         // 既定は None
+}
+
+// 行 G9: ラスタ（§3.7、§5.5.3、Issue #196）。Raster を直接持つ（要素の数が表の列の長さと合わないため）
+public enum RasterOrigin { Upper, Lower }               // 行 0 を画像の上の辺に置くか、下の辺に置くか
+public enum RasterInterpolation { Nearest, Bilinear }   // テクセルが画素より大きいときの読み方
+
+public readonly record struct RasterExtent(double Left, double Right, double Bottom, double Top);   // データの単位。画像の左右と上下の辺
+
+public sealed record ImageLayerSpec : LayerSpec
+{
+    public required Raster Raster { get; init; }
+    public RasterExtent? Extent { get; init; }          // null なら (−0.5, 幅 − 0.5, −0.5, 高さ − 0.5)
+    public RasterOrigin Origin { get; init; }           // 既定は Upper
+    public RasterInterpolation Interpolation { get; init; }   // 既定は Nearest
+    public double Opacity { get; init; } = 1;           // 0 以上 1 以下
 }
 
 public sealed record CustomLayerSpec : LayerSpec        // 利用者の Geom（§5.5.3）
@@ -796,6 +844,7 @@ public sealed class PlotBuilder
     public PlotBuilder Text<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, CategoryRef text, Action<TextBuilder>? configure = null);
     public PlotBuilder Text<TY, TL>(CategoryRef x, ColumnRef<TY> y, ColumnRef<TL> text, Action<TextBuilder>? configure = null);
     public PlotBuilder Text<TY>(CategoryRef x, ColumnRef<TY> y, CategoryRef text, Action<TextBuilder>? configure = null);
+    public PlotBuilder Image(Raster raster, Action<ImageBuilder>? configure = null);   // 行 G9。null は ArgumentNullException
     public PlotBuilder Title(string? title);            // 行 G3
     public PlotBuilder Theme(Theme theme);              // 行 G3。null は ArgumentNullException
     public PlotBuilder Coord(CoordSpec coord);          // 行 G10。null は ArgumentNullException
@@ -843,6 +892,14 @@ public sealed class TextBuilder                          // 行 G8。Text
     public TextBuilder Label(string? label);
     public TextBuilder ColorBy(CategoryRef category);   // カテゴリだけ（数の列は取らない）
 }
+
+public sealed class ImageBuilder                         // 行 G9。Image
+{
+    public ImageBuilder Extent(double left, double right, double bottom, double top);
+    public ImageBuilder Origin(RasterOrigin origin);
+    public ImageBuilder Interpolation(RasterInterpolation interpolation);
+    public ImageBuilder Opacity(double opacity);
+}
 ```
 
 - **同一性**: `SpecId` は、ノードを作るときと、`with` で写すとき（record の写しのコンストラクタ）に、プロセスで一意の値を新しく振る（`Interlocked.Increment`）。record の写しのコンストラクタは値をそのまま写すので、`Id` だけを持つ基底 `SpecNode` が自分の写しのコンストラクタで振り直し、派生の record の生成された写しのコンストラクタがそれを呼ぶ（派生の型が自分のメンバーを手で写さずに済む）。仕様は不変なので、同じ `Id` のノードは中身も同じである。`Id` は record の等しさに入る（中身が同じでも、別に作ったノードは等しくない）。中身を比べるのは、コンパイルの差分（§4.8）の役目である
@@ -884,6 +941,16 @@ public sealed class TextBuilder                          // 行 G8。Text
   - **ビルダ**: `PlotBuilder.Text` の 4 つの多重定義（x とラベルのそれぞれが数の列かカテゴリの列）と `TextBuilder`。列が `Create` に渡した表の列でない、`default` の参照なら `ArgumentException`。`Size` が有限で 0 より大きく 512 以下でない、`Offset` が有限でない、`TextAlign`・`TextBaseline`・`TextRotation` の定義にない値なら `ArgumentOutOfRangeException`。ラベルがカテゴリの列の `Text` で、configure が `Format` を与えたら `ArgumentException`。仕様を直接作ったときは、コンパイルが同じ例外で確かめる。`Size` に倍率 s を掛けて 512 を超えたら、コンパイルが学習の前に、層の番号と値を書いた `ArgumentException` を投げる（テーマの文字の大きさの検査と同じ形、§4.7。記録の途中で `DrawText` が投げる形にしない）
   - **列の長さ**: X・Y・`Text`（と `ColorBy`）は同じ表の列で、表の列はどれも同じ長さである（`DataTableBuilder.Build` が確かめる、§3.1）。そのため text の層は長さを確かめない（行 G8 の実装。設計は「違えば `ArgumentException`」としていたが、その場合は作れない）
   - **スクラッチのコンパイル**: この形（`TextLayerSpec`、`PlotBuilder.Text` の 4 つ、`TextBuilder`、§4.9 の例）を Core を参照するスクラッチでコンパイルした（下の §4.9）
+- **行 G9 の image**（Issue #196）: ラスタ（§3.7）を矩形に置く Geom（要件 G-3）
+  - **持ち方**: `ImageLayerSpec` は `Raster` を直接持つ。表の列はどれも同じ長さで、ラスタの要素の数（幅 × 高さ）とは合わないからである。`PlotSpec.Data` はほかの層のための表のままで、image だけのプロットでも要る（空の表でよい）
+  - **置く所と向き**: `Extent` はデータの単位で、画像の左・右・下・上の辺の座標である。`Origin` が `Upper` なら行 0 を上の辺に、`Lower` なら下の辺に置く。列 0 はいつも左の辺である。既定の `Extent` は (−0.5, 幅 − 0.5, −0.5, 高さ − 0.5) で、画素 (列 c、行 r) の中心は x = c、y は `Upper` なら 高さ − 1 − r、`Lower` なら r にある。画像の向きは画面で決まり、層は y のスケールを逆にしない（Issue #196 のオーナーの決定。matplotlib の `imshow` は既定の extent (−0.5, 幅 − 0.5, 高さ − 0.5, −0.5) で y 軸を逆にして行 0 を上に出すが、HyperPlot の層はスケールを変えない、`design-decisions.md`）。y の目盛りで行の番号を読みたいときは、`Lower` と y の `Reverse` を使う。`Left` > `Right` や `Bottom` > `Top` の `Extent` は、画像を左右や上下に裏返す
+  - **値**: 数のラスタは、プロットの色のスケール（`PlotSpec.ScaleColor`、sequential か diverging、行 G7c）で塗る。`ScaleColor` が null なら、ほかの数の色の層と同じく sequential（viridis、linear）。ordinal のスケールと数のラスタの組は `ArgumentException`。RGBA の画像は色のスケールを使わない
+  - **読み方**: テクセルが画素より大きいとき（拡大）は `Interpolation`（既定は `Nearest`、`Bilinear` も選べる）。縮小はミップマップの段（§3.7）が平均を受け持つ。matplotlib の既定の Hanning の補間（`lib/matplotlib/image.py` の `_resample`）は作らない
+  - **`Opacity`**: 画像全体に掛けるアルファ（0〜1）。NaN の画素は `Opacity` によらず透明
+  - **座標系**: flip は受ける（画像の x の向きが縦になる）。polar は、層の番号を書いた `ArgumentException`（極座標へ曲げて描くには画素ごとの逆写像が要る。`design-decisions.md`）
+  - **色のチャネル**: `ColorBy` と `FillBy` は `ArgumentException`。`Label` は持てるが、凡例の層の行は出さない（数のラスタの色はカラーバーで読む、§4.6）
+  - **ビルダ**: `PlotBuilder.Image` と `ImageBuilder`。`raster` が null なら `ArgumentNullException`。`Extent` の値が有限でない、`Left` と `Right` か `Bottom` と `Top` が等しいとき、`Opacity` が 0〜1 の外か NaN、`RasterOrigin`・`RasterInterpolation` の定義にない値なら `ArgumentOutOfRangeException`。仕様を直接作ったときは、コンパイルが同じ例外で確かめる
+  - **スクラッチのコンパイル**: この形（`Raster`・`Raster<T>`、`ImageLayerSpec`、`PlotBuilder.Image`、`ImageBuilder`、§4.9 の例）を Core を参照するスクラッチでコンパイルした（§4.9）
 - **行 G3 の仕様**（Issue #111）: ガイドの設定は、§4.1 の表のとおりスケールに持つ（軸のタイトル・nice・書式）。`PlotSpec` の別の軸の仕様にしないのは、軸の中身がスケールの種類（数か日時か）で決まり、スケールと軸が 1 対 1 だからである（`design-decisions.md`）。§4.9 の例の `.Title("…")` は、`Title` のプロパティと同じ名前のメソッドを C# の型が持てないので、`WithTitle` にした。`WithTitle` は `WithDomain` と違い種類によらないので、拡張メソッド 1 つにする。`Title` と `Label` は null と空を「なし」とし、例外にしない。グリッドと軸を描くかはテーマ（§4.7）で決める。`LineLayerSpec.Style` の太さと破線の長さは、行 G3 から DIP で、`HeadlessRenderer` の `Scale`（§7.5）を掛けて記録する（倍率 1 なら行 G1 と同じ画素）
 
 ### 4.2 エンコーディングとスケール
@@ -917,14 +984,14 @@ public sealed class TextBuilder                          // 行 G8。Text
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
   - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない
-- 色・大きさ・形のスケールの写像は SIMD のカーネルで行い、結果はチャンクごとに持つ。色のスケールのうち連続のものは、GPU では 256 色のテクスチャの参照で行う。行 G7c の連続の色は、要素の数が 131,072 以下に限られるので、フレームごとに CPU で写す（下）。チャンクごとに持つ形は、点の数で色を写す行 R3 で作る
+- 色・大きさ・形のスケールの写像は SIMD のカーネルで行い、結果はチャンクごとに持つ。色のスケールのうち連続のものは、GPU では 256 色のテクスチャの参照で行う。行 G7c の連続の色は、要素の数が 131,072 以下に限られるので、フレームごとに CPU で写す（下）。チャンクごとに持つ形は、点の数で色を写す行 R3 で作る。行 G9 の数のラスタは、GPU で写す最初の形で、タイルの値（R32_FLOAT）を、シェーダが中のスケールの変換（linear・log・symlog・pow の 4 つ）でスケールの空間へ写し、下の sequential か diverging の式で t を求め、256 × 1 の色の表のテクスチャを点で引く。CPU の `ColorMap.Map`（⌊t · 256⌋、t = 1 は 255、範囲の外は端の色、NaN は透明）と同じ添字になるよう、シェーダも t から ⌊t · 256⌋ を整数で求めて表を引く（テクスチャの補間を使わない）。利用者の `IScale` はシェーダで走らせられないので、数のラスタを塗る色のスケールが `TransformScaleSpec` なら、層の番号を書いた `ArgumentException`（Issue #196）
 - **行 G7c の色のスケール**（Issue #168）: `ColorBy`・`FillBy`（§4.1）の値を色に写す。3 種で、すべての層の `ColorBy`・`FillBy` が 1 つの `PlotSpec.ScaleColor` を共有する
   - **既定**: `ScaleColor` が null なら、色の列がカテゴリなら `Scale.Ordinal()`、数（time の `long` を含む）なら `Scale.Sequential()`（viridis、linear）。色の列がなければ使わない
   - **検査**: ordinal に数の列、sequential か diverging にカテゴリの列を与えたら、列の名前とスケールの種類を書いた `ArgumentException`。色の列がカテゴリと数で混ざっても同じ。カテゴリなら、色の列はどれも同じカテゴリの並び（同じ列か、名前の並びが序数で同じ列）で、違えば `ArgumentException`（行 G7b の band と同じ）。中のスケールの検査（`with` の domain など）は位置のスケールと同じ（§4.8）。中のスケールが time なら、色の列は `long` の日時
   - **ordinal**: domain はカテゴリの列の並びの全部（使われないカテゴリも落とさない、行 G7b と同じ）。カテゴリ i の色は `Palette[i mod n]`（`Palette` が null ならテーマのパレット）
   - **sequential**: 値 v を中のスケールの変換でスケールの空間へ写し（位置のスケールと同じ変換、§4.2 の上）、domain の下端を 0、上端を 1 とする t を `Map.Map(t)` で色にする。`Reverse` は t を 1 − t にする。domain の外は端の色（matplotlib の under と over の既定と同じ）で、中のスケールの `Clamp` は使わない
   - **diverging**: 中点 m（`Mid` をスケールの空間へ写した値、null なら domain の下端と上端の真ん中）で分け、v ≤ m なら t = 0.5 · (v − 下端) / (m − 下端)、v > m なら t = 0.5 + 0.5 · (v − m) / (上端 − m)（d3-scale の diverging と同じ。`src/diverging.js`）。m が domain の内（下端 < m < 上端）でなければ、値を書いた `ArgumentException`（学習の後、配置の前）。`Mid` は `double` なので、`long` の日時の中点は 2^53 を超えると丸まる
-  - **学習**: 数の色の domain は、色の列の範囲の和（位置のスケールと同じく、チャンクの統計と `UniformColumn` の両端を読む。O(チャンクの数)）。中のスケールが `Domain` を持てばそれを使う。`Nice` は、カラーバーの目盛り（§4.6）で domain を外側へ広げる。`Zero` は位置のスケールと同じ
+  - **学習**: 数の色の domain は、色の列の範囲の和（位置のスケールと同じく、チャンクの統計と `UniformColumn` の両端を読む。O(チャンクの数)）。行 G9 から、数のラスタの列（`Raster.Values`）の範囲もこの和に入る（ラスタの位置の domain は `Extent` から、§4.1）。中のスケールが `Domain` を持てばそれを使う。`Nice` は、カラーバーの目盛り（§4.6）で domain を外側へ広げる。`Zero` は位置のスケールと同じ
   - **写す時**: 要素ごとの色は、記録の段で、見える要素だけを CPU で写す（131,072 以下）。系列の色（ordinal）は記録で 1 回引く。どちらも確保しない
   - **差分**（§4.8）: 色の列の参照が変わったら「データ」（分ける系列を作り直す、§5.5.3）。中のスケールの domain・変換（種類と中身）・`Mid`・`Nice`・`Zero` が変わったら「スケール」。`Palette`・`Map`・`Reverse`・`Title` だけなら「見た目」（配置と記録だけ）
 
@@ -987,7 +1054,7 @@ public sealed class TextBuilder                          // 行 G8。Text
 
 1. 図の矩形 F は、描画先を四方とも P だけ内側に縮めたもの
 2. **タイトル**: `PlotSpec.Title` が null でも空でもなければ、F の上に「タイトルを `TitleSize` で測った高さ + G」を取る
-3. **凡例**: `Label` が null でも空でもないレイヤーがあれば、F の右に「凡例の幅 + G」を取る。凡例の幅 = 見本の長さ（⌊`LegendSwatch` · s + 0.5⌋）+ G + ラベルを `LegendSize` で測った幅の最大
+3. **凡例**: `Label` が null でも空でもないレイヤー（image の層を除く。行 G9、§4.1）があれば、F の右に「凡例の幅 + G」を取る。凡例の幅 = 見本の長さ（⌊`LegendSwatch` · s + 0.5⌋）+ G + ラベルを `LegendSize` で測った幅の最大
    - **行 G7c**（Issue #168）: 色のスケールを使う層があれば、凡例に色の項を足す（下の「色の凡例」）。ordinal なら、カテゴリ名の行を層のラベルの行の後に続け、ラベルの幅の最大にカテゴリ名とスケールのタイトルを含める。連続ならカラーバーで、その幅（太さ + T + G + 目盛りのラベルの幅の最大、タイトルがあればその幅との大きい方）と、上の幅の大きい方を凡例の幅にする。カラーバーの長さはパネルの高さで決まり（下）、パネルの高さは 4 の x の帯の高さで決まる。x の帯の高さは目盛りによらないので、ここで 4 を先に求め、カラーバーの目盛りを選んでから凡例の幅を決める
 4. **x の帯**（`ShowAxes` が真のとき）: F の下に「T + G + h(`TickLabelSize`)」と、x の軸のタイトルがあれば「+ G + h(`AxisTitleSize`)」を取る。x の帯の高さは目盛りによらない
 5. パネルの高さ H = F の高さ − タイトルの帯 − x の帯。**y の目盛り**を、軸の長さ H で選ぶ（下の「目盛りの選び方」）
@@ -1033,7 +1100,7 @@ public sealed class TextBuilder                          // 行 G8。Text
 **色の凡例**（行 G7c、Issue #168）: 層のラベルの行の後に、上から続けて置く。
 
 - **分けた層**: `ColorBy` か `FillBy` にカテゴリの列を持つ層は、層の `Label` の行を出さず、代わりに色の項がカテゴリごとの行を出す（Vega-Lite の色の凡例と同じく、スケールに 1 つ）。スケールのタイトルがあれば最初の行に `LegendSize` で書き、続けてカテゴリの番号の順に、見本とカテゴリ名の行を置く。見本は、そのスケールを使う最初の層の Geom の見本（§5.5.3。塗りなら正方形、線なら線）を、カテゴリの色で描く。256 カテゴリなら 256 行になり、パネルを超える行は描画先が切る（層のラベルと同じ）
-- **カラーバー**: sequential と diverging は、縦の帯 1 本。太さ B = ⌊`ColorBarThickness` · s + 0.5⌋、長さ Lc = パネルの高さ H を [⌊`ColorBarLength` · s / 2 + 0.5⌋, ⌊`ColorBarLength` · s + 0.5⌋] に収めた値（既定で 100〜200、Vega の `gradientThickness` 16・`gradientLength` 200 と Vega-Lite の縦の帯の 100〜200）。タイトルがあれば上に `LegendSize` の 1 行を置き、その下に帯を置く。帯は、長さの画素の行ごとに 1 本の矩形（行の中心の t で写した色、下が domain の下端。`Reverse` でも帯の向きは同じで、色の並びが逆になる）を `DrawRect` で記録し、Lc 本（200 以下）で済む。新しい描画の命令は要らない
+- **カラーバー**: sequential と diverging は、縦の帯 1 本。行 G9 から、数のラスタの層もこのカラーバーを出す（数の色の層と `ScaleColor` を共有する。RGBA の画像の層は色の項を出さない）。太さ B = ⌊`ColorBarThickness` · s + 0.5⌋、長さ Lc = パネルの高さ H を [⌊`ColorBarLength` · s / 2 + 0.5⌋, ⌊`ColorBarLength` · s + 0.5⌋] に収めた値（既定で 100〜200、Vega の `gradientThickness` 16・`gradientLength` 200 と Vega-Lite の縦の帯の 100〜200）。タイトルがあれば上に `LegendSize` の 1 行を置き、その下に帯を置く。帯は、長さの画素の行ごとに 1 本の矩形（行の中心の t で写した色、下が domain の下端。`Reverse` でも帯の向きは同じで、色の並びが逆になる）を `DrawRect` で記録し、Lc 本（200 以下）で済む。新しい描画の命令は要らない
 - **カラーバーの目盛り**: 凡例の一部なので、`ShowAxes` と `ShowGrid` が偽でも選んで描く（行 G7c の実装）。帯の長さ Lc を軸の長さとし、位置の軸と同じ選び方（拡張アルゴリズム、time なら日時の目盛り、`TickSpacingY`、書式は中のスケールの `TickFormat`）で選ぶ。目盛りは帯の右に長さ T の線、ラベルはその右 G に `Left`・`Middle`。線とラベルの色は軸と同じ（`AxisColor`・`Foreground`）。`Nice` が真なら、選んだ目盛りで domain を広げる（位置の軸の nice と同じ規則）
 - **記録の量**: 色の項は、カテゴリの行（256 以下）か帯の矩形（200 以下）と目盛りで、データの量によらない
 
@@ -1209,6 +1276,9 @@ public sealed record Theme                    // コンストラクタは privat
 - **差分（行 G7c）**: 色の列の参照（`ColorBy`・`FillBy`）が変わったら「データ」の段で、分けた系列（§5.5.3 の区間か集めた列）を作り直す。`ScaleColor` の中のスケールの domain・変換・`Mid`・`Nice`・`Zero` は「スケール」の段で、色の domain を学び直し、記録し直す（位置の M4 は引き直さない。色は位置の境界を変えない）。`Palette`・`Map`・中のスケールの `Reverse`・`Title` だけが変わったら「見た目」の段（配置と記録だけ）。スケールの種類（ordinal と連続）が変わったら、列の検査からやり直す（「データ」）
 - **検査（行 G8）**: §4.1 の「行 G8 の text」の例外（列の参照・種類、`Format` とカテゴリのラベル、`Size`（倍率を掛けた 512 を含む）・`Offset`・揃え・回転の値、数の列の `ColorBy` と `FillBy`、`Color` と `ColorBy` の組）を、学習の前にコンパイルが確かめる。4,096 の上限（プロットの text の層の行の和）の `InvalidOperationException` も、列の長さだけで決まるので、学習の前に確かめる（データをなめない）
 - **差分（行 G8）**: X・Y・`Text`・`ColorBy` の参照が変わったら「データ」の段。`Format` が変わったら、数のラベルの文字列を書き直し、配置と記録をやり直す（§5.5.3）。`Text` の列の版が変わったら、ほかの列の版と同じく学び直して M4 を引き直し、記録で文字列を書き直す（行 G8 の実装。版は層の列ごとに 1 つの道で見るので、ラベルの列だけを記録だけの道に分けない。位置の domain は変わらない）。`Color`・`Size`・揃え・ずらし・`Rotation`・`Label` だけなら「見た目」（配置と記録だけ。`Label` と `Size` は凡例の幅を変えうる）
+- **検査（行 G9）**: §4.1 の「行 G9 の image」の例外（`Raster` の null、`Extent`・`Opacity`・`Origin`・`Interpolation` の値、polar、`ColorBy`・`FillBy`、ordinal のスケールと数のラスタ、`TransformScaleSpec` の色のスケールと数のラスタ）を、学習の前にコンパイルが確かめる
+- **索引（行 G9）**: 計画はラスタ（参照の同一性）ごとにミップマップ（§3.7）を 1 つ持ち、同じラスタを使う層で共有する。ラスタの列の版が変わったら、変わったチャンクの行のタイルと上の段だけを作り直す（ピラミッドの `Invalidate` と同じ、§3.3）。ヘッドレス（§7.5）は、ピラミッドと同じく、描く前にミップマップが列の今の版でそろうのを待ち、見えるタイルがすべて GPU に届くまで、転送の予算によらず送ってから描く（§5.5.3。画像はいつ描いても同じ）
+- **差分（行 G9）**: `Raster` の参照が変わったら「データ」の段（ミップマップを作り直す）。`Extent` が変わったら位置の domain が変わるので「スケール」の段。`Origin`・`Interpolation`・`Opacity`・`Label` だけなら「見た目」（配置と記録だけ）。ラスタの列の版が変わったら、ほかの列の版と同じく学び直し（色の domain）、記録し直す
 - **描く**: §5.5.3 の道で、レイヤーの順に、パネルで切り抜いて記録する。ピラミッドは、Y・YMin・YMax の列ごとに 1 つで、同じ列を指すチャネルは共有する（線と同じ）
 
 **行 G3 のコンパイル**（Issue #111）: 5（配置、§4.6）を足す。順は、1 → 2（学習）→ 4（索引）→ 5（配置: y の目盛り、x の目盛り、nice）→ M4 → 記録で、nice が広げた domain で M4 を引く。
@@ -1282,6 +1352,23 @@ var bars = Plot.Create(data)
 
 var names = Plot.Create(data)
     .Text(data.Col<double>("x"), data.Col<double>("y"), data.Cat("name"), t => t.ColorBy(data.Cat("group")).Size(10))
+    .Build();
+```
+
+- 行 G9 は、ラスタ（`Raster`・`Raster<T>`）、`ImageLayerSpec`・`RasterExtent`・`RasterOrigin`・`RasterInterpolation`、`PlotBuilder.Image`・`ImageBuilder`、`IGpuBackend.Images` と常駐キャッシュ `ResidencyCache`（§5.2）を公開する（Issue #196）。行 G9 で書ける形は次のとおり（スクラッチでコンパイルした、§4.1）
+
+```csharp
+// 行 G9: 2 万 × 2 万の float のラスタ（メモリマップ）を、viridis の log の色で。RGBA の写真を 0..1 の矩形に
+using var values = Column.MapFile<float>("field.f32");
+var field = Raster.Of(values, width: 20_000);
+var heat = Plot.Create(DataTable.Create().Build())
+    .Image(field, i => i.Extent(0, 200, 0, 200).Interpolation(RasterInterpolation.Bilinear))
+    .ScaleColor(Scale.Sequential(ColorMaps.Viridis, Scale.Log().WithTitle("Field")))
+    .Build();
+
+var pixels = Column.Wrap(File.ReadAllBytes("photo.rgba"));
+var photo = Plot.Create(DataTable.Create().Build())
+    .Image(Raster.Rgba(pixels, width: 640), i => i.Extent(0, 1, 0, 0.75).Opacity(0.8))
     .Build();
 ```
 
@@ -1375,11 +1462,11 @@ Core はフレームごとに、層（§5.4）ごとの `RenderList` を作る�
 | `DrawColumns` | 画素列ごとの台形のインスタンス（area・band の塗り、行 G4、§5.5.3） |
 | `DrawSectors` | 極座標の台形のインスタンス（polar の bar・rect・area・band の塗り、行 G11、§4.4） |
 | `DrawDensityTiles` | 密度タイルのテクスチャと色の写像（§5.5.2） |
-| `DrawImage` | ラスタ（ヒートマップ・画像の Geom） |
+| `DrawImage` | ラスタ（画像の Geom、行 G9）。タイルごとに、常駐キャッシュの場所・画面の 4 つの角・タイルの中のテクセルの範囲・読み方（nearest か bilinear）・色の写し（数なら変換の種類と定数・domain・色の表の場所、RGBA なら なし）・`Opacity` を記録する。行 G9 では internal（独自 Geom から画像を描く口は、使い手が出てから公開する） |
 | `DrawText` | 文字列・位置・`TextStyle`。描くときにバックエンドが整形し、アトラスのグリフを並べる（§5.6、行 T1） |
 
 - **3D への備え**: 各コマンドは深度のモード（なし・検査・検査と書き込み）を持つ。位置が 3 成分のインスタンスは、2 成分のものとは別の記録の形（別のストリーム）に入れる。1 つの記録に使わない z を持たせないので、2D のマークの記録は大きくならない。v1 の 2D はすべて深度のモード「なし」と 2 成分の記録を使う。深度のモードの欄は最初から記録に持ち（v1 は「なし」だけ）、3 成分の記録のストリームは行 K1 で足す（§13、不変条件 12）
-- **常駐キャッシュ**（行 R3 から。GPU にデータを置き続ける最初の行）: GPU に置くもの（生の点のチャンク、密度タイル、色の表、アトラス）は Core の `ResidencyCache` が、バイトの予算と LRU で管理する。資源は「何から作ったか」（列・チャンク・版）を記述子として持ち、GPU 側が失われても Core の状態から作り直せる（不変条件 10、要件 N-9）
+- **常駐キャッシュ**（行 G9 から。GPU にデータを置き続ける最初の行。行 R3 の予定だったが、ラスタのタイルが先に要るので行 G9 で作り、行 R3 は生の点のチャンクと密度タイルでそれを使う、Issue #196）: GPU に置くもの（ラスタのタイル、生の点のチャンク、密度タイル、色の表）は Core の `ResidencyCache` が、バイトの予算と LRU で管理する（§5.2。グリフのアトラスは行 T1 の `TextEngine` が持つまま）。資源は「何から作ったか」（列・チャンク・版）を記述子として持ち、GPU 側が失われても Core の状態から作り直せる（不変条件 10、要件 N-9）
 - バックエンドは記述子に従って資源を作り、コマンドを描くだけで、どのデータを置くかは決めない
 
 **折れ線（行 R2）**: 公開の `RenderList` に、線を描く命令を記録する。GoG の層（行 G1）より前の行 S1 のサンプルも、これで M4 の線を描く（オーナーの決定、2026-10-28、Issue #42）。
@@ -1490,6 +1577,14 @@ public interface IGpuBackend : IDisposable
     void EndFrame(long token);                // FrameScope.Dispose が呼ぶ。行 S2
     GpuFrameTime? LastFrameTime { get; }      // 行 S2。最近 GPU 時間の分かったフレーム、なければ null
     TextEngine Text { get; }                  // 行 T1。整形のキャッシュとアトラス（§5.6）
+    ResidencyCache Images { get; }            // 行 G9。ラスタのタイルと色の表の常駐キャッシュ（下）
+}
+
+// 行 G9: GPU に置くタイルの常駐キャッシュ（Issue #196）。Core が持ち、バックエンドは描くときに読む（TextEngine のアトラスと同じ形）
+public sealed class ResidencyCache
+{
+    public const long DefaultBudget = 256L << 20;       // GPU のバイトの予算、256 MB
+    public const int FrameUpload = 4 << 20;             // 1 フレームに送るバイトの予算、4 MB
 }
 
 public interface IRenderTarget : IDisposable
@@ -1528,6 +1623,12 @@ public sealed class HeadlessRenderer : IDisposable   // §7.5
 ```
 
 - `Color` は GoG（行 G7c の色のスケール）も使う型である。名前つきの色（`Colors`）とパレットは行 G7a で足す
+- **常駐キャッシュ**（行 G9、Issue #196）: `ResidencyCache` は Core の型で、バックエンドごとに 1 つ（`IGpuBackend.Images`）。`TextEngine` のアトラスと同じく、Core が「どのタイルをどこに置くか」を決め、バックエンドは描くときに、書き換えた場所を送って描くだけである。公開するのは型と 2 つの定数だけで、中の口は internal（計画とバックエンドが使う）
+  - **場所**: GPU のテクスチャの配列（面の並び）を、形式ごと（数のタイルは `R32_FLOAT`、RGBA は `R8G8B8A8_UNORM`）に持つ。面 1 つが「場所」で、258 × 258（タイルの 256 × 256 と 1 テクセルの縁、§5.3）、`R32_FLOAT` で約 260 KB である。配列は、64 面（約 17 MB）ずつ、予算（`DefaultBudget`、256 MB）まで足す。色の表（256 × 1 の `R8G8B8A8_UNORM`）は、写像（`ColorMap`）ごとに別の小さい配列に置く
+  - **記述子**: 場所ごとに「何を置いたか」（ラスタの同一性・段・タイルの列と行・列の版・数のタイルなら原点）を持つ。描く層は記述子で場所を引き、あればその場所を使う（LRU の順を前に出す）。なければ空いた場所か、最も古く使った場所（今のフレームで使っていないもの）を割り当て、Core がタイルの値（数のタイルは、値から原点を引いた `float`、RGBA は前乗算した値）を書き込み用の領域に書き、送る予定に入れる
+  - **送る予算**: 1 フレームに送るのは `FrameUpload`（4 MB、`R32_FLOAT` のタイル 15 枚）まで。予算を超えた分は次のフレームに回し、そのタイルの所は、置いてある粗い段のタイルで仮に描く（§5.5.3、不変条件 4 の暫定の表示）。仮の描画が残るあいだ、計画はホストへ描き直しを頼む（§8.2）。ヘッドレス（§7.5）は予算によらずすべて送ってから描く
+  - **喪失**: バックエンドがデバイスを作り直すと、配列は空になり、キャッシュの記述子をすべて捨てる。次のフレームから、見えるタイルを Core の段（§3.7）から送り直す（不変条件 10、要件 N-9）。Core にタイルの写しは持たない（段とラスタが元である）
+  - **確保**: 場所の表・記述子の表・書き込み用の領域（`FrameUpload` の大きさ）は温まった後は使い回し、フレームの道で確保しない（不変条件 3）
 - `RenderTargetDescription` の幅と高さは 1 以上 16,384 以下（D3D11 のテクスチャの一辺の上限）で、外れれば `ArgumentOutOfRangeException`。`Depth` が `None` でなければ、v1 のバックエンドは `NotSupportedException`（§13.1）
 - **フレームと GPU 時間（行 S2）**: `BeginFrame` は `FrameScope` を返し、その `Dispose` がフレームを閉じる（`using var frame = backend.BeginFrame();`）。例外で抜けるときも `using` が閉じるので、呼び出し側が `try` / `finally` を書く必要はない。フレームは入れ子にできる。いちばん外の `BeginFrame` がフレームを開いて番号（0 から 1 ずつ増える）を振り、それを閉じたときにフレームが終わる。`CreateRenderTarget`・`Clear`・`ReadPixels`・`Draw` は中で `BeginFrame` を開いて `using` で閉じるので、外のフレームが開いていればその一部になり、開いていなければそれだけで 1 つのフレームになる（例外で抜けるときも閉じる）。`BeginFrame` は開くたびに新しいトークンを振り、`EndFrame(token)` は、そのトークンが開いているフレームなら、それとその中でまだ開いているフレームを閉じ、閉じたものや `default` のトークンなら何もしない。`EndFrame` は公開の契約だが、呼ぶのは `FrameScope` で、対応がなくても例外を投げない（`csharp.mdc`: 段階の違いで投げない。オーナーの判断、PR #59 のレビュー）。GPU 時間は、いちばん外のフレームの開始から終わりまでを、タイムスタンプのクエリで測る。結果は数フレーム後にしか読めないので、`LastFrameTime` は、GPU 時間の分かった最も新しいフレームの番号と時間を返す。まだ分かったフレームがなければ null。読むのは閉じるときで、待たずに読める分だけ読む（同じフレームの中で待つと、GPU がフレームの間に空になってクロックを下げる。`docs/benchmarks/r2-lines.md`）。GPU の時計が乱れた（disjoint）フレームは飛ばす。喪失を見たフレームは、その後に中で作り直されても時間を持たない（喪失でクエリを捨て、作り直したクエリには測りかけのフレームがない。印は持たない）。喪失の状態でフレームを閉じるのは、入れ子を戻すだけである（§5.3）
 - `Clear` と `ReadPixels` はフレームの外でも呼べる。バックエンドがその中でフレームを開いて閉じる（上の「フレームと GPU 時間」）。`Clear` は、各色を前乗算した整数 `k = (c · a + 127) / 255`（整数の除算）を CPU で求め、`k / 255f` を描画先に書く。GPU の float から UNORM への変換は最も近い整数に丸め、`k / 255f · 255` の誤差は 1e-5 程度なので、書かれる値はちょうど `k` になる
@@ -1571,6 +1672,7 @@ public sealed class D3D11Backend : IGpuBackend
   - 中間テクスチャ（幅 × 高さ × 4 バイト。1,920 × 1,080 で 8 MB）は、丸でない線か極座標の台形（行 G11）を初めて描くときに描画先ごとに作り、丸の線だけなら作らない。喪失の後は R8 と同じく作り直す
   - 部品の記録は 32 バイト（点・入る向き・出る向き、種類と使わない 4 バイト）で、線分と別の構造化バッファに置く。28 バイトの記録は、CPU で重なる 16 バイトの半分で写されてストアの転送が止まり、記録の時間の半分を占めた（`docs/benchmarks/r4-lines.md`）。端と結合の種類と破線の区間の累計の位置（最大 8 個）は、折れ線ごとの定数に入れる。シェーダの分岐は折れ線ごとに決まり、画素ごとには変わらない。丸の結合と丸の端の 2 区間以下の線（既定）は、行 R2 のシェーダと定数の値のまま描く
 - **グリフ（行 T1）**: アトラスの頁は `R8_UNORM` のテクスチャで、頁ごとに 1 枚。描く前に、Core の頁の書き換えた矩形を `UpdateSubresource` で送る。グリフは 1 つにつき四角を 1 つ描き（頂点は `SV_VertexID` から、インスタンスはグリフの記録: 画面の整数の矩形・アトラスの左上・回転・前乗算した色の 48 バイト。頁は段ごとに束ねるので記録に持たない）、ピクセルシェーダはアトラスを点で読み（補間しない。四角は整数の画素に乗る。回したグリフは回した向きでテクセルを読み、向きは条件の値で選んで分岐しない）、前乗算した色に掛けて `ONE`・`INV_SRC_ALPHA` で合成する。記録の順の中で、続く文字列の命令は、頁か切り抜きが変わるまでまとめて 1 回の `DrawInstanced` にする（シザー矩形は命令ごとなので、切り抜きが変われば切る）。喪失の後は、頁のテクスチャを Core の CPU の頁から作り直す
+- **画像（行 G9、Issue #196）**: 常駐キャッシュ（§5.2）の配列は `Texture2DArray`（`R32_FLOAT` と `R8G8B8A8_UNORM`、面 258 × 258、ミップマップは 1 段。段はタイルの側で持つ）。描く前に、そのフレームに送る場所を `UpdateSubresource` で送る（4 MB まで）。タイルは 1 つにつき四角を 1 つ描く（頂点は `SV_VertexID` から、インスタンスはタイルの記録: 画面の 4 つの角（flip と `Extent` の裏返しを含む、平行四辺形）・場所の面の番号・面の中のテクセルの範囲・読み方・色の写しの番号と定数・`Opacity`）。ピクセルシェーダは、nearest なら `Load` で 1 テクセルを、bilinear なら 4 テクセルを読んで補間する。タイルの境で隣のタイルのテクセルが要るので、面は 258 × 258 で、タイルの 256 × 256 の周りに、隣のタイルから写した 1 テクセルの縁を持つ（ラスタの外の縁は端のテクセルを写す）。継ぎ目は縁のない読み方と同じ値になる。数のタイルは、値に原点を足し（§3.6）、変換と t を求め、色の表を `Load` で引く（§4.2）。NaN は透明。RGBA は前乗算した値をそのまま使う。色に `Opacity` を掛けて `ONE`・`INV_SRC_ALPHA` で合成する。四角の端は画素の中心で切り（`SV_Position` の中心がタイルの範囲に入る画素だけ塗る）、隣り合うタイルの継ぎ目は重ならず隙間もない。同じ配列と読み方の続くタイルは 1 回の `DrawInstanced` にまとめる
 - **矩形（行 G3）**: 矩形は 1 つにつき四角を 1 つ描く（頂点は `SV_VertexID` から、インスタンスは矩形の記録: 左上・幅・高さの float 4 つと前乗算した色の float 4 つの 32 バイト）。四角は矩形を外向きに整数の画素へ広げたもの（⌊x⌋ から ⌈x + width⌉）で、ピクセルシェーダは画素の左上（`SV_Position.xy` − 0.5）から §5.1 の ox · oy を求め、前乗算した色に掛けて `ONE`・`INV_SRC_ALPHA` で合成する。続く矩形の命令は、切り抜きが変わるまでまとめて 1 回の `DrawInstanced` にする（グリフと同じ）。記録は動的なバッファに書き、足りなければ 2 倍にする。喪失の後はシェーダとバッファを作り直す。座標は描画先の大きさ（16,384 以下）の float で、整数の端は正確に表せる
 - **列の台形（行 G4）**: 台形は 1 つにつき四角を 1 つ描く（頂点は `SV_VertexID` から、インスタンスは台形の 6 つの float と前乗算した色の float 4 つを 48 バイトにそろえた記録）。四角は台形の外接矩形を外向きに整数の画素へ広げたもので、ピクセルシェーダは §5.1 の積分を閉じた式で求め、前乗算した色に掛けて `ONE`・`INV_SRC_ALPHA` で合成する。続く命令は切り抜きが変わるまでまとめる。記録は動的なバッファに書き、足りなければ 2 倍にする。喪失の後はシェーダとバッファを作り直す
 - **極座標の台形（行 G11、Issue #145）**: 1 回の呼び出しを、行 R4 の丸でない線と同じ 3 つの段で描く（シェーダは `Shaders/Sectors.hlsl`）。隣り合う台形の境の画素を 1 回だけ合成するためである（§5.1）
@@ -1581,7 +1683,7 @@ public sealed class D3D11Backend : IGpuBackend
   - 中間テクスチャは R4 のものを共有する（描画先ごとに 1 枚、初めて要るときに作る。1,920 × 1,080 で 8 MB）
 - **切り抜き**: `SetClip` はシザー矩形（`RSSetScissorRects`）にする。プロットのパネルは軸に沿った整数の矩形なので、シェーダに手を入れず、どの画素も遅くしない。XylemUI はシェーダの中で距離で切り抜く（変換のかかった矩形のため、`QuadShaders.cs` 88〜89 行目）
 - **インスタンスの送り方**: 線分の記録は動的なバッファ（`D3D11_USAGE_DYNAMIC`）に `Map`（`D3D11_MAP_WRITE_DISCARD`）で毎フレーム書き、足りなければ 2 倍にする（XylemUI と同じ、`D3D11Renderer.cs` 1993〜2009 行目）。1 系列の M4 は最大 4W 点なので、送る量は画素数で抑えられる（要件 R-1）
-- **デバイスの喪失**: HRESULT を返す呼び出しで `DXGI_ERROR_DEVICE_REMOVED`・`DXGI_ERROR_DEVICE_RESET`・`DXGI_ERROR_DEVICE_HUNG`・`DXGI_ERROR_DRIVER_INTERNAL_ERROR` を受けたら（XylemUI の `HResults.cs` 15〜20 行目と同じ 4 つ）、バックエンドを「喪失」にし、その呼び出しは `GpuDeviceLostException` を投げる。`RemovedReason` は `GetDeviceRemovedReason` の値で、それが `S_OK`（理由がまだ出ていない）なら受けた HRESULT にする。`ClearRenderTargetView` と `CopyResource` は HRESULT を返さないので、`EndFrame` が `GetDeviceRemovedReason` を 1 回呼んで検査する。これで、塗りつぶしだけのフレームでも、喪失はそのフレームの終わりで見える。黙って作り直して続けると、描画先の中身が失われたことが呼び出し側に伝わらない。次の `BeginFrame`（`Clear` や `ReadPixels` が中で始めるフレームを含む）で、デバイスを作り直し（`Shared` はハードウェア、作れなければ WARP。`Create(useWarp: true)` は WARP）、まだ破棄されていない描画先をすべて記述から作り直し、透明（`0, 0, 0, 0`）に塗る。D3D11 は新しいテクスチャの中身を決めていないので、塗らないと作り直しの直後の `ReadPixels` の値が決まらない。前の中身は失われるので、呼び出し側が描き直す。喪失の状態で `CreateRenderTarget` を呼ぶと、`BeginFrame` と同じ作り直しを先に行う。喪失の状態の `EndFrame` は何もしない。作り直しが失敗したら `InvalidOperationException` を投げ、喪失のままにして、次の `BeginFrame` でまた試す。行 R2 からは、パイプラインの物（シェーダ・状態・動的なバッファ・中間テクスチャ）も作り直し、行 R3 からは常駐キャッシュの記述子から資源も作り直す
+- **デバイスの喪失**: HRESULT を返す呼び出しで `DXGI_ERROR_DEVICE_REMOVED`・`DXGI_ERROR_DEVICE_RESET`・`DXGI_ERROR_DEVICE_HUNG`・`DXGI_ERROR_DRIVER_INTERNAL_ERROR` を受けたら（XylemUI の `HResults.cs` 15〜20 行目と同じ 4 つ）、バックエンドを「喪失」にし、その呼び出しは `GpuDeviceLostException` を投げる。`RemovedReason` は `GetDeviceRemovedReason` の値で、それが `S_OK`（理由がまだ出ていない）なら受けた HRESULT にする。`ClearRenderTargetView` と `CopyResource` は HRESULT を返さないので、`EndFrame` が `GetDeviceRemovedReason` を 1 回呼んで検査する。これで、塗りつぶしだけのフレームでも、喪失はそのフレームの終わりで見える。黙って作り直して続けると、描画先の中身が失われたことが呼び出し側に伝わらない。次の `BeginFrame`（`Clear` や `ReadPixels` が中で始めるフレームを含む）で、デバイスを作り直し（`Shared` はハードウェア、作れなければ WARP。`Create(useWarp: true)` は WARP）、まだ破棄されていない描画先をすべて記述から作り直し、透明（`0, 0, 0, 0`）に塗る。D3D11 は新しいテクスチャの中身を決めていないので、塗らないと作り直しの直後の `ReadPixels` の値が決まらない。前の中身は失われるので、呼び出し側が描き直す。喪失の状態で `CreateRenderTarget` を呼ぶと、`BeginFrame` と同じ作り直しを先に行う。喪失の状態の `EndFrame` は何もしない。作り直しが失敗したら `InvalidOperationException` を投げ、喪失のままにして、次の `BeginFrame` でまた試す。行 R2 からは、パイプラインの物（シェーダ・状態・動的なバッファ・中間テクスチャ）も作り直し、行 G9 からは常駐キャッシュの記述子をすべて捨て、見えるタイルを Core の段から送り直す（§5.2）
 
 | 状態 | 意味 | 移る先 |
 | --- | --- | --- |
@@ -1731,7 +1833,7 @@ public sealed class PlotWorkerPool
   - **segment と rect**: 並びを求めない。要素の総数が 131,072（2^17）以下なら、毎フレームすべての要素を写して記録する（走査と記録は定数で抑えられ、rect の記録で 4 MB。要件 R-1 の「1 フレームの転送は数 MB 以下」は画素の数でなく量の条件なので、上限はパネルの大きさに依らない。パネルの大きさに依ると、ウィンドウを縮めただけで投げることになり、行 G3 の小さい描画先の扱いと逆になる。PR #121 のレビュー、オーナーの決定 2026-10-30）。超えたら、要素の数と上限を書いた `InvalidOperationException`。見える要素だけを数えると毎フレーム全要素の走査になり、不変条件 2 を破るので、総数で決める（Issue #120）。大きなデータの道（密度）は行 R3。rect は 2 つの角を写し、小さい方を左上にして `DrawRect` で記録する（reverse と log でも向きによらない）
   - **線のまとめ方**: segment・rule・errorbar の多数の線は、NaN の点で区切った 1 本の折れ線として記録する（§5.1 の欠損の切れ目）。折れ線は 1 本につき 3 回描くので（§5.3）、1 本ずつだと描画の呼び出しが線の数の 3 倍になる。1 本にまとめると、重なった半透明の線は 1 つの形として 1 回だけ塗られる（線の Geom と同じ）
   - **`IGeom`**: `CustomLayerSpec` の `Learn` は domain を学ぶたびに 1 回、`Record` は記録するたびに 1 回呼ぶ。`Record` はパネルで切り抜かれた `RenderList` に記録し、`GeomFrame` の写し方で画素を求める。呼び出しはレイヤーごとで、点ごとには呼ばない（§4.1）。記録する量を画素の数で抑えるのは実装する側の責任で、XML に書く。呼ぶのは `Render` のスレッドだけで、投げた例外は `Render` からそのまま出る（`IScale` と同じ）。組み込みの Geom も同じ形の internal の実装で、コンパイルはレイヤーの種類によらず 1 つの道で扱う
-  - **凡例**（§4.6）: 塗りの Geom（area・band・bar・rect）の見本は、行の高さの正方形を塗りの色で塗る（`DrawRect`）。線の Geom（step・rule・segment・errorbar）は線と同じ見本。`CustomLayerSpec` は線の見本を、行 G7a から系列の色（`GeomFrame.SeriesColor`、§4.1）の太さ 1 で描く（それまでは黒）。text の見本（行 G8）は、層の色の「a」の 1 文字を `LegendSize` で、見本の長さの真ん中・行の真ん中に置く。見本の色は、コンパイルが決めた色（指定がなければパレットの色）。行 G7c の分けた層は、層の行の代わりにカテゴリの行を出し、連続の色はカラーバーにする（§4.6 の「色の凡例」）
+  - **凡例**（§4.6）: 塗りの Geom（area・band・bar・rect）の見本は、行の高さの正方形を塗りの色で塗る（`DrawRect`）。線の Geom（step・rule・segment・errorbar）は線と同じ見本。`CustomLayerSpec` は線の見本を、行 G7a から系列の色（`GeomFrame.SeriesColor`、§4.1）の太さ 1 で描く（それまでは黒）。text の見本（行 G8）は、層の色の「a」の 1 文字を `LegendSize` で、見本の長さの真ん中・行の真ん中に置く。image の層（行 G9）は見本と行を出さない（数のラスタはカラーバー、§4.6）。見本の色は、コンパイルが決めた色（指定がなければパレットの色）。行 G7c の分けた層は、層の行の代わりにカテゴリの行を出し、連続の色はカラーバーにする（§4.6 の「色の凡例」）
   - **text**（行 G8、Issue #184）: 行ごとに、基準点（x と y を座標系で写した画面の点）にラベルを 1 つ置く。並びは求めない
     - **上限**: プロットのすべての text の層の行の総和（各層の X の列の長さの和。`ColorBy` で分けても分ける前の数）が 4,096 以下なら、毎フレームすべての行を写して記録する。超えたら、層ごとの行の数と和と上限と「多くの点は散布（行 R3）で描く」ことを書いた `InvalidOperationException`。総数で決めるのは segment・rect と同じ理由（見える行を数えると、毎フレーム全行の走査になる）である。上限を segment・rect の 131,072 にしないのは、文字列はグリフごとに転送するからで、1 ラベル 8 文字なら 131,072 × 8 × 48 B（グリフの記録、§5.3）= 約 50 MB を毎フレーム送り、要件 R-1 の「1 フレームの転送は数 MB 以下」を破る。4,096 なら同じ 8 文字で約 1.6 MB である（`design-decisions.md`）。層ごとでなくプロットの和で数えるのは、転送の量も整形のキャッシュ（§5.6、プロットに 1 つ）もフレームの総量で決まるからで、層ごとに数えると、text の層が 3 つで 1 フレームの文字列が 8,192 を超え、描くたびに整形し直して確保する（PR #185 のレビュー、オーナーの決定）
     - **文字列を作る時**: カテゴリのラベルは、列が持つ名前をそのまま記録する（確保しない）。数のラベルは、層ごとに行の数の文字列の配列（4,096 以下）を持ち、`Text` の列の版か `Format` が変わったときに全行を書き直す（NaN の行は書かない）。フレームの道では書かない。書き直すフレームは文字列を確保するが、それは定常状態のフレームではない（不変条件 3）
@@ -1743,7 +1845,15 @@ public sealed class PlotWorkerPool
     - **学習**: x と y の domain は、ほかの Geom と同じく列の統計から、基準点だけで学ぶ。ラベルの箱の大きさは domain に入れないので、端のラベルはパネルで切れることがある。箱を入れると、domain が文字の画素の大きさに依り、パネルの大きさが domain を変え、配置を 2 度やり直すことになる（`design-decisions.md`）
     - **量**: 1 フレームの仕事は text の層の行の和（4,096 以下）で、記録は 4,096 個までの文字列とそのグリフである。1 フレームの文字列の数が整形のキャッシュの上限を超えると、描くたびに追い出した文字列を整形し直して確保するので、キャッシュの上限を 8,192 に上げる（§5.6。4,096 のラベルと、目盛り・凡例・タイトルの文字列が収まる）
     - **計測**: 4,096 個のラベル（8 文字）の 1 フレームの CPU と GPU の時間を、NativeAOT の Release、1,920 × 1,080、交互に 3 回で測り、要件 P-1 の 8 ms と比べる。温まった後の確保 0 も見る（§9 の記録、`docs/benchmarks/g8-text.md`）
-- **ほかの行**: point（散布）は行 R3、image（ラスタ）は行 G9、カテゴリの x の bar は行 G7b。画像・ヒートマップの大きなラスタは、タイルとミップマップを作って見える部分だけを置く（行 G9）
+  - **image**（行 G9、Issue #196）: ラスタ（§3.7）を `Extent` の矩形に、見えるタイルだけを GPU に置いて描く。1 フレームの仕事と転送は、ラスタの大きさでなく見えるタイルの数で抑えられる
+    - **位置のスケール**: image の層を持つプロットの x と y は、linear か time のスケールに限る（画像の矩形がパネルの平行四辺形に写り、タイルを四角 1 つで描ける）。log・symlog・pow・`IScale` は、層の番号とスケールを書いた `ArgumentException`（曲がった軸に画像を描くには画素ごとの逆写像が要る。polar と同じ理由、`design-decisions.md`）
+    - **段の選び方**: 画面の 1 画素あたりの元のテクセルの数を、x の向きで sx、y の向きで sy とし（`Extent` と軸の画素から求める）、段 ℓ = min(最上の段, max(0, ⌊log₂ max(sx, sy)⌋)) を使う。その段では、どちらの向きもテクセルが 1 画素以上の大きさになる（細かい方の向きでは 2 画素未満）。拡大（sx, sy < 1）は段 0 を `Interpolation` で読む
+    - **見えるタイル**: パネルと画像の矩形の重なりにかかる、段 ℓ のタイル。各向きの見えるテクセルは 2 × 画素 + 2 × 256 以下なので、1,920 × 1,080 のパネルで最大でおよそ 17 × 10 = 170 タイル（`R32_FLOAT` で約 44 MB）である。常駐キャッシュの予算（256 MB）に収まる
+    - **送る順と仮の描画**: 見えるタイルのうち置いていないものを、粗い段から（最上の段の 1 枚を最初に）、画面の真ん中に近い順に、常駐キャッシュへ頼む（§5.2、1 フレーム 4 MB まで）。置いていないタイルの所は、置いてある最も近い上の段のタイルの、その範囲を描く（最上の段は最初のフレームで置くので、いつも何かが描ける）。仮の描画は、ミップマップを作っている途中の段と同じく暫定の表示である（不変条件 4、§8.2 でホストに知らせて描き直す）
+    - **記録**: タイルごとに、`Extent` の座標からタイルの 4 つの角をデータの単位で求め、x と y のスケールで画素へ写し（倍精度、flip は向きを入れ替える、§4.4）、`DrawImage` に記録する（§5.1）。`Origin` と `Extent` の裏返しは、角とテクセルの対応で表す。数のタイルは、色のスケールの変換・domain・中点（diverging）と色の表を、RGBA は前乗算を記録する
+    - **量**: 1 フレームの仕事は見えるタイルの数（1,920 × 1,080 で 170 以下）で、ラスタの大きさによらない（不変条件 2）。転送は 1 フレーム 4 MB まで（要件 R-1）。ミップマップを作る仕事（O(N)）はワーカーが行い、フレームは待たない（ヘッドレスは待つ、§4.8）
+    - **計測**: 2 万 × 2 万の `float` のラスタ（1.6 GB、メモリマップ）で、ミップマップを作る時間、全体を表示したフレームと、パンとズームの 1 フレームの CPU と GPU の時間と、1 フレームの転送量と、仮の描画が消えるまでのフレームの数（NativeAOT の Release、1,920 × 1,080、交互に 3 回、要件 P-1）。記録は `docs/benchmarks/g9-image.md`
+- **ほかの行**: point（散布）は行 R3、カテゴリの x の bar は行 G7b
 
 ### 5.6 テキスト
 
@@ -1998,6 +2108,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 | 色のチャネルと色のスケール（G7c） | 仕様（Core）: `Scale.Ordinal`・`Sequential`・`Diverging` の既定（テーマのパレット、viridis と linear、RdBu と null の中点）、`Diverging` の有限でない `mid` で `ArgumentOutOfRangeException`。`ColorMap` の 1 色以下で `ArgumentException`、範囲の外の添字で `ArgumentOutOfRangeException`、中身の等しさ。`PlotBuilder.ScaleColor(null)` で `ArgumentNullException`。テーマの `ColorBarThickness`・`ColorBarLength` の 0・負・NaN・∞ で、メンバーの名前を書いた `ArgumentException`（色の項がないプロットでも）。写像の値: 12 の写像の 256 色が、matplotlib の表から作った基準（`_cm_listed.py` の値と、`_cm.py` の色の並びを 256 段に線形に補間した値を、⌊v · 255⌋ でバイトに）とバイトまで一致（基準の表をテストのデータに持ち、出どころと版を書く）。`Map` の位置が ⌊t · 256⌋ で、t = 1 で 255、t < 0 と t > 1 で端、NaN で透明。2 色の `ColorMap` が 256 段の線形の補間。チャネルの検査（Core）: 別の表と `default` の参照、長さ違い、M4 の Geom・rule・segment・errorbar に数の列、独自 Geom、定数の色との 4 つの組、線の Geom の `FillBy`、257 カテゴリ、カテゴリの x の bar を色で分けた nk × nx が 2^24 を 1 つ超えて（ちょうどは通る）、ordinal に数の列、sequential と diverging にカテゴリの列、違う並びのカテゴリの 2 層、domain の外の中点で `ArgumentException`。記録（Core、`RenderList` を手で組んだものと比べる）: カテゴリで分けた line・step・area・band・bar・errorbar・rule・segment・rect が、カテゴリごとに行を抜き出した層を `Palette[i mod n]` の色で並べて描いたものと同じ記録（区間に並ぶカテゴリと混ざるカテゴリの両方、欠け（−1）の行、使われないカテゴリ、M4 の 4W を超える大きさで）。区間の系列の M4 が、区間を抜き出した列の M4 と同じ点（区間の端の `Before`・`After` を含む）。area の `FillBy` と `ColorBy` が塗りと縁を別の列で分ける。連続の色の rect と数の x の bar が、要素ごとに §4.2 の式の色（sequential の linear・log・reverse、diverging の両側と中点ちょうど、domain の外の端の色、NaN の要素を描かない）。数の x の bar が、見える棒が 4W を超えても要素ごとで、131,072 を 1 つ超えると `InvalidOperationException`（rect とカテゴリの x の bar は総数で）。カテゴリの x の bar を色のカテゴリで分けた最小・最大が CPU の基準と一致。層の数え方: 分けた層の後ろの層の系列の色が変わらない。凡例（Core、偽の `ITextBackend`）: カテゴリの行（タイトル、見本の形、カテゴリ名、番号の順）と、分けた層の `Label` の行がないこと。カラーバーの矩形の数が Lc で、長さが 100〜200 に収まり（低いパネルと高いパネル）、各行の色が行の中心の t の色、`Reverse` で色の並びが逆、目盛りが拡張アルゴリズムの値で、凡例の幅に入る。ワーカー: 区間を調べる仕事がカテゴリごとの最初・最後・数を CPU と同じに出し、列ごとに 1 回。集めた列が CPU で集めたものと一致し、Y の `Invalidate` で作り直す。要素ごとの色の列だけを `Invalidate` すると、色を学び直して記録し直す（PR #173 のレビュー）。差分: 色の列でデータの段、中のスケールの domain・`Mid` でスケールの段（M4 0）、`Palette`・`Map`・`Reverse`・`Title` で配置 1・M4 0・記録 1。確保: 温まった後、分けた層と連続の色の層の描き直しが確保しない。ゴールデン画像: §10.1 の場面 (14) と (15) |
 | 端のラベル（G3b） | 配置（Core、偽の `ITextBackend`）: 下の軸の最初と最後のラベルが F の左右の端を越える幅で、ラベルの箱が F の端にそろい、越えないラベルは目盛りの中心のまま（寄せる量 0）。左の軸の上下の端も同じ。目盛りの線とグリッドは目盛りの位置のまま、パネルの矩形（`Left`・`Top`・`Width`・`Height`）は寄せる前と同じ。F より大きいラベルは軸の低い端の側にそろう。`Reverse`（左の軸の y を含む）・flip（左の軸が x で上下の端）で同じ規則。polar の軸は寄せない（ラベルの中心が目盛りの画素のまま）。F を限りにした帰結: タイトルのない左の軸で一番上の目盛りがパネルの上端にあるとき、そのラベルが h / 2 下へ寄る（描画先では切れていなかったもの）。band の軸（カテゴリの名前）でも寄せる。重なり: 寄せた後の箱で重なりの値を測る（中心の位置では重ならず、寄せると近づく 2 つのラベルで、重なりの値が寄せた後の d の値になる）。band の軸の k が寄せた後の箱で決まる（k₀ と跳ぶ k に寄せる量が入り、端のラベルを含む組で打ち切った後の k でその組が g 離れる）。確保: 寄せる場面の描き直しが確保しない。ゴールデン画像: §10.1 の場面 (13) の基準を書き直し、ほかの場面は変わらない |
 | text の Geom（G8） | ビルダ（Core）: 4 つの多重定義それぞれで、別の表と `default` の参照で `ArgumentException`。`Size` の 0・負・NaN・∞・512 を超える値、`Offset` の NaN と ∞、`TextAlign`・`TextBaseline`・`TextRotation` の定義にない値で `ArgumentOutOfRangeException`。カテゴリのラベルに `Format` を与えて `ArgumentException`。仕様の既定（大きさ 12、中央・真ん中、ずらし 0、回転なし、色 null）。検査（Core、仕様を直接作る）: 同じ不正な値で同じ例外、`Size` 400 を倍率 1.5 で描くと層の番号と値を書いた `ArgumentException`（倍率 1 では描ける）、カテゴリの y、数の列の `ColorBy`、`FillBy`、`Color` と `ColorBy` の両方で `ArgumentException`。行の数が 4,096 で描け、4,097 で、行の数と上限を書いた `InvalidOperationException`（`ColorBy` で分けた層も分ける前の数で）。2 つの text の層の行の和が 4,097（2,048 と 2,049）で、層ごとの数と和を書いた同じ例外、和が 4,096 で描ける。書式: 既定の `"G6"`（1234567 → "1.23457E+06"、0.1、−0、整数の列の値）、利用者の書式の結果、偽を返す書式と `charsWritten` が 65 の書式で `InvalidOperationException`、書式が投げた例外がそのまま出る、0 文字のラベルを描かない。記録（Core、偽の `ITextBackend`）: 行ごとの `DrawText` の文字列と `Position` が §5.5.3 の式（揃えの横 3 × 縦 4、ずらし、回転 3 通りで、回した箱の揃えの点が基準点に来る、倍率 1.5）、カテゴリの x の band の真ん中（`Reverse` を含む）、カテゴリのラベルが列の名前の同じ参照、パネルの外の基準点と、NaN・log の 0 以下・欠けたカテゴリ（x・`Text`・`ColorBy`）・NaN の数のラベルの行を描かない、端のちょうど上の基準点を描く、色（定数、系列の色、`ColorBy` のカテゴリの色を、区間に並ぶカテゴリと混ざるカテゴリの両方で）、行の順（`ColorBy` ではカテゴリの番号の順、その中で行の順）。flip と polar で基準点が `GeomFrame.Map` の点で、文字を回さない。学習: domain が基準点の列の範囲で、ラベルの大きさによらない。文字列を作る時: `Text` の列を `Invalidate` すると数のラベルが新しい値になり、`Format` だけを変えた仕様で書き直し、同じデリゲートを持つ新しいノードでは書き直さない（確保 0）。差分: `Color`・`Size`・揃え・ずらし・回転・`Label`（凡例があるまま、同じ幅の文字に変える）で配置 1・M4 0・記録 1。凡例: 見本の「a」が層の色と `LegendSize` で見本の真ん中にあり、`ColorBy` でカテゴリの行の見本も「a」。整形のキャッシュ: 4,096 のラベルと軸と凡例の文字列（合わせて 4,096 を超える）を描いた 2 フレーム目に、整形を呼ばない（偽の `ITextBackend` で数える）。確保: 温まった後、4,096 のラベル（数とカテゴリ）の描き直しが確保しない。ゴールデン画像: §10.1 の場面 (16) |
+| ラスタと image の Geom（G9） | ラスタ（Core）: `Raster.Of` と `Raster.Rgba` の幅・高さ・`Values`・`IsRgba`、長さが幅 × 高さ（RGBA は 4 倍）で割り切れない列・幅 0 と負・null で、それぞれ `ArgumentException`・`ArgumentOutOfRangeException`・`ArgumentNullException`、`Invalidate(firstRow, rowCount)` が列の要素の範囲を書き換えたことにし、範囲の外で `ArgumentOutOfRangeException`。ミップマップ（Core、ワーカー）: 段 1 から上の各画素が 2 × 2 の平均（`float` の NaN を除く・4 つとも NaN で NaN、整数の丸め（ちょうど半分）、`long` の大きな値であふれない、RGBA は前乗算の平均）で、CPU で数えた基準と一致（奇数の幅と高さの端の画素、最上の段が 256 以下）。段 1 から上の要素の数が元の 1/3 未満。列の一部の `Invalidate` で、そのチャンクの行のタイルと上の段だけを作り直し（作り直したタイルの数を数える）、作り直した段が全体から作ったものと一致。ビルダ（Core）: `Extent` の NaN・∞・左右か上下の等しい値、`Opacity` の −0.1・1.1・NaN、定義にない `RasterOrigin`・`RasterInterpolation` で `ArgumentOutOfRangeException`、null の `raster` で `ArgumentNullException`。検査（Core、仕様を直接作る）: 同じ不正な値で同じ例外、polar、log の x と y、`ColorBy`・`FillBy`、ordinal の色のスケールと数のラスタ、`TransformScaleSpec` の色のスケールと数のラスタで `ArgumentException`。学習: x と y の domain が `Extent`（既定の (−0.5, 幅 − 0.5, −0.5, 高さ − 0.5)、裏返した `Extent`）、色の domain がラスタの列の範囲とほかの数の色の列の和。記録（Core、`DrawImage` の記録を読む）: 段の選び方（sx と sy の組で ℓ の境、拡大で段 0、最上の段で止まる）、見えるタイル（パンでパネルの外のタイルを記録しない、1,920 × 1,080 で 170 以下）、タイルの角が `Extent` と `Origin` と flip の写しの点、テクセルの範囲、送る予算（1 フレームの送る量が 4 MB 以下、置いていないタイルの所に上の段のタイルの範囲、最上の段は最初のフレームで置く、何フレームかで仮の描画がなくなる）、ヘッドレスは最初の 1 回ですべて置く。常駐キャッシュ（Core）: 同じ記述子で同じ場所、列の版か原点が変わると送り直す、予算を超えると最も古く使った場所を使い（今のフレームの場所は使わない）、喪失で記述子をすべて捨てて送り直す。GPU（D3D11、WARP）: nearest と bilinear の画素がシェーダの式を CPU で写した基準と一致（タイルの継ぎ目を含む）、数のタイルの色が `ColorMap.Map` と同じ添字（linear・log・symlog・pow、diverging の中点、domain の外の端の色、NaN の透明）、`Opacity`、RGBA の前乗算。差分: `Raster` の参照でデータの段、`Extent` でスケールの段、`Origin`・`Interpolation`・`Opacity`・`Label` で配置 1・M4 0・記録 1、列の版で学び直し。凡例: 数のラスタでカラーバー、RGBA でなし、`Label` の行なし。確保: 温まった後、見えるタイルを置いた後の描き直しとパンが確保しない。ゴールデン画像: §10.1 の場面 (17)・(18)・(19) |
 | ガイドと配置（G3） | 目盛り（Core、偽の `ITextBackend` で測る）: 拡張アルゴリズムの探し方が、枝刈りなしの総当たり（j ≤ 8、k ≤ 30、z は §5 の最初から 6 つ上まで、start は §5 の範囲）と同じ候補を選ぶ（乱数の範囲・軸の長さ・目標の間隔で 100 通り）。点数の 4 項が §4.6 の式の値で、重みが 0.25・0.2・0.5・0.05（疑似コードの入れ替えた重みと違う候補になる範囲を 1 つ含める）、v が 0 を含む目盛りで 1。`Nice` が偽で目盛りがすべて domain の中にあり「埋める」条件を満たし、真で domain を覆い、domain が [lmin, lmax] になる。軸が短くてすべて重なるとき目盛りを描かない。重なりの値の 3 つの場合（1.5 em ちょうど、その間、重なり）。値が M · 10^e で正確（0.1 刻みの 0.3 が "0.3"）。負の範囲・0 をまたぐ範囲・1e300 と 1e-300 の大きさ。pow と sqrt と利用者の `IScale` の目盛りの画素が `Forward` の位置。log: 1 桁に満たない範囲で linear の選び方、3 桁に満たない範囲で {1, 2, 5} · 10^k、多い桁で j 個おき、重ならない、目盛りが 2 つを下回る j で止まる、nice が 10 の冪に広げる、nice の候補の当たる条件を広げた domain の画素で測る（広げる前の画素では当たり、広げた後は重なる候補を選ばない。symlog と time も）、広げた domain で当たる候補がなければ nice なしの選び方になり domain は学習したまま（log の 0.3〜3,000 を 250 画素、間隔 90）。symlog: 0 を含み両側、10 · C に届かない domain で linear。time: 各段（ns から年まで）が選ばれる範囲、置き方（7 日が月曜、月の 3 と 6 が 1 月から、年が倍数、日の 2 が 0001 年からの日数）、ns の単位で 2262 年の近くまで正確、`Ticks` の単位で 100 ns の倍数でない刻みを使わず、ms の単位で ms より細かい刻みを使わない、起点より前（1969 年）が ⌊⌋ で分かれる、`boundary` が目盛りごとに最も粗い境、`DateTime` の範囲の外の domain が `InvalidOperationException`（`ShowAxes` と `ShowGrid` が偽なら投げない）、nice が刻みの目盛りに広げる。書式: 拡張アルゴリズムの軸で小数の桁がそろう、log で目盛りごと、12 文字を超えると軸のすべてが指数の形、負の 0 を書かない、time の 9 つの境の形。利用者の書式: 偽・64 を超える `charsWritten`・負の `charsWritten` が `InvalidOperationException`、投げた例外がそのまま出る、0 文字のラベル（`DrawText` を記録せず、重なりでは幅 0 として隣のラベルとの間を測る）。文字列の表: 当たれば `string` を作らない、4,097 個目で最も古いものを捨てる。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: タイトルあり・なし、凡例あり・なし、軸のタイトルあり・なし、倍率 1 と 1.5（丸め）、`ShowAxes` が偽、y を x より先に選ぶ（y のラベルの幅が W を決める）、小さい描画先で背景だけを描き例外を投げない。記録（`RenderList` の命令の列を見る）: §4.6 の描く順、パネルの切り抜き、太さ 1 と 2 の線の位置（奇数は ⌊p⌋ + 0.5、偶数は ⌊p + 0.5⌋）、太さ 1 と 2 の軸の線がパネルの画素に重ならない（WARP で、パネルの最後の行と最初の列が軸の色を持たず、そのすぐ外が持つ）、目盛りが軸の線の中心から始まり、丸い端を含めた外の端がパネルの辺から T、凡例の見本が `Style` の s 倍、文字のスタイルが `Foreground`・大きさ · s・`FontFamily`・`Locale`。テーマの検査（メンバーごとの範囲の外、s を掛けて 512 を超える大きさ、null のテーマ）。`HeadlessRenderer` の `scale` の 0・負・NaN・∞。倍率: 1.5 でデータの線の太さと破線の長さ（`On`・`Off`・`Offset`）が 1.5 倍で記録され、1 で行 G1 と同じ値で記録される。倍率 1.5 の `HeadlessRenderer` の `Render(RenderList)` の画素と `MeasureText` の値が、倍率 1 のものと同じ。`WithTitle` の null の scale と `PlotBuilder.Theme(null)` が `ArgumentNullException`。`PlotSpec.Title`・`Label`・スケールの `Title` が null のときと空のときのどちらも「なし」で、タイトルの帯・凡例の行・軸のタイトルの帯を取らない。差分（数え口）: 同じ仕様の描き直しは配置 0・M4 0・記録 0、タイトル・テーマ・ラベル・書式・軸のタイトルだけは配置 1・M4 0・記録 1、W を変えるテーマ（`Padding`）は M4 1、`Nice` は M4 1。矩形（WARP）: CPU の基準（§5.1 の ox · oy を背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（整数の端、端数の端、1 画素より小さい矩形、半透明の 2 つの重なり）。幅か高さ 0 は何も描かない、切り抜き、§5.1 の引数の例外、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、同じ仕様の描き直しが確保しない。2 つの domain を交互に描くと、両方を一度描いた後は確保しない。ゴールデン画像: §10.1 の場面 (6) と (7)。サンプル（`SpecPlot`）は NativeAOT で発行して警告 0、実行して 2 枚の PNG を書く。行 G1 と G2 の行の「手で組んだ記録との比較」と確保のテストは、§4.8 のガイドのないテーマで描く |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
@@ -2057,7 +2168,7 @@ public sealed class ImageMismatchException : Exception
 - **合わないとき**: `<名前>` は `baselinePath` のファイル名から拡張子を除いたもの（基準をどこに置いても同じ）。`outputDirectory`（なければ作る）に `<名前>.actual.png`（実際の画像）と `<名前>.diff.png`（差の画像）を書き、`ImageMismatchException` を投げる。差の画像は、`Channel` を超えた画素を不透明の赤（255, 0, 0, 255）に、それ以外を基準の画素の輝度を薄めた灰色（`255 − (255 − Y) / 4`、Y は Rec. 709 の係数で 8 ビットに丸めた輝度、不透明）にする。メッセージには、基準のパス、超えた画素の数と許容の数、差の最大、最初に超えた画素の位置、書いた 2 つのファイルのパスを書く。大きさが基準と違うときは、両方の大きさを書き、実際の画像だけを書く（差の画像は作らない）
 - **PNG**: 書くのは `HeadlessRenderer` と同じ書き手（§7.5）。読むのは `HyperPlot.Testing` の internal の復号器で、§7.5 の書き手が書く形（8 ビットの RGBA、カラータイプ 6、インターレースなし、行のフィルタ 0）だけを読む。それ以外の形、壊れたチャンク（CRC の不一致、`IDAT` の展開の失敗、足りない長さ）は、理由を書いた `InvalidDataException` にする。外部のライブラリは使わない（§0 の表、`design-decisions.md`）。今テストの中にある復号器（`tests/HyperPlot.Core.Tests/Rendering/PngDecoder.cs`）をここへ移し、Core と D3D11 のテストは `InternalsVisibleTo` でそれを使う（チャンクの並びと CRC を見る §7.5 の PNG のテストも含む）
 - **引数**: `actual`・`expected` の長さが `width × height × 4` でない、`width`・`height` が 1 未満なら `ArgumentException`。パスと `renderer` が null なら `ArgumentNullException`。基準の PNG が読めないとき（§10.1 の「PNG」の形の外、壊れたチャンク）は、`AssertMatches` は復号器の `InvalidDataException` をそのまま投げ、`ImageMismatchException` に包まない（合わないのでなく、基準のファイルが壊れている）。`AssertMatches(HeadlessRenderer, ...)` は、`renderer` の大きさで 1 枚分を確保して `ReadPixels` で読む（テストの経路で、フレームの経路ではない）
-- **ゴールデン画像の場面**（`tests/HyperPlot.Rendering.D3D11.Tests`、WARP、Windows のみ）: (1) `HelloPlot` の場面（§2.1。4 系列の正弦波＋シードつきの雑音＋NaN の欠け、ピラミッド・`M4Batch`・格子・M4 の線、1,280 × 720）を 1e5 点で描いたもの。場面の組み立ては `samples/Shared` にあり、`HelloPlot` とテストが同じコードで描く。点の数を引数にし、欠けの位置と正弦波の周波数は点の数に対する割合で決める。場面を出す前と後で、`HelloPlot`（1e6 点）の PNG が画素まで同じことを、行 S3 の実装の PR で確かめる。(2) R2 の線の種類（太さ 0.5・1・1.5・3、破線、切り抜き、半透明の重なり）を 1 枚に並べた場面。R2 の各ケースは CPU の基準と比べているので（§10 の表）、画像では持たない。(3) 行 G1 の線のプロット（`HeadlessRenderer.Render(PlotSpec)`、640 × 360、1e5 点の 2 レイヤー: 等間隔の X と NaN の欠けのある `float` の Y、保存された X と破線の `double` の Y）。同じテストが、手で組んだ `M4Batch` と `RenderList` の画素と一致することも確かめる（§10 の G1 の行）。(4) 行 G2 の位置のスケール（640 × 360、1e5 点: 1970 年起点の ns で 1 µs 刻みの `Column<long>` の X を `Scale.Time(TimeUnit.Nanoseconds)` で、0.1〜約 1,000 の `float` の Y を NaN の欠けつきで `Scale.Log()` で、`Golden/plot-scales.png`）。画素の正しさは §10 の G2 の行の手で組んだ記録との比較が見る。(5) 行 T1 のテキスト（640 × 360、偽の `ITextBackend` で: 横 3 通り × 縦 4 通りの揃え、回転 3 通り、2 行と 3 行の束、`Golden/text.png`）。DirectWrite の画素は OS のフォントと版に依るので、基準に入れない（§5.6、不変条件 11 の例外）。(6) 行 G3 のガイドのライトテーマ（640 × 360、偽の `ITextBackend`、倍率 1、1e5 点の 2 レイヤー: ns の time の x とタイトル、nice の linear の y とタイトル、破線のレイヤーを含む 2 つのラベルの凡例、プロットのタイトル、`Theme.Light`、`Golden/guides-light.png`）。(7) 行 G3 のガイドのダークテーマ（640 × 360、偽の `ITextBackend`、倍率 1.5、log の y を nice で、sqrt の x、`Theme.Dark`、`Golden/guides-dark.png`）。行 G3 から、(3) と (4) は §4.8 のガイドのないテーマで描き、基準は変わらない。(8) 行 G4 の塗りの Geom（640 × 360、偽の `ITextBackend`、`Theme.Light`、100 点の X に、`Baseline` 0 と縁つきの area、band、20 本の bar、4 つの rect）、`Golden/geoms-fill.png`。(9) 行 G4 の線の Geom（同じ大きさで、3 つの `Mode` の step、縦と横の rule、segment、端つきの errorbar）、`Golden/geoms-line.png`。(10) 行 R4 の線の結合と端（640 × 360、`RenderList` で直接: 3 つの結合 × 3 つの端の太さ 12 の折れ線の格子、`MiterLimit` の前後の鋭い角、2・4・6・8 区間の平らな端の破線の見本（四角の端は太さより狭い隙間を埋めるので、見本には使わない）、半透明の自分と重なる折れ線、傾き 1/5 付近の太さ 1 のマイターの直線）、`Golden/lines-joins.png`。(11) 行 G10 の flip（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつきで、flip した線・area・bar・縦と横の rule・端つきの errorbar）、`Golden/coord-flip.png`。(12) 行 G11 の polar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）の 2 枚: theta = x の線・area・bar（バラ図）と、theta = y の bar（ドーナツ、`InnerRadius` 0.4）、`Golden/coord-polar.png` と `Golden/coord-polar-donut.png`。大きなデータの道（4W を超える要素）は、§10 の G4 の行の記録の比べ方で見る。ゴールデン画像の役目は、記録から readback までの経路全体が知らないうちに変わったのを見つけることである。行 G7a で線と塗りの既定の色がパレットの色になるが、場面 (1)〜(12) の層はどれも色を指定している（(1)・(2)・(5)・(10) は `RenderList` に直接描き、(3)・(4)・(6)・(7)・(8)・(9)・(11)・(12) の層は `.Color` か `.Fill` を持つ）ので、どの基準も変わらない。行 G7a の実装の PR は、基準が変わらないことを確かめる。色を指定しない層は `GuideRenderTests.AxisLines_StayOffThePanel` の線だけで、これは基準の画像と比べない。(13) 行 G7b のカテゴリの x の bar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 12 カテゴリの bar で、1 カテゴリに複数の行と負の値を含み、ラベルが重なって k 個おきに間引かれる幅、`Golden/categorical-bar.png`。行 G7b は場面 (1)〜(12) の基準を変えない（カテゴリの列を使う場面がない）。(14) 行 G7c のカテゴリで分けた層（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 3 カテゴリが行ごとに混ざった線（集める道）と、カテゴリの順に並んだ bar（区間の道）、ordinal のスケールのタイトルとカテゴリ名の凡例、`Golden/color-categorical.png`。(15) 行 G7c の連続の色（同じ大きさ）: viridis の sequential で色を付けた rect の格子と、タイトルつきのカラーバー、`Golden/color-continuous.png`。行 G7c は場面 (1)〜(13) の基準を変えない（色のチャネルを使う場面がなく、凡例は色の項がなければ今のまま）。行 G3b は場面 (13) の基準を変える: 最初のラベル "Category 01" が F の左端を 0.6 画素越えているので、F の左端にそろう（今の場面のテストに一時的な検査を入れて数えた。ほかの場面のラベルは F を越えない）。Issue #190 で、band の軸の目盛り・ラベル・グリッドが 1 カテゴリ左にずれていた（目盛りの画素を domain の原点を引かずに求めていた）のを直し、場面 (13) の基準を書き直した。目盛りは棒の真ん中に移り、最初のラベルは F を越えなくなった。(16) 行 G8 の text（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 6 カテゴリの x の bar に、棒の上に値の数のラベル（`Bottom`、上へ 4 DIP ずらし、書式 "N0"）と、棒の中に `Clockwise90` で回したカテゴリ名のラベル（`ColorBy` でカテゴリの色、y は棒の高さの半分の列）、`Golden/text-labels.png`。y の domain は `WithDomain(0, 最大の値 · 1.2)` で上に余裕を取り、一番高い棒の値のラベルもパネルの中に描く（domain はラベルの箱を入れないので、余裕がないと基準点がパネルの上端に来て、ラベルが切れる。PR #185 のレビュー）。行 G8 は場面 (1)〜(15) の基準を変えない（text の層を持つ場面がなく、整形のキャッシュの上限は記録を変えない）
+- **ゴールデン画像の場面**（`tests/HyperPlot.Rendering.D3D11.Tests`、WARP、Windows のみ）: (1) `HelloPlot` の場面（§2.1。4 系列の正弦波＋シードつきの雑音＋NaN の欠け、ピラミッド・`M4Batch`・格子・M4 の線、1,280 × 720）を 1e5 点で描いたもの。場面の組み立ては `samples/Shared` にあり、`HelloPlot` とテストが同じコードで描く。点の数を引数にし、欠けの位置と正弦波の周波数は点の数に対する割合で決める。場面を出す前と後で、`HelloPlot`（1e6 点）の PNG が画素まで同じことを、行 S3 の実装の PR で確かめる。(2) R2 の線の種類（太さ 0.5・1・1.5・3、破線、切り抜き、半透明の重なり）を 1 枚に並べた場面。R2 の各ケースは CPU の基準と比べているので（§10 の表）、画像では持たない。(3) 行 G1 の線のプロット（`HeadlessRenderer.Render(PlotSpec)`、640 × 360、1e5 点の 2 レイヤー: 等間隔の X と NaN の欠けのある `float` の Y、保存された X と破線の `double` の Y）。同じテストが、手で組んだ `M4Batch` と `RenderList` の画素と一致することも確かめる（§10 の G1 の行）。(4) 行 G2 の位置のスケール（640 × 360、1e5 点: 1970 年起点の ns で 1 µs 刻みの `Column<long>` の X を `Scale.Time(TimeUnit.Nanoseconds)` で、0.1〜約 1,000 の `float` の Y を NaN の欠けつきで `Scale.Log()` で、`Golden/plot-scales.png`）。画素の正しさは §10 の G2 の行の手で組んだ記録との比較が見る。(5) 行 T1 のテキスト（640 × 360、偽の `ITextBackend` で: 横 3 通り × 縦 4 通りの揃え、回転 3 通り、2 行と 3 行の束、`Golden/text.png`）。DirectWrite の画素は OS のフォントと版に依るので、基準に入れない（§5.6、不変条件 11 の例外）。(6) 行 G3 のガイドのライトテーマ（640 × 360、偽の `ITextBackend`、倍率 1、1e5 点の 2 レイヤー: ns の time の x とタイトル、nice の linear の y とタイトル、破線のレイヤーを含む 2 つのラベルの凡例、プロットのタイトル、`Theme.Light`、`Golden/guides-light.png`）。(7) 行 G3 のガイドのダークテーマ（640 × 360、偽の `ITextBackend`、倍率 1.5、log の y を nice で、sqrt の x、`Theme.Dark`、`Golden/guides-dark.png`）。行 G3 から、(3) と (4) は §4.8 のガイドのないテーマで描き、基準は変わらない。(8) 行 G4 の塗りの Geom（640 × 360、偽の `ITextBackend`、`Theme.Light`、100 点の X に、`Baseline` 0 と縁つきの area、band、20 本の bar、4 つの rect）、`Golden/geoms-fill.png`。(9) 行 G4 の線の Geom（同じ大きさで、3 つの `Mode` の step、縦と横の rule、segment、端つきの errorbar）、`Golden/geoms-line.png`。(10) 行 R4 の線の結合と端（640 × 360、`RenderList` で直接: 3 つの結合 × 3 つの端の太さ 12 の折れ線の格子、`MiterLimit` の前後の鋭い角、2・4・6・8 区間の平らな端の破線の見本（四角の端は太さより狭い隙間を埋めるので、見本には使わない）、半透明の自分と重なる折れ線、傾き 1/5 付近の太さ 1 のマイターの直線）、`Golden/lines-joins.png`。(11) 行 G10 の flip（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつきで、flip した線・area・bar・縦と横の rule・端つきの errorbar）、`Golden/coord-flip.png`。(12) 行 G11 の polar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）の 2 枚: theta = x の線・area・bar（バラ図）と、theta = y の bar（ドーナツ、`InnerRadius` 0.4）、`Golden/coord-polar.png` と `Golden/coord-polar-donut.png`。大きなデータの道（4W を超える要素）は、§10 の G4 の行の記録の比べ方で見る。ゴールデン画像の役目は、記録から readback までの経路全体が知らないうちに変わったのを見つけることである。行 G7a で線と塗りの既定の色がパレットの色になるが、場面 (1)〜(12) の層はどれも色を指定している（(1)・(2)・(5)・(10) は `RenderList` に直接描き、(3)・(4)・(6)・(7)・(8)・(9)・(11)・(12) の層は `.Color` か `.Fill` を持つ）ので、どの基準も変わらない。行 G7a の実装の PR は、基準が変わらないことを確かめる。色を指定しない層は `GuideRenderTests.AxisLines_StayOffThePanel` の線だけで、これは基準の画像と比べない。(13) 行 G7b のカテゴリの x の bar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 12 カテゴリの bar で、1 カテゴリに複数の行と負の値を含み、ラベルが重なって k 個おきに間引かれる幅、`Golden/categorical-bar.png`。行 G7b は場面 (1)〜(12) の基準を変えない（カテゴリの列を使う場面がない）。(14) 行 G7c のカテゴリで分けた層（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 3 カテゴリが行ごとに混ざった線（集める道）と、カテゴリの順に並んだ bar（区間の道）、ordinal のスケールのタイトルとカテゴリ名の凡例、`Golden/color-categorical.png`。(15) 行 G7c の連続の色（同じ大きさ）: viridis の sequential で色を付けた rect の格子と、タイトルつきのカラーバー、`Golden/color-continuous.png`。行 G7c は場面 (1)〜(13) の基準を変えない（色のチャネルを使う場面がなく、凡例は色の項がなければ今のまま）。行 G3b は場面 (13) の基準を変える: 最初のラベル "Category 01" が F の左端を 0.6 画素越えているので、F の左端にそろう（今の場面のテストに一時的な検査を入れて数えた。ほかの場面のラベルは F を越えない）。Issue #190 で、band の軸の目盛り・ラベル・グリッドが 1 カテゴリ左にずれていた（目盛りの画素を domain の原点を引かずに求めていた）のを直し、場面 (13) の基準を書き直した。目盛りは棒の真ん中に移り、最初のラベルは F を越えなくなった。(16) 行 G8 の text（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 6 カテゴリの x の bar に、棒の上に値の数のラベル（`Bottom`、上へ 4 DIP ずらし、書式 "N0"）と、棒の中に `Clockwise90` で回したカテゴリ名のラベル（`ColorBy` でカテゴリの色、y は棒の高さの半分の列）、`Golden/text-labels.png`。y の domain は `WithDomain(0, 最大の値 · 1.2)` で上に余裕を取り、一番高い棒の値のラベルもパネルの中に描く（domain はラベルの箱を入れないので、余裕がないと基準点がパネルの上端に来て、ラベルが切れる。PR #185 のレビュー）。行 G8 は場面 (1)〜(15) の基準を変えない（text の層を持つ場面がなく、整形のキャッシュの上限は記録を変えない）。(17) 行 G9 の数のラスタの拡大（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 40 × 24 の `float` のラスタ（sin · cos の値と、NaN の小さな矩形）を viridis の sequential で、`Nearest` で拡大し、カラーバーつき、`Golden/image-nearest.png`。(18) 同じラスタを `Bilinear` と `Origin` の `Lower`、裏返した x の `Extent` で、`Golden/image-bilinear.png`。(19) RGBA の画像（64 × 48 の色の格子と、アルファが 0・128・255 の帯）を、塗りの矩形の上に `Opacity` 0.8 で、`Golden/image-rgba.png`。縮小（ミップマップの段）は、場面でなく §10 の G9 の行の CPU の基準で見る。行 G9 は場面 (1)〜(16) の基準を変えない（image の層を持つ場面がない）
 - **CI**: Windows の回は、ゴールデン画像のテストが書いた `golden-output/`（テストの実行のフォルダの下）を artifact として上げる
 
 ## 11. 不変条件
