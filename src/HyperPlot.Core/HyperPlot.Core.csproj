@@ -12,6 +12,8 @@
     <InternalsVisibleTo Include="HyperPlot.DataPath" />
     <!-- The D3D11 backend premultiplies and takes out the alpha with Core's integer forms (design §5.2). -->
     <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11" />
+    <!-- The image pipeline's tests write tile records and fill the residency cache by hand (row G9): DrawImage is internal. -->
+    <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
     <!-- GoldenImage writes the actual and diff images with the same PNG writer as HeadlessRenderer (design §10.1). -->
     <InternalsVisibleTo Include="HyperPlot.Testing" />
   </ItemGroup>

@@ -622,6 +622,32 @@ public sealed class PlotBuilder
         };
     }
 
+    /// <summary>Adds an image layer: a raster put on a rectangle (design §5.5.3, row G9).</summary>
+    /// <param name="raster">The raster: numbers, painted through the plot's color scale, or an RGBA image.</param>
+    /// <param name="configure">Sets the extent, the origin, the reading, and the opacity; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="raster"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The configure gives an extent, an origin, a reading, or an opacity out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Image(Raster raster, Action<ImageBuilder>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(raster);
+        ThrowIfBuilt();
+        var image = new ImageBuilder();
+        configure?.Invoke(image);
+        _layers.Add(
+            new ImageLayerSpec
+            {
+                Raster = raster,
+                Extent = image.ExtentValue,
+                Origin = image.OriginValue,
+                Interpolation = image.InterpolationValue,
+                Opacity = image.OpacityValue,
+            }
+        );
+        return this;
+    }
+
     private PlotBuilder AddText(ColumnRef x, ColumnRef y, ColumnRef text, Action<TextBuilder>? configure)
     {
         ThrowIfBuilt();

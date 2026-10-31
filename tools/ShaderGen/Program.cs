@@ -25,6 +25,8 @@ if (fxc is null)
     ("Columns.hlsl", "ColumnsVS", "vs_5_0"),
     ("Glyph.hlsl", "GlyphPS", "ps_5_0"),
     ("Glyph.hlsl", "GlyphVS", "vs_5_0"),
+    ("Image.hlsl", "ImagePS", "ps_5_0"),
+    ("Image.hlsl", "ImageVS", "vs_5_0"),
     ("Line.hlsl", "BoundsVS", "vs_5_0"),
     ("Line.hlsl", "ColorPS", "ps_5_0"),
     ("Line.hlsl", "CoveragePS", "ps_5_0"),

@@ -135,6 +135,12 @@ public sealed class TextEngine
                 // Each call is its own shape (design §5.1): never joined with the call before.
                 AddStep(new DrawStep(DrawStepKind.Sectors, command.Index, 1, 0, list.SectorCalls[command.Index].Clip));
             }
+            else if (command.Kind == RenderCommandKind.Image)
+            {
+                // Tiles of one page under one clip are one step (design §5.3, row G9).
+                var (page, clip) = list.ImageCalls[command.Index];
+                AddRun(DrawStepKind.Images, command.Index, clip, page);
+            }
             else if (!TryPlace(texts[command.Index], width, height))
             {
                 ThrowAtlasFull(list, i);
@@ -290,21 +296,21 @@ public sealed class TextEngine
         AddStep(new DrawStep(DrawStepKind.Glyphs, _instanceCount - 1, 1, page, clip));
     }
 
-    private void AddRun(DrawStepKind kind, int index, ClipRect clip)
+    private void AddRun(DrawStepKind kind, int index, ClipRect clip, int page = 0)
     {
         // Rectangles or column trapezoids that follow one another under the same clip are one step: their records are in
         // order (design §5.3).
         if (_stepCount > 0)
         {
             ref var last = ref _steps[_stepCount - 1];
-            if (last.Kind == kind && last.Clip == clip)
+            if (last.Kind == kind && last.Clip == clip && last.Page == page)
             {
                 last = last with { Count = last.Count + 1 };
                 return;
             }
         }
 
-        AddStep(new DrawStep(kind, index, 1, 0, clip));
+        AddStep(new DrawStep(kind, index, 1, page, clip));
     }
 
     private void AddStep(in DrawStep step)
@@ -384,6 +390,9 @@ internal enum DrawStepKind : byte
 
     /// <summary>One call of polar trapezoids, drawn as one shape: the index is into <see cref="RenderList.SectorCalls"/> (row G11).</summary>
     Sectors,
+
+    /// <summary>Image tiles of one page of the residency cache under one clip: a range of <see cref="RenderList.Images"/> (row G9).</summary>
+    Images,
 }
 
 /// <summary>One step of a backend's <c>Draw</c>, in the order of the list's commands.</summary>
