@@ -58,6 +58,8 @@ _slots[index].Generation = 1;
 - A static value that threads share and that is made when first read uses `Lazy<T>` with `LazyThreadSafetyMode.ExecutionAndPublication`, not `??=`. With `??=`, two threads (a worker and the UI thread) can each make one, each with an id of its own.
 - A check on a combination of a positional record's members runs where the value is taken (a setter, a constructor's parameter), not in the record. `with` copies the value and sets members through `init`, and never calls the primary constructor, so a check there does not see `value with { ... }`; a check in `init` sees one member set before the other and refuses a valid result.
 
+- A relative tolerance in a check is relative to the magnitude of what is compared as a whole (a range's larger end), not to a value that can be 0. PR #235 checked a transform's round trip relative to each end of the domain; at an end of 0 the tolerance was about 0, and a monotonic transform that offsets and scales was refused. The review found it.
+
 ## XML docs
 
 - Public members under `src/` have `summary`, and `param` / `returns` / `exception` when a caller might be unsure. Sentences end with a period. Properties start with "Gets" / "Gets or sets"; constructors with "Initializes a new instance of the <see cref="T"/> class".
