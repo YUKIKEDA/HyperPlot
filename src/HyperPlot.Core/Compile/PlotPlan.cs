@@ -1073,7 +1073,8 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>
     /// Throws unless a band scale's values are in range and every layer's x is a categorical column with the same categories
-    /// (design §4.2, row G7b). A layer without an x channel (a horizontal rule, a user's geom) may be there.
+    /// (design §4.2, row G7b). A layer without an x channel (a horizontal rule, a user's geom) may be there. A layer on the
+    /// secondary x is mapped by ScaleX2, not by the band (row G6a), and is left out.
     /// </summary>
     private void CheckBand(PlotSpec plot, BandScaleSpec band, ScaleSpec? previous)
     {
@@ -1085,6 +1086,11 @@ internal sealed class PlotPlan : IDisposable
         CategoricalColumn? first = null;
         for (var i = 0; i < plot.Layers.Count; i++)
         {
+            if (plot.Layers[i].SecondaryX)
+            {
+                continue;
+            }
+
             var count = LayerPlan.AxisChannels(plot.Layers[i], ofX: true, _channels);
             for (var c = 0; c < count; c++)
             {
@@ -1107,11 +1113,19 @@ internal sealed class PlotPlan : IDisposable
         }
     }
 
-    /// <summary>Returns the categorical column of the plot's x, the first layer's that has one; null when no layer reads x.</summary>
+    /// <summary>
+    /// Returns the categorical column of the plot's x, the first layer's on the primary x that has one; null when no such layer
+    /// reads x. A layer on ScaleX2 is not the band's (row G6a).
+    /// </summary>
     private CategoricalColumn? BandColumn(PlotSpec spec)
     {
         for (var i = 0; i < spec.Layers.Count; i++)
         {
+            if (spec.Layers[i].SecondaryX)
+            {
+                continue;
+            }
+
             var count = LayerPlan.AxisChannels(spec.Layers[i], ofX: true, _channels);
             if (count > 0 && _channels[0].Column is CategoricalColumn categories)
             {
