@@ -654,3 +654,22 @@ Rejected:
   - セルごとに値を集めて並べる quantile: メモリがデータと同じ桁になり、要件 P-8 の考え（索引は元の 10 % 以下）に合わない
   - ggplot2 の既定の `mean_se`: 標準偏差が要件 G-4 にない。`IStat` で書ける
   - bin の bar を棒の幅 1 つの bar の層で描く: log と time の x では区切りの幅がそろわない。矩形で描き、Position は Stat の中で当てる
+
+## Stat: R の density() の手順の KDE、x の単位の窓の移動平均、rect の 2D の bin（行 G5c）
+
+Decision:
+  行 G5c は、density（KDE、1D）・smooth（移動平均）・bin（2D）を行 G5b の枠の上に作る。density は R の `density()` の手順（格子への線形の配りとガウスの核の畳み込み、既定の帯域幅は `bw.nrd0`）、smooth は x の単位の窓の中の y の平均を `Points` 個の点で、bin 2D は軸ごとの `BinStatSpec` のセルを rect で数で塗る（Issue #222）
+
+Reason:
+  1e9 行で、仕事が行の数に比例する 1 度なめ（帯域幅の自動は quantile の段を足す）で済み、派生の表は点かセルの数の大きさになる。density は ggplot2 の `stat_density` が呼ぶ R の `density()` と同じ値になり、R の出力を基準にできる。smooth の窓の端の間の区間に行を配る形は、x の並びによらず厳密
+
+Rejected:
+  - Vega の KDE（出力の点ごとに全行の核を足す厳密な和）: 1e9 行 × 200 点 = 2e11 回の `exp` で、要件 P-2 に届かない
+  - Vega の Scott の帯域幅（1.06 倍）: ggplot2 と R の既定の `bw.nrd0`（0.9 倍）と値が違う
+  - R の既定の `cut = 3`（範囲の外へ 3 h 延ばす）: ggplot2 はデータの範囲で評価する。範囲の幅が 0 のときだけ使う
+  - 近似の IQR（格子のヒストグラムから読む）: `bw.nrd0` の値が R と合わない。帯域幅を数で与えれば、quantile のなめは飛ばせる
+  - FFT の畳み込み: 格子は 4,096 点までで、直接の和で約 1.7e7 回の積和。FFT の実装を持たずに同じ値になる
+  - 行の数の窓の移動平均（pandas の `rolling`、Vega の `window`）: 出力が行ごとの 1e9 行の派生の列になり、メモリが数 GB 増える
+  - G9 の画像の層で 2D の bin を描く: log の軸や time の暦の段の不等幅の区切りに合わない
+  - ggplot2 の 2D の bin の `density`（数 / 数の和）: 1D の密度（積分が 1）と形がそろわない
+  - 2D の bin の層に新しい `X`・`Y` のチャネルか、専用の層の型を足す: 行 G5b の summary の errorbar と同じく、今のチャネル（`XMin`・`YMin`）に置く（オーナーが決定）
