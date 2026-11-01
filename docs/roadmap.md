@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** G6（G5c は #226 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** G6a
+- **ブランチ:** `docs/230-g6a-axes`（設計）
+- **Issue:** [#230](https://github.com/YUKIKEDA/HyperPlot/issues/230)（設計）
 
 ## ツールチェーン
 
@@ -64,9 +64,11 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G5a | Position（要件 G-5）: `PositionSpec`（identity・stack・dodge・fill）と `LayerSpec.Position`、色で分けた bar と area の既定の積み上げ（行 G7c から）、カテゴリの x の積み上げ（セルごとの正と負の和をワーカーが作る）と数の x の積み上げ（系列を併合した累積の列、area は ggplot2 の `stat_align` の補間）、fill、dodge（全体で固定の場所）、カテゴリの x の errorbar・縦の rule（行 G7b から）、flip と polar（§4.1・§4.2・§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。ワーカー（セルの和 1e8 行、色 8 × x 50 と 8 × 1e5。累積の列 1e8 点・8 系列、x がそろう場合とずれる場合の時間とメモリ）と、積んだ bar・area、並べた bar と errorbar の 1 フレームの CPU と GPU の時間 | done | [#204](https://github.com/YUKIKEDA/HyperPlot/issues/204)（設計）、[#208](https://github.com/YUKIKEDA/HyperPlot/issues/208) |
 | G5b | Stat の枠（`IStat`、ワーカーが作る版付きの派生の表、§4.3）と、bin（1D）・count・summary（mean・min・max・quantile）（要件 G-4）。bin は Vega の刻み・[a, b)・スケールの空間、summary の quantile は厳密な type 7 の radix select、Stat の結果はワーカーが作る派生の表で、層は Geom の道と Position で描く（§4.1・§4.3・§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、3 回。1e9 点の `float`（メモリマップ）のヒストグラム（1 群と 8 群）、count（1e9 行、カテゴリ 50 と 1e5）、summary（1e9 行・カテゴリ 50 の平均・最小・最大と quantile 2 つ）を作る時間と 1 フレームの時間（要件 P-2・P-1） | done | [#214](https://github.com/YUKIKEDA/HyperPlot/issues/214)（設計）、[#218](https://github.com/YUKIKEDA/HyperPlot/issues/218) |
 | G5c | 残りの Stat: density（KDE、1D）・smooth（移動平均）・bin（2D）（要件 G-4）。density は R の `density()` の手順（格子への線形の配りとガウスの核、既定の帯域幅は厳密な `bw.nrd0`）、smooth は x の単位の窓の中の y の平均、bin 2D は軸ごとの `BinStatSpec` のセルを rect で数で塗る（§4.1・§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、3 回。1e9 点の `float`（メモリマップ）の density（1 群と 8 群、帯域幅の自動と数）、smooth（x は `UniformColumn`）、bin 2D（x と y の `float`、既定の区切りと 300 × 300）を作る時間と 1 フレームの時間（要件 P-2・P-1） | done | [#222](https://github.com/YUKIKEDA/HyperPlot/issues/222)（設計）、[#226](https://github.com/YUKIKEDA/HyperPlot/issues/226) |
-| G6 | ファセットと複数のプロット、二次軸（要件 G-9）と上や右に置く軸（§4.6） | not-started | |
+| G6a | 軸の置き場所と二次軸（要件 G-9、§4.6）: スケールの `Side`（上と右の軸）、独立した二次のスケール（`PlotSpec.ScaleX2`・`ScaleY2` と層の `SecondaryX`・`SecondaryY`）と主の軸の変換の軸（`WithSecondaryAxis`）、グリッドは主だけ（§4.1・§4.6）。計測: NativeAOT の Release、1,920 × 1,080、3 回。1e9 点の系列 2 本を左右の y に載せ、x の上に変換の軸を付けた場面の 1 フレームの CPU と GPU の時間と確保を、軸が 1 本の場面と比べる（要件 P-1） | in-progress | [#230](https://github.com/YUKIKEDA/HyperPlot/issues/230)（設計） |
+| G6b | ファセット（要件 G-8、§4.5）: wrap と grid、軸の shared と free、ファセットのラベル（strip） | not-started | |
+| G6c | 複数のプロット（要件 G-9、§4.5）: `FigureSpec` の concat と grid | not-started | |
 | **C: インタラクションと WPF** | | | |
-| I1 | 入力のモデル、ツールの状態機械、ビューの操作（原点の付け直し、§6.2）、ズームの履歴、ズーム中に新しい目盛りのラベルで確保しないこと（span を受ける `DrawText` と確保しない整形、§4.6・不変条件 3） | not-started | |
+| I1 | 入力のモデル、ツールの状態機械、ビューの操作（原点の付け直し、§6.2）、ズームの履歴、二次のスケール（行 G6a の `ScaleX2`・`ScaleY2`）へのズームとパン、ズーム中に新しい目盛りのラベルで確保しないこと（span を受ける `DrawText` と確保しない整形、§4.6・不変条件 3） | not-started | |
 | W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI とその変化での描き直し、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2）、プロットの要約をアクセシビリティの API に渡すこと（要件 N-10、§4.6） | not-started | |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6） | not-started | |
 | I3 | 選択とリンク | not-started | |
