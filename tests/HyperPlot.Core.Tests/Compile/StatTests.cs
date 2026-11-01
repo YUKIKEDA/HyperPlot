@@ -233,6 +233,14 @@ public sealed class StatTests
             Assert.Contains("layer 0", thrown.Message, StringComparison.OrdinalIgnoreCase);
         }
 
+        // A time x bins a column of longs only (the time scale's check, row G2).
+        using (var plan = TestPlans.Create(pool, Size, Size))
+        {
+            _ = Assert.Throws<ArgumentException>(() =>
+                plan.Render(Spec(t, new BarLayerSpec { X = n, Stat = Stat.Bin() }) with { ScaleX = Scale.Time() })
+            );
+        }
+
         // Quantiles: two take 4 ranks of 2 KB, so 32,768 cells fill 256 MB; 32,769 do not fit.
         foreach (var (categories, fits) in (ReadOnlySpan<(int, bool)>)[(32_768, true), (32_769, false)])
         {
@@ -461,11 +469,130 @@ public sealed class StatTests
             var list = plan.Render(Spec(t, layer) with { ScaleX = Scale.Linear(), ScaleY = Scale.Linear() });
             Assert.Equal((0.0, 30.0), Ends(plan.XDomain));
             Assert.Equal((0.0, 10.0), Ends(plan.YDomain));
+            if (layer is AreaLayerSpec)
+            {
+                // Split in two groups, the bins' counts stack: the y domain reaches the greatest total, 10.
+                var halves = DataTable
+                    .Create()
+                    .Add("x", x)
+                    .Add("g", Column.Categorical([.. values.Select((_, i) => (string?)(i % 2 == 0 ? "a" : "b"))]))
+                    .Build();
+                using var split = TestPlans.Create(pool, Size, Size);
+                _ = split.Render(
+                    Spec(
+                        halves,
+                        new AreaLayerSpec
+                        {
+                            X = halves.Col<double>("x"),
+                            Stat = Stat.Bin(step: 10),
+                            FillBy = halves.Cat("g").ToColumnRef(),
+                        }
+                    ) with
+                    {
+                        ScaleX = Scale.Linear(),
+                        ScaleY = Scale.Linear(),
+                    }
+                );
+                Assert.Equal((0.0, 10.0), Ends(split.YDomain));
+            }
+
             if (layer is StepLayerSpec)
             {
                 var xs = SegmentsOf(list, 0).SelectMany(s => (float[])[s.Start.X, s.End.X]).Distinct().Order().ToArray();
                 Assert.Equal([Size * 5f / 30, Size * 15f / 30, Size * 25f / 30], xs, (a, b) => Math.Abs(a - b) < 1e-3);
             }
+        }
+    }
+
+    /// <summary>
+    /// A drawn summary is type 7 between the selected ranks, and a density divides by the bin's width (design §4.1): the
+    /// learned y domain is the values the plan draws.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One category of the values 1 to 10; the values 1 to 29 in bins of a step of 10 (counts 9, 10, 10 of 29).
+    ///
+    /// Steps:
+    /// - Render an error bar of the quartiles and a histogram of densities with learned y domains.
+    ///
+    /// Expected:
+    /// - The y domain [3.25, 7.75] (h = 2.25 and 6.75 of the sorted values); [0, 10 / (29 · 10)].
+    /// </remarks>
+    [Fact]
+    public void DrawnValues_AreType7AndDensities()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var ys = Column.Wrap(Enumerable.Range(1, 10).Select(i => (double)i).ToArray());
+        var t = DataTable.Create().Add("c", Column.Categorical([.. Enumerable.Repeat<string?>("only", 10)])).Add("y", ys).Build();
+        using (var plan = TestPlans.Create(pool, Size, Size))
+        {
+            _ = plan.Render(
+                Spec(
+                    t,
+                    new ErrorBarLayerSpec
+                    {
+                        X = t.Cat("c").ToColumnRef(),
+                        YMin = t.Col<double>("y"),
+                        YMax = t.Col<double>("y"),
+                        Stat = Stat.Summary(SummaryOp.Quantile(0.25), SummaryOp.Quantile(0.75)),
+                    }
+                ) with
+                {
+                    ScaleX = Scale.Band(),
+                    ScaleY = Scale.Linear(),
+                }
+            );
+            Assert.Equal((3.25, 7.75), Ends(plan.YDomain));
+        }
+
+        using var xs = Column.Wrap(Enumerable.Range(1, 29).Select(i => (double)i).ToArray());
+        var b = DataTable.Create().Add("x", xs).Build();
+        using (var plan = TestPlans.Create(pool, Size, Size))
+        {
+            _ = plan.Render(
+                Spec(b, new BarLayerSpec { X = b.Col<double>("x"), Stat = Stat.Bin(step: 10, output: BinOutput.Density) }) with
+                {
+                    ScaleX = Scale.Linear(),
+                    ScaleY = Scale.Linear(),
+                }
+            );
+            Assert.Equal(0, Ends(plan.YDomain).Min);
+            Assert.Equal(10.0 / (29 * 10), Ends(plan.YDomain).Max, 12);
+        }
+    }
+
+    /// <summary>
+    /// A cell's sums do not depend on the number of workers (design §5.5.3): the chunks join in fixed groups, in their order.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 3 · 2^20 rows (3 chunks) over 4 categories, values of many magnitudes.
+    ///
+    /// Steps:
+    /// - Summarize with 1 worker and with 4, three times.
+    ///
+    /// Expected:
+    /// - The same sums, bit for bit.
+    /// </remarks>
+    [Fact]
+    public void Summary_SumsAlikeOnAnyNumberOfWorkers()
+    {
+        const int Rows = 3 << 20;
+        var random = new Random(12);
+        var values = new double[Rows];
+        for (var i = 0; i < Rows; i++)
+        {
+            values[i] = random.NextDouble() * Math.Pow(10, random.Next(-6, 6));
+        }
+
+        using var y = Column.Wrap(values);
+        var x = Column.Categorical(Enumerable.Range(0, Rows).Select(i => (string?)Cats[i % 4]).ToArray(), Cats);
+        using var one = new PlotWorkerPool(1);
+        var expected = StatWork.Summarize(x, null, y, [], one).Sum;
+        foreach (var workers in (int[])[4, 4, 4])
+        {
+            using var pool = new PlotWorkerPool(workers);
+            Assert.Equal(expected, StatWork.Summarize(x, null, y, [], pool).Sum);
         }
     }
 
@@ -716,10 +843,11 @@ public sealed class StatTests
     /// - A histogram of the fixture's numbers.
     ///
     /// Steps:
-    /// - Render; render a new node of the same bins; render other bins; invalidate the column and render.
+    /// - Render; render a new node of the same bins; render other bins; invalidate the column and render; render other x
+    ///   and y domains; render a log x.
     ///
     /// Expected:
-    /// - The same layer plan, then a new one twice.
+    /// - The same layer plan, then a new one twice; the same over other domains; a new one over a log x.
     /// </remarks>
     [Fact]
     public void Diff_MakesTheLayerAgainForOtherStats()
@@ -739,6 +867,19 @@ public sealed class StatTests
         data.SetN(0, 99);
         _ = plan.Render(Spec(t, layer with { Stat = Stat.Bin(maxBins: 6) }));
         Assert.NotSame(second, plan.Layers[0]);
+
+        // Another y domain, or x domain, keeps the bins; another x space (log) makes them again.
+        var third = plan.Layers[0];
+        _ = plan.Render(
+            Spec(t, layer with { Stat = Stat.Bin(maxBins: 6) }) with
+            {
+                ScaleY = Scale.Linear().WithDomain(0, 7),
+                ScaleX = Scale.Linear().WithDomain(1, 50),
+            }
+        );
+        Assert.Same(third, plan.Layers[0]);
+        _ = plan.Render(Spec(t, layer with { Stat = Stat.Bin(maxBins: 6) }) with { ScaleX = Scale.Log() });
+        Assert.NotSame(third, plan.Layers[0]);
     }
 
     /// <summary>Once warm, a histogram, counts, and summaries drawn again allocate nothing (design §4.8).</summary>

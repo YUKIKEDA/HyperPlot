@@ -185,8 +185,8 @@ internal sealed class PlotPlan : IDisposable
         }
 
         // A stack over a numeric x whose columns changed is made again (row G5a): its union of x values may change length.
-        // Bins are chosen in the x scale's space (row G5b): another transform makes the layers again.
-        if (data || StaleLayers() || (scales && BinsLayers(spec)))
+        // Bins are chosen in the x scale's space (row G5b): another space (not another domain) makes the layers again.
+        if (data || StaleLayers() || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && BinsLayers(spec)))
         {
             BuildLayers(spec);
         }
@@ -806,6 +806,22 @@ internal sealed class PlotPlan : IDisposable
                 && b.PaddingOuter.Equals(a.PaddingOuter)
                 && b.Align.Equals(a.Align),
             (ContinuousScaleSpec b, ContinuousScaleSpec a) => b.Nice == a.Nice && SameKind(before, after),
+            _ => false,
+        };
+
+    /// <summary>
+    /// Returns whether two scales map to the same space, whatever their domains (row G5b): the same kind and transform. Bins
+    /// are chosen in that space, so a zoom or a domain given anew keeps them.
+    /// </summary>
+    private static bool SameSpace(ScaleSpec before, ScaleSpec after) =>
+        before.Id == after.Id
+        || (before, after) switch
+        {
+            (LinearScaleSpec, LinearScaleSpec) or (LogScaleSpec, LogScaleSpec) or (BandScaleSpec, BandScaleSpec) => true,
+            (SymlogScaleSpec b, SymlogScaleSpec a) => b.Constant.Equals(a.Constant),
+            (PowScaleSpec b, PowScaleSpec a) => b.Exponent.Equals(a.Exponent),
+            (TimeScaleSpec b, TimeScaleSpec a) => b.Unit == a.Unit && b.Epoch == a.Epoch,
+            (TransformScaleSpec b, TransformScaleSpec a) => ReferenceEquals(b.Transform, a.Transform),
             _ => false,
         };
 
