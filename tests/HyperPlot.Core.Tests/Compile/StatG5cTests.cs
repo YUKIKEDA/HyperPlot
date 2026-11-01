@@ -878,6 +878,47 @@ public sealed class StatG5cTests
     }
 
     /// <summary>
+    /// 2D bins labeled in the spec show the color bar and no row of their own (design §4.1, §4.6): their cells are colored by
+    /// their values, as an image of numbers is.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The light theme with its legend; 2D bins labeled "L" over 4 rows.
+    ///
+    /// Steps:
+    /// - Render.
+    ///
+    /// Expected:
+    /// - A color bar, and no text "L".
+    /// </remarks>
+    [Fact]
+    public void Bin2D_ShowsTheColorBarOnly()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.Wrap(new double[] { 1, 2, 3, 4 });
+        using var y = Column.Wrap(new double[] { 1, 3, 2, 4 });
+        var t = DataTable.Create().Add("x", x).Add("y", y).Build();
+        using var plan = new PlotPlan(pool, 640, 360, new TextEngine(new FakeTextBackend()), 1);
+        var list = plan.Render(
+            Linear(
+                t,
+                new RectLayerSpec
+                {
+                    XMin = t.Col<double>("x"),
+                    YMin = t.Col<double>("y"),
+                    Stat = Stat.Bin2D(),
+                    Label = "L",
+                }
+            ) with
+            {
+                Theme = Theme.Light,
+            }
+        );
+        Assert.True(plan.Guides.ColorBarLength > 0);
+        Assert.DoesNotContain(list.Texts.ToArray(), text => text.Text == "L");
+    }
+
+    /// <summary>
     /// 2D bins over a log x bin in log10 (design §4.1): cells a decade wide, values at and below 0 not counted, and the
     /// cells' edges back in the data.
     /// </summary>
