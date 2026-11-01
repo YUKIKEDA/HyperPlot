@@ -877,6 +877,51 @@ public sealed class StatG5cTests
         }
     }
 
+    /// <summary>
+    /// 2D bins over a log x bin in log10 (design §4.1): cells a decade wide, values at and below 0 not counted, and the
+    /// cells' edges back in the data.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400 rows: x 10^(i mod 4 + 0.5) (100 rows in each decade from 1 to 10^4), y 0 or 1.5 by turns of 4 rows (50 of each
+    ///   in each decade); two more rows with x 0 and −1; a log x; bins of a step of 1 on x and y.
+    ///
+    /// Steps:
+    /// - Render 2D bins; read the cells.
+    ///
+    /// Expected:
+    /// - 8 cells of 50 rows, their x edges 1, 10, 100, 1,000, 10,000.
+    /// </remarks>
+    [Fact]
+    public void Bin2D_OnALogX_BinsInLog10()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.Wrap(Enumerable.Range(0, 400).Select(i => Math.Pow(10, (i % 4) + 0.5)).Concat([0.0, -1]).ToArray());
+        using var y = Column.Wrap(Enumerable.Range(0, 402).Select(i => ((i / 4) % 2) * 1.5).ToArray());
+        var t = DataTable.Create().Add("x", x).Add("y", y).Build();
+        using var plan = TestPlans.Create(pool, Size, Size);
+        _ = plan.Render(
+            Spec(
+                t,
+                new RectLayerSpec
+                {
+                    XMin = t.Col<double>("x"),
+                    YMin = t.Col<double>("y"),
+                    Stat = Stat.Bin2D(Stat.Bin(step: 1), Stat.Bin(step: 1)),
+                }
+            ) with
+            {
+                ScaleX = Scale.Log(),
+                ScaleY = Scale.Linear(),
+            }
+        );
+        var layer = Assert.IsType<StatPlan>(plan.Layers[0]);
+        var values = Values(layer.Derived, 4);
+        Assert.Equal(Enumerable.Repeat(50.0, 8), values);
+        var edges = Values(layer.Derived, 0).Concat(Values(layer.Derived, 1)).Distinct().Order().ToArray();
+        Assert.Equal([1, 10, 100, 1_000, 10_000], edges, (a, b) => Math.Abs(a - b) <= 1e-9 * b);
+    }
+
     /// <summary>2D bins over a time y take its calendar boundaries (design §4.1): the y edges are those of a time histogram.</summary>
     /// <remarks>
     /// Preconditions:
