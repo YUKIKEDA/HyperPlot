@@ -43,7 +43,7 @@ internal sealed class CategoryRuns
             return known;
         }
 
-        var runs = Find(column, pool, RowRange.All);
+        var runs = Find(new ColumnKeys(column), pool, RowRange.All);
         return Interlocked.CompareExchange(ref column.Runs, runs, null) ?? runs;
     }
 
@@ -52,12 +52,16 @@ internal sealed class CategoryRuns
     /// column's, found once; a run's are found each time, by a pass over its chunks only, and the layer keeps them.
     /// </summary>
     public static CategoryRuns Of(CategoricalColumn column, PlotWorkerPool pool, RowRange rows) =>
-        rows == RowRange.All ? Of(column, pool) : Find(column, pool, rows);
+        rows == RowRange.All ? Of(column, pool) : Find(new ColumnKeys(column), pool, rows);
 
-    /// <summary>Finds the runs over a run of a column's rows: a pass of the workers over the chunks it lies in.</summary>
-    private static CategoryRuns Find(CategoricalColumn column, PlotWorkerPool pool, RowRange rows)
+    /// <summary>
+    /// Finds the runs of the keys of rows over a run of them (rows G6b and G7c): a pass of the workers over the chunks it
+    /// lies in. A facet grid's keys are the pairs of its two columns' categories.
+    /// </summary>
+    public static CategoryRuns Find(RowKeys keys, PlotWorkerPool pool, RowRange rows)
     {
-        var n = column.CategoryCount;
+        var column = keys.Column;
+        var n = keys.Count;
         var runs = new CategoryRuns(n, column.ChunkCount);
         var sync = new object();
         var (firstChunk, endChunk) = StatWork.ChunksOf(column, rows);
@@ -67,7 +71,8 @@ internal sealed class CategoryRuns
                 {
                     var chunk = firstChunk + at;
                     var (lo, hi) = StatWork.PartOf(column, chunk, rows);
-                    var codes = column.GetCodes(chunk)[lo..hi];
+                    var scratch = keys.Scratch();
+                    var codes = keys.Codes(chunk, scratch)[lo..hi];
                     var start = ((long)chunk << Column.ChunkShift) + lo;
                     var counts = runs.ChunkCounts.AsSpan(chunk * n, n);
                     Span<long> first = n <= 256 ? stackalloc long[n] : new long[n];
@@ -94,6 +99,8 @@ internal sealed class CategoryRuns
                             runs.Last[c] = Math.Max(runs.Last[c], last[c]);
                         }
                     }
+
+                    keys.Return(scratch);
                 }
             )
             .GetAwaiter()
@@ -688,9 +695,23 @@ internal sealed class SplitPlan : LayerPlan
         GatherChannel[] gathers,
         ref long[] chunkStarts,
         RowRange rows
+    ) => GatherRows(pool, new ColumnKeys(categories), runs, gathers, ref chunkStarts, rows);
+
+    /// <summary>
+    /// Writes the rows of the keys that do not lie in one run into their gathered columns (rows G6b and G7c): a pass of the
+    /// workers over the chunks, each key's rows in their order.
+    /// </summary>
+    internal static void GatherRows(
+        PlotWorkerPool pool,
+        RowKeys keys,
+        CategoryRuns runs,
+        GatherChannel[] gathers,
+        ref long[] chunkStarts,
+        RowRange rows
     )
     {
-        var n = categories.CategoryCount;
+        var categories = keys.Column;
+        var n = keys.Count;
 
         // Each category's position at each chunk's start: its rows in the chunks before. The counts never change, so the sums
         // are made once, by the first pass.
@@ -717,12 +738,15 @@ internal sealed class SplitPlan : LayerPlan
                     var (lo, hi) = StatWork.PartOf(categories, chunk, rows);
                     var start = starts.AsSpan(chunk * n, n);
                     Span<long> positions = n <= 256 ? stackalloc long[n] : new long[n];
-                    var codes = categories.GetCodes(chunk)[lo..hi];
+                    var scratch = keys.Scratch();
+                    var codes = keys.Codes(chunk, scratch)[lo..hi];
                     foreach (var gather in gathers)
                     {
                         start.CopyTo(positions);
                         gather.Copy(chunk, lo, codes, positions);
                     }
+
+                    keys.Return(scratch);
                 }
             )
             .GetAwaiter()
@@ -731,4 +755,66 @@ internal sealed class SplitPlan : LayerPlan
 
     /// <summary>One series: its category (−1 for the layer's own color), its plan, and its table when its rows were gathered.</summary>
     private readonly record struct Part(int Category, LayerPlan Plan, DataTable? Table, Func<LayerSpec, LayerSpec> Make);
+}
+
+/// <summary>
+/// The key of each row a split reads (rows G6b and G7c): a categorical column's numbers, or a facet grid's pairs of two
+/// columns' categories. −1 is no key.
+/// </summary>
+internal abstract class RowKeys
+{
+    /// <summary>Gets the number of keys.</summary>
+    public abstract int Count { get; }
+
+    /// <summary>Gets a column of the rows, whose length and chunks the keys follow.</summary>
+    public abstract Column Column { get; }
+
+    /// <summary>Returns a buffer a chunk's keys may be written into, or an empty one when they are read as they are.</summary>
+    public virtual int[] Scratch() => [];
+
+    /// <summary>Returns a buffer <see cref="Scratch"/> gave.</summary>
+    public virtual void Return(int[] scratch) { }
+
+    /// <summary>Returns a chunk's keys, one a row from its first.</summary>
+    public abstract ReadOnlySpan<int> Codes(int chunk, int[] scratch);
+}
+
+/// <summary>A categorical column's numbers as keys.</summary>
+internal sealed class ColumnKeys(CategoricalColumn column) : RowKeys
+{
+    public override int Count => column.CategoryCount;
+
+    public override Column Column => column;
+
+    public override ReadOnlySpan<int> Codes(int chunk, int[] scratch) => column.GetCodes(chunk);
+}
+
+/// <summary>
+/// A facet grid's keys (row G6b): the row category's place among the used ones times the number of used column categories,
+/// plus the column category's place; −1 when either is missing or unused.
+/// </summary>
+internal sealed class PairKeys(CategoricalColumn rows, int[] rowPlaces, int rowCount, CategoricalColumn columns, int[] columnPlaces, int columnCount)
+    : RowKeys
+{
+    public override int Count => rowCount * columnCount;
+
+    public override Column Column => rows;
+
+    public override int[] Scratch() => System.Buffers.ArrayPool<int>.Shared.Rent(Column.ChunkLength);
+
+    public override void Return(int[] scratch) => System.Buffers.ArrayPool<int>.Shared.Return(scratch);
+
+    public override ReadOnlySpan<int> Codes(int chunk, int[] scratch)
+    {
+        var r = rows.GetCodes(chunk);
+        var c = columns.GetCodes(chunk);
+        var keys = scratch.AsSpan(0, r.Length);
+        for (var i = 0; i < keys.Length; i++)
+        {
+            var (row, column) = (r[i] < 0 ? -1 : rowPlaces[r[i]], c[i] < 0 ? -1 : columnPlaces[c[i]]);
+            keys[i] = row < 0 || column < 0 ? -1 : (row * columnCount) + column;
+        }
+
+        return keys;
+    }
 }

@@ -29,16 +29,7 @@ internal sealed class StatPlan : LayerPlan
         : base(spec, rows)
     {
         var groups = SplitPlan.Splits(spec) ? (CategoricalColumn)(spec.FillBy ?? spec.ColorBy)!.Value.Column : null;
-        var (x, y) = spec switch
-        {
-            BarLayerSpec b => (b.X.Column, b.Y.IsDefault ? null : b.Y.Column),
-            AreaLayerSpec a => (a.X.Column, null),
-            StepLayerSpec s => (s.X.Column, null),
-            ErrorBarLayerSpec e => (e.X.Column, e.YMin.Column),
-            LineLayerSpec l => (l.X.Column, l.Y.IsDefault ? null : l.Y.Column),
-            RectLayerSpec r => (r.XMin.Column, r.YMin.Column),
-            _ => throw new InvalidOperationException($"A {spec.GetType().Name} takes no stat."),
-        };
+        var (x, y) = StatColumns(spec);
         var columns = new List<Column> { x };
         if (y is not null)
         {
@@ -51,7 +42,7 @@ internal sealed class StatPlan : LayerPlan
         }
 
         SetColumns([.. columns]);
-        _source = source ?? new StatSource(x, y, rows);
+        _source = source ?? new StatSource(x, rows, y, rows);
         _built = new long[Columns.Length];
         for (var i = 0; i < _built.Length; i++)
         {
@@ -70,6 +61,19 @@ internal sealed class StatPlan : LayerPlan
         (_table, _make, _xEnds) = (made.Table, made.Make, made.XEnds);
         _inner = Create(_make(spec), build);
     }
+
+    /// <summary>Returns the columns a layer's stat reads: its x, and its y or none (rows G5b and G5c).</summary>
+    internal static (Column X, Column? Y) StatColumns(LayerSpec spec) =>
+        spec switch
+        {
+            BarLayerSpec b => (b.X.Column, b.Y.IsDefault ? null : b.Y.Column),
+            AreaLayerSpec a => (a.X.Column, null),
+            StepLayerSpec s => (s.X.Column, null),
+            ErrorBarLayerSpec e => (e.X.Column, e.YMin.Column),
+            LineLayerSpec l => (l.X.Column, l.Y.IsDefault ? null : l.Y.Column),
+            RectLayerSpec r => (r.XMin.Column, r.YMin.Column),
+            _ => throw new InvalidOperationException($"A {spec.GetType().Name} takes no stat."),
+        };
 
     /// <summary>Gets the derived table the inner layer draws (rows G5b and G5c).</summary>
     public DataTable Derived => _table;
@@ -191,7 +195,7 @@ internal sealed class StatPlan : LayerPlan
         var pool = build.Pool;
         var time = build.XScale as TimeScaleSpec;
         var transform = time is null ? build.XTransform : null;
-        var (edges, origin, uniform) = BinEdges(_source.X, _source.Rows, bin, time, transform, build);
+        var (edges, origin, uniform) = BinEdges(_source.X, _source.XRows, bin, time, transform, build);
 
         var bins = Math.Max(edges.Length - 1, 0);
         var nk = groups?.CategoryCount ?? 1;
@@ -358,15 +362,15 @@ internal sealed class StatPlan : LayerPlan
         StatWork.Spread? spread = null;
         if (density.Bandwidth is { } given)
         {
-            (from, to, origin) = RangeOf(_source.X, _source.Rows, time, transform, pool);
+            (from, to, origin) = RangeOf(_source.X, _source.XRows, time, transform, pool);
             h.AsSpan().Fill(given * density.Adjust);
             drawn.AsSpan().Fill(true);
         }
         else
         {
             // The bandwidths come from the layer's own rows; a range the panels share comes from the whole layer (row G6b).
-            var own = _source.Rows == Rows && ReferenceEquals(_source.X, x);
-            origin = time && _source.X.TryGetRange(_source.Rows, out var low, out _) ? low.Integer : 0;
+            var own = _source.XRows == Rows && ReferenceEquals(_source.X, x);
+            origin = time && _source.X.TryGetRange(_source.XRows, out var low, out _) ? low.Integer : 0;
             spread = StatWork.SpreadOf(x, groups, transform, origin, pool, Rows);
             if (own)
             {
@@ -374,7 +378,7 @@ internal sealed class StatPlan : LayerPlan
             }
             else
             {
-                (from, to, _) = RangeOf(_source.X, _source.Rows, time, transform, pool);
+                (from, to, _) = RangeOf(_source.X, _source.XRows, time, transform, pool);
             }
 
             ChooseBandwidths(x, Rows, groups, spread, time, transform, origin, density.Adjust, h, drawn, pool);
@@ -562,7 +566,7 @@ internal sealed class StatPlan : LayerPlan
         var time = build.XScale is TimeScaleSpec;
         var transform = time ? null : build.XTransform;
         var nk = groups?.CategoryCount ?? 1;
-        var (from, to, origin) = RangeOf(_source.X, _source.Rows, time, transform, pool);
+        var (from, to, origin) = RangeOf(_source.X, _source.XRows, time, transform, pool);
         var points = smooth.Points;
         if (!(from <= to))
         {
@@ -676,8 +680,8 @@ internal sealed class StatPlan : LayerPlan
     {
         var (timeX, timeY) = (build.XScale as TimeScaleSpec, build.YScale as TimeScaleSpec);
         var (tx, ty) = (timeX is null ? build.XTransform : null, timeY is null ? build.YTransform : null);
-        var (ex, ox, ux) = BinEdges(_source.X, _source.Rows, cells.X, timeX, tx, build);
-        var (ey, oy, uy) = BinEdges(_source.Y!, _source.Rows, cells.Y, timeY, ty, build);
+        var (ex, ox, ux) = BinEdges(_source.X, _source.XRows, cells.X, timeX, tx, build);
+        var (ey, oy, uy) = BinEdges(_source.Y!, _source.YRows, cells.Y, timeY, ty, build);
         var (bx, by) = (Math.Max(ex.Length - 1, 0), Math.Max(ey.Length - 1, 0));
         if ((long)bx * by > MaxElements)
         {
@@ -976,6 +980,6 @@ internal sealed class StatPlan : LayerPlan
 
 /// <summary>
 /// Where a stat's bins' edges and a density's or a moving average's range come from (design §4.5, row G6b): the layer's
-/// columns X and Y (2D bins) over a run of rows. A facet panel takes the whole layer's when the panels share the axis.
+/// columns X and Y (2D bins), each over a run of rows. A facet panel takes the whole layer's of an axis the panels share.
 /// </summary>
-internal sealed record StatSource(Column X, Column? Y, RowRange Rows);
+internal sealed record StatSource(Column X, RowRange XRows, Column? Y, RowRange YRows);

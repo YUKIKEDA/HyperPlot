@@ -46,6 +46,15 @@ internal sealed class PlotGuides
     private int _rightBand;
     private int _legendBand;
 
+    // The rectangle the panels take together (row G6b), the panel's own without a facet: the axes' titles center on it, and
+    // the legend starts at its top.
+    private int _gridLeft;
+    private int _gridTop;
+    private int _gridWidth;
+    private int _gridHeight;
+    private int _panelCount = 1;
+    private FacetArrangement? _facet;
+
     /// <summary>Gets the text engine the guides measure with.</summary>
     internal TextEngine Text => _text;
 
@@ -57,6 +66,9 @@ internal sealed class PlotGuides
         ColorBar.Text = text;
         ColorBar.Labels = _labels;
     }
+
+    /// <summary>Gets the number of panels the last layout laid out (row G6b): one without a facet.</summary>
+    internal int PanelCount => _panelCount;
 
     /// <summary>Gets the ticks of the color bar (row G7c): along its length, from the domain's low end at the bottom.</summary>
     internal TickAxis ColorBar { get; } = new();
@@ -136,37 +148,85 @@ internal sealed class PlotGuides
     /// <summary>Gets the table of the labels' strings, for the tests of its size.</summary>
     internal LabelTable LabelTable => _labels;
 
+    /// <summary>Returns a panel's guides (row G6b): its rectangle, its ticks, and its polar transform.</summary>
+    internal PanelGuide PanelAt(int index) => _panels[index];
+
     /// <summary>Rounds a length in DIPs to whole pixels: ⌊v · s + 0.5⌋ (design §4.6).</summary>
     internal int Round(float dips) => (int)MathF.Floor((dips * _scale) + 0.5f);
 
     /// <summary>
     /// Lays the guides out (design §4.6): the bands, the panel, the ticks of the left axis then the bottom one, and the
-    /// domains nice widens. The domains are the learned ones in the scale space; nice applies to a scale that asks for it
-    /// and whose domain is learned. The tick spacings go with the sides: <see cref="Theme.TickSpacingX"/> on the bottom.
+    /// domains nice widens. The domains are the learned ones in the scale space, a panel each; nice applies to a scale that
+    /// asks for it and whose domain is learned. The tick spacings go with the sides: <see cref="Theme.TickSpacingX"/> on the
+    /// bottom. A facet lays its panels out on a grid (row G6b).
     /// </summary>
     internal void Layout(
         PlotSpec spec,
         IScale? xTransform,
-        ScaleRange x,
         IScale? yTransform,
-        ScaleRange y,
         CategoricalColumn? categories,
-        ColorScale? color = null,
-        SecondaryDomains secondary = default
+        ColorScale? color,
+        IScale? xTransform2,
+        IScale? yTransform2,
+        FacetArrangement? facet,
+        ReadOnlySpan<PanelDomains> learned
     )
     {
         _categories = categories;
         _color = color;
+        _facet = facet;
         var theme = spec.Theme;
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
-        (Polar, ThetaBand, X.Circular, Y.Circular, _titleBand, _rightBand, _legendBand) = (null, 0, false, false, 0, 0, 0);
-        if (spec.Coord is PolarCoordSpec polar)
+        (_titleBand, _rightBand, _legendBand) = (0, 0, 0);
+        UsePanels(facet?.Cells.Length ?? 1);
+        if (facet is not null)
         {
-            LayoutPolar(spec, polar, xTransform, x, yTransform, y);
+            if (spec.Coord is PolarCoordSpec facetPolar)
+            {
+                LayoutFacetsPolar(spec, theme, facetPolar, facet, xTransform, yTransform, learned);
+            }
+            else
+            {
+                LayoutFacets(spec, theme, facet, xTransform, yTransform, xTransform2, yTransform2, learned);
+            }
+
+            _current = _panels[0];
             return;
         }
 
-        LayoutSides(spec, theme, xTransform, x, yTransform, y, secondary);
+        var domains = learned[0];
+        if (spec.Coord is PolarCoordSpec polar)
+        {
+            LayoutPolar(spec, polar, xTransform, domains.X, yTransform, domains.Y);
+        }
+        else
+        {
+            LayoutSides(spec, theme, xTransform, domains.X, yTransform, domains.Y, new(xTransform2, domains.X2, yTransform2, domains.Y2));
+        }
+
+        (_gridLeft, _gridTop, _gridWidth, _gridHeight) = (Left, Top, Width, Height);
+    }
+
+    /// <summary>Makes the panels' guides a layout uses, and resets each: its own axes, no polar transform, every side drawn.</summary>
+    private void UsePanels(int count)
+    {
+        while (_panels.Count < count)
+        {
+            _panels.Add(new PanelGuide(_text, _labels));
+        }
+
+        _panelCount = count;
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _panels[p];
+            (panel.X, panel.Y, panel.X2, panel.Y2) = (panel.OwnX, panel.OwnY, panel.OwnX2, panel.OwnY2);
+            (panel.Polar, panel.ThetaBand, panel.Strip) = (null, 0, null);
+            (panel.X.Circular, panel.Y.Circular) = (false, false);
+            Array.Fill(panel.Draws, true);
+            Array.Clear(panel.Offsets);
+        }
+
+        _current = _panels[0];
     }
 
     /// <summary>
@@ -455,8 +515,20 @@ internal sealed class PlotGuides
         return tick + gap + Ceiling(widest) + (HasText(side.Scale.Title) ? gap + Ceiling(titleHeight) : 0);
     }
 
-    /// <summary>Records what goes behind the data (design §4.6): the panel and the grid.</summary>
+    /// <summary>Records what goes behind the data (design §4.6): each panel and its grid.</summary>
     internal void RecordBehind(RenderList list, PlotSpec spec)
+    {
+        for (var p = 0; p < _panelCount; p++)
+        {
+            _current = _panels[p];
+            RecordPanelBehind(list, spec);
+        }
+
+        _current = _panels[0];
+    }
+
+    /// <summary>Records the current panel and its grid.</summary>
+    private void RecordPanelBehind(RenderList list, PlotSpec spec)
     {
         var theme = spec.Theme;
         list.DrawRect(Left, Top, Width, Height, theme.PanelBackground);
@@ -503,21 +575,39 @@ internal sealed class PlotGuides
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
         var padding = Round(theme.Padding);
-        if (theme.ShowAxes && Polar is { } polar)
+        if (theme.ShowAxes)
         {
-            RecordPolarAxes(list, spec, polar, theme, gap, tick);
-            RecordTitles(list, spec, theme, padding);
-        }
-        else if (theme.ShowAxes)
-        {
-            RecordAxes(list, spec, theme, gap, tick, padding);
+            // Each panel's axes, then the titles once for the figure (row G6b).
+            for (var p = 0; p < _panelCount; p++)
+            {
+                _current = _panels[p];
+                if (Polar is { } polar)
+                {
+                    RecordPolarAxes(list, spec, polar, theme, gap, tick);
+                }
+                else
+                {
+                    RecordAxes(list, theme, gap, tick);
+                }
+            }
+
+            _current = _panels[0];
+            if (Polar is not null)
+            {
+                RecordTitles(list, spec, theme, padding);
+            }
+            else
+            {
+                RecordSideTitles(list, theme, padding);
+            }
         }
 
+        RecordStrips(list, theme, gap);
         if (HasText(spec.Title))
         {
             list.DrawText(
                 spec.Title!,
-                new Vector2(Left + (Width / 2f) - (_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Width / 2), padding),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Width / 2), padding),
                 Style(theme, theme.TitleSize) with
                 {
                     Horizontal = TextAlign.Left,
@@ -734,6 +824,7 @@ internal sealed class PlotGuides
             Style(theme, theme.TickLabelSize),
             _text.Measure("0", Style(theme, theme.TickLabelSize)).Height
         );
+        _legendBand = legendBand;
         var tickStyle = Style(theme, theme.TickLabelSize);
         var titleStyle = Style(theme, theme.AxisTitleSize);
         var lineHeight = _text.Measure("0", tickStyle).Height;
@@ -809,6 +900,501 @@ internal sealed class PlotGuides
         var outer = Half(Math.Min(Width, Height)) - ThetaBand;
         var inner = (int)Math.Floor(polar.InnerRadius * outer);
         Polar = new PolarTransform(Left + (Width / 2.0), Top + (Height / 2.0), outer, inner, polar);
+    }
+
+    /// <summary>
+    /// Lays a facet's cartesian panels out on their grid (design §4.6, row G6b): the title and the axes' titles once for the
+    /// figure; a strip above each row of a wrap, or above the first row and right of the last column of a grid; the tick
+    /// bands once for a shared direction and a row or a column each for a free one; equal panels G apart. A shared
+    /// direction's ticks are chosen once, over a panel's length; a free one's a panel each. A shared direction's axis is
+    /// drawn only where no panel lies beside it.
+    /// </summary>
+    private void LayoutFacets(
+        PlotSpec spec,
+        Theme theme,
+        FacetArrangement facet,
+        IScale? xTransform,
+        IScale? yTransform,
+        IScale? xTransform2,
+        IScale? yTransform2,
+        ReadOnlySpan<PanelDomains> learned
+    )
+    {
+        var (rows, columns, count) = (facet.Rows, facet.Columns, facet.Cells.Length);
+
+        // A band scale keeps all its categories in every panel (design §4.5): its direction is shared.
+        var freeX = facet.FreeX && spec.ScaleX is not BandScaleSpec;
+        var freeY = facet.FreeY;
+        var (freeHorizontal, freeVertical) = Flipped ? (freeY, freeX) : (freeX, freeY);
+        var first = _panels[0];
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _panels[p];
+            (panel.X, panel.X2) = freeX ? (panel.OwnX, panel.OwnX2) : (first.OwnX, first.OwnX2);
+            (panel.Y, panel.Y2) = freeY ? (panel.OwnY, panel.OwnY2) : (first.OwnY, first.OwnY2);
+            (panel.Row, panel.Column) = (facet.Cells[p].Row, facet.Cells[p].Column);
+            panel.Strip = facet.Wrap ? facet.Cells[p].Strip : null;
+            _current = panel;
+            AssignSides(spec);
+            var (horizontal, vertical) = Flipped ? (Y, X) : (X, Y);
+            var (horizontalSecond, verticalSecond) = Flipped ? (Y2, X2) : (X2, Y2);
+            (horizontal.Horizontal, vertical.Horizontal, horizontalSecond.Horizontal, verticalSecond.Horizontal) = (true, false, true, false);
+            X2.Circular = Y2.Circular = false;
+        }
+
+        _current = first;
+        var (bottomScale, sideScale) = (new AxisScale(Flipped ? spec.ScaleY : spec.ScaleX), new AxisScale(Flipped ? spec.ScaleX : spec.ScaleY));
+        var padding = Round(theme.Padding);
+        var gap = Round(theme.Spacing);
+        var tick = Round(theme.TickLength);
+        var (figureLeft, figureTop, figureRight, figureBottom) = (padding, padding, _width - padding, _height - padding);
+        var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
+        _titleBand = titleBand;
+        var tickStyle = Style(theme, theme.TickLabelSize);
+        var titleStyle = Style(theme, theme.AxisTitleSize);
+        var lineHeight = _text.Measure("0", tickStyle).Height;
+        var titleHeight = _text.Measure("0", titleStyle).Height;
+
+        // The sides with an axis, the same in every panel; the tick bands, the titles' bands, and the strips (design §4.6).
+        var sides = first.Sides;
+        var (hasBottom, hasTop, hasLeft, hasRight) = (
+            theme.ShowAxes && sides[SideBottom].Axis is not null,
+            theme.ShowAxes && sides[SideTop].Axis is not null,
+            theme.ShowAxes && sides[SideLeft].Axis is not null,
+            theme.ShowAxes && sides[SideRight].Axis is not null
+        );
+        var tickBand = tick + gap + Ceiling(lineHeight);
+        var titleBandHeight = gap + Ceiling(titleHeight);
+        var (bottomTitle, topTitle, leftTitle, rightTitle) = (
+            hasBottom && HasText(sides[SideBottom].Scale.Title) ? titleBandHeight : 0,
+            hasTop && HasText(sides[SideTop].Scale.Title) ? titleBandHeight : 0,
+            hasLeft && HasText(sides[SideLeft].Scale.Title) ? titleBandHeight : 0,
+            hasRight && HasText(sides[SideRight].Scale.Title) ? titleBandHeight : 0
+        );
+        var strip = Ceiling(titleHeight) + gap;
+        var columnStrip = !facet.Wrap && facet.ColumnLabels.Length > 0 ? strip : 0;
+        var rowStrip = !facet.Wrap && facet.RowLabels.Length > 0 ? strip : 0;
+        int TopBand(int row) => hasTop && (freeHorizontal || row == 0) ? tickBand : 0;
+        int BottomBand(int row) => hasBottom && (freeHorizontal || row == rows - 1) ? tickBand : 0;
+        int StripOf(int row) =>
+            facet.Wrap ? strip
+            : row == 0 ? columnStrip
+            : 0;
+
+        // The rows' tops and the panels' height Hp, which no tick changes (step 4).
+        var used = titleBand + topTitle + bottomTitle + ((rows - 1) * gap);
+        for (var r = 0; r < rows; r++)
+        {
+            used += TopBand(r) + StripOf(r) + BottomBand(r);
+        }
+
+        var height = (int)Math.Floor((figureBottom - figureTop - used) / (double)rows);
+        Span<int> tops = stackalloc int[rows];
+        var y = figureTop + titleBand + topTitle;
+        for (var r = 0; r < rows; r++)
+        {
+            y += TopBand(r) + StripOf(r);
+            tops[r] = y;
+            y += height + BottomBand(r) + gap;
+        }
+
+        for (var p = 0; p < count; p++)
+        {
+            (_panels[p].Top, _panels[p].Height, _panels[p].Width) = (tops[_panels[p].Row], height, 0);
+        }
+
+        (_gridTop, _gridHeight) = (tops[0], tops[rows - 1] + height - tops[0]);
+
+        // The legend's band: a color bar as long as the panels' rows together (row G6b).
+        _legendBand = LegendBand(spec, theme, gap, tick, (rows * height) + ((rows - 1) * gap), tickStyle, lineHeight);
+        if (height < 1)
+        {
+            return;
+        }
+
+        // The vertical axes' ticks over Hp: once for a shared direction, a panel each for a free one. An end beside another
+        // panel keeps G / 2 of room; an end at the figure's edge, the room to it (row G3b).
+        for (var p = 0; p < count; p++)
+        {
+            if (!freeVertical && p > 0)
+            {
+                continue;
+            }
+
+            var panel = _current = _panels[p];
+            var row = freeVertical ? panel.Row : -1;
+            var below = row == rows - 1 || (row < 0 && rows == 1) ? figureBottom - (tops[rows - 1] + height) : gap / 2.0;
+            var above = row == 0 || (row < 0 && rows == 1) ? tops[0] - figureTop : gap / 2.0;
+            var vertical = Flipped ? X : Y;
+            var (transform, domain) = Flipped ? (xTransform, learned[p].X) : (yTransform, learned[p].Y);
+            Prepare(
+                vertical,
+                sideScale,
+                transform,
+                domain,
+                height,
+                theme.TickSpacingY,
+                tickStyle,
+                lineHeight,
+                theme,
+                room: sideScale.Reverse ? (above, below) : (below, above)
+            );
+            PrepareSecond(
+                spec,
+                horizontal: false,
+                height,
+                theme,
+                tickStyle,
+                lineHeight,
+                (below, above),
+                new(xTransform2, learned[p].X2, yTransform2, learned[p].Y2)
+            );
+        }
+
+        // The vertical bands: a column's widest labels, a free direction's in each column (step 5).
+        Span<int> lefts = stackalloc int[columns];
+        Span<int> leftBands = stackalloc int[columns];
+        Span<int> rightBands = stackalloc int[columns];
+        leftBands.Clear();
+        rightBands.Clear();
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _panels[p];
+            var column = panel.Column;
+            if (hasLeft && (freeVertical || column == 0))
+            {
+                leftBands[column] = Math.Max(leftBands[column], TickBand(panel.Sides[SideLeft].Axis!, tick, gap, tickStyle));
+            }
+
+            if (hasRight && (freeVertical || column == columns - 1))
+            {
+                rightBands[column] = Math.Max(rightBands[column], TickBand(panel.Sides[SideRight].Axis!, tick, gap, tickStyle));
+            }
+        }
+
+        // The panels' width Wp (step 6); the pixels ⌊⌋ leaves stay on the grid's right and bottom.
+        used = leftTitle + rightTitle + _legendBand + rowStrip + ((columns - 1) * gap);
+        for (var c = 0; c < columns; c++)
+        {
+            used += leftBands[c] + rightBands[c];
+        }
+
+        var width = (int)Math.Floor((figureRight - figureLeft - used) / (double)columns);
+        var x = figureLeft + leftTitle;
+        for (var c = 0; c < columns; c++)
+        {
+            x += leftBands[c];
+            lefts[c] = x;
+            x += width + (c == columns - 1 ? rowStrip : 0) + rightBands[c] + gap;
+        }
+
+        for (var p = 0; p < count; p++)
+        {
+            (_panels[p].Left, _panels[p].Width) = (lefts[_panels[p].Column], width);
+        }
+
+        (_gridLeft, _gridWidth) = (lefts[0], lefts[columns - 1] + width - lefts[0]);
+        _rightBand = rowStrip + rightBands[columns - 1];
+        if (width < 1)
+        {
+            return;
+        }
+
+        // The horizontal axes' ticks over Wp.
+        for (var p = 0; p < count; p++)
+        {
+            if (!freeHorizontal && p > 0)
+            {
+                continue;
+            }
+
+            var panel = _current = _panels[p];
+            var column = freeHorizontal ? panel.Column : -1;
+            var before = column == 0 || (column < 0 && columns == 1) ? lefts[0] - figureLeft : gap / 2.0;
+            var after = column == columns - 1 || (column < 0 && columns == 1) ? figureRight - (lefts[columns - 1] + width) : gap / 2.0;
+            var horizontal = Flipped ? Y : X;
+            var (transform, domain) = Flipped ? (yTransform, learned[p].Y) : (xTransform, learned[p].X);
+            Prepare(
+                horizontal,
+                bottomScale,
+                transform,
+                domain,
+                width,
+                theme.TickSpacingX,
+                tickStyle,
+                lineHeight,
+                theme,
+                room: bottomScale.Reverse ? (after, before) : (before, after)
+            );
+            PrepareSecond(
+                spec,
+                horizontal: true,
+                width,
+                theme,
+                tickStyle,
+                lineHeight,
+                (before, after),
+                new(xTransform2, learned[p].X2, yTransform2, learned[p].Y2)
+            );
+        }
+
+        // A shared axis's side, as the first panel set it (a transform's axis that turns its ticks), and what each panel draws.
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _panels[p];
+            for (var side = 0; side < 4; side++)
+            {
+                if (p > 0 && ReferenceEquals(panel.Sides[side].Axis, first.Sides[side].Axis))
+                {
+                    panel.Sides[side] = first.Sides[side];
+                }
+            }
+
+            var (row, column) = (panel.Row, panel.Column);
+            panel.Draws[SideBottom] = freeHorizontal || !facet.Has(row + 1, column);
+            panel.Draws[SideTop] = freeHorizontal || !facet.Has(row - 1, column);
+            panel.Draws[SideLeft] = freeVertical || !facet.Has(row, column - 1);
+            panel.Draws[SideRight] = freeVertical || !facet.Has(row, column + 1);
+            panel.Offsets[SideTop] = StripOf(row);
+            panel.Offsets[SideRight] = column == columns - 1 ? rowStrip : 0;
+        }
+    }
+
+    /// <summary>
+    /// Lays a facet's polar panels out on their grid (design §4.6, rows G6b and G11): the strips and the titles as the
+    /// cartesian grid's, the radius's band left of a column, and in each panel a circle as one polar plot's. A shared
+    /// direction's ticks are chosen once; the radius's axis of a shared radius is drawn only where no panel lies on its left.
+    /// </summary>
+    private void LayoutFacetsPolar(
+        PlotSpec spec,
+        Theme theme,
+        PolarCoordSpec polar,
+        FacetArrangement facet,
+        IScale? xTransform,
+        IScale? yTransform,
+        ReadOnlySpan<PanelDomains> learned
+    )
+    {
+        var (rows, columns, count) = (facet.Rows, facet.Columns, facet.Cells.Length);
+        var (freeX, freeY) = (facet.FreeX && spec.ScaleX is not BandScaleSpec, facet.FreeY);
+        var (freeTheta, freeRadius) = polar.Theta == PolarTheta.X ? (freeX, freeY) : (freeY, freeX);
+        var first = _panels[0];
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _panels[p];
+            panel.X = freeX ? panel.OwnX : first.OwnX;
+            panel.Y = freeY ? panel.OwnY : first.OwnY;
+            (panel.Row, panel.Column) = (facet.Cells[p].Row, facet.Cells[p].Column);
+            panel.Strip = facet.Wrap ? facet.Cells[p].Strip : null;
+            _current = panel;
+            var (theta, _) = Bottom(spec);
+            var (radius, _) = Side(spec);
+            (theta.Horizontal, theta.Circular, radius.Horizontal, radius.Circular) = (true, true, false, false);
+        }
+
+        _current = first;
+        var (thetaScale, radiusScale) = (Bottom(spec).Scale, Side(spec).Scale);
+        var padding = Round(theme.Padding);
+        var gap = Round(theme.Spacing);
+        var tick = Round(theme.TickLength);
+        var (figureLeft, figureTop, figureRight, figureBottom) = (padding, padding, _width - padding, _height - padding);
+        var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
+        _titleBand = titleBand;
+        var tickStyle = Style(theme, theme.TickLabelSize);
+        var titleStyle = Style(theme, theme.AxisTitleSize);
+        var lineHeight = _text.Measure("0", tickStyle).Height;
+        var titleHeight = _text.Measure("0", titleStyle).Height;
+        var bottomTitle = theme.ShowAxes && HasText(thetaScale.Title) ? gap + Ceiling(titleHeight) : 0;
+        var leftTitle = theme.ShowAxes && HasText(radiusScale.Title) ? gap + Ceiling(titleHeight) : 0;
+        var strip = Ceiling(titleHeight) + gap;
+        var columnStrip = !facet.Wrap && facet.ColumnLabels.Length > 0 ? strip : 0;
+        var rowStrip = !facet.Wrap && facet.RowLabels.Length > 0 ? strip : 0;
+        int StripOf(int row) =>
+            facet.Wrap ? strip
+            : row == 0 ? columnStrip
+            : 0;
+
+        var used = titleBand + bottomTitle + ((rows - 1) * gap);
+        for (var r = 0; r < rows; r++)
+        {
+            used += StripOf(r);
+        }
+
+        var height = (int)Math.Floor((figureBottom - figureTop - used) / (double)rows);
+        Span<int> tops = stackalloc int[rows];
+        var y = figureTop + titleBand;
+        for (var r = 0; r < rows; r++)
+        {
+            y += StripOf(r);
+            tops[r] = y;
+            y += height + gap;
+        }
+
+        for (var p = 0; p < count; p++)
+        {
+            (_panels[p].Top, _panels[p].Height, _panels[p].Width) = (tops[_panels[p].Row], height, 0);
+        }
+
+        (_gridTop, _gridHeight) = (tops[0], tops[rows - 1] + height - tops[0]);
+        _legendBand = LegendBand(spec, theme, gap, tick, (rows * height) + ((rows - 1) * gap), tickStyle, lineHeight);
+        if (height < 1)
+        {
+            return;
+        }
+
+        // The radius's ticks over a provisional radius from Hp, as one polar plot's (design §4.6).
+        var provisionalBand = theme.ShowAxes ? tick + gap + Ceiling(lineHeight) + gap : 0;
+        var byHeight = Half(height) - provisionalBand;
+        for (var p = 0; p < count; p++)
+        {
+            if (!freeRadius && p > 0)
+            {
+                continue;
+            }
+
+            _current = _panels[p];
+            var (radius, _) = Side(spec);
+            var (transform, domain) = polar.Theta == PolarTheta.X ? (yTransform, learned[p].Y) : (xTransform, learned[p].X);
+            Prepare(
+                radius,
+                radiusScale,
+                transform,
+                domain,
+                byHeight - (int)Math.Floor(polar.InnerRadius * byHeight),
+                theme.TickSpacingY,
+                tickStyle,
+                lineHeight,
+                theme
+            );
+        }
+
+        // The radius's band left of a column: its labels' widest, a free radius's in each column.
+        Span<int> lefts = stackalloc int[columns];
+        Span<int> bands = stackalloc int[columns];
+        bands.Clear();
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _current = _panels[p];
+            if (theme.ShowAxes && (freeRadius || panel.Column == 0))
+            {
+                bands[panel.Column] = Math.Max(bands[panel.Column], TickBand(Side(spec).Axis, tick, gap, tickStyle));
+            }
+        }
+
+        used = leftTitle + _legendBand + rowStrip + ((columns - 1) * gap);
+        for (var c = 0; c < columns; c++)
+        {
+            used += bands[c];
+        }
+
+        var width = (int)Math.Floor((figureRight - figureLeft - used) / (double)columns);
+        var x = figureLeft + leftTitle;
+        for (var c = 0; c < columns; c++)
+        {
+            x += bands[c];
+            lefts[c] = x;
+            x += width + (c == columns - 1 ? rowStrip : 0) + gap;
+        }
+
+        for (var p = 0; p < count; p++)
+        {
+            (_panels[p].Left, _panels[p].Width) = (lefts[_panels[p].Column], width);
+        }
+
+        (_gridLeft, _gridWidth) = (lefts[0], lefts[columns - 1] + width - lefts[0]);
+        _rightBand = rowStrip;
+        if (width < 1)
+        {
+            return;
+        }
+
+        // The angle's ticks around a provisional circle of the smaller side, then each panel's circle (steps 4 and 5).
+        var bySide = Half(Math.Min(width, height)) - provisionalBand;
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _current = _panels[p];
+            var (theta, _) = Bottom(spec);
+            if (freeTheta || p == 0)
+            {
+                var (transform, domain) = polar.Theta == PolarTheta.X ? (xTransform, learned[p].X) : (yTransform, learned[p].Y);
+                Prepare(
+                    theta,
+                    thetaScale,
+                    transform,
+                    domain,
+                    bySide > 0 ? PolarTransform.Turn(bySide) : 0,
+                    theme.TickSpacingX,
+                    tickStyle,
+                    lineHeight,
+                    theme
+                );
+            }
+
+            if (theme.ShowAxes)
+            {
+                var widest = 0f;
+                foreach (var label in theta.TickLabels)
+                {
+                    widest = label.Length == 0 ? widest : MathF.Max(widest, _text.Measure(label, tickStyle).Width);
+                }
+
+                panel.ThetaBand = tick + gap + Math.Max(Ceiling(widest), Ceiling(lineHeight)) + gap;
+            }
+
+            var outer = Half(Math.Min(width, height)) - panel.ThetaBand;
+            var inner = (int)Math.Floor(polar.InnerRadius * outer);
+            panel.Polar = new PolarTransform(panel.Left + (width / 2.0), panel.Top + (height / 2.0), outer, inner, polar);
+            panel.Draws[SideLeft] = freeRadius || !facet.Has(panel.Row, panel.Column - 1);
+        }
+    }
+
+    /// <summary>Returns the width of a vertical axis's tick band: the ticks, a gap, and its widest label (design §4.6).</summary>
+    private int TickBand(TickAxis axis, int tick, int gap, in TextStyle style)
+    {
+        var widest = 0f;
+        foreach (var label in axis.TickLabels)
+        {
+            widest = label.Length == 0 ? widest : MathF.Max(widest, _text.Measure(label, style).Width);
+        }
+
+        return tick + gap + Ceiling(widest);
+    }
+
+    /// <summary>
+    /// Records a facet's strips (design §4.6, row G6b): a wrap's category above each panel and a grid's column categories
+    /// above its first row, centered on the panel with their bottom G above it; a grid's row categories turned clockwise
+    /// right of its last column, centered on the row. Only the text, as Vega-Lite's headers.
+    /// </summary>
+    private void RecordStrips(RenderList list, Theme theme, int gap)
+    {
+        if (_facet is not { } facet)
+        {
+            return;
+        }
+
+        var style = Style(theme, theme.AxisTitleSize);
+        var above = style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Bottom };
+        var turned = style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Top, Rotation = TextRotation.Clockwise90 };
+        var strip = Ceiling(_text.Measure("0", style).Height) + gap;
+        for (var p = 0; p < _panelCount; p++)
+        {
+            var panel = _panels[p];
+            var top = panel.Strip ?? (!facet.Wrap && panel.Row == 0 && facet.ColumnLabels.Length > 0 ? facet.ColumnLabels[panel.Column] : null);
+            if (top is not null)
+            {
+                list.DrawText(top, new Vector2(panel.Left + (panel.Width / 2f) - (_text.Measure(top, style).Width / 2), panel.Top - gap), above);
+            }
+
+            if (!facet.Wrap && panel.Column == facet.Columns - 1 && facet.RowLabels.Length > 0)
+            {
+                var label = facet.RowLabels[panel.Row];
+                list.DrawText(
+                    label,
+                    new Vector2(panel.Left + panel.Width + strip, panel.Top + (panel.Height / 2f) - (_text.Measure(label, style).Width / 2)),
+                    turned
+                );
+            }
+        }
     }
 
     /// <summary>The share of a tick along its axis, from the scale's low end: reversed, from its high end.</summary>
@@ -888,7 +1474,13 @@ internal sealed class PlotGuides
             }
         }
 
-        // The radius's axis: a vertical line at x = center − R − Θ, its ticks and labels on its left as cartesian's y axis.
+        // The radius's axis: a vertical line at x = center − R − Θ, its ticks and labels on its left as cartesian's y axis. A
+        // facet's panel draws it only where its Draws says (row G6b).
+        if (!_current.Draws[SideLeft])
+        {
+            return;
+        }
+
         var edge = polar.CenterX - polar.Radius - ThetaBand;
         var line = Snap(edge - (axisPixels / 2.0), axisPixels);
         Line(list, new Vector2(line, (float)polar.CenterY), new Vector2(line, (float)(polar.CenterY - polar.Radius)), axis);
@@ -914,26 +1506,38 @@ internal sealed class PlotGuides
     private double VerticalOf(AxisScale scale, double pixel) => Top + (scale.Reverse ? pixel : Height - pixel);
 
     /// <summary>
-    /// Records the cartesian axes on their sides (design §4.6, row G6a): a line along each side with an axis, half its width
-    /// outside the panel and meeting the lines beside it; the ticks out from it; the labels beyond them; and the titles.
-    /// The bottom and the left are row G3's; the top is the bottom's mirror and the right the left's.
+    /// Records the current panel's cartesian axes on their sides (design §4.6, row G6a): a line along each side with an axis,
+    /// half its width outside the panel and meeting the lines beside it; the ticks out from it; and the labels beyond them.
+    /// The bottom and the left are row G3's; the top is the bottom's mirror and the right the left's. A facet's panel draws a
+    /// side's axis only where its <see cref="PanelGuide.Draws"/> says, past a strip between the panel and the axis (row G6b).
     /// </summary>
-    private void RecordAxes(RenderList list, PlotSpec spec, Theme theme, int gap, int tick, int padding)
+    private void RecordAxes(RenderList list, Theme theme, int gap, int tick)
     {
         var axisPixels = Round(theme.AxisWidth);
         var axis = new LineStyle(theme.AxisColor, theme.AxisWidth * _scale);
         var ticks = new LineStyle(theme.AxisColor, theme.TickWidth * _scale);
         var tickPixels = Round(theme.TickWidth);
         var halfTick = theme.TickWidth * _scale / 2;
+        var offsets = _current.Offsets;
+        var (bottomEdge, topEdge) = (Top + Height + offsets[SideBottom], Top - offsets[SideTop]);
+        var (leftEdge, rightEdge) = (Left - offsets[SideLeft], Left + Width + offsets[SideRight]);
 
-        // The axis lines' centers half their width outside the panel's edges, so that they do not cover the data (design §4.6).
-        var bottomLine = Snap(Top + Height + (axisPixels / 2.0), axisPixels);
-        var topLine = Snap(Top - (axisPixels / 2.0), axisPixels);
-        var leftLine = Snap(Left - (axisPixels / 2.0), axisPixels);
-        var rightLine = Snap(Left + Width + (axisPixels / 2.0), axisPixels);
-        var (bottom, top, left, right) = (Sides[SideBottom], Sides[SideTop], Sides[SideLeft], Sides[SideRight]);
-        var (from, to) = (left.Axis is null ? Left : leftLine, right.Axis is null ? Left + Width : rightLine);
-        var (high, low) = (top.Axis is null ? Top : topLine, bottom.Axis is null ? Top + Height : bottomLine);
+        // The axis lines' centers half their width outside the edges, so that they do not cover the data (design §4.6).
+        var bottomLine = Snap(bottomEdge + (axisPixels / 2.0), axisPixels);
+        var topLine = Snap(topEdge - (axisPixels / 2.0), axisPixels);
+        var leftLine = Snap(leftEdge - (axisPixels / 2.0), axisPixels);
+        var rightLine = Snap(rightEdge + (axisPixels / 2.0), axisPixels);
+        var (bottom, top, left, right) = (Drawn(SideBottom), Drawn(SideTop), Drawn(SideLeft), Drawn(SideRight));
+
+        // A line meets the one beside it when that one lies on the panel's edge, not past a strip.
+        var (from, to) = (
+            left.Axis is null || offsets[SideLeft] > 0 ? Left : leftLine,
+            right.Axis is null || offsets[SideRight] > 0 ? Left + Width : rightLine
+        );
+        var (high, low) = (
+            top.Axis is null || offsets[SideTop] > 0 ? Top : topLine,
+            bottom.Axis is null || offsets[SideBottom] > 0 ? Top + Height : bottomLine
+        );
         if (bottom.Axis is not null)
         {
             Line(list, new Vector2(from, bottomLine), new Vector2(to, bottomLine), axis);
@@ -962,15 +1566,12 @@ internal sealed class PlotGuides
             for (var i = 0; i < pixels.Length; i++)
             {
                 var at = Snap(HorizontalOf(bottom.Scale, pixels[i]), tickPixels);
-                Line(list, new Vector2(at, bottomLine), new Vector2(at, MathF.Max(bottomLine, Top + Height + tick - halfTick)), ticks);
+                Line(list, new Vector2(at, bottomLine), new Vector2(at, MathF.Max(bottomLine, bottomEdge + tick - halfTick)), ticks);
                 if (labels[i].Length > 0)
                 {
                     list.DrawText(
                         labels[i],
-                        new Vector2(
-                            Place(horizontal: true, bottom.Scale, bottomAxis, i, at) - (bottomAxis.Extents[i] / 2),
-                            Top + Height + tick + gap
-                        ),
+                        new Vector2(Place(horizontal: true, bottom.Scale, bottomAxis, i, at) - (bottomAxis.Extents[i] / 2), bottomEdge + tick + gap),
                         labelStyle with
                         {
                             Horizontal = TextAlign.Left,
@@ -988,12 +1589,12 @@ internal sealed class PlotGuides
             for (var i = 0; i < pixels.Length; i++)
             {
                 var at = Snap(HorizontalOf(top.Scale, pixels[i]), tickPixels);
-                Line(list, new Vector2(at, topLine), new Vector2(at, MathF.Min(topLine, Top - tick + halfTick)), ticks);
+                Line(list, new Vector2(at, topLine), new Vector2(at, MathF.Min(topLine, topEdge - tick + halfTick)), ticks);
                 if (labels[i].Length > 0)
                 {
                     list.DrawText(
                         labels[i],
-                        new Vector2(Place(horizontal: true, top.Scale, topAxis, i, at) - (topAxis.Extents[i] / 2), Top - tick - gap),
+                        new Vector2(Place(horizontal: true, top.Scale, topAxis, i, at) - (topAxis.Extents[i] / 2), topEdge - tick - gap),
                         labelStyle with
                         {
                             Horizontal = TextAlign.Left,
@@ -1011,13 +1612,13 @@ internal sealed class PlotGuides
             for (var i = 0; i < pixels.Length; i++)
             {
                 var at = Snap(VerticalOf(left.Scale, pixels[i]), tickPixels);
-                Line(list, new Vector2(leftLine, at), new Vector2(MathF.Min(leftLine, Left - tick + halfTick), at), ticks);
+                Line(list, new Vector2(leftLine, at), new Vector2(MathF.Min(leftLine, leftEdge - tick + halfTick), at), ticks);
                 if (labels[i].Length > 0)
                 {
                     list.DrawText(
                         labels[i],
                         new Vector2(
-                            Left - tick - gap - _text.Measure(labels[i], labelStyle).Width,
+                            leftEdge - tick - gap - _text.Measure(labels[i], labelStyle).Width,
                             Place(horizontal: false, left.Scale, leftAxis, i, at)
                         ),
                         labelStyle with
@@ -1037,12 +1638,12 @@ internal sealed class PlotGuides
             for (var i = 0; i < pixels.Length; i++)
             {
                 var at = Snap(VerticalOf(right.Scale, pixels[i]), tickPixels);
-                Line(list, new Vector2(rightLine, at), new Vector2(MathF.Max(rightLine, Left + Width + tick - halfTick), at), ticks);
+                Line(list, new Vector2(rightLine, at), new Vector2(MathF.Max(rightLine, rightEdge + tick - halfTick), at), ticks);
                 if (labels[i].Length > 0)
                 {
                     list.DrawText(
                         labels[i],
-                        new Vector2(Left + Width + tick + gap, Place(horizontal: false, right.Scale, rightAxis, i, at)),
+                        new Vector2(rightEdge + tick + gap, Place(horizontal: false, right.Scale, rightAxis, i, at)),
                         labelStyle with
                         {
                             Horizontal = TextAlign.Left,
@@ -1052,9 +1653,10 @@ internal sealed class PlotGuides
                 }
             }
         }
-
-        RecordSideTitles(list, theme, padding);
     }
+
+    /// <summary>Returns the current panel's axis on a side when the panel draws it, else a side without an axis (row G6b).</summary>
+    private SideAxis Drawn(int side) => _current.Draws[side] ? Sides[side] : default;
 
     /// <summary>
     /// Records the cartesian axes' titles (design §4.6, row G6a): the bottom one at the figure's bottom, the top one under the
@@ -1068,7 +1670,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 bottomTitle,
-                new Vector2(Left + (Width / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1081,7 +1683,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 topTitle,
-                new Vector2(Left + (Width / 2f) - (_text.Measure(topTitle, titleStyle).Width / 2), padding + _titleBand),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(topTitle, titleStyle).Width / 2), padding + _titleBand),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1094,7 +1696,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 leftTitle,
-                new Vector2(padding, Top + (Height / 2f) + (_text.Measure(leftTitle, titleStyle).Width / 2)),
+                new Vector2(padding, _gridTop + (_gridHeight / 2f) + (_text.Measure(leftTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1108,7 +1710,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 rightTitle,
-                new Vector2(_width - padding - _legendBand, Top + (Height / 2f) - (_text.Measure(rightTitle, titleStyle).Width / 2)),
+                new Vector2(_width - padding - _legendBand, _gridTop + (_gridHeight / 2f) - (_text.Measure(rightTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1132,7 +1734,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 bottomTitle,
-                new Vector2(Left + (Width / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1145,7 +1747,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 sideTitle,
-                new Vector2(padding, Top + (Height / 2f) + (_text.Measure(sideTitle, titleStyle).Width / 2)),
+                new Vector2(padding, _gridTop + (_gridHeight / 2f) + (_text.Measure(sideTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1161,8 +1763,10 @@ internal sealed class PlotGuides
         var style = Style(theme, theme.LegendSize);
         var lineHeight = _text.Measure("0", style).Height;
         var swatch = Round(theme.LegendSwatch);
-        var x = Left + Width + _rightBand + gap;
-        var y = (float)Top;
+
+        // Past the panels' right bands, at the top of the first row: the figure's right minus the legend's band (row G6b).
+        var x = _width - Round(theme.Padding) - _legendBand + gap;
+        var y = (float)_gridTop;
         for (var i = 0; i < spec.Layers.Count; i++)
         {
             // An index, not foreach: the interface's enumerator would be boxed on every recording.

@@ -21,6 +21,15 @@ internal sealed class PlotPanel
     /// </summary>
     public M4Batch[] Batches { get; }
 
+    /// <summary>
+    /// Gets or sets the panel's rows (row G6b): a run of the plot's table, or a table of its gathered rows; null without a
+    /// facet.
+    /// </summary>
+    public PanelData? Data { get; set; }
+
+    /// <summary>Gets or sets the table the panel's layers read, whose names the messages use: the plot's, or the panel's own.</summary>
+    public DataTable? Table { get; set; }
+
     /// <summary>Gets or sets the layers' plans, one a layer of the spec, in its order.</summary>
     public LayerPlan[] Layers { get; set; } = [];
 
