@@ -455,11 +455,13 @@ internal sealed class SplitPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var palette = Colors?.Palette ?? Palette!;
+        var dodge = PositionOf(Spec) == PositionKind.Dodge;
         foreach (var part in _parts)
         {
             part.Plan.SeriesColor = part.Category >= 0 ? palette.Series(part.Category) : SeriesColor;
             part.Plan.Index = Index;
             part.Plan.Colors = Colors;
+            part.Plan.DodgeSlot = dodge && part.Category >= 0 ? (part.Category, _categories!.CategoryCount) : null;
             if (part.Plan is SplitPlan inner)
             {
                 inner.Palette = palette;
@@ -487,8 +489,10 @@ internal sealed class SplitPlan : LayerPlan
     /// Returns whether two nodes of the same layer draw alike (row G7c): the same kind, label, and looks (stroke, fill, outline,
     /// baseline, width, mode, caps). Their channels are the same, or the diff would have made the layer again.
     /// </summary>
-    private static bool SameLooks(LayerSpec before, LayerSpec after) =>
+    internal static bool SameLooks(LayerSpec before, LayerSpec after) =>
         string.Equals(before.Label, after.Label, StringComparison.Ordinal)
+        && PositionOf(before) == PositionOf(after)
+        && DodgePadding(before).Equals(DodgePadding(after))
         && (before, after) switch
         {
             (LineLayerSpec b, LineLayerSpec a) => b.Style == a.Style,
@@ -641,20 +645,34 @@ internal sealed class SplitPlan : LayerPlan
     /// <summary>Writes the gathered categories' rows from the sources' current values: a pass of the workers over the chunks.</summary>
     private void Gather(PlotWorkerPool pool)
     {
-        var categories = _categories!;
-        var n = categories.CategoryCount;
-        var runs = _runs!;
         for (var s = 0; s < _sources.Length; s++)
         {
             _gatheredVersions[s] = _sources[s].Version;
         }
 
+        GatherRows(pool, _categories!, _runs!, _gathers, ref _starts);
+    }
+
+    /// <summary>
+    /// Writes the rows of the categories that do not lie in one run into their gathered columns (design §5.5.3, rows G7c and
+    /// G5a): a pass of the workers over the chunks, each category's rows in their order.
+    /// </summary>
+    internal static void GatherRows(
+        PlotWorkerPool pool,
+        CategoricalColumn categories,
+        CategoryRuns runs,
+        GatherChannel[] gathers,
+        ref long[] chunkStarts
+    )
+    {
+        var n = categories.CategoryCount;
+
         // Each category's position at each chunk's start: its rows in the chunks before. The counts never change, so the sums
         // are made once, by the first pass.
-        var starts = _starts;
+        var starts = chunkStarts;
         if (starts.Length != runs.ChunkCounts.Length)
         {
-            starts = _starts = new long[runs.ChunkCounts.Length];
+            starts = chunkStarts = new long[runs.ChunkCounts.Length];
             for (var k = 1; k < categories.ChunkCount; k++)
             {
                 for (var c = 0; c < n; c++)
@@ -671,7 +689,7 @@ internal sealed class SplitPlan : LayerPlan
                     var start = starts.AsSpan(chunk * n, n);
                     Span<long> positions = n <= 256 ? stackalloc long[n] : new long[n];
                     var codes = categories.GetCodes(chunk);
-                    foreach (var gather in _gathers)
+                    foreach (var gather in gathers)
                     {
                         start.CopyTo(positions);
                         gather.Copy(chunk, codes, positions);

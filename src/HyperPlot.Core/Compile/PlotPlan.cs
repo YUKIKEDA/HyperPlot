@@ -184,7 +184,8 @@ internal sealed class PlotPlan : IDisposable
             );
         }
 
-        if (data)
+        // A stack over a numeric x whose columns changed is made again (row G5a): its union of x values may change length.
+        if (data || StaleLayers())
         {
             BuildLayers(spec);
         }
@@ -683,6 +684,20 @@ internal sealed class PlotPlan : IDisposable
         for (var i = 0; i < spec.Layers.Count; i++)
         {
             if (previous.Layers[i].Id != spec.Layers[i].Id)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Returns whether a layer's workers' results are older than its columns (row G5a).</summary>
+    private bool StaleLayers()
+    {
+        foreach (var layer in _layers)
+        {
+            if (layer.Stale)
             {
                 return true;
             }

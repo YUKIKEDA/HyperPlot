@@ -248,6 +248,10 @@ public abstract class Column
     internal virtual CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool, RowRange rows) =>
         throw new InvalidOperationException($"A {KindName} is not a Y column of bars.");
 
+    /// <summary>Writes a chunk.s values as doubles into <paramref name="destination"/> (row G5a): only a <see cref="Column{T}"/> has values to read.</summary>
+    internal virtual void ReadChunk(int chunk, Span<double> destination) =>
+        throw new InvalidOperationException($"A {KindName} is not a Y column of stacked bars.");
+
     /// <summary>Returns the gather of the rows of a split layer's categories that do not lie in one run (design §5.5.3, row G7c).</summary>
     internal abstract GatherChannel MakeGather(ReadOnlySpan<long> counts);
 

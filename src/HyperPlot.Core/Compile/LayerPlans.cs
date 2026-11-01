@@ -69,6 +69,18 @@ internal abstract class LayerPlan
     /// <summary>Gets or sets the plot's color scale, set before each recording; null when no layer has a color channel (row G7c).</summary>
     public ColorScale? Colors { get; set; }
 
+    /// <summary>
+    /// Gets or sets the place of a dodged part (design §4.1, row G5a): its category and the number of categories, set by its
+    /// split layer before each recording; null draws the elements where they are.
+    /// </summary>
+    public (int Index, int Count)? DodgeSlot { get; set; }
+
+    /// <summary>
+    /// Gets a value indicating whether the layer's workers' results are older than its columns, so that it is made again before the wait (row
+    /// G5a): a stack over a numeric x, whose union of x values may change its length.
+    /// </summary>
+    public virtual bool Stale => false;
+
     /// <summary>Gets the versions of <see cref="Columns"/> this Render read before its wait.</summary>
     public long[] Seen { get; private set; } = [];
 
@@ -77,7 +89,13 @@ internal abstract class LayerPlan
 
     /// <summary>Makes the plan of a layer: its pyramids and series join the plan's.</summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build) =>
-        SplitPlan.Splits(spec) ? new SplitPlan(spec, build) : Create(spec, build, RowRange.All);
+        Stacks(PositionOf(spec))
+            ? spec is BarLayerSpec { X.Column: CategoricalColumn } bar
+                ? new StackedCategoryBarPlan(bar)
+                : new StackedSeriesPlan(spec, build)
+            : SplitPlan.Splits(spec)
+                ? new SplitPlan(spec, build)
+                : Create(spec, build, RowRange.All);
 
     /// <summary>Makes the plan of a layer over a run of its columns' rows (row G7c): the series of one category.</summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows) =>
@@ -89,7 +107,9 @@ internal abstract class LayerPlan
             BandLayerSpec band => new BandPlan(band, build, rows),
             BarLayerSpec { X.Column: CategoricalColumn } bar => new CategoryBarPlan(bar, rows),
             BarLayerSpec bar => new BarPlan(bar, build, rows),
+            ErrorBarLayerSpec { X.Column: CategoricalColumn } errorBar => new CategoryErrorBarPlan(errorBar, rows),
             ErrorBarLayerSpec errorBar => new ErrorBarPlan(errorBar, build, rows),
+            RuleLayerSpec { X.IsDefault: false, X.Column: CategoricalColumn } rule => new CategoryRulePlan(rule, rows),
             RuleLayerSpec rule => new RulePlan(rule, rows),
             RectLayerSpec rect => new RectPlan(rect, rows),
             SegmentLayerSpec segment => new SegmentPlan(segment, rows),
@@ -195,11 +215,11 @@ internal abstract class LayerPlan
             {
                 CheckReference(data, buffer[c], index, ofX ? "x channel" : "y channel");
 
-                // Categories go on x of bars and of text only (design §4.2, rows G7b and G8).
-                if (buffer[c].Column is CategoricalColumn && !(ofX && layer is BarLayerSpec or TextLayerSpec))
+                // Categories go on x of bars, text, error bars, and vertical rules only (design §4.2, rows G7b, G8, G5a).
+                if (buffer[c].Column is CategoricalColumn && !(ofX && layer is BarLayerSpec or TextLayerSpec or ErrorBarLayerSpec or RuleLayerSpec))
                 {
                     throw new ArgumentException(
-                        $"The {(ofX ? "x" : "y")} column \"{data.GetName(buffer[c].Index)}\" of layer {index} is a CategoricalColumn; categories go on x of bars and of text only (a {layer.GetType().Name} here)."
+                        $"The {(ofX ? "x" : "y")} column \"{data.GetName(buffer[c].Index)}\" of layer {index} is a CategoricalColumn; categories go on x of bars, text, error bars, and vertical rules only (a {layer.GetType().Name} here)."
                     );
                 }
             }
@@ -270,6 +290,112 @@ internal abstract class LayerPlan
         }
 
         ValidateColor(data, layer, index, buffer);
+        ValidatePosition(layer, index);
+    }
+
+    /// <summary>
+    /// Returns how a layer places its elements (design §4.1, row G5a): its position's kind, or the geom's default, a stack for
+    /// a bar or an area split by categories. Allocates nothing.
+    /// </summary>
+    public static PositionKind PositionOf(LayerSpec layer) =>
+        layer.Position switch
+        {
+            null => layer is BarLayerSpec or AreaLayerSpec && SplitPlan.Splits(layer) ? PositionKind.Stack : PositionKind.Identity,
+            StackPositionSpec => PositionKind.Stack,
+            FillPositionSpec => PositionKind.Fill,
+            DodgePositionSpec => PositionKind.Dodge,
+            _ => PositionKind.Identity,
+        };
+
+    /// <summary>Returns the categorical x of a bar, an error bar, or a vertical rule, or null (rows G7b and G5a).</summary>
+    public static CategoricalColumn? CategoricalX(LayerSpec layer) =>
+        layer switch
+        {
+            BarLayerSpec { X.Column: CategoricalColumn x } => x,
+            ErrorBarLayerSpec { X.Column: CategoricalColumn x } => x,
+            RuleLayerSpec { X.IsDefault: false, X.Column: CategoricalColumn x } => x,
+            _ => null,
+        };
+
+    /// <summary>Returns whether a position stacks: a stack or a fill (row G5a).</summary>
+    public static bool Stacks(PositionKind kind) => kind is PositionKind.Stack or PositionKind.Fill;
+
+    /// <summary>Returns the padding of a layer's dodge, or 0 (row G5a).</summary>
+    public static double DodgePadding(LayerSpec layer) => layer.Position is DodgePositionSpec dodge ? dodge.Padding : 0;
+
+    /// <summary>
+    /// Throws unless a layer's position is one its geom takes (design §4.1, row G5a): a stack or a fill on bars and areas
+    /// from a baseline of 0, not over colors a bar; a dodge on bars, and on error bars and vertical rules over categories.
+    /// </summary>
+    private static void ValidatePosition(LayerSpec layer, int index)
+    {
+        if (layer.Position is not (null or IdentityPositionSpec or StackPositionSpec or FillPositionSpec or DodgePositionSpec))
+        {
+            throw new ArgumentException(
+                $"The Position of layer {index} is a {layer.Position.GetType().Name}; the plot compiles the positions of row G5a (Identity, Stack, Fill, Dodge)."
+            );
+        }
+
+        if (layer.Position is DodgePositionSpec { Padding: var padding } && !(padding is >= 0 and < 1))
+        {
+            throw new ArgumentException($"The dodge Padding of layer {index} is {padding}; it is at least 0 and below 1.");
+        }
+
+        var kind = PositionOf(layer);
+        if (kind == PositionKind.Identity)
+        {
+            return;
+        }
+
+        var takes = kind switch
+        {
+            PositionKind.Stack or PositionKind.Fill => layer is BarLayerSpec or AreaLayerSpec,
+            _ => layer is BarLayerSpec or ErrorBarLayerSpec or RuleLayerSpec { X.IsDefault: false },
+        };
+        if (!takes)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a {layer.GetType().Name} with a {kind} position; a stack and a fill go on bars and areas, a dodge on bars, error bars, and vertical rules (design §4.1)."
+            );
+        }
+
+        if (kind == PositionKind.Dodge && layer is ErrorBarLayerSpec or RuleLayerSpec && AxisX(layer) is not CategoricalColumn)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a {layer.GetType().Name} over a numeric x with a dodge; error bars and vertical rules are dodged over a categorical x only, which gives the places their width (design §4.1)."
+            );
+        }
+
+        if (kind is PositionKind.Stack or PositionKind.Fill)
+        {
+            if (layer is BarLayerSpec && (layer.FillBy ?? layer.ColorBy) is { Column: not CategoricalColumn })
+            {
+                throw new ArgumentException(
+                    $"Layer {index} is a bar colored one by one by a number with a {kind} position; a stacked group has one color (design §4.1)."
+                );
+            }
+
+            var baseline = layer switch
+            {
+                BarLayerSpec b => b.Baseline,
+                AreaLayerSpec a => a.Baseline,
+                _ => 0,
+            };
+            if (baseline != 0)
+            {
+                throw new ArgumentException(
+                    $"The Baseline of layer {index} is {baseline} with a {kind} position; a stack starts at 0 (design §4.1)."
+                );
+            }
+        }
+
+        static Column AxisX(LayerSpec layer) =>
+            layer switch
+            {
+                ErrorBarLayerSpec e => e.X.Column,
+                RuleLayerSpec r => r.X.Column,
+                _ => throw new InvalidOperationException("Only error bars and rules are asked."),
+            };
     }
 
     /// <summary>
@@ -326,10 +452,10 @@ internal abstract class LayerPlan
                     );
                 }
 
-                if (layer is BarLayerSpec { X.Column: CategoricalColumn x } && (long)categories.CategoryCount * x.CategoryCount > MaxCategoryCells)
+                if (CategoricalX(layer) is { } x && (long)categories.CategoryCount * x.CategoryCount > MaxCategoryCells)
                 {
                     throw new ArgumentException(
-                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the extremes of bars over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3)."
+                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the cells of bars, error bars, and rules over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3)."
                     );
                 }
             }
@@ -415,7 +541,15 @@ internal abstract class LayerPlan
             return true;
         }
 
-        if (SplitPlan.Splits(after))
+        // A stack or a fill is made by the workers (design §4.8, row G5a): one coming, going, or turning into the other makes
+        // the layer again. A dodge only places the elements: it records again.
+        var (was, now) = (PositionOf(before), PositionOf(after));
+        if (was != now && (Stacks(was) || Stacks(now)))
+        {
+            return true;
+        }
+
+        if (SplitPlan.Splits(after) || Stacks(now))
         {
             var outlineChanged = (before, after) switch
             {
@@ -508,6 +642,22 @@ internal abstract class LayerPlan
 
     /// <summary>Frees what the layer made for itself (a pyramid over its categories' extremes); the plan's pyramids stay with the plan.</summary>
     public virtual void Release() { }
+
+    /// <summary>
+    /// Returns the part of an element's span of pixels its dodged place draws (design §4.1, row G5a): the span split into
+    /// <see cref="DodgeSlot"/>'s count of places, this one's, less its padding, half on each side. Without a place, the span.
+    /// </summary>
+    protected (double From, double To) Place(double from, double to)
+    {
+        if (DodgeSlot is not { } slot)
+        {
+            return (from, to);
+        }
+
+        var place = (to - from) / slot.Count;
+        var start = from + (place * slot.Index) + (place * DodgePadding(Spec) / 2);
+        return (start, start + (place * (1 - DodgePadding(Spec))));
+    }
 
     /// <summary>Returns a spec's stroke with its color, or the series color when it has none (design §4.1).</summary>
     protected LineStyle Stroke(in StrokeSpec stroke) => stroke.Resolve(SeriesColor);
@@ -1269,4 +1419,20 @@ internal sealed class ColumnEnvelope
         _from[c] = double.IsNaN(_from[c]) ? from : Math.Min(_from[c], from);
         _to[c] = double.IsNaN(_to[c]) ? to : Math.Max(_to[c], to);
     }
+}
+
+/// <summary>How a layer places its elements against each other (design §4.1, row G5a).</summary>
+internal enum PositionKind
+{
+    /// <summary>As they are.</summary>
+    Identity,
+
+    /// <summary>The groups stacked from 0.</summary>
+    Stack,
+
+    /// <summary>The stack divided by its sum at each x.</summary>
+    Fill,
+
+    /// <summary>The groups side by side.</summary>
+    Dodge,
 }
