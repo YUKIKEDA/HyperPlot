@@ -27,6 +27,19 @@ public abstract record ContinuousScaleSpec : ScaleSpec
     /// </summary>
     public bool Nice { get; init; }
 
+    /// <summary>
+    /// Gets the side of the panel the scale's axis lies on (row G6a): <see cref="AxisSide.Bottom"/> or <see cref="AxisSide.Top"/>
+    /// for x, <see cref="AxisSide.Left"/> or <see cref="AxisSide.Right"/> for y; null for the default, the bottom and the left
+    /// for a primary scale and the side opposite its primary for a secondary one.
+    /// </summary>
+    public AxisSide? Side { get; init; }
+
+    /// <summary>
+    /// Gets an axis on the side opposite this primary scale's that shows a transform of its values (row G6a), or null for
+    /// none. A time scale takes none.
+    /// </summary>
+    public SecondaryAxisSpec? SecondaryAxis { get; init; }
+
     /// <summary>Gets the tick format of a numeric scale, or null for the default; a time scale's is <see cref="TimeScaleSpec.TickFormat"/>.</summary>
     internal abstract TickFormatter? NumericFormat { get; }
 

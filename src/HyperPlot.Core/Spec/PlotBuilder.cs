@@ -17,6 +17,8 @@ public sealed class PlotBuilder
     private Theme? _theme;
     private CoordSpec? _coord;
     private ColorScaleSpec? _scaleColor;
+    private ContinuousScaleSpec? _scaleX2;
+    private ContinuousScaleSpec? _scaleY2;
     private bool _built;
 
     internal PlotBuilder(DataTable data) => _data = data;
@@ -62,6 +64,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -104,6 +107,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -144,6 +148,7 @@ public sealed class PlotBuilder
                 FillBy = Channel(area.FillByRef),
             }
         );
+        Secondary(area.SecondaryXValue, area.SecondaryYValue);
         return this;
     }
 
@@ -183,6 +188,7 @@ public sealed class PlotBuilder
                 FillBy = Channel(area.FillByRef),
             }
         );
+        Secondary(area.SecondaryXValue, area.SecondaryYValue);
         return this;
     }
 
@@ -222,6 +228,7 @@ public sealed class PlotBuilder
                 Position = fill.PositionValue,
             }
         );
+        Secondary(fill.SecondaryXValue, fill.SecondaryYValue);
         return this;
     }
 
@@ -267,6 +274,7 @@ public sealed class PlotBuilder
                 Position = fill.PositionValue,
             }
         );
+        Secondary(fill.SecondaryXValue, fill.SecondaryYValue);
         return this;
     }
 
@@ -311,6 +319,7 @@ public sealed class PlotBuilder
                 Position = fill.PositionValue,
             }
         );
+        Secondary(fill.SecondaryXValue, fill.SecondaryYValue);
         return this;
     }
 
@@ -337,6 +346,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -363,6 +373,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -406,6 +417,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -457,6 +469,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -503,6 +516,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -529,6 +543,7 @@ public sealed class PlotBuilder
                 Position = style.PositionValue,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -558,6 +573,7 @@ public sealed class PlotBuilder
                 Stat = bin ?? HyperPlot.Stat.Bin(),
             }
         );
+        Secondary(fill.SecondaryXValue, fill.SecondaryYValue);
         return this;
     }
 
@@ -584,6 +600,7 @@ public sealed class PlotBuilder
                 Stat = HyperPlot.Stat.Count,
             }
         );
+        Secondary(fill.SecondaryXValue, fill.SecondaryYValue);
         return this;
     }
 
@@ -616,6 +633,7 @@ public sealed class PlotBuilder
                 Stat = HyperPlot.Stat.Summary(value),
             }
         );
+        Secondary(fill.SecondaryXValue, fill.SecondaryYValue);
         return this;
     }
 
@@ -667,6 +685,7 @@ public sealed class PlotBuilder
                 Stat = HyperPlot.Stat.Summary(low ?? SummaryOp.Min, high ?? SummaryOp.Max),
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -695,6 +714,7 @@ public sealed class PlotBuilder
                 Stat = density ?? HyperPlot.Stat.Density(),
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -731,6 +751,7 @@ public sealed class PlotBuilder
                 Stat = stat,
             }
         );
+        Secondary(style.SecondaryXValue, style.SecondaryYValue);
         return this;
     }
 
@@ -935,6 +956,8 @@ public sealed class PlotBuilder
             Theme = _theme ?? HyperPlot.Theme.Light,
             Coord = _coord ?? HyperPlot.Coord.Cartesian(),
             ScaleColor = _scaleColor,
+            ScaleX2 = _scaleX2,
+            ScaleY2 = _scaleY2,
         };
     }
 
@@ -961,6 +984,7 @@ public sealed class PlotBuilder
                 Opacity = image.OpacityValue,
             }
         );
+        Secondary(image.SecondaryXValue, image.SecondaryYValue);
         return this;
     }
 
@@ -995,6 +1019,7 @@ public sealed class PlotBuilder
                 ColorBy = Channel(looks.ColorByRef),
             }
         );
+        Secondary(looks.SecondaryXValue, looks.SecondaryYValue);
         return this;
     }
 
@@ -1068,6 +1093,41 @@ public sealed class PlotBuilder
         if (_built)
         {
             throw new InvalidOperationException("The plot was built; start another with Plot.Create.");
+        }
+    }
+
+    /// <summary>Sets the secondary x scale, independent of the primary one (design §4.1, row G6a): the layers put on it with <c>SecondaryX</c> are mapped by it.</summary>
+    /// <param name="scale">The scale.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder ScaleX2(ContinuousScaleSpec scale)
+    {
+        ThrowIfBuilt();
+        ArgumentNullException.ThrowIfNull(scale);
+        _scaleX2 = scale;
+        return this;
+    }
+
+    /// <summary>Sets the secondary y scale, independent of the primary one (design §4.1, row G6a): the layers put on it with <c>SecondaryY</c> are mapped by it.</summary>
+    /// <param name="scale">The scale.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder ScaleY2(ContinuousScaleSpec scale)
+    {
+        ThrowIfBuilt();
+        ArgumentNullException.ThrowIfNull(scale);
+        _scaleY2 = scale;
+        return this;
+    }
+
+    /// <summary>Puts the layer just added on the secondary scales its builder asked for (row G6a).</summary>
+    private void Secondary(bool x, bool y)
+    {
+        if (x || y)
+        {
+            _layers[^1] = _layers[^1] with { SecondaryX = x, SecondaryY = y };
         }
     }
 }

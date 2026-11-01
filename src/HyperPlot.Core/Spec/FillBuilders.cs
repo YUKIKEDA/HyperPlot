@@ -81,6 +81,28 @@ public sealed class AreaBuilder
         FillByRef = category.ToColumnRef();
         return this;
     }
+
+    /// <summary>Gets a value indicating whether the layer's x goes on the secondary x scale (row G6a).</summary>
+    internal bool SecondaryXValue { get; private set; }
+
+    /// <summary>Gets a value indicating whether the layer's y goes on the secondary y scale (row G6a).</summary>
+    internal bool SecondaryYValue { get; private set; }
+
+    /// <summary>Puts the layer's x on <see cref="PlotSpec.ScaleX2"/> (design §4.1, row G6a).</summary>
+    /// <returns>This builder.</returns>
+    public AreaBuilder SecondaryX()
+    {
+        SecondaryXValue = true;
+        return this;
+    }
+
+    /// <summary>Puts the layer's y on <see cref="PlotSpec.ScaleY2"/> (design §4.1, row G6a).</summary>
+    /// <returns>This builder.</returns>
+    public AreaBuilder SecondaryY()
+    {
+        SecondaryYValue = true;
+        return this;
+    }
 }
 
 /// <summary>Sets the fill and the label of a bar or a rect layer (design §4.1).</summary>
@@ -149,6 +171,28 @@ public sealed class FillBuilder
         where T : unmanaged, INumber<T>
     {
         ColorByRef = values;
+        return this;
+    }
+
+    /// <summary>Gets a value indicating whether the layer's x goes on the secondary x scale (row G6a).</summary>
+    internal bool SecondaryXValue { get; private set; }
+
+    /// <summary>Gets a value indicating whether the layer's y goes on the secondary y scale (row G6a).</summary>
+    internal bool SecondaryYValue { get; private set; }
+
+    /// <summary>Puts the layer's x on <see cref="PlotSpec.ScaleX2"/> (design §4.1, row G6a).</summary>
+    /// <returns>This builder.</returns>
+    public FillBuilder SecondaryX()
+    {
+        SecondaryXValue = true;
+        return this;
+    }
+
+    /// <summary>Puts the layer's y on <see cref="PlotSpec.ScaleY2"/> (design §4.1, row G6a).</summary>
+    /// <returns>This builder.</returns>
+    public FillBuilder SecondaryY()
+    {
+        SecondaryYValue = true;
         return this;
     }
 }

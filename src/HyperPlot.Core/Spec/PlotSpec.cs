@@ -32,4 +32,13 @@ public sealed record PlotSpec : SpecNode
     /// §4.2, row G7c). Null takes an ordinal scale for categories and a sequential one for numbers.
     /// </summary>
     public ColorScaleSpec? ScaleColor { get; init; }
+
+    /// <summary>
+    /// Gets a secondary x scale, independent of <see cref="ScaleX"/> (design §4.1, row G6a): the layers with
+    /// <see cref="LayerSpec.SecondaryX"/> are mapped by it, and it learns its domain from them only. Null for none.
+    /// </summary>
+    public ContinuousScaleSpec? ScaleX2 { get; init; }
+
+    /// <summary>Gets a secondary y scale, independent of <see cref="ScaleY"/> (row G6a): the layers with <see cref="LayerSpec.SecondaryY"/> are mapped by it.</summary>
+    public ContinuousScaleSpec? ScaleY2 { get; init; }
 }
