@@ -185,7 +185,8 @@ internal sealed class PlotPlan : IDisposable
         }
 
         // A stack over a numeric x whose columns changed is made again (row G5a): its union of x values may change length.
-        if (data || StaleLayers())
+        // Bins are chosen in the x scale's space (row G5b): another transform makes the layers again.
+        if (data || StaleLayers() || (scales && BinsLayers(spec)))
         {
             BuildLayers(spec);
         }
@@ -692,6 +693,20 @@ internal sealed class PlotPlan : IDisposable
         return false;
     }
 
+    /// <summary>Returns whether a layer bins its x (row G5b): its bins depend on the x scale.</summary>
+    private static bool BinsLayers(PlotSpec spec)
+    {
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (spec.Layers[i].Stat is BinStatSpec)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Returns whether a layer's workers' results are older than its columns (row G5a).</summary>
     private bool StaleLayers()
     {
@@ -1028,10 +1043,11 @@ internal sealed class PlotPlan : IDisposable
         _batch.Clear();
         var used = new HashSet<Column>();
         var rasters = new HashSet<Raster>();
-        var build = new PlanBuild(Pyramid, column => _pyramids.GetValueOrDefault(column), _batch, _capacity, _pool, Mipmap);
+        var build = new PlanBuild(Pyramid, column => _pyramids.GetValueOrDefault(column), _batch, _capacity, _pool, Mipmap, spec.ScaleX, _xTransform);
         var layers = new LayerPlan[spec.Layers.Count];
         for (var i = 0; i < layers.Length; i++)
         {
+            build.Layer = i;
             layers[i] = LayerPlan.Create(spec.Layers[i], build);
         }
 

@@ -47,4 +47,10 @@ public abstract record LayerSpec : SpecNode
     /// column of the layer changes.
     /// </remarks>
     public PositionSpec? Position { get; init; }
+
+    /// <summary>
+    /// Gets what the layer draws from its columns (design §4.1, row G5b): bins, counts, or summaries, which the workers make
+    /// once a version of the columns; null draws the columns as they are.
+    /// </summary>
+    public StatSpec? Stat { get; init; }
 }

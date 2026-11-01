@@ -256,6 +256,23 @@ public abstract class Column
     internal virtual void ReadChunk(int chunk, int offset, Span<double> destination, long origin) =>
         throw new InvalidOperationException($"A {KindName} has no values to stack.");
 
+    /// <summary>
+    /// Gets the bytes of the keys <see cref="ReadKeys"/> writes (row G5b): the element type's size, the passes of a quantile's
+    /// radix select. Only a <see cref="Column{T}"/> has keys.
+    /// </summary>
+    internal virtual int KeyBytes => 0;
+
+    /// <summary>
+    /// Writes the keys of a chunk's elements from <paramref name="offset"/> into <paramref name="destination"/> (row G5b):
+    /// unsigned integers in the values' order, their <see cref="KeyBytes"/> high bytes used, and <see cref="ulong.MaxValue"/>
+    /// for NaN.
+    /// </summary>
+    internal virtual void ReadKeys(int chunk, int offset, Span<ulong> destination) =>
+        throw new InvalidOperationException($"A {KindName} has no values to summarize.");
+
+    /// <summary>Returns the value of a key <see cref="ReadKeys"/> wrote (row G5b).</summary>
+    internal virtual double ValueOfKey(ulong key) => throw new InvalidOperationException($"A {KindName} has no values to summarize.");
+
     /// <summary>Returns the gather of the rows of a split layer's categories that do not lie in one run (design §5.5.3, row G7c).</summary>
     internal abstract GatherChannel MakeGather(ReadOnlySpan<long> counts);
 

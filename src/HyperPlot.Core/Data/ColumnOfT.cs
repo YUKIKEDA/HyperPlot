@@ -15,6 +15,9 @@ namespace HyperPlot;
 public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     where T : unmanaged, INumber<T>
 {
+    /// <summary>The sign bit of a 64-bit key (row G5b).</summary>
+    private const ulong SignBit = 0x8000_0000_0000_0000UL;
+
     private readonly ColumnStorage<T> _storage;
     private readonly StatsEntry?[] _stats;
     private readonly long[] _generations;
@@ -224,6 +227,91 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
         {
             destination[i] = double.CreateTruncating(values[i]) - origin;
         }
+    }
+
+    /// <inheritdoc />
+    internal override int KeyBytes => System.Runtime.CompilerServices.Unsafe.SizeOf<T>();
+
+    /// <inheritdoc />
+    internal override void ReadKeys(int chunk, int offset, Span<ulong> destination)
+    {
+        var values = GetChunk(chunk).Slice(offset, destination.Length);
+        for (var i = 0; i < values.Length; i++)
+        {
+            destination[i] = KeyOf(values[i]);
+        }
+    }
+
+    /// <inheritdoc />
+    internal override double ValueOfKey(ulong key)
+    {
+        if (typeof(T) == typeof(double))
+        {
+            var bits = (key & SignBit) != 0 ? key & ~SignBit : ~key;
+            return BitConverter.UInt64BitsToDouble(bits);
+        }
+
+        if (typeof(T) == typeof(float))
+        {
+            var high = (uint)(key >> 32);
+            var bits = (high & 0x8000_0000u) != 0 ? high & 0x7FFF_FFFFu : ~high;
+            return BitConverter.UInt32BitsToSingle(bits);
+        }
+
+        if (typeof(T) == typeof(long))
+        {
+            return (long)(key ^ SignBit);
+        }
+
+        if (typeof(T) == typeof(int))
+        {
+            return (int)((uint)(key >> 32) ^ 0x8000_0000u);
+        }
+
+        return (byte)(key >> 56);
+    }
+
+    /// <summary>
+    /// Returns a value's key: an unsigned integer in the values' order, left-aligned to 64 bits. A float's sign bit is set for
+    /// a positive value and all bits are flipped for a negative one; an integer's sign bit is flipped. NaN is the greatest key.
+    /// </summary>
+    private static ulong KeyOf(T value)
+    {
+        if (typeof(T) == typeof(double))
+        {
+            var v = double.CreateTruncating(value);
+            if (double.IsNaN(v))
+            {
+                return ulong.MaxValue;
+            }
+
+            var bits = BitConverter.DoubleToUInt64Bits(v);
+            return (bits & SignBit) != 0 ? ~bits : bits | SignBit;
+        }
+
+        if (typeof(T) == typeof(float))
+        {
+            var v = float.CreateTruncating(value);
+            if (float.IsNaN(v))
+            {
+                return ulong.MaxValue;
+            }
+
+            var bits = BitConverter.SingleToUInt32Bits(v);
+            return (ulong)((bits & 0x8000_0000u) != 0 ? ~bits : bits | 0x8000_0000u) << 32;
+        }
+
+        if (typeof(T) == typeof(long))
+        {
+            return (ulong)long.CreateTruncating(value) ^ SignBit;
+        }
+
+        if (typeof(T) == typeof(int))
+        {
+            return (ulong)((uint)int.CreateTruncating(value) ^ 0x8000_0000u) << 32;
+        }
+
+        return (ulong)byte.CreateTruncating(value) << 56;
     }
 
     /// <inheritdoc />
