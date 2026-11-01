@@ -10,6 +10,7 @@ The agent shell on this setup is PowerShell. Do not use bash-only constructs in 
 ## Forbidden in PowerShell
 
 - Heredoc: `$(cat <<'EOF' ... EOF)`
+- A heredoc passed to the Bash tool holds no apostrophe (`'`), even quoted as `<<'EOF'`: the tool stops with "unexpected EOF while looking for matching `''`". A script whose text has one (C# XML docs, English sentences with `R's`) is written to a file with the Write tool and run from there. PR #227's session rewrote three such scripts.
 - Unquoted git upstream: `@{u}` (PowerShell parses `@{...}` as a hashtable). Write `'@{u}'`.
 - `export FOO=bar`, bash arrays, `&&` chains that assume bash semantics for `$?`.
 
