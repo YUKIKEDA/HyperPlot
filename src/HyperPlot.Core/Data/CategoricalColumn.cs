@@ -120,6 +120,9 @@ public sealed class CategoricalColumn : Column
     }
 
     /// <inheritdoc />
+    internal override bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max) => TryGetRange(out min, out max);
+
+    /// <inheritdoc />
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => null;
 
     /// <inheritdoc />
@@ -140,6 +143,12 @@ public sealed class CategoricalColumn : Column
 
     /// <inheritdoc />
     internal override bool IsNonDecreasing(PlotWorkerPool pool) => false;
+
+    /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool, RowRange rows) => false;
+
+    /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin, RowRange rows) => LowerBound(boundary, origin);
 
     /// <inheritdoc />
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>

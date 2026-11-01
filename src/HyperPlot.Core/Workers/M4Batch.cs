@@ -200,10 +200,25 @@ public sealed class M4Batch
         where TX : unmanaged, INumber<TX>
         where TY : unmanaged, INumber<TY>
     {
-        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) =>
-            rows == RowRange.All
-                ? M4.Extract(x, y, origin, boundaries, destination, options)
-                : M4.Extract(x, y, origin, boundaries, destination, options, rows);
+        // Whether the run's X is non-decreasing, read once a version of the column (row G6b): its ends' chunks are passed over.
+        private long _checked = -1;
+        private bool _nonDecreasing;
+
+        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries)
+        {
+            if (rows == RowRange.All)
+            {
+                return M4.Extract(x, y, origin, boundaries, destination, options);
+            }
+
+            var version = x.Version;
+            if (version != _checked && x.TryIsNonDecreasing(rows, out var nonDecreasing))
+            {
+                (_checked, _nonDecreasing) = (version, nonDecreasing);
+            }
+
+            return M4.Extract(x, y, origin, boundaries, destination, options, rows, _checked == version ? _nonDecreasing : null);
+        }
     }
 
     private sealed class UniformJob<TY>(UniformColumn x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options, RowRange rows) : Job

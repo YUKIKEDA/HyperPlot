@@ -16,13 +16,16 @@ internal sealed class LinePlan : LayerPlan
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
+    /// <summary>Returns the line's M4 points of the last extraction from its batch. Tests only.</summary>
+    internal ReadOnlySpan<M4Point> Points(M4Batch batch) => _output.AsSpan(0, batch.GetResult(_series).Count);
+
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var line = (LineLayerSpec)Spec;
         var reference = ofX ? line.X : line.Y;
-        sink.AddColumn(reference.Column, data.GetName(reference.Index));
+        AddColumn(sink, reference.Column, data.GetName(reference.Index));
     }
 
     public override void Record(RecordContext context)
@@ -52,7 +55,7 @@ internal sealed class StepPlan : LayerPlan
     {
         var step = (StepLayerSpec)Spec;
         var reference = ofX ? step.X : step.Y;
-        sink.AddColumn(reference.Column, data.GetName(reference.Index));
+        AddColumn(sink, reference.Column, data.GetName(reference.Index));
     }
 
     public override void Record(RecordContext context)
@@ -114,7 +117,7 @@ internal sealed class AreaPlan : LayerPlan
     {
         var area = (AreaLayerSpec)Spec;
         var reference = ofX ? area.X : area.Y;
-        sink.AddColumn(reference.Column, data.GetName(reference.Index));
+        AddColumn(sink, reference.Column, data.GetName(reference.Index));
         if (!ofX)
         {
             sink.AddBaseline(area.Baseline);
@@ -206,12 +209,12 @@ internal sealed class BandPlan : LayerPlan
         var band = (BandLayerSpec)Spec;
         if (ofX)
         {
-            sink.AddColumn(band.X.Column, data.GetName(band.X.Index));
+            AddColumn(sink, band.X.Column, data.GetName(band.X.Index));
             return;
         }
 
-        sink.AddColumn(band.YMin.Column, data.GetName(band.YMin.Index));
-        sink.AddColumn(band.YMax.Column, data.GetName(band.YMax.Index));
+        AddColumn(sink, band.YMin.Column, data.GetName(band.YMin.Index));
+        AddColumn(sink, band.YMax.Column, data.GetName(band.YMax.Index));
     }
 
     public override void Record(RecordContext context)
@@ -289,7 +292,13 @@ internal sealed class BarPlan : LayerPlan
     }
 
     /// <summary>Gets the width the bars are drawn with, in data units: read from the X's statistics, so after the wait.</summary>
-    private double Width => ((BarLayerSpec)Spec).Width ?? DefaultWidth(Columns[0]);
+    private double Width =>
+        ((BarLayerSpec)Spec).Width
+        ?? (
+            Columns[0] is UniformColumn uniform ? uniform.Step * 0.9
+            : TryGetRange(Columns[0], out var min, out var max) ? DefaultWidth(min.Value, max.Value, RowCount(Columns[0].Length))
+            : 0.9
+        );
 
     /// <summary>
     /// Returns the default width (design §5.5.3): 0.9 times a uniform X's step or a stored X's mean spacing, or 0.9 when a
@@ -302,10 +311,11 @@ internal sealed class BarPlan : LayerPlan
             return uniform.Step * 0.9;
         }
 
-        return x.Length > 1 && x.TryGetRange(out var min, out var max) && max.Value > min.Value
-            ? (max.Value - min.Value) / (x.Length - 1) * 0.9
-            : 0.9;
+        return x.TryGetRange(out var min, out var max) ? DefaultWidth(min.Value, max.Value, x.Length) : 0.9;
     }
+
+    /// <summary>Returns the default width of a stored X of a range and a number of rows: 0.9 times its mean spacing, or 0.9.</summary>
+    internal static double DefaultWidth(double min, double max, long count) => count > 1 && max > min ? (max - min) / (count - 1) * 0.9 : 0.9;
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
 
@@ -314,13 +324,13 @@ internal sealed class BarPlan : LayerPlan
         var bar = (BarLayerSpec)Spec;
         if (!ofX)
         {
-            sink.AddColumn(bar.Y.Column, data.GetName(bar.Y.Index));
+            AddColumn(sink, bar.Y.Column, data.GetName(bar.Y.Index));
             sink.AddBaseline(bar.Baseline);
             return;
         }
 
-        sink.AddColumn(bar.X.Column, data.GetName(bar.X.Index));
-        if (bar.X.Column.TryGetRange(out var min, out var max))
+        AddColumn(sink, bar.X.Column, data.GetName(bar.X.Index));
+        if (TryGetRange(bar.X.Column, out var min, out var max))
         {
             // Half a bar past each end, so that the end bars are not cut (design §4.2).
             var half = Width / 2;
@@ -335,8 +345,8 @@ internal sealed class BarPlan : LayerPlan
         var y = bar.Y.Column;
         var boundaries = context.Boundaries;
         var half = Width / 2;
-        var first = Rows.Hold(x.LowerBound(boundaries[0] - half, context.XOrigin), x.Length);
-        var end = Rows.Hold(x.LowerBound(boundaries[^1] + half, context.XOrigin), x.Length);
+        var first = x.LowerBound(boundaries[0] - half, context.XOrigin, Rows);
+        var end = x.LowerBound(boundaries[^1] + half, context.XOrigin, Rows);
         var baseline = context.BaselinePixel(bar.Baseline);
         var barFill = FillOf(bar.Fill, translucent: false);
         if (ElementColors is { } colors)
@@ -450,7 +460,7 @@ internal sealed class CategoryBarPlan : LayerPlan
         }
 
         var bar = (BarLayerSpec)Spec;
-        sink.AddColumn(bar.Y.Column, data.GetName(bar.Y.Index));
+        AddColumn(sink, bar.Y.Column, data.GetName(bar.Y.Index));
         sink.AddBaseline(bar.Baseline);
     }
 
@@ -587,20 +597,20 @@ internal sealed class ErrorBarPlan : LayerPlan
         var bars = (ErrorBarLayerSpec)Spec;
         if (ofX)
         {
-            sink.AddColumn(bars.X.Column, data.GetName(bars.X.Index));
+            AddColumn(sink, bars.X.Column, data.GetName(bars.X.Index));
             return;
         }
 
-        sink.AddColumn(bars.YMin.Column, data.GetName(bars.YMin.Index));
-        sink.AddColumn(bars.YMax.Column, data.GetName(bars.YMax.Index));
+        AddColumn(sink, bars.YMin.Column, data.GetName(bars.YMin.Index));
+        AddColumn(sink, bars.YMax.Column, data.GetName(bars.YMax.Index));
     }
 
     public override void Record(RecordContext context)
     {
         var bars = (ErrorBarLayerSpec)Spec;
         var x = bars.X.Column;
-        var first = Rows.Hold(x.LowerBound(context.Boundaries[0], context.XOrigin), x.Length);
-        var end = Rows.Hold(x.LowerBound(context.Boundaries[^1], context.XOrigin), x.Length);
+        var first = x.LowerBound(context.Boundaries[0], context.XOrigin, Rows);
+        var end = x.LowerBound(context.Boundaries[^1], context.XOrigin, Rows);
         if (end - first <= 4L * context.X.Size)
         {
             var half = bars.CapWidth * context.Scale / 2;
@@ -667,6 +677,8 @@ internal sealed class ErrorBarPlan : LayerPlan
 /// </summary>
 internal sealed class RulePlan : LayerPlan
 {
+    private long _checked = -1;
+
     public RulePlan(RuleLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(Channel(spec).Column);
 
@@ -674,14 +686,23 @@ internal sealed class RulePlan : LayerPlan
 
     public override void WaitForIndexes(PlotWorkerPool pool)
     {
+        // The rows a rule searches, the run of a facet's panel or a split's category (row G6b), checked once a version.
         var rule = (RuleLayerSpec)Spec;
         var column = Columns[0];
-        if (!column.IsNonDecreasing(pool))
+        var version = column.Version;
+        if (version == _checked)
+        {
+            return;
+        }
+
+        if (!column.IsNonDecreasing(pool, Rows))
         {
             throw new InvalidOperationException(
                 $"The {(rule.X.IsDefault ? "Y" : "X")} column of a rule layer is not non-decreasing without NaN; a rule's lines are found by searching it (design §5.5.3)."
             );
         }
+
+        _checked = version;
     }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
@@ -690,7 +711,7 @@ internal sealed class RulePlan : LayerPlan
         var reference = ofX ? rule.X : rule.Y;
         if (!reference.IsDefault)
         {
-            sink.AddColumn(reference.Column, data.GetName(reference.Index));
+            AddColumn(sink, reference.Column, data.GetName(reference.Index));
         }
     }
 
@@ -703,8 +724,8 @@ internal sealed class RulePlan : LayerPlan
         var across = vertical ? context.Y : context.X;
         var origin = vertical ? context.XOrigin : context.YOrigin;
         ReadOnlySpan<double> boundaries = vertical ? context.Boundaries : context.YBoundaries();
-        var first = Rows.Hold(column.LowerBound(boundaries[0], origin), column.Length);
-        var end = Rows.Hold(column.LowerBound(boundaries[^1], origin), column.Length);
+        var first = column.LowerBound(boundaries[0], origin, Rows);
+        var end = column.LowerBound(boundaries[^1], origin, Rows);
         var (from, to) = ((float)across.Offset, (float)(across.Offset + across.Size));
         var many = end - first > 4L * axis.Size;
         var buffer = context.Points(3 * (int)(many ? axis.Size : end - first));
@@ -723,7 +744,7 @@ internal sealed class RulePlan : LayerPlan
             var start = first;
             for (var k = 0; k < axis.Size; k++)
             {
-                var next = Rows.Hold(column.LowerBound(boundaries[k + 1], origin), column.Length);
+                var next = column.LowerBound(boundaries[k + 1], origin, Rows);
                 if (next > start)
                 {
                     // The boundaries run with the data; a descending axis runs the pixels the other way.
@@ -749,8 +770,8 @@ internal sealed class RectPlan : LayerPlan
     {
         var rect = (RectLayerSpec)Spec;
         var (a, b) = ofX ? (rect.XMin, rect.XMax) : (rect.YMin, rect.YMax);
-        sink.AddColumn(a.Column, data.GetName(a.Index));
-        sink.AddColumn(b.Column, data.GetName(b.Index));
+        AddColumn(sink, a.Column, data.GetName(a.Index));
+        AddColumn(sink, b.Column, data.GetName(b.Index));
     }
 
     public override void Record(RecordContext context)
@@ -789,8 +810,8 @@ internal sealed class SegmentPlan : LayerPlan
     {
         var segment = (SegmentLayerSpec)Spec;
         var (a, b) = ofX ? (segment.X, segment.XEnd) : (segment.Y, segment.YEnd);
-        sink.AddColumn(a.Column, data.GetName(a.Index));
-        sink.AddColumn(b.Column, data.GetName(b.Index));
+        AddColumn(sink, a.Column, data.GetName(a.Index));
+        AddColumn(sink, b.Column, data.GetName(b.Index));
     }
 
     public override void Record(RecordContext context)

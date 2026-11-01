@@ -1052,10 +1052,10 @@ public sealed class StatG5cTests
         var axis = new StatWork.Axis2D(edges, true, 0, null);
         string Run(PlotWorkerPool pool)
         {
-            var spread = StatWork.SpreadOf(x, groups, null, 0, pool);
-            var grid = StatWork.SpreadOnGrids(x, groups, null, 0, lo, delta, 1024, pool);
-            var sums = StatWork.WindowSums(y, x, groups, null, 0, edges, pool);
-            var cells = StatWork.Bin2D(y, y, axis, axis, pool);
+            var spread = StatWork.SpreadOf(x, groups, null, 0, pool, RowRange.All);
+            var grid = StatWork.SpreadOnGrids(x, groups, null, 0, lo, delta, 1024, pool, RowRange.All);
+            var sums = StatWork.WindowSums(y, x, groups, null, 0, edges, pool, RowRange.All);
+            var cells = StatWork.Bin2D(y, y, axis, axis, pool, RowRange.All);
             return string.Join(
                 ",",
                 spread

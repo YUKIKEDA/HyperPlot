@@ -24,13 +24,6 @@ internal sealed class PlotPlan : IDisposable
     private readonly float _scale;
     private readonly PlotGuides _guides;
     private readonly Dictionary<Column, PlotPyramid> _pyramids = [];
-    private readonly M4Batch _batch = new();
-
-    // The M4 batches of the pairs of scales a layer may lie on (row G6a): at (secondary x ? 1 : 0) + (secondary y ? 2 : 0).
-    // The first is _batch, of the primary pair; the others hold series only when a layer lies on a secondary scale.
-    private readonly M4Batch[] _batches;
-    private readonly ScaleOrigin[] _origins = new ScaleOrigin[4];
-    private readonly double[][] _pairBoundaries = new double[4][];
     private readonly RenderList _list = new();
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
@@ -44,41 +37,21 @@ internal sealed class PlotPlan : IDisposable
     // The channels of a layer's node and of the one before it, for the checks and the diff (design §4.8).
     private readonly ColumnRef[] _channels = new ColumnRef[4];
     private readonly ColumnRef[] _previousChannels = new ColumnRef[4];
-    private readonly (double[] Data, double[] Scale)[] _widths = new (double[], double[])[4];
     private IScale? _xTransform;
     private IScale? _yTransform;
     private IScale? _xTransform2;
     private IScale? _yTransform2;
-    private LayerPlan[] _layers = [];
     private PlotSpec? _spec;
 
-    // The boundaries of the pixel columns along x, W + 1 of them for the panel's width W (H + 1 for its height when
-    // flipped), in data units and in the scale space (design §4.8). The labels on the left set W, so a new domain can change
-    // it: _widths keeps the buffers of the last four lengths, so that drawing domains seen before allocates nothing (§4.6).
-    private double[] _boundaries = [];
-    private double[] _scaleBoundaries = [];
+    // The panels (design §4.5, row G6b): one without a facet. Each holds its layers, batches, boundaries, and domains.
+    private PlotPanel[] _panels = [new PlotPanel()];
+    private PanelDomains[] _learned = new PanelDomains[1];
+    private FacetData? _facet;
 
-    // The boundaries of the pixel columns over the secondary x domain (row G6a): M4 runs a layer on ScaleX2 over them.
-    private double[] _boundaries2 = [];
-    private double[] _scaleBoundaries2 = [];
-
-    // The domains learned (design §4.2), before nice widens them in the layout (§4.6).
-    private ScaleRange _learnedX;
-    private ScaleRange _learnedY;
-    private ScaleRange _learnedX2;
-    private ScaleRange _learnedY2;
-
-    // ScaleRange.None until boundaries are made for a domain: no domain equals it.
-    private ScaleRange _x = ScaleRange.None;
-    private ScaleRange _y;
-    private ScaleRange _x2 = ScaleRange.None;
-    private ScaleRange _y2;
-
-    // The axes of the last recording (row G6a): a layer on a secondary scale is mapped by its pair's.
-    private GeomFrame.Axis _frameX;
-    private GeomFrame.Axis _frameY;
-    private GeomFrame.Axis _frameX2;
-    private GeomFrame.Axis _frameY2;
+    // The batches, origins, and boundaries of every panel's pairs of scales, at panel · 4 + pair: M4 extracts them together.
+    private M4Batch[] _allBatches = [];
+    private ScaleOrigin[] _allOrigins = [];
+    private double[][] _allBoundaries = [];
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlotPlan"/> class for a target of a size in physical pixels, measuring
@@ -93,9 +66,9 @@ internal sealed class PlotPlan : IDisposable
         _pool = pool;
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
-        _context = new RecordContext(_guides, _batch, _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
-        _batches = [_batch, new M4Batch(), new M4Batch(), new M4Batch()];
+        _context = new RecordContext(_guides, _panels[0].Batches[0], _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
         _ownImages = images is null;
+        GatherBatches();
 
         // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10), and polar over the
         // outer circle, ⌈2πR⌉ with R at most half the smaller side (row G11).
@@ -121,7 +94,16 @@ internal sealed class PlotPlan : IDisposable
     internal ColorScale? Color { get; private set; }
 
     /// <summary>Gets the layers' plans. Tests only.</summary>
-    internal IReadOnlyList<LayerPlan> Layers => _layers;
+    internal IReadOnlyList<LayerPlan> Layers => _panels[0].Layers;
+
+    /// <summary>Gets the facet's panels and their rows, or null without a facet (row G6b). Tests only.</summary>
+    internal FacetData? Facet => _facet;
+
+    /// <summary>Gets the number of rasters' mipmaps the plan holds, one a raster however many panels draw it (row G6b). Tests only.</summary>
+    internal int RasterCount => _rasters.Count;
+
+    /// <summary>Gets the panels (row G6b). Tests only.</summary>
+    internal IReadOnlyList<PlotPanel> Panels => _panels;
 
     /// <summary>Gets the layout of the guides. Tests only.</summary>
     internal PlotGuides Guides => _guides;
@@ -130,13 +112,13 @@ internal sealed class PlotPlan : IDisposable
     internal IReadOnlyCollection<PlotPyramid> Pyramids => _pyramids.Values;
 
     /// <summary>Gets the number of pixel columns (rows when flipped) M4 last ran over: W, or H when flipped. Tests only.</summary>
-    internal int PixelColumns => _boundaries.Length - 1;
+    internal int PixelColumns => _panels[0].Boundaries.Length - 1;
 
     /// <summary>Gets the x domain of the last extraction, as an origin and differences (design §3.6). Tests only.</summary>
-    internal ScaleRange XDomain => _x;
+    internal ScaleRange XDomain => _panels[0].X;
 
     /// <summary>Gets the y domain of the last extraction. Tests only.</summary>
-    internal ScaleRange YDomain => _y;
+    internal ScaleRange YDomain => _panels[0].Y;
 
     /// <summary>
     /// Compiles a spec against the last one drawn, waits until its pyramids and X statistics are built for the columns'
@@ -179,7 +161,7 @@ internal sealed class PlotPlan : IDisposable
 
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
         _spec = null;
-        var data = previous is null || DataChanged(previous, spec);
+        var data = previous is null || DataChanged(previous, spec) || FacetDataChanged(previous.Facet, spec.Facet);
         var flipped = Flipped(spec);
 
         // A flip, a polar system, its theta, and its hole change the axes' lengths, which nice and the boundaries depend on:
@@ -190,7 +172,8 @@ internal sealed class PlotPlan : IDisposable
             || !SameMapping(previous.ScaleY, spec.ScaleY)
             || !SameMapping(previous.ScaleX2, spec.ScaleX2)
             || !SameMapping(previous.ScaleY2, spec.ScaleY2)
-            || CoordMappingChanged(previous.Coord, spec.Coord);
+            || CoordMappingChanged(previous.Coord, spec.Coord)
+            || previous.Facet?.Scales != spec.Facet?.Scales;
         var ranges = data || RangesChanged(previous!, spec);
         var looks =
             data
@@ -206,47 +189,85 @@ internal sealed class PlotPlan : IDisposable
             || AxesChanged(previous.ScaleX, spec.ScaleX)
             || AxesChanged(previous.ScaleY, spec.ScaleY)
             || AxesChanged(previous.ScaleX2, spec.ScaleX2)
-            || AxesChanged(previous.ScaleY2, spec.ScaleY2);
+            || AxesChanged(previous.ScaleY2, spec.ScaleY2)
+            || (previous.Facet as FacetWrapSpec)?.ColumnCount != (spec.Facet as FacetWrapSpec)?.ColumnCount;
         if (scales)
         {
             // A new transform makes new boundaries even over the same range of the scale space.
             // A band scale has no transform: its axis is the space of category positions (design §4.2, row G7b).
-            (_xTransform, _yTransform, _x) = (
+            (_xTransform, _yTransform) = (
                 (spec.ScaleX as ContinuousScaleSpec)?.CreateTransform(),
-                ((ContinuousScaleSpec)spec.ScaleY).CreateTransform(),
-                ScaleRange.None
+                ((ContinuousScaleSpec)spec.ScaleY).CreateTransform()
             );
-            (_xTransform2, _yTransform2, _x2) = (spec.ScaleX2?.CreateTransform(), spec.ScaleY2?.CreateTransform(), ScaleRange.None);
+            (_xTransform2, _yTransform2) = (spec.ScaleX2?.CreateTransform(), spec.ScaleY2?.CreateTransform());
+            foreach (var panel in _panels)
+            {
+                (panel.X, panel.X2) = (ScaleRange.None, ScaleRange.None);
+            }
         }
 
         // A stack over a numeric x whose columns changed is made again (row G5a): its union of x values may change length.
         // Bins, densities, and moving averages are made in the x scale's space, 2D bins in the y scale's too (rows G5b and
         // G5c): another space (not another domain) makes the layers again.
+        // A gathered panel's rows follow their columns' new versions before the layers check whether they are stale (row G6b).
+        if (!data)
+        {
+            _ = _facet?.Refresh(_pool);
+        }
+
+        // A facet's new arrangement (its columns' count or its scales) keeps its panels' rows; new scales change where a stat's
+        // edges come from, a shared or a free direction (design §4.5).
+        if (
+            !data
+            && previous!.Facet is { } before
+            && spec.Facet is { } after
+            && (before.Scales != after.Scales || (before as FacetWrapSpec)?.ColumnCount != (after as FacetWrapSpec)?.ColumnCount)
+        )
+        {
+            _facet!.Rearrange(after);
+        }
+
         if (
             data
             || StaleLayers()
+            || (previous is not null && previous.Facet?.Scales != spec.Facet?.Scales && HasStat(spec))
             || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true, secondary: false))
             || (previous is not null && !SameSpace(previous.ScaleY, spec.ScaleY) && SpaceLayers(spec, ofX: false, secondary: false))
             || (previous is not null && !SameSpace(previous.ScaleX2, spec.ScaleX2) && SpaceLayers(spec, ofX: true, secondary: true))
             || (previous is not null && !SameSpace(previous.ScaleY2, spec.ScaleY2) && SpaceLayers(spec, ofX: false, secondary: true))
         )
         {
-            BuildLayers(spec);
+            BuildLayers(spec, data);
         }
         else
         {
-            // The layers name the same columns; take the new nodes for their looks, baselines, and widths.
-            for (var i = 0; i < _layers.Length; i++)
+            // The layers name the same columns; take the new nodes for their looks, baselines, and widths. A gathered panel's
+            // layers read its own table: a new node of other looks is remapped onto it (row G6b).
+            foreach (var panel in _panels)
             {
-                _layers[i].Take(spec.Layers[i]);
+                for (var i = 0; i < panel.Layers.Length; i++)
+                {
+                    var layer = spec.Layers[i];
+                    if (panel.Data is not { Map: { } map } || FacetData.Rowless(layer))
+                    {
+                        panel.Layers[i].Take(layer);
+                    }
+                    else if (previous is null || !(ReferenceEquals(previous.Layers[i], layer) || SplitPlan.SameLooks(previous.Layers[i], layer)))
+                    {
+                        panel.Layers[i].Take(FacetData.Remap(layer, map));
+                    }
+                }
             }
         }
 
         // The versions are read before the wait and the extraction. An Invalidate that comes after this read leaves the
         // recorded versions behind the column's, so the next Render extracts again.
-        foreach (var layer in _layers)
+        foreach (var panel in _panels)
         {
-            layer.ReadVersions();
+            foreach (var layer in panel.Layers)
+            {
+                layer.ReadVersions();
+            }
         }
 
         WaitForIndexes();
@@ -261,26 +282,69 @@ internal sealed class PlotPlan : IDisposable
                 || (spec.ScaleY2 is { } y2 && Learns(y2))
             )
             {
-                foreach (var layer in _layers)
+                foreach (var panel in _panels)
                 {
-                    layer.BeginLearning();
+                    foreach (var layer in panel.Layers)
+                    {
+                        layer.BeginLearning();
+                    }
                 }
             }
 
-            _learnedX = spec.ScaleX is BandScaleSpec band
-                ? BandAxis.Domain(band, BandColumn(spec)?.CategoryCount ?? 0)
-                : Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true, secondary: false);
-            _learnedY = Learn(spec, (ContinuousScaleSpec)spec.ScaleY, _yTransform, ofX: false, secondary: false);
-
-            // A secondary scale learns from the layers on it only, by the same rules (design §4.2, row G6a).
-            if (spec.ScaleX2 is { } secondaryX)
+            // A shared direction learns once from every panel; a free one a panel each (design §4.5, row G6b). A band scale
+            // keeps all its categories.
+            var (freeX, freeY) = (_facet?.Arrangement.FreeXOf(spec.ScaleX) == true, _facet?.Arrangement is { FreeY: true });
+            for (var p = 0; p < _panels.Length; p++)
             {
-                _learnedX2 = Learn(spec, secondaryX, _xTransform2, ofX: true, secondary: true);
-            }
+                var panel = _panels[p];
+                var first = _panels[0];
+                if (spec.ScaleX is BandScaleSpec band)
+                {
+                    panel.LearnedX = BandAxis.Domain(band, BandColumn(spec)?.CategoryCount ?? 0);
+                }
+                else
+                {
+                    panel.LearnedX =
+                        freeX || p == 0
+                            ? Learn(
+                                spec,
+                                (ContinuousScaleSpec)spec.ScaleX,
+                                _xTransform,
+                                ofX: true,
+                                secondary: false,
+                                freeX ? _panels.AsSpan(p, 1) : _panels
+                            )
+                            : first.LearnedX;
+                }
 
-            if (spec.ScaleY2 is { } secondaryY)
-            {
-                _learnedY2 = Learn(spec, secondaryY, _yTransform2, ofX: false, secondary: true);
+                panel.LearnedY =
+                    freeY || p == 0
+                        ? Learn(
+                            spec,
+                            (ContinuousScaleSpec)spec.ScaleY,
+                            _yTransform,
+                            ofX: false,
+                            secondary: false,
+                            freeY ? _panels.AsSpan(p, 1) : _panels
+                        )
+                        : first.LearnedY;
+
+                // A secondary scale learns from the layers on it only, by the same rules (design §4.2, row G6a).
+                if (spec.ScaleX2 is { } secondaryX)
+                {
+                    panel.LearnedX2 =
+                        freeX || p == 0
+                            ? Learn(spec, secondaryX, _xTransform2, ofX: true, secondary: true, freeX ? _panels.AsSpan(p, 1) : _panels)
+                            : first.LearnedX2;
+                }
+
+                if (spec.ScaleY2 is { } secondaryY)
+                {
+                    panel.LearnedY2 =
+                        freeY || p == 0
+                            ? Learn(spec, secondaryY, _yTransform2, ofX: false, secondary: true, freeY ? _panels.AsSpan(p, 1) : _panels)
+                            : first.LearnedY2;
+                }
             }
         }
 
@@ -294,62 +358,79 @@ internal sealed class PlotPlan : IDisposable
             }
 
             // The layout chooses the ticks, which nice may widen the domains to (design §4.6, §4.8).
-            _guides.Layout(
-                spec,
-                _xTransform,
-                _learnedX,
-                _yTransform,
-                _learnedY,
-                BandColumn(spec),
-                Color,
-                new(_xTransform2, _learnedX2, _yTransform2, _learnedY2)
-            );
+            for (var p = 0; p < _panels.Length; p++)
+            {
+                var panel = _panels[p];
+                _learned[p] = new PanelDomains(panel.LearnedX, panel.LearnedY, panel.LearnedX2, panel.LearnedY2);
+            }
+
+            _guides.Layout(spec, _xTransform, _yTransform, BandColumn(spec), Color, _xTransform2, _yTransform2, _facet?.Arrangement, _learned);
             Color?.CheckMiddle();
             Layouts++;
             if (_guides.Empty)
             {
                 // Only the background, which the renderer clears to (design §4.6).
                 _list.Clear();
-                _x = ScaleRange.None;
+                foreach (var panel in _panels)
+                {
+                    panel.X = ScaleRange.None;
+                }
+
                 _spec = spec;
                 return _list;
             }
 
-            var x = _guides.X.FinalDomain;
-            _y = _guides.Y.FinalDomain;
-            var along =
-                _guides.Polar is { } polar ? polar.AlongSize
-                : flipped ? _guides.Height
-                : _guides.Width;
-            var boundaries = x != _x || _boundaries.Length != along + 1;
-            if (boundaries)
+            var boundaries = false;
+            for (var p = 0; p < _panels.Length; p++)
             {
-                MakeBoundaries(x, along);
-            }
+                var (panel, guide) = (_panels[p], _guides.PanelAt(p));
+                var x = guide.X.FinalDomain;
+                panel.Y = guide.Y.FinalDomain;
+                var along =
+                    guide.Polar is { } polar ? polar.AlongSize
+                    : flipped ? guide.Height
+                    : guide.Width;
+                if (x != panel.X || panel.Boundaries.Length != along + 1)
+                {
+                    panel.MakeBoundaries(x, along, _xTransform);
+                    boundaries = true;
+                }
 
-            // The secondary scales (row G6a): their own boundaries, made the same way over the secondary x domain.
-            _y2 = spec.ScaleY2 is null ? default : _guides.Y2.FinalDomain;
-            if (spec.ScaleX2 is not null && (_guides.X2.FinalDomain != _x2 || _boundaries2.Length != along + 1))
-            {
-                MakeSecondaryBoundaries(_guides.X2.FinalDomain, along);
-                boundaries = true;
+                // The secondary scales (row G6a): their own boundaries, made the same way over the secondary x domain.
+                panel.Y2 = spec.ScaleY2 is null ? default : guide.Y2.FinalDomain;
+                if (spec.ScaleX2 is not null && (guide.X2.FinalDomain != panel.X2 || panel.Boundaries2.Length != along + 1))
+                {
+                    panel.MakeSecondaryBoundaries(guide.X2.FinalDomain, along, _xTransform2);
+                    boundaries = true;
+                }
             }
 
             if (extract || boundaries)
             {
                 // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A pair
-                // with a secondary scale runs over its own x boundaries and origins, beside the primary pair (row G6a).
-                for (var pair = 0; pair < _batches.Length; pair++)
+                // with a secondary scale runs over its own x boundaries and origins, beside the primary pair (row G6a). Every
+                // panel's pairs run together (row G6b).
+                for (var p = 0; p < _panels.Length; p++)
                 {
-                    (_origins[pair], _pairBoundaries[pair]) = (OriginOf(pair), (pair & 1) != 0 ? _boundaries2 : _boundaries);
+                    var panel = _panels[p];
+                    for (var pair = 0; pair < 4; pair++)
+                    {
+                        (_allOrigins[(p * 4) + pair], _allBoundaries[(p * 4) + pair]) = (
+                            OriginOf(panel, pair),
+                            (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries
+                        );
+                    }
                 }
 
-                _pool.ExtractTogether(_batches, _origins, _pairBoundaries, _batches.Length);
+                _pool.ExtractTogether(_allBatches, _allOrigins, _allBoundaries, _allBatches.Length);
 
                 Extractions++;
-                foreach (var layer in _layers)
+                foreach (var panel in _panels)
                 {
-                    layer.MarkExtracted();
+                    foreach (var layer in panel.Layers)
+                    {
+                        layer.MarkExtracted();
+                    }
                 }
             }
 
@@ -376,13 +457,13 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _rasters.Clear();
-        foreach (var layer in _layers)
+        foreach (var panel in _panels)
         {
-            layer.Release();
+            panel.Release();
         }
 
-        _layers = [];
-        _batch.Clear();
+        _facet?.Dispose();
+        _facet = null;
         _spec = null;
     }
 
@@ -605,6 +686,7 @@ internal sealed class PlotPlan : IDisposable
         CheckTextRows(plot);
         CheckImages(plot);
         CheckAxes(plot);
+        FacetData.Check(plot);
         CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true, secondary: false);
         CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false, secondary: false);
         if (plot.ScaleX2 is { } x2)
@@ -790,10 +872,13 @@ internal sealed class PlotPlan : IDisposable
                 _sink.AddColumn(raster.Values, RasterName);
             }
 
-            // 2D bins add their cells' values (row G5c).
-            if (_layers[i] is StatPlan { CellValues: { } cells })
+            // 2D bins add their cells' values (row G5c), every panel's (row G6b).
+            foreach (var panel in _panels)
             {
-                _sink.AddColumn(cells, CellsName);
+                if (panel.Layers[i] is StatPlan { CellValues: { } cells })
+                {
+                    _sink.AddColumn(cells, CellsName);
+                }
             }
         }
 
@@ -952,11 +1037,14 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Returns whether a layer's workers' results are older than its columns (row G5a).</summary>
     private bool StaleLayers()
     {
-        foreach (var layer in _layers)
+        foreach (var panel in _panels)
         {
-            if (layer.Stale)
+            foreach (var layer in panel.Layers)
             {
-                return true;
+                if (layer.Stale)
+                {
+                    return true;
+                }
             }
         }
 
@@ -1156,7 +1244,7 @@ internal sealed class PlotPlan : IDisposable
     /// column, and as <see cref="double"/> once a floating-point one comes in. With a transform it is in the scale space: the
     /// ends are mapped, and the cases of no value and one value are taken there.
     /// </summary>
-    private ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX, bool secondary)
+    private ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX, bool secondary, ReadOnlySpan<PlotPanel> panels)
     {
         if (scale is TimeScaleSpec { Domain: { } time })
         {
@@ -1171,12 +1259,15 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _sink.Reset();
-        foreach (var layer in _layers)
+        foreach (var panel in panels)
         {
-            // A scale learns from the layers it maps (row G6a): the primary from those not on the secondary.
-            if ((ofX ? layer.Spec.SecondaryX : layer.Spec.SecondaryY) == secondary)
+            foreach (var layer in panel.Layers)
             {
-                layer.AddRanges(_sink, ofX, spec.Data);
+                // A scale learns from the layers it maps (row G6a): the primary from those not on the secondary.
+                if ((ofX ? layer.Spec.SecondaryX : layer.Spec.SecondaryY) == secondary)
+                {
+                    layer.AddRanges(_sink, ofX, panel.Table ?? spec.Data);
+                }
             }
         }
 
@@ -1272,152 +1363,210 @@ internal sealed class PlotPlan : IDisposable
         }
     }
 
-    /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over the primary x domain into the plan's buffers (design §4.8): a
-    /// new width takes kept buffers or new ones in the place of the least recent.
-    /// </summary>
-    private void MakeBoundaries(ScaleRange domain, int width)
-    {
-        // Until the buffer holds this domain's boundaries, it holds no domain's. A new width makes new buffers: the layout
-        // changed, which is not the steady state.
-        _x = ScaleRange.None;
-        if (_boundaries.Length != width + 1)
-        {
-            (_boundaries, _scaleBoundaries) = Buffers(width + 1);
-        }
-
-        WriteBoundaries(domain, width, _boundaries, _scaleBoundaries, _xTransform);
-        _x = domain;
-    }
-
-    /// <summary>
-    /// Writes the boundaries of the pixel columns over the secondary x domain (row G6a), as <see cref="MakeBoundaries"/> does
-    /// over the primary: a new width makes new buffers, which is not the steady state.
-    /// </summary>
-    private void MakeSecondaryBoundaries(ScaleRange domain, int width)
-    {
-        _x2 = ScaleRange.None;
-        if (_boundaries2.Length != width + 1)
-        {
-            (_boundaries2, _scaleBoundaries2) = (new double[width + 1], new double[width + 1]);
-        }
-
-        WriteBoundaries(domain, width, _boundaries2, _scaleBoundaries2, _xTransform2);
-        _x2 = domain;
-    }
-
-    /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over an x domain, or throws when they do not increase in double (design
-    /// §4.8). Without a transform they are differences from the domain's origin; with one they are made in the scale space and
-    /// mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase (design §4.2). Allocates nothing,
-    /// so that a new x domain costs no garbage.
-    /// </summary>
-    private static void WriteBoundaries(ScaleRange domain, int width, double[] boundaries, double[] scaleBoundaries, IScale? transform)
-    {
-        var target = transform is null ? boundaries : scaleBoundaries;
-        for (var k = 0; k <= width; k++)
-        {
-            target[k] = domain.Lower + ((domain.Upper - domain.Lower) * k / width);
-            if (k > 0 && !(target[k - 1] < target[k]))
-            {
-                throw new ArgumentException(
-                    $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] is too narrow for {width} pixel columns: their boundaries do not increase in double."
-                );
-            }
-        }
-
-        if (transform is null)
-        {
-            return;
-        }
-
-        for (var k = 0; k <= width; k++)
-        {
-            scaleBoundaries[k] += domain.Origin;
-        }
-
-        transform.Inverse(scaleBoundaries, boundaries);
-        for (var k = 0; k <= width; k++)
-        {
-            if (!double.IsFinite(boundaries[k]) || (k > 0 && !(boundaries[k - 1] < boundaries[k])))
-            {
-                throw new ArgumentException(
-                    $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] of the scale space is too narrow for {width} pixel columns: its boundaries, mapped back to data units, do not increase in double."
-                );
-            }
-        }
-    }
-
     /// <summary>Returns the number of a layer's pair of scales (row G6a): (secondary x ? 1 : 0) + (secondary y ? 2 : 0).</summary>
     private static int Pair(LayerSpec layer) => (layer.SecondaryX ? 1 : 0) + (layer.SecondaryY ? 2 : 0);
 
-    /// <summary>Returns the origins a pair of scales reads its columns in (row G6a): of its x domain and its y domain, 0 with a transform.</summary>
-    private ScaleOrigin OriginOf(int pair)
+    /// <summary>Returns the origins a panel's pair of scales reads its columns in (row G6a): of its x domain and its y domain, 0 with a transform.</summary>
+    private ScaleOrigin OriginOf(PlotPanel panel, int pair)
     {
         var (secondaryX, secondaryY) = ((pair & 1) != 0, (pair & 2) != 0);
-        var x = secondaryX ? (_xTransform2 is null ? _x2.Origin : 0) : (_xTransform is null ? _x.Origin : 0);
-        var y = secondaryY ? (_yTransform2 is null ? _y2.Origin : 0) : (_yTransform is null ? _y.Origin : 0);
+        var x = secondaryX ? (_xTransform2 is null ? panel.X2.Origin : 0) : (_xTransform is null ? panel.X.Origin : 0);
+        var y = secondaryY ? (_yTransform2 is null ? panel.Y2.Origin : 0) : (_yTransform is null ? panel.Y.Origin : 0);
         return new ScaleOrigin(x, y);
     }
 
-    /// <summary>Returns the buffers of a length: kept ones, or new ones in the place of the least recent.</summary>
-    private (double[] Data, double[] Scale) Buffers(int length)
+    /// <summary>
+    /// Makes a layer's plan in a panel (design §4.5, row G6b): over the panel's run, or remapped onto its gathered table; an
+    /// image or a user's geom as it is in every panel; nothing in an empty cell. A stat's edges and ranges come from the whole
+    /// layer along a shared direction and from the panel's rows along a free one.
+    /// </summary>
+    private static LayerPlan PanelLayer(LayerSpec layer, PanelData? data, PlanBuild build, (StatRange? X, StatRange? Y) shared)
     {
-        for (var i = 0; i < _widths.Length; i++)
+        if (data is null || FacetData.Rowless(layer))
         {
-            if (_widths[i].Data?.Length == length)
+            return LayerPlan.Create(layer, build);
+        }
+
+        if (data.Empty)
+        {
+            return new EmptyPlan(layer);
+        }
+
+        var mapped = data.Map is { } map ? FacetData.Remap(layer, map) : layer;
+        StatSource? source = null;
+        if (layer.Stat is not null)
+        {
+            var (ownX, ownY) = StatPlan.StatColumns(mapped);
+            source = new StatSource(
+                shared.X ?? new StatRange([(ownX, data.Rows)]),
+                ownY is null ? null : shared.Y ?? new StatRange([(ownY, data.Rows)])
+            );
+        }
+
+        return LayerPlan.Create(mapped, build, data.Rows, source);
+    }
+
+    /// <summary>
+    /// Returns each stat layer's ranges along a facet's shared directions (design §4.5, row G6b): the union of every panel's
+    /// rows, a run or a gathered table each, made once a layer so that its panels read it once. Rows in no panel are left
+    /// out. Null along a free direction, and for a layer without a stat or a plot without a facet.
+    /// </summary>
+    private (StatRange? X, StatRange? Y)[] SharedSources(PlotSpec spec)
+    {
+        var shared = new (StatRange?, StatRange?)[spec.Layers.Count];
+        if (_facet is not { } facet)
+        {
+            return shared;
+        }
+
+        for (var i = 0; i < shared.Length; i++)
+        {
+            var layer = spec.Layers[i];
+            if (layer.Stat is null || FacetData.Rowless(layer))
             {
-                var found = _widths[i];
-                Array.Copy(_widths, 0, _widths, 1, i);
-                _widths[0] = found;
-                return found;
+                continue;
+            }
+
+            var xs = new List<(Column, RowRange)>();
+            var ys = new List<(Column, RowRange)>();
+            foreach (var data in facet.Panels)
+            {
+                if (!data.Empty)
+                {
+                    var (x, y) = StatPlan.StatColumns(data.Map is { } map ? FacetData.Remap(layer, map) : layer);
+                    xs.Add((x, data.Rows));
+                    if (y is not null)
+                    {
+                        ys.Add((y, data.Rows));
+                    }
+                }
+            }
+
+            shared[i] = (
+                facet.Arrangement.FreeXOf(spec.ScaleX) ? null : new StatRange(xs),
+                facet.Arrangement.FreeY || ys.Count == 0 ? null : new StatRange(ys)
+            );
+        }
+
+        return shared;
+    }
+
+    /// <summary>Returns whether a layer has a stat, whose edges a facet's new scales move (row G6b).</summary>
+    private static bool HasStat(PlotSpec spec)
+    {
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (spec.Layers[i].Stat is not null)
+            {
+                return true;
             }
         }
 
-        Array.Copy(_widths, 0, _widths, 1, _widths.Length - 1);
-        _widths[0] = (new double[length], new double[length]);
-        return _widths[0];
+        return false;
+    }
+
+    /// <summary>
+    /// Returns whether a facet's kind or columns changed (design §4.8, row G6b): the "data" stage, which finds the panels and
+    /// their rows again. Its scales and its columns' count only arrange them again.
+    /// </summary>
+    private static bool FacetDataChanged(FacetSpec? before, FacetSpec? after) =>
+        before is null || after is null
+            ? before is not null || after is not null
+            : before.Id != after.Id
+                && (before, after) switch
+                {
+                    (FacetWrapSpec b, FacetWrapSpec a) => b.By != a.By,
+                    (FacetGridSpec b, FacetGridSpec a) => b.Rows != a.Rows || b.Columns != a.Columns,
+                    _ => true,
+                };
+
+    /// <summary>Gathers every panel's batches into the arrays M4 extracts together, made when the panels change.</summary>
+    private void GatherBatches()
+    {
+        var count = _panels.Length * 4;
+        if (_allBatches.Length != count)
+        {
+            (_allBatches, _allOrigins, _allBoundaries) = (new M4Batch[count], new ScaleOrigin[count], new double[count][]);
+        }
+
+        for (var p = 0; p < _panels.Length; p++)
+        {
+            for (var pair = 0; pair < 4; pair++)
+            {
+                _allBatches[(p * 4) + pair] = _panels[p].Batches[pair];
+            }
+        }
     }
 
     /// <summary>
     /// Makes the layers again (design §4.8): a pyramid for each Y column not held yet, the layers' M4 series, and frees the
     /// pyramids no layer uses.
     /// </summary>
-    private void BuildLayers(PlotSpec spec)
+    private void BuildLayers(PlotSpec spec, bool data)
     {
-        foreach (var batch in _batches)
-        {
-            batch.Clear();
-        }
-
         var used = new HashSet<Column>();
         var rasters = new HashSet<Raster>();
-        var build = new PlanBuild(
-            Pyramid,
-            column => _pyramids.GetValueOrDefault(column),
-            _batch,
-            _capacity,
-            _pool,
-            Mipmap,
-            spec.ScaleX,
-            _xTransform,
-            spec.ScaleY,
-            _yTransform
-        );
-        var layers = new LayerPlan[spec.Layers.Count];
-        for (var i = 0; i < layers.Length; i++)
+        var olds = new List<LayerPlan>();
+
+        // The facet's panels and their rows (row G6b): found again when the facet or the layers' columns changed.
+        var oldFacet = _facet;
+        if (spec.Facet is null)
         {
-            // A layer's series go into the batch of its pair of scales, and its stat reads those scales (row G6a).
-            var layer = spec.Layers[i];
-            build.Layer = i;
-            build.Use(
-                _batches[Pair(layer)],
-                layer.SecondaryX ? spec.ScaleX2 : spec.ScaleX,
-                layer.SecondaryX ? _xTransform2 : _xTransform,
-                layer.SecondaryY ? spec.ScaleY2 : spec.ScaleY,
-                layer.SecondaryY ? _yTransform2 : _yTransform
+            _facet = null;
+        }
+        else if (data || _facet is null)
+        {
+            _facet = FacetData.Build(spec, _pool);
+        }
+
+        var count = _facet?.Panels.Length ?? 1;
+        if (_panels.Length != count)
+        {
+            olds.AddRange(_panels.SelectMany(p => p.Layers));
+            _panels = [.. Enumerable.Range(0, count).Select(_ => new PlotPanel())];
+            _learned = new PanelDomains[count];
+        }
+
+        var shared = SharedSources(spec);
+        for (var p = 0; p < count; p++)
+        {
+            var panel = _panels[p];
+            (panel.Data, panel.Table) = _facet is null ? (null, spec.Data) : (_facet.Panels[p], _facet.Panels[p].Data);
+            foreach (var batch in panel.Batches)
+            {
+                batch.Clear();
+            }
+
+            var build = new PlanBuild(
+                Pyramid,
+                column => _pyramids.GetValueOrDefault(column),
+                panel.Batches[0],
+                _capacity,
+                _pool,
+                Mipmap,
+                spec.ScaleX,
+                _xTransform,
+                spec.ScaleY,
+                _yTransform
             );
-            layers[i] = LayerPlan.Create(layer, build);
+            var layers = new LayerPlan[spec.Layers.Count];
+            for (var i = 0; i < layers.Length; i++)
+            {
+                // A layer's series go into the batch of its pair of scales, and its stat reads those scales (row G6a).
+                var layer = spec.Layers[i];
+                build.Layer = i;
+                build.Use(
+                    panel.Batches[Pair(layer)],
+                    layer.SecondaryX ? spec.ScaleX2 : spec.ScaleX,
+                    layer.SecondaryX ? _xTransform2 : _xTransform,
+                    layer.SecondaryY ? spec.ScaleY2 : spec.ScaleY,
+                    layer.SecondaryY ? _yTransform2 : _yTransform
+                );
+                layers[i] = PanelLayer(layer, panel.Data, build, shared[i]);
+            }
+
+            olds.AddRange(panel.Layers);
+            panel.Layers = layers;
         }
 
         foreach (var column in _pyramids.Keys.ToArray())
@@ -1438,12 +1587,17 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
-        foreach (var old in _layers)
+        foreach (var old in olds)
         {
             old.Release();
         }
 
-        _layers = layers;
+        if (!ReferenceEquals(oldFacet, _facet))
+        {
+            oldFacet?.Dispose();
+        }
+
+        GatherBatches();
 
         RasterPyramid Mipmap(Raster raster)
         {
@@ -1488,20 +1642,26 @@ internal sealed class PlotPlan : IDisposable
             mipmap.Update(_pool);
         }
 
-        foreach (var layer in _layers)
+        foreach (var panel in _panels)
         {
-            layer.WaitForIndexes(_pool);
+            foreach (var layer in panel.Layers)
+            {
+                layer.WaitForIndexes(_pool);
+            }
         }
     }
 
     /// <summary>Returns whether a column's values changed between the last extraction and this Render's read of the versions (an Invalidate).</summary>
     private bool ValuesChanged()
     {
-        foreach (var layer in _layers)
+        foreach (var panel in _panels)
         {
-            if (layer.ValuesChanged())
+            foreach (var layer in panel.Layers)
             {
-                return true;
+                if (layer.ValuesChanged())
+                {
+                    return true;
+                }
             }
         }
 
@@ -1509,11 +1669,32 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
-    /// Records the guides behind, each layer in order inside the panel's clip, and the guides over (design §4.6, §5.5.3). A
+    /// Records the guides behind, each panel's layers in order inside its clip, and the guides over (design §4.6, §5.5.3). A
     /// layer maps its values to pixels in double, through the transforms a span at a time. A horizontal axis runs left to
     /// right and a vertical one bottom to top, or the other way when reversed; flipped, x is the vertical one (row G10).
     /// </summary>
     private void Record(PlotSpec spec, bool flipped)
+    {
+        _list.Clear();
+        _context.Theme = spec.Theme;
+        if (_ownImages)
+        {
+            // No backend sends the plan's own cache: what the last frame staged counts as sent.
+            _context.Images.Sent();
+        }
+
+        _context.Images.BeginFrame();
+        _guides.RecordBehind(_list, spec);
+        for (var p = 0; p < _panels.Length; p++)
+        {
+            RecordPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
+        }
+
+        _guides.RecordOver(_list, spec);
+    }
+
+    /// <summary>Records a panel's layers inside its clip, mapped by its axes (row G6b).</summary>
+    private void RecordPanel(PlotSpec spec, PlotPanel panel, PanelGuide guide, bool flipped)
     {
         var yScale = (ContinuousScaleSpec)spec.ScaleY;
 
@@ -1524,84 +1705,75 @@ internal sealed class PlotPlan : IDisposable
             ContinuousScaleSpec c => (c.Reverse, c.Clamp, null),
             _ => (false, false, null),
         };
-        _list.Clear();
-        _context.Theme = spec.Theme;
-        _context.Use(_batch);
-        if (_ownImages)
-        {
-            // No backend sends the plan's own cache: what the last frame staged counts as sent.
-            _context.Images.Sent();
-        }
-
-        _context.Images.BeginFrame();
-        _guides.RecordBehind(_list, spec);
-        var (left, top, width, height) = (_guides.Left, _guides.Top, _guides.Width, _guides.Height);
-        if (_guides.Polar is { } polar)
+        _context.Use(panel.Batches[0]);
+        var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
+        if (guide.Polar is { } polar)
         {
             // The stretched space (design §4.4): each axis from 0 over its pixels, increasing with its data unless reversed.
-            var polarX = new GeomFrame.Axis(_xTransform, _x, xReverse, xClamp, 0, polar.AlongSize, band);
-            var polarY = new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
-            _context.Begin(polarX, polarY, _boundaries, _scale, flipped: false, (left, top, width, height), polar);
-            RecordLayers(spec.Theme.Palette, flipped: false);
-            _guides.RecordOver(_list, spec);
+            var polarX = new GeomFrame.Axis(_xTransform, panel.X, xReverse, xClamp, 0, polar.AlongSize, band);
+            var polarY = new GeomFrame.Axis(_yTransform, panel.Y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
+            _context.Begin(polarX, polarY, panel.Boundaries, _scale, flipped: false, (left, top, width, height), polar);
+            RecordLayers(panel, spec.Theme.Palette, flipped: false);
             return;
         }
 
         var x = flipped
-            ? new GeomFrame.Axis(_xTransform, _x, !xReverse, xClamp, top, height, band)
-            : new GeomFrame.Axis(_xTransform, _x, xReverse, xClamp, left, width, band);
+            ? new GeomFrame.Axis(_xTransform, panel.X, !xReverse, xClamp, top, height, band)
+            : new GeomFrame.Axis(_xTransform, panel.X, xReverse, xClamp, left, width, band);
         var y = flipped
-            ? new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, left, width)
-            : new GeomFrame.Axis(_yTransform, _y, !yScale.Reverse, yScale.Clamp, top, height);
+            ? new GeomFrame.Axis(_yTransform, panel.Y, yScale.Reverse, yScale.Clamp, left, width)
+            : new GeomFrame.Axis(_yTransform, panel.Y, !yScale.Reverse, yScale.Clamp, top, height);
 
         // The secondary scales' axes over the same panel (row G6a), each with its own domain, transform, reverse, and clamp.
-        (_frameX, _frameY, _frameX2, _frameY2) = (x, y, x, y);
-        if (spec.ScaleX2 is { } x2)
+        var (x2, y2) = (x, y);
+        if (spec.ScaleX2 is { } secondX)
         {
-            _frameX2 = flipped
-                ? new GeomFrame.Axis(_xTransform2, _x2, !x2.Reverse, x2.Clamp, top, height)
-                : new GeomFrame.Axis(_xTransform2, _x2, x2.Reverse, x2.Clamp, left, width);
+            x2 = flipped
+                ? new GeomFrame.Axis(_xTransform2, panel.X2, !secondX.Reverse, secondX.Clamp, top, height)
+                : new GeomFrame.Axis(_xTransform2, panel.X2, secondX.Reverse, secondX.Clamp, left, width);
         }
 
-        if (spec.ScaleY2 is { } y2)
+        if (spec.ScaleY2 is { } secondY)
         {
-            _frameY2 = flipped
-                ? new GeomFrame.Axis(_yTransform2, _y2, y2.Reverse, y2.Clamp, left, width)
-                : new GeomFrame.Axis(_yTransform2, _y2, !y2.Reverse, y2.Clamp, top, height);
+            y2 = flipped
+                ? new GeomFrame.Axis(_yTransform2, panel.Y2, secondY.Reverse, secondY.Clamp, left, width)
+                : new GeomFrame.Axis(_yTransform2, panel.Y2, !secondY.Reverse, secondY.Clamp, top, height);
         }
 
-        _context.Begin(x, y, _boundaries, _scale, flipped, (left, top, width, height), null);
-        RecordLayers(spec.Theme.Palette, flipped);
-        _guides.RecordOver(_list, spec);
+        panel.Frames = (x, y, x2, y2);
+        _context.Begin(x, y, panel.Boundaries, _scale, flipped, (left, top, width, height), null);
+        RecordLayers(panel, spec.Theme.Palette, flipped);
     }
 
     /// <summary>
-    /// Records each layer in order inside the panel's clip, in its series color where its spec gives none; a polar layer's fills
+    /// Records a panel's layers in order inside its clip, in its series color where its spec gives none; a polar layer's fills
     /// go out as one shape after it.
     /// </summary>
-    private void RecordLayers(Palette palette, bool flipped)
+    private void RecordLayers(PlotPanel panel, Palette palette, bool flipped)
     {
         _context.ClipToPanel();
         var current = 0;
-        for (var i = 0; i < _layers.Length; i++)
+        var layers = panel.Layers;
+        for (var i = 0; i < layers.Length; i++)
         {
             // The series color of the layer's position (design §4.1, row G7a).
-            var layer = _layers[i];
+            var layer = layers[i];
 
             // A layer on a secondary scale is mapped by its pair's axes and reads its pair's batch (row G6a). Polar has none.
             var pair = Pair(layer.Spec);
             if (pair != current)
             {
+                var frames = panel.Frames;
                 _context.Begin(
-                    (pair & 1) != 0 ? _frameX2 : _frameX,
-                    (pair & 2) != 0 ? _frameY2 : _frameY,
-                    (pair & 1) != 0 ? _boundaries2 : _boundaries,
+                    (pair & 1) != 0 ? frames.X2 : frames.X,
+                    (pair & 2) != 0 ? frames.Y2 : frames.Y,
+                    (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries,
                     _scale,
                     flipped,
                     _context.Panel,
                     null
                 );
-                _context.Use(_batches[pair]);
+                _context.Use(panel.Batches[pair]);
                 current = pair;
             }
 

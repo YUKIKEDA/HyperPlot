@@ -32,8 +32,8 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
     private (double Min, double Max)? _range;
     private bool _anyNegative;
 
-    public StackedCategoryBarPlan(BarLayerSpec spec)
-        : base(spec)
+    public StackedCategoryBarPlan(BarLayerSpec spec, RowRange rows)
+        : base(spec, rows)
     {
         _x = (CategoricalColumn)spec.X.Column;
         _y = spec.Y.Column;
@@ -222,7 +222,8 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         var nx = _x.CategoryCount;
         var nk = _groupCount;
         var cells = nk * nx;
-        var chunks = _y.ChunkCount;
+        var (firstChunk, endChunk) = StatWork.ChunksOf(_y, Rows);
+        var chunks = endChunk - firstChunk;
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(16L * cells, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var sums = new double[partials][];
         pool.RunChunks(
@@ -234,12 +235,13 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
                     try
                     {
                         var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                        for (var chunk = first; chunk < end; chunk++)
+                        for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
                         {
-                            var codes = _x.GetCodes(chunk);
-                            var groups = _groups is null ? default : _groups.GetCodes(chunk);
+                            var (lo, hi) = StatWork.PartOf(_y, chunk, Rows);
+                            var codes = _x.GetCodes(chunk)[lo..hi];
+                            var groups = _groups is null ? default : _groups.GetCodes(chunk)[lo..hi];
                             var values = buffer.AsSpan(0, codes.Length);
-                            _y.ReadChunk(chunk, 0, values, 0);
+                            _y.ReadChunk(chunk, lo, values, 0);
                             for (var i = 0; i < codes.Length; i++)
                             {
                                 var (code, group, value) = (codes[i], groups.IsEmpty ? 0 : groups[i], values[i]);
@@ -374,8 +376,8 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
         }
 
         var bars = (ErrorBarLayerSpec)Spec;
-        sink.AddColumn(bars.YMin.Column, data.GetName(bars.YMin.Index));
-        sink.AddColumn(bars.YMax.Column, data.GetName(bars.YMax.Index));
+        AddColumn(sink, bars.YMin.Column, data.GetName(bars.YMin.Index));
+        AddColumn(sink, bars.YMax.Column, data.GetName(bars.YMax.Index));
     }
 
     public override void Record(RecordContext context)

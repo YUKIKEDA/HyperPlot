@@ -221,6 +221,13 @@ public abstract class Column
     internal abstract bool TryGetRange(out ScaleEnd min, out ScaleEnd max);
 
     /// <summary>
+    /// Returns the range of the values that are not NaN in a run of rows (design §5.5.3, row G6b): false when there is none.
+    /// The whole column reads <see cref="TryGetRange(out ScaleEnd, out ScaleEnd)"/>; a run combines the statistics of the
+    /// chunks it covers with a pass over its rows in the chunks at its two ends. An integer column's ends are exact.
+    /// </summary>
+    internal abstract bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max);
+
+    /// <summary>
     /// Starts computing the chunk statistics that M4 needs of this column as X (design §5.5.1), or returns null when they are
     /// all there or the column needs none.
     /// </summary>
@@ -240,6 +247,18 @@ public abstract class Column
 
     /// <summary>Returns whether the column is non-decreasing without NaN, from its statistics; a uniform column always is.</summary>
     internal abstract bool IsNonDecreasing(PlotWorkerPool pool);
+
+    /// <summary>
+    /// Returns whether a run's values are non-decreasing with no NaN (row G6b): a facet's long data restarts its times in each
+    /// panel's run. Computes the statistics the check reads.
+    /// </summary>
+    internal abstract bool IsNonDecreasing(PlotWorkerPool pool, RowRange rows);
+
+    /// <summary>
+    /// Returns the least row of a run with d(v(i)) ≥ <paramref name="boundary"/>, or the run's end (row G6b): the values need
+    /// be non-decreasing over the run only.
+    /// </summary>
+    internal abstract long LowerBound(double boundary, long origin, RowRange rows);
 
     /// <summary>
     /// Starts the pass that finds each category's least and greatest value of this column as Y (design §5.5.3, row G7b);

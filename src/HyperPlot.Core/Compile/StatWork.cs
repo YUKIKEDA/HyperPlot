@@ -83,21 +83,24 @@ internal static class StatWork
     /// Returns the least and the greatest finite value of a column in the scale space, by one pass of the workers, or
     /// (+∞, −∞) for none (design §4.1): the range of bins when the statistics' ends are not finite or a transform maps them.
     /// </summary>
-    public static (double Min, double Max) FiniteRange(Column x, IScale? transform, long origin, PlotWorkerPool pool)
+    public static (double Min, double Max) FiniteRange(Column x, IScale? transform, long origin, PlotWorkerPool pool, RowRange rows)
     {
-        var chunks = x.ChunkCount;
+        var (firstChunk, endChunk) = ChunksOf(x, rows);
+        var chunks = endChunk - firstChunk;
         var lows = new double[Math.Max(chunks, 1)];
         var highs = new double[Math.Max(chunks, 1)];
         pool.RunChunks(
                 chunks,
-                chunk =>
+                at =>
                 {
-                    var length = ChunkLength(x, chunk);
+                    var chunk = firstChunk + at;
+                    var (lo, hi) = PartOf(x, chunk, rows);
+                    var length = hi - lo;
                     var buffer = ArrayPool<double>.Shared.Rent(length);
                     try
                     {
                         var values = buffer.AsSpan(0, length);
-                        x.ReadChunk(chunk, 0, values, origin);
+                        x.ReadChunk(chunk, lo, values, origin);
                         transform?.Forward(values, values);
                         var (low, high) = (double.PositiveInfinity, double.NegativeInfinity);
                         foreach (var v in values)
@@ -108,7 +111,7 @@ internal static class StatWork
                             }
                         }
 
-                        (lows[chunk], highs[chunk]) = (low, high);
+                        (lows[at], highs[at]) = (low, high);
                     }
                     finally
                     {
@@ -126,25 +129,35 @@ internal static class StatWork
     /// outside the edges, and rows of no group are not counted. The edges are in the scale space; values are read as
     /// differences from <paramref name="origin"/> and mapped by <paramref name="transform"/>. Counts at group · bins + bin.
     /// </summary>
-    public static long[] Bin(Column x, CategoricalColumn? groups, IScale? transform, long origin, double[] edges, bool uniform, PlotWorkerPool pool)
+    public static long[] Bin(
+        Column x,
+        CategoricalColumn? groups,
+        IScale? transform,
+        long origin,
+        double[] edges,
+        bool uniform,
+        PlotWorkerPool pool,
+        RowRange rows
+    )
     {
         var bins = edges.Length - 1;
         var nk = groups?.CategoryCount ?? 1;
         var (start, stop, step) = (edges[0], edges[^1], (edges[^1] - edges[0]) / bins);
         return CountInGroups(
-            x.ChunkCount,
+            ChunksOf(x, rows),
             nk * bins,
             pool,
             (chunk, mine) =>
             {
-                var length = ChunkLength(x, chunk);
+                var (lo, hi) = PartOf(x, chunk, rows);
+                var length = hi - lo;
                 var buffer = ArrayPool<double>.Shared.Rent(length);
                 try
                 {
                     var values = buffer.AsSpan(0, length);
-                    x.ReadChunk(chunk, 0, values, origin);
+                    x.ReadChunk(chunk, lo, values, origin);
                     transform?.Forward(values, values);
-                    var codes = groups is null ? default : groups.GetCodes(chunk);
+                    var codes = groups is null ? default : groups.GetCodes(chunk)[lo..hi];
                     for (var i = 0; i < values.Length; i++)
                     {
                         var g = codes.IsEmpty ? 0 : codes[i];
@@ -193,26 +206,27 @@ internal static class StatWork
     /// Counts the values of each cell of 2D bins (design §5.5.3, row G5c): a row counts when both its x and its y lie in their
     /// bins (<see cref="BinOf"/>). Counts at y bin · x bins + x bin.
     /// </summary>
-    public static long[] Bin2D(Column x, Column y, Axis2D ofX, Axis2D ofY, PlotWorkerPool pool)
+    public static long[] Bin2D(Column x, Column y, Axis2D ofX, Axis2D ofY, PlotWorkerPool pool, RowRange rows)
     {
         var (bx, by) = (ofX.Edges.Length - 1, ofY.Edges.Length - 1);
         var (sx, tx, stepX) = (ofX.Edges[0], ofX.Edges[^1], (ofX.Edges[^1] - ofX.Edges[0]) / bx);
         var (sy, ty, stepY) = (ofY.Edges[0], ofY.Edges[^1], (ofY.Edges[^1] - ofY.Edges[0]) / by);
         return CountInGroups(
-            x.ChunkCount,
+            ChunksOf(x, rows),
             bx * by,
             pool,
             (chunk, mine) =>
             {
-                var length = ChunkLength(x, chunk);
+                var (lo, hi) = PartOf(x, chunk, rows);
+                var length = hi - lo;
                 var xs = ArrayPool<double>.Shared.Rent(length);
                 var ys = ArrayPool<double>.Shared.Rent(length);
                 try
                 {
                     var a = xs.AsSpan(0, length);
                     var b = ys.AsSpan(0, length);
-                    x.ReadChunk(chunk, 0, a, ofX.Origin);
-                    y.ReadChunk(chunk, 0, b, ofY.Origin);
+                    x.ReadChunk(chunk, lo, a, ofX.Origin);
+                    y.ReadChunk(chunk, lo, b, ofY.Origin);
                     ofX.Transform?.Forward(a, a);
                     ofY.Transform?.Forward(b, b);
                     for (var i = 0; i < length; i++)
@@ -240,10 +254,11 @@ internal static class StatWork
     /// deviations are found apart and joined by Chan's formula in a fixed order of groups of chunks; sums and sums of squares
     /// would lose the digits on 1e9 rows.
     /// </summary>
-    public static Spread SpreadOf(Column x, CategoricalColumn? groups, IScale? transform, long origin, PlotWorkerPool pool)
+    public static Spread SpreadOf(Column x, CategoricalColumn? groups, IScale? transform, long origin, PlotWorkerPool pool, RowRange rows)
     {
         var nk = groups?.CategoryCount ?? 1;
-        var chunks = x.ChunkCount;
+        var (firstChunk, endChunk) = ChunksOf(x, rows);
+        var chunks = endChunk - firstChunk;
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(96L * nk, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var parts = new Spread[partials];
         pool.RunChunks(
@@ -257,17 +272,18 @@ internal static class StatWork
                     try
                     {
                         var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                        for (var chunk = first; chunk < end; chunk++)
+                        for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
                         {
-                            var length = ChunkLength(x, chunk);
+                            var (lo, hi) = PartOf(x, chunk, rows);
+                            var length = hi - lo;
                             var rawValues = raw.AsSpan(0, length);
                             var values = mapped.AsSpan(0, length);
-                            x.ReadChunk(chunk, 0, rawValues, origin);
+                            x.ReadChunk(chunk, lo, rawValues, origin);
                             rawValues.CopyTo(values);
                             transform?.Forward(values, values);
-                            var codes = groups is null ? default : groups.GetCodes(chunk);
+                            var codes = groups is null ? default : groups.GetCodes(chunk)[lo..hi];
                             chunkSpread.Clear();
-                            chunkSpread.AddChunk(values, rawValues, codes, (long)chunk << Column.ChunkShift);
+                            chunkSpread.AddChunk(values, rawValues, codes, ((long)chunk << Column.ChunkShift) + lo);
                             mine.Merge(chunkSpread);
                         }
                     }
@@ -303,24 +319,26 @@ internal static class StatWork
         double[] lo,
         double[] delta,
         int m,
-        PlotWorkerPool pool
+        PlotWorkerPool pool,
+        RowRange rows
     )
     {
         var nk = lo.Length;
         return SumInGroups(
-            x.ChunkCount,
+            ChunksOf(x, rows),
             nk * m,
             pool,
             (chunk, mine) =>
             {
-                var length = ChunkLength(x, chunk);
+                var (from, to) = PartOf(x, chunk, rows);
+                var length = to - from;
                 var buffer = ArrayPool<double>.Shared.Rent(length);
                 try
                 {
                     var values = buffer.AsSpan(0, length);
-                    x.ReadChunk(chunk, 0, values, origin);
+                    x.ReadChunk(chunk, from, values, origin);
                     transform?.Forward(values, values);
-                    var codes = groups is null ? default : groups.GetCodes(chunk);
+                    var codes = groups is null ? default : groups.GetCodes(chunk)[from..to];
                     for (var i = 0; i < values.Length; i++)
                     {
                         var (v, g) = (values[i], codes.IsEmpty ? 0 : codes[i]);
@@ -396,28 +414,30 @@ internal static class StatWork
         IScale? transform,
         long origin,
         double[] edges,
-        PlotWorkerPool pool
+        PlotWorkerPool pool,
+        RowRange rows
     )
     {
         var intervals = edges.Length - 1;
         var nk = groups?.CategoryCount ?? 1;
         return SumInGroups(
-            x.ChunkCount,
+            ChunksOf(x, rows),
             nk * intervals * 2,
             pool,
             (chunk, mine) =>
             {
-                var length = ChunkLength(x, chunk);
+                var (lo, hi) = PartOf(x, chunk, rows);
+                var length = hi - lo;
                 var xs = ArrayPool<double>.Shared.Rent(length);
                 var ys = ArrayPool<double>.Shared.Rent(length);
                 try
                 {
                     var a = xs.AsSpan(0, length);
                     var b = ys.AsSpan(0, length);
-                    x.ReadChunk(chunk, 0, a, origin);
+                    x.ReadChunk(chunk, lo, a, origin);
                     transform?.Forward(a, a);
-                    y.ReadChunk(chunk, 0, b, 0);
-                    var codes = groups is null ? default : groups.GetCodes(chunk);
+                    y.ReadChunk(chunk, lo, b, 0);
+                    var codes = groups is null ? default : groups.GetCodes(chunk)[lo..hi];
                     for (var i = 0; i < length; i++)
                     {
                         var (v, g) = (a[i], codes.IsEmpty ? 0 : codes[i]);
@@ -444,17 +464,18 @@ internal static class StatWork
     }
 
     /// <summary>Counts the rows of each cell (x category, group): at group · nx + category; rows of no category or group are not counted.</summary>
-    public static long[] Count(CategoricalColumn x, CategoricalColumn? groups, PlotWorkerPool pool)
+    public static long[] Count(CategoricalColumn x, CategoricalColumn? groups, PlotWorkerPool pool, RowRange rows)
     {
         var nx = x.CategoryCount;
         return CountInGroups(
-            x.ChunkCount,
+            ChunksOf(x, rows),
             (groups?.CategoryCount ?? 1) * nx,
             pool,
             (chunk, mine) =>
             {
-                var codes = x.GetCodes(chunk);
-                var groupCodes = groups is null ? default : groups.GetCodes(chunk);
+                var (lo, hi) = PartOf(x, chunk, rows);
+                var codes = x.GetCodes(chunk)[lo..hi];
+                var groupCodes = groups is null ? default : groups.GetCodes(chunk)[lo..hi];
                 for (var i = 0; i < codes.Length; i++)
                 {
                     var g = groupCodes.IsEmpty ? 0 : groupCodes[i];
@@ -471,8 +492,9 @@ internal static class StatWork
     /// Counts over the chunks in a fixed number of groups (design §5.5.3): a group counts its chunks into an array of its own,
     /// and the arrays join once all have ended. The groups' arrays take at most <see cref="PartialBytes"/>.
     /// </summary>
-    private static long[] CountInGroups(int chunks, int cells, PlotWorkerPool pool, Action<int, long[]> count)
+    private static long[] CountInGroups((int First, int End) span, int cells, PlotWorkerPool pool, Action<int, long[]> count)
     {
+        var chunks = span.End - span.First;
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(8L * cells, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var parts = new long[partials][];
         pool.RunChunks(
@@ -481,7 +503,7 @@ internal static class StatWork
                 {
                     var mine = parts[part] = new long[cells];
                     var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                    for (var chunk = first; chunk < end; chunk++)
+                    for (var chunk = span.First + first; chunk < span.First + end; chunk++)
                     {
                         count(chunk, mine);
                     }
@@ -505,8 +527,9 @@ internal static class StatWork
     /// Sums over the chunks in a fixed number of groups (row G5c), as <see cref="CountInGroups"/> counts: a group adds its
     /// chunks into an array of its own, in their order, and the arrays join in the groups' order.
     /// </summary>
-    private static double[] SumInGroups(int chunks, int cells, PlotWorkerPool pool, Action<int, double[]> sum)
+    private static double[] SumInGroups((int First, int End) span, int cells, PlotWorkerPool pool, Action<int, double[]> sum)
     {
+        var chunks = span.End - span.First;
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(8L * cells, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var parts = new double[partials][];
         pool.RunChunks(
@@ -515,7 +538,7 @@ internal static class StatWork
                 {
                     var mine = parts[part] = new double[cells];
                     var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                    for (var chunk = first; chunk < end; chunk++)
+                    for (var chunk = span.First + first; chunk < span.First + end; chunk++)
                     {
                         sum(chunk, mine);
                     }
@@ -539,7 +562,14 @@ internal static class StatWork
     /// Returns each cell's number of values, sum, least, and greatest value, and the states of the custom summaries (design
     /// §5.5.3): NaN values and rows of no category or group are left out. The chunks join in fixed groups in their order.
     /// </summary>
-    public static Moments Summarize(CategoricalColumn x, CategoricalColumn? groups, Column y, IReadOnlyList<IStat> customs, PlotWorkerPool pool)
+    public static Moments Summarize(
+        CategoricalColumn x,
+        CategoricalColumn? groups,
+        Column y,
+        IReadOnlyList<IStat> customs,
+        PlotWorkerPool pool,
+        RowRange rows
+    )
     {
         var nx = x.CategoryCount;
         var cells = (groups?.CategoryCount ?? 1) * nx;
@@ -549,7 +579,8 @@ internal static class StatWork
             states += custom.StateLength;
         }
 
-        var chunks = x.ChunkCount;
+        var (firstChunk, endChunk) = ChunksOf(x, rows);
+        var chunks = endChunk - firstChunk;
         var perPartial = (long)cells * (32 + (8 * states) + (customs.Count > 0 ? 4 : 0));
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(perPartial, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var parts = new Moments[partials];
@@ -566,12 +597,13 @@ internal static class StatWork
                     try
                     {
                         var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                        for (var chunk = first; chunk < end; chunk++)
+                        for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
                         {
-                            var codes = x.GetCodes(chunk);
-                            var groupCodes = groups is null ? default : groups.GetCodes(chunk);
+                            var (lo, hi) = PartOf(x, chunk, rows);
+                            var codes = x.GetCodes(chunk)[lo..hi];
+                            var groupCodes = groups is null ? default : groups.GetCodes(chunk)[lo..hi];
                             var values = buffer.AsSpan(0, codes.Length);
-                            y.ReadChunk(chunk, 0, values, 0);
+                            y.ReadChunk(chunk, lo, values, 0);
                             var kept = 0;
                             for (var i = 0; i < codes.Length; i++)
                             {
@@ -692,6 +724,7 @@ internal static class StatWork
         long[] counts,
         IReadOnlyList<double> ps,
         PlotWorkerPool pool,
+        RowRange rows,
         ulong lowest = 0,
         ulong highest = ulong.MaxValue
     )
@@ -721,7 +754,8 @@ internal static class StatWork
         }
 
         var floating = y is Column<float> or Column<double>;
-        var chunks = y.ChunkCount;
+        var (firstChunk, endChunk) = ChunksOf(y, rows);
+        var chunks = endChunk - firstChunk;
         for (var pass = 0; pass < y.KeyBytes; pass++)
         {
             var shift = 56 - (8 * pass);
@@ -738,12 +772,13 @@ internal static class StatWork
                         try
                         {
                             var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                            for (var chunk = first; chunk < end; chunk++)
+                            for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
                             {
-                                var codes = x is null ? default : x.GetCodes(chunk);
-                                var groupCodes = groups is null ? default : groups.GetCodes(chunk);
-                                var span = keys.AsSpan(0, ChunkLength(y, chunk));
-                                y.ReadKeys(chunk, 0, span);
+                                var (lo, hi) = PartOf(y, chunk, rows);
+                                var codes = x is null ? default : x.GetCodes(chunk)[lo..hi];
+                                var groupCodes = groups is null ? default : groups.GetCodes(chunk)[lo..hi];
+                                var span = keys.AsSpan(0, hi - lo);
+                                y.ReadKeys(chunk, lo, span);
                                 for (var i = 0; i < span.Length; i++)
                                 {
                                     var (code, g, key) = (codes.IsEmpty ? 0 : codes[i], groupCodes.IsEmpty ? 0 : groupCodes[i], span[i]);
@@ -839,6 +874,20 @@ internal static class StatWork
     }
 
     private static int ChunkLength(Column column, int chunk) => (int)Math.Min(Column.ChunkLength, column.Length - ((long)chunk << Column.ChunkShift));
+
+    /// <summary>Returns the chunks a run of rows lies in, [First, End) (row G6b): all of a column's for the whole column.</summary>
+    internal static (int First, int End) ChunksOf(Column column, RowRange rows)
+    {
+        var (start, end) = (Math.Clamp(rows.Start, 0, column.Length), rows.EndIn(column.Length));
+        return start >= end ? (0, 0) : ((int)(start >> Column.ChunkShift), (int)(((end - 1) >> Column.ChunkShift) + 1));
+    }
+
+    /// <summary>Returns the rows of a chunk inside a run (row G6b): [Lo, Hi) from the chunk's first row.</summary>
+    internal static (int Lo, int Hi) PartOf(Column column, int chunk, RowRange rows)
+    {
+        var (first, length) = ((long)chunk << Column.ChunkShift, ChunkLength(column, chunk));
+        return ((int)Math.Clamp(rows.Start - first, 0, length), (int)Math.Clamp(rows.EndIn(column.Length) - first, 0, length));
+    }
 
     /// <summary>The scale of a 2D bins' axis: its edges in the scale space, whether they are equal, its values' origin and transform.</summary>
     internal readonly record struct Axis2D(double[] Edges, bool Uniform, long Origin, IScale? Transform);
