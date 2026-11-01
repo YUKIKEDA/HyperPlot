@@ -292,7 +292,7 @@ internal static class StatWork
     /// <summary>
     /// Spreads each group's finite values linearly onto its grid of <paramref name="m"/> points from <paramref name="lo"/> by
     /// <paramref name="delta"/> (design §4.1, row G5c), as R's <c>BinDist</c> does (<c>src/library/stats/src/massdist.c</c>):
-    /// a value at p = (v − lo) / δ adds 1 − f to point ⌊p⌋ and f to the next, the ends kept in part. A group whose delta is
+    /// a value at p = (v − lo) / δ adds 1 − f to point ⌊p⌋ and f to the next, the last point keeping 1 − f. A group whose delta is
     /// NaN is not drawn and spreads nothing. Weights at group · m + point, not yet over the group's number.
     /// </summary>
     public static double[] SpreadOnGrids(
@@ -329,27 +329,21 @@ internal static class StatWork
                             continue;
                         }
 
+                        // The values lie in [from, to] and lo is below from, so the position is at least 0 (R's left end does
+                        // not occur). It reaches the last point when the range is so much wider than the bandwidth that up
+                        // rounds to to: that point keeps 1 − f, as R's right end does.
                         var position = (v - lo[g]) / delta[g];
-                        if (position is > int.MaxValue or < int.MinValue)
-                        {
-                            continue;
-                        }
-
                         var at = (int)Math.Floor(position);
                         var f = position - at;
                         var row = g * m;
-                        if (at >= 0 && at <= m - 2)
+                        if (at <= m - 2)
                         {
                             mine[row + at] += 1 - f;
                             mine[row + at + 1] += f;
                         }
-                        else if (at == -1)
+                        else
                         {
-                            mine[row] += f;
-                        }
-                        else if (at == m - 1)
-                        {
-                            mine[row + at] += 1 - f;
+                            mine[row + m - 1] += 1 - f;
                         }
                     }
                 }
@@ -392,7 +386,7 @@ internal static class StatWork
 
     /// <summary>
     /// Returns each group's sum and number of y values in each interval [e_r, e_r+1) of the windows' edges (design §5.5.3,
-    /// row G5c): a row counts when its x is finite and lies in the edges, and its y is not NaN. Sums at (group · intervals +
+    /// row G5c): a row counts when its x is finite and below the last edge, and its y is not NaN. Sums at (group · intervals +
     /// interval) · 2, numbers after them.
     /// </summary>
     public static double[] WindowSums(
@@ -427,7 +421,10 @@ internal static class StatWork
                     for (var i = 0; i < length; i++)
                     {
                         var (v, g) = (a[i], codes.IsEmpty ? 0 : codes[i]);
-                        if (g < 0 || !double.IsFinite(v) || double.IsNaN(b[i]) || v < edges[0] || v >= edges[^1])
+
+                        // The windows' first edge lies below the range, so x is at or above it. x reaches the last edge when
+                        // the range is so much wider than the window that to + w / 2 rounds to to: it lies in no window.
+                        if (g < 0 || !double.IsFinite(v) || double.IsNaN(b[i]) || v >= edges[^1])
                         {
                             continue;
                         }

@@ -1224,6 +1224,95 @@ public sealed class StatG5cTests
         }
     }
 
+    /// <summary>
+    /// A range far wider than the bandwidth or the window keeps its greatest value (design §4.1, §5.5.3): when to + 4h rounds
+    /// to to, that value falls on the grid's last point and keeps its weight, as R's right end does; when to + w / 2 rounds to
+    /// to, it lies in no window.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - x 0 and 511 · 2^40 (to + 0.004 rounds to to, and the grid's step is 2^40); y 1 and 2.
+    ///
+    /// Steps:
+    /// - Render a density of a bandwidth of 0.001 and a moving average of a window of 0.001 at 2 points.
+    ///
+    /// Expected:
+    /// - The density at both ends half the kernel's peak, 1 / (2 · 0.001 · √(2π)); the means 1 and NaN.
+    /// </remarks>
+    [Fact]
+    public void AWideRange_KeepsItsGreatestValue()
+    {
+        using var pool = new PlotWorkerPool(1);
+        var top = 511.0 * (1L << 40);
+        using var x = Column.Wrap(new[] { 0, top });
+        using var y = Column.Wrap(new double[] { 1, 2 });
+        var t = DataTable.Create().Add("x", x).Add("y", y).Build();
+        using var plan = TestPlans.Create(pool, Size, Size);
+        _ = plan.Render(Linear(t, new LineLayerSpec { X = t.Col<double>("x"), Stat = Stat.Density(0.001, points: 2) }));
+        var densities = Values(Assert.IsType<StatPlan>(plan.Layers[0]).Derived, 1);
+        var half = 1 / (2 * 0.001 * Math.Sqrt(2 * Math.PI));
+        Assert.Equal(half, densities[0], half * 1e-6);
+        Assert.Equal(half, densities[1], half * 1e-6);
+
+        _ = plan.Render(
+            Linear(
+                t,
+                new LineLayerSpec
+                {
+                    X = t.Col<double>("x"),
+                    Y = t.Col<double>("y"),
+                    Stat = Stat.Smooth(0.001, 2),
+                }
+            )
+        );
+        var means = Values(Assert.IsType<StatPlan>(plan.Layers[0]).Derived, 1);
+        Assert.Equal(1, means[0]);
+        Assert.True(double.IsNaN(means[1]));
+    }
+
+    /// <summary>
+    /// The automatic bandwidth joins the chunks exactly (design §5.5.3): the chunks' means and squared deviations joined by
+    /// Chan's formula give R's <c>bw.nrd0</c> of all the values, here computed by hand.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 3 · 2^20 values (3 chunks), each chunk 3 apart from the one before; 4 workers.
+    ///
+    /// Steps:
+    /// - Render a density; compute 0.9 · min(s, IQR / 1.34) · n^(−1/5) from the sorted values and a two-pass s.
+    ///
+    /// Expected:
+    /// - The same bandwidth within 1e-9.
+    /// </remarks>
+    [Fact]
+    public void Bandwidth_JoinsTheChunks()
+    {
+        const int Rows = 3 << 20;
+        var values = new double[Rows];
+        for (var i = 0; i < Rows; i++)
+        {
+            values[i] = ((i >> 20) * 3) + U(i, 1) + U(i, 2);
+        }
+
+        var mean = values.Average();
+        var s = Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)) / (Rows - 1));
+        var sorted = values.Order().ToArray();
+        double Quantile(double p)
+        {
+            var h = (Rows - 1) * p;
+            var low = (int)Math.Floor(h);
+            return sorted[low] + ((h - low) * (sorted[low + 1] - sorted[low]));
+        }
+
+        var expected = 0.9 * Math.Min(s, (Quantile(0.75) - Quantile(0.25)) / 1.34) * Math.Pow(Rows, -0.2);
+        using var pool = new PlotWorkerPool(4);
+        using var x = Column.Wrap(values);
+        var t = DataTable.Create().Add("x", x).Build();
+        using var plan = TestPlans.Create(pool, Size, Size);
+        _ = plan.Render(Linear(t, new LineLayerSpec { X = t.Col<double>("x"), Stat = Stat.Density(points: 2) }));
+        Assert.Equal(expected, Assert.IsType<StatPlan>(plan.Layers[0]).Bandwidths[0], expected * 1e-9);
+    }
+
     /// <summary>A value of the integer formula the R script shares: exact in both.</summary>
     private static double U(long i, long k) => (((i * 2654435761L) + (k * 40503)) % 10007) / 10007.0;
 
