@@ -29,11 +29,10 @@ internal sealed class PlotGuides
     private readonly int _height;
     private readonly LabelTable _labels = new();
     private readonly Vector2[] _segment = new Vector2[2];
-    private readonly SecondaryTransform _secondaryX = new();
-    private readonly SecondaryTransform _secondaryY = new();
 
-    // The axes on the panel's four sides (row G6a): at Bottom, Top, Left, Right; a side with no axis holds a null axis.
-    private readonly SideAxis[] _sides = new SideAxis[4];
+    // The panels' guides (row G6b): one without a facet. The layout and the recording work on the current one.
+    private readonly List<PanelGuide> _panels = [];
+    private PanelGuide _current;
     private Vector2[] _curve = new Vector2[256];
     private CategoricalColumn? _categories;
     private ColorScale? _color;
@@ -53,14 +52,8 @@ internal sealed class PlotGuides
     internal PlotGuides(TextEngine text, float scale, int width, int height)
     {
         (_text, _scale, _width, _height) = (text, scale, width, height);
-        X.Text = text;
-        X.Labels = _labels;
-        Y.Text = text;
-        Y.Labels = _labels;
-        X2.Text = text;
-        X2.Labels = _labels;
-        Y2.Text = text;
-        Y2.Labels = _labels;
+        _current = new PanelGuide(text, _labels);
+        _panels.Add(_current);
         ColorBar.Text = text;
         ColorBar.Labels = _labels;
     }
@@ -71,35 +64,51 @@ internal sealed class PlotGuides
     /// <summary>Gets the color bar's length in pixels, Lc (design §4.6); 0 without a continuous color scale.</summary>
     internal int ColorBarLength { get; private set; }
 
-    /// <summary>Gets the ticks of x.</summary>
-    internal TickAxis X { get; } = new();
+    /// <summary>Gets the ticks of x: the current panel's (row G6b), the first after a layout.</summary>
+    internal TickAxis X => _current.X;
 
     /// <summary>Gets the ticks of y.</summary>
-    internal TickAxis Y { get; } = new();
+    internal TickAxis Y => _current.Y;
 
     /// <summary>
     /// Gets the ticks of x's second axis (row G6a): the secondary x scale's, over its own domain, or those of a transform of x
     /// on the side opposite x.
     /// </summary>
-    internal TickAxis X2 { get; } = new();
+    internal TickAxis X2 => _current.X2;
 
     /// <summary>Gets the ticks of y's second axis (row G6a).</summary>
-    internal TickAxis Y2 { get; } = new();
+    internal TickAxis Y2 => _current.Y2;
 
     /// <summary>Gets a value indicating whether the last layout put x on the left and y on the bottom (row G10).</summary>
     internal bool Flipped { get; private set; }
 
     /// <summary>Gets the panel's left edge, in whole pixels.</summary>
-    internal int Left { get; private set; }
+    internal int Left
+    {
+        get => _current.Left;
+        private set => _current.Left = value;
+    }
 
     /// <summary>Gets the panel's top edge.</summary>
-    internal int Top { get; private set; }
+    internal int Top
+    {
+        get => _current.Top;
+        private set => _current.Top = value;
+    }
 
     /// <summary>Gets the panel's width W; below 1 draws nothing but the background.</summary>
-    internal int Width { get; private set; }
+    internal int Width
+    {
+        get => _current.Width;
+        private set => _current.Width = value;
+    }
 
     /// <summary>Gets the panel's height H.</summary>
-    internal int Height { get; private set; }
+    internal int Height
+    {
+        get => _current.Height;
+        private set => _current.Height = value;
+    }
 
     /// <summary>
     /// Gets a value indicating whether the panel is too small to draw (design §4.6): only the background is drawn. Polar, also
@@ -108,10 +117,21 @@ internal sealed class PlotGuides
     internal bool Empty => Width < 1 || Height < 1 || (Polar is { } polar && polar.Radius - polar.Inner < 1);
 
     /// <summary>Gets the polar transform of the last layout, or null when it was not polar (row G11).</summary>
-    internal PolarTransform? Polar { get; private set; }
+    internal PolarTransform? Polar
+    {
+        get => _current.Polar;
+        private set => _current.Polar = value;
+    }
 
     /// <summary>Gets the band of the angle's labels outside the circle, Θ (design §4.6); 0 when not polar.</summary>
-    internal int ThetaBand { get; private set; }
+    internal int ThetaBand
+    {
+        get => _current.ThetaBand;
+        private set => _current.ThetaBand = value;
+    }
+
+    /// <summary>Gets the axes on the current panel's four sides (row G6a): a side with no axis holds a null axis.</summary>
+    private SideAxis[] Sides => _current.Sides;
 
     /// <summary>Gets the table of the labels' strings, for the tests of its size.</summary>
     internal LabelTable LabelTable => _labels;
@@ -188,8 +208,8 @@ internal sealed class PlotGuides
         var (bottomBand, topBand) = (0, 0);
         if (theme.ShowAxes)
         {
-            bottomBand = HorizontalBand(_sides[SideBottom], tick, gap, lineHeight, titleHeight);
-            topBand = HorizontalBand(_sides[SideTop], tick, gap, lineHeight, titleHeight);
+            bottomBand = HorizontalBand(Sides[SideBottom], tick, gap, lineHeight, titleHeight);
+            topBand = HorizontalBand(Sides[SideTop], tick, gap, lineHeight, titleHeight);
         }
 
         // The horizontal bands do not depend on ticks, so the panel's height is known before the legend: the color bar's
@@ -218,8 +238,8 @@ internal sealed class PlotGuides
         var (leftBand, rightBand) = (0, 0);
         if (theme.ShowAxes)
         {
-            leftBand = VerticalBand(_sides[SideLeft], tick, gap, tickStyle, titleHeight);
-            rightBand = VerticalBand(_sides[SideRight], tick, gap, tickStyle, titleHeight);
+            leftBand = VerticalBand(Sides[SideLeft], tick, gap, tickStyle, titleHeight);
+            rightBand = VerticalBand(Sides[SideRight], tick, gap, tickStyle, titleHeight);
         }
 
         _rightBand = rightBand;
@@ -255,7 +275,7 @@ internal sealed class PlotGuides
     /// </summary>
     private void AssignSides(PlotSpec spec)
     {
-        Array.Clear(_sides);
+        Array.Clear(Sides);
         Family(spec.ScaleX, X, spec.ScaleX2, X2, horizontal: !Flipped);
         Family(spec.ScaleY, Y, spec.ScaleY2, Y2, horizontal: Flipped);
 
@@ -268,14 +288,14 @@ internal sealed class PlotGuides
                 _ => false,
             };
             var (near, farSide) = horizontal ? (SideBottom, SideTop) : (SideLeft, SideRight);
-            _sides[far ? farSide : near] = new SideAxis(axis, new AxisScale(primary), Primary: true);
+            Sides[far ? farSide : near] = new SideAxis(axis, new AxisScale(primary), Primary: true);
             if (secondScale is not null)
             {
-                _sides[far ? near : farSide] = new SideAxis(second, new AxisScale(secondScale), Primary: false);
+                Sides[far ? near : farSide] = new SideAxis(second, new AxisScale(secondScale), Primary: false);
             }
             else if (primary is ContinuousScaleSpec { SecondaryAxis: { } derived })
             {
-                _sides[far ? near : farSide] = new SideAxis(second, new AxisScale(primary, derived), Primary: false);
+                Sides[far ? near : farSide] = new SideAxis(second, new AxisScale(primary, derived), Primary: false);
             }
         }
     }
@@ -297,15 +317,15 @@ internal sealed class PlotGuides
     {
         var (near, far) = horizontal ? (SideBottom, SideTop) : (SideLeft, SideRight);
         var at =
-            _sides[near] is { Primary: false, Axis: not null } ? near
-            : _sides[far] is { Primary: false, Axis: not null } ? far
+            Sides[near] is { Primary: false, Axis: not null } ? near
+            : Sides[far] is { Primary: false, Axis: not null } ? far
             : -1;
         if (at < 0)
         {
             return;
         }
 
-        var side = _sides[at];
+        var side = Sides[at];
         var ofX = side.Axis == X2;
         var spacing = horizontal ? theme.TickSpacingX : theme.TickSpacingY;
         if (side.Scale.Derived is not { } derived)
@@ -337,10 +357,10 @@ internal sealed class PlotGuides
         CheckRoundTrip(derived.Transform, a, ta, magnitude, ofX);
         CheckRoundTrip(derived.Transform, b, tb, magnitude, ofX);
         var decreasing = tb < ta;
-        var composed = ofX ? _secondaryX : _secondaryY;
+        var composed = ofX ? _current.SecondaryX : _current.SecondaryY;
         composed.Set(primary.Transform, derived.Transform, decreasing);
         var reverse = primaryScale.Reverse != decreasing;
-        _sides[at] = side with { Scale = side.Scale with { Flip = decreasing } };
+        Sides[at] = side with { Scale = side.Scale with { Flip = decreasing } };
         var axis = side.Axis!;
         (axis.Before, axis.After) = reverse ? (room.After, room.Before) : room;
         axis.Scale = FormatScale(derived.TickFormat, ofX);
@@ -911,7 +931,7 @@ internal sealed class PlotGuides
         var topLine = Snap(Top - (axisPixels / 2.0), axisPixels);
         var leftLine = Snap(Left - (axisPixels / 2.0), axisPixels);
         var rightLine = Snap(Left + Width + (axisPixels / 2.0), axisPixels);
-        var (bottom, top, left, right) = (_sides[SideBottom], _sides[SideTop], _sides[SideLeft], _sides[SideRight]);
+        var (bottom, top, left, right) = (Sides[SideBottom], Sides[SideTop], Sides[SideLeft], Sides[SideRight]);
         var (from, to) = (left.Axis is null ? Left : leftLine, right.Axis is null ? Left + Width : rightLine);
         var (high, low) = (top.Axis is null ? Top : topLine, bottom.Axis is null ? Top + Height : bottomLine);
         if (bottom.Axis is not null)
@@ -1044,7 +1064,7 @@ internal sealed class PlotGuides
     private void RecordSideTitles(RenderList list, Theme theme, int padding)
     {
         var titleStyle = Style(theme, theme.AxisTitleSize);
-        if (_sides[SideBottom].Scale.Title is { Length: > 0 } bottomTitle && _sides[SideBottom].Axis is not null)
+        if (Sides[SideBottom].Scale.Title is { Length: > 0 } bottomTitle && Sides[SideBottom].Axis is not null)
         {
             list.DrawText(
                 bottomTitle,
@@ -1057,7 +1077,7 @@ internal sealed class PlotGuides
             );
         }
 
-        if (_sides[SideTop].Scale.Title is { Length: > 0 } topTitle && _sides[SideTop].Axis is not null)
+        if (Sides[SideTop].Scale.Title is { Length: > 0 } topTitle && Sides[SideTop].Axis is not null)
         {
             list.DrawText(
                 topTitle,
@@ -1070,7 +1090,7 @@ internal sealed class PlotGuides
             );
         }
 
-        if (_sides[SideLeft].Scale.Title is { Length: > 0 } leftTitle && _sides[SideLeft].Axis is not null)
+        if (Sides[SideLeft].Scale.Title is { Length: > 0 } leftTitle && Sides[SideLeft].Axis is not null)
         {
             list.DrawText(
                 leftTitle,
@@ -1084,7 +1104,7 @@ internal sealed class PlotGuides
             );
         }
 
-        if (_sides[SideRight].Scale.Title is { Length: > 0 } rightTitle && _sides[SideRight].Axis is not null)
+        if (Sides[SideRight].Scale.Title is { Length: > 0 } rightTitle && Sides[SideRight].Axis is not null)
         {
             list.DrawText(
                 rightTitle,
@@ -1344,7 +1364,7 @@ internal sealed class PlotGuides
     /// The axis of a transform of a primary scale (row G6a) reads its title from <see cref="Derived"/>, and its ticks run the
     /// other way when the transform decreases (<see cref="Flip"/>).
     /// </remarks>
-    private readonly record struct AxisScale(ScaleSpec Spec, SecondaryAxisSpec? Derived = null, bool Flip = false)
+    internal readonly record struct AxisScale(ScaleSpec Spec, SecondaryAxisSpec? Derived = null, bool Flip = false)
     {
         public string? Title =>
             Derived is { } derived
@@ -1360,5 +1380,5 @@ internal sealed class PlotGuides
     }
 
     /// <summary>An axis on a side of the panel (row G6a): its ticks, its scale, and whether it is its direction's primary, which draws the grid.</summary>
-    private readonly record struct SideAxis(TickAxis? Axis, AxisScale Scale, bool Primary);
+    internal readonly record struct SideAxis(TickAxis? Axis, AxisScale Scale, bool Primary);
 }
