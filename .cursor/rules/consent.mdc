@@ -20,7 +20,7 @@ The goal is SciChart-class speed and quality on data of billions of points. Befo
 
 Before recommending a design, search `docs/design-decisions.md` for a rejection of the same shape, and say how the recommendation differs from it. A recommendation that repeats a rejected shape under a narrower scope makes the owner decide the same question twice.
 
-A statement about how another library behaves is checked in its source or its official documentation before it goes to the owner, and what was not checked is said to be unchecked. The same holds for a comparison written into the design: an unchecked sentence about another library's API has been the opposite of its documentation more than once.
+A statement about how another library behaves is checked in its source or its official documentation before it goes to the owner, and what was not checked is said to be unchecked. That holds for a reply to a review too: PR #215 wrote ggplot2's default `pad` from memory into the design and into a reply marked "from memory", and corrected both once `R/stat-bin.R` and `R/geom-freqpoly.R` were read; read first, then write. The same holds for a comparison written into the design: an unchecked sentence about another library's API has been the opposite of its documentation more than once.
 
 When the owner corrects a criterion, go back over the decisions made before the correction and judge them by the new criterion: the design, the decision records, and the conversation logs, where reasons given only in passing are kept ("leave it for now" in a review, a public API added only for a sample's check). Each one that fails gets a roadmap row or a Grill before the row that depends on it.
 
