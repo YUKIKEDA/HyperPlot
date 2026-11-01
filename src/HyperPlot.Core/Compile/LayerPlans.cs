@@ -451,10 +451,10 @@ internal abstract class LayerPlan
                     );
                 }
 
-                if (layer is BarLayerSpec { Width: not null } or BarLayerSpec { Baseline: not 0 })
+                if (layer is BarLayerSpec { Width: not null } or BarLayerSpec { Baseline: not 0 } or AreaLayerSpec { Baseline: not 0 })
                 {
                     throw new ArgumentException(
-                        $"Layer {index} is a binned bar with a Width or a Baseline other than 0; its bars span their bins from 0 (design §5.5.3)."
+                        $"Layer {index} is a binned bar with a Width, or a binned bar or area with a Baseline other than 0; its counts start at 0 (design §5.5.3)."
                     );
                 }
 

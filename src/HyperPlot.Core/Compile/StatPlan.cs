@@ -226,9 +226,10 @@ internal sealed class StatPlan : LayerPlan
 
         double Data(double s)
         {
+            // A time x stays a difference from the first edge until its column adds the origin as a long.
             if (time is not null)
             {
-                return origin + s;
+                return s;
             }
 
             if (transform is null)
@@ -243,7 +244,7 @@ internal sealed class StatPlan : LayerPlan
 
         if (spec is BarLayerSpec bar)
         {
-            return Rects(bar, edges, values, nk, groups, Data);
+            return Rects(bar, edges, values, nk, groups, Data, time is not null, origin);
         }
 
         // Points at the bins' middles, the groups in turn at each (design §5.5.3).
@@ -259,9 +260,9 @@ internal sealed class StatPlan : LayerPlan
             }
         }
 
-        var table = Table(("x", Own(Column.Wrap(xs))), ("y", Own(Column.Wrap(ys))), ("g", groups?.WithCodes(codes)));
+        var table = Table(("x", XColumn(xs, time is not null, origin)), ("y", Own(Column.Wrap(ys))), ("g", groups?.WithCodes(codes)));
         var (xRef, yRef, gRef) = (new ColumnRef(table, 0), new ColumnRef(table, 1), groups is null ? (ColumnRef?)null : new ColumnRef(table, 2));
-        (double, double)? ends = bins == 0 ? null : (Data(edges[0]), Data(edges[^1]));
+        (double, double)? ends = bins == 0 ? null : (Data(edges[0]) + (time is null ? 0 : origin), Data(edges[^1]) + (time is null ? 0 : origin));
         return new Made(
             table,
             layer =>
@@ -297,7 +298,16 @@ internal sealed class StatPlan : LayerPlan
     /// A binned bar's pieces as rects (design §5.5.3): a rect a group and bin, placed by the layer's position in the stat (a
     /// stack from the last group, a fill to 1, a dodge in the bin's width), none for a count of 0.
     /// </summary>
-    private Made Rects(BarLayerSpec bar, double[] edges, double[] values, int nk, CategoricalColumn? groups, Func<double, double> data)
+    private Made Rects(
+        BarLayerSpec bar,
+        double[] edges,
+        double[] values,
+        int nk,
+        CategoricalColumn? groups,
+        Func<double, double> data,
+        bool time,
+        long origin
+    )
     {
         var bins = Math.Max(edges.Length - 1, 0);
         var kind = PositionOf(bar);
@@ -338,8 +348,8 @@ internal sealed class StatPlan : LayerPlan
         }
 
         var table = Table(
-            ("xmin", Own(Column.Wrap(rows.Select(r => r.XMin).ToArray()))),
-            ("xmax", Own(Column.Wrap(rows.Select(r => r.XMax).ToArray()))),
+            ("xmin", XColumn([.. rows.Select(r => r.XMin)], time, origin)),
+            ("xmax", XColumn([.. rows.Select(r => r.XMax)], time, origin)),
             ("ymin", Own(Column.Wrap(rows.Select(r => r.YMin).ToArray()))),
             ("ymax", Own(Column.Wrap(rows.Select(r => r.YMax).ToArray()))),
             ("g", groups?.WithCodes([.. rows.Select(r => r.Group)]))
@@ -497,6 +507,22 @@ internal sealed class StatPlan : LayerPlan
         }
 
         return table.Build();
+    }
+
+    /// <summary>
+    /// Returns a derived x column (row G5b): longs for a time x, as its own columns (design §4.2, a time scale's columns are
+    /// long), else doubles.
+    /// </summary>
+    private Column XColumn(double[] values, bool time, long origin)
+    {
+        if (!time)
+        {
+            return Own(Column.Wrap(values));
+        }
+
+        var longs = Column.Wrap(values.Select(v => origin + (long)Math.Round(v)).ToArray());
+        _owned.Add(longs);
+        return longs;
     }
 
     private Column<double> Own(Column<double> column)

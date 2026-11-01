@@ -130,86 +130,109 @@ internal static class StatWork
     {
         var bins = edges.Length - 1;
         var nk = groups?.CategoryCount ?? 1;
-        var counts = new long[nk * bins];
         var (start, stop, step) = (edges[0], edges[^1], (edges[^1] - edges[0]) / bins);
-        pool.RunChunks(
-                x.ChunkCount,
-                chunk =>
+        return CountInGroups(
+            x.ChunkCount,
+            nk * bins,
+            pool,
+            (chunk, mine) =>
+            {
+                var length = ChunkLength(x, chunk);
+                var buffer = ArrayPool<double>.Shared.Rent(length);
+                try
                 {
-                    var length = ChunkLength(x, chunk);
-                    var buffer = ArrayPool<double>.Shared.Rent(length);
-                    var mine = new long[counts.Length];
-                    try
+                    var values = buffer.AsSpan(0, length);
+                    x.ReadChunk(chunk, 0, values, origin);
+                    transform?.Forward(values, values);
+                    var codes = groups is null ? default : groups.GetCodes(chunk);
+                    for (var i = 0; i < values.Length; i++)
                     {
-                        var values = buffer.AsSpan(0, length);
-                        x.ReadChunk(chunk, 0, values, origin);
-                        transform?.Forward(values, values);
-                        var codes = groups is null ? default : groups.GetCodes(chunk);
-                        for (var i = 0; i < values.Length; i++)
+                        var (v, g) = (values[i], codes.IsEmpty ? 0 : codes[i]);
+                        if (g < 0 || !double.IsFinite(v) || v < start || v > stop)
                         {
-                            var (v, g) = (values[i], codes.IsEmpty ? 0 : codes[i]);
-                            if (g < 0 || !double.IsFinite(v) || v < start || v > stop)
-                            {
-                                continue;
-                            }
-
-                            var b = uniform ? (int)Math.Floor((v - start) / step) : Upper(edges, v) - 1;
-                            mine[(g * bins) + Math.Clamp(b, 0, bins - 1)]++;
+                            continue;
                         }
-                    }
-                    finally
-                    {
-                        ArrayPool<double>.Shared.Return(buffer);
-                    }
 
-                    // Counts are integers: they join in any order.
-                    lock (counts)
-                    {
-                        for (var c = 0; c < counts.Length; c++)
+                        var b = uniform ? Math.Clamp((int)Math.Floor((v - start) / step), 0, bins - 1) : Upper(edges, v) - 1;
+
+                        // The division and the edges may round apart by an ulp: the edges decide, as numpy's histogram does
+                        // (an edge's value in the bin to its right, the last bin closed on both sides).
+                        if (b > 0 && v < edges[b])
                         {
-                            counts[c] += mine[c];
+                            b--;
                         }
+                        else if (b < bins - 1 && v >= edges[b + 1])
+                        {
+                            b++;
+                        }
+
+                        mine[(g * bins) + Math.Clamp(b, 0, bins - 1)]++;
                     }
                 }
-            )
-            .GetAwaiter()
-            .GetResult();
-        return counts;
+                finally
+                {
+                    ArrayPool<double>.Shared.Return(buffer);
+                }
+            }
+        );
     }
 
     /// <summary>Counts the rows of each cell (x category, group): at group · nx + category; rows of no category or group are not counted.</summary>
     public static long[] Count(CategoricalColumn x, CategoricalColumn? groups, PlotWorkerPool pool)
     {
         var nx = x.CategoryCount;
-        var counts = new long[(groups?.CategoryCount ?? 1) * nx];
-        pool.RunChunks(
-                x.ChunkCount,
-                chunk =>
+        return CountInGroups(
+            x.ChunkCount,
+            (groups?.CategoryCount ?? 1) * nx,
+            pool,
+            (chunk, mine) =>
+            {
+                var codes = x.GetCodes(chunk);
+                var groupCodes = groups is null ? default : groups.GetCodes(chunk);
+                for (var i = 0; i < codes.Length; i++)
                 {
-                    var codes = x.GetCodes(chunk);
-                    var groupCodes = groups is null ? default : groups.GetCodes(chunk);
-                    var mine = new long[counts.Length];
-                    for (var i = 0; i < codes.Length; i++)
+                    var g = groupCodes.IsEmpty ? 0 : groupCodes[i];
+                    if (codes[i] >= 0 && g >= 0)
                     {
-                        var g = groupCodes.IsEmpty ? 0 : groupCodes[i];
-                        if (codes[i] >= 0 && g >= 0)
-                        {
-                            mine[(g * nx) + codes[i]]++;
-                        }
+                        mine[(g * nx) + codes[i]]++;
                     }
+                }
+            }
+        );
+    }
 
-                    lock (counts)
+    /// <summary>
+    /// Counts over the chunks in a fixed number of groups (design §5.5.3): a group counts its chunks into an array of its own,
+    /// and the arrays join once all have ended. The groups' arrays take at most <see cref="PartialBytes"/>.
+    /// </summary>
+    private static long[] CountInGroups(int chunks, int cells, PlotWorkerPool pool, Action<int, long[]> count)
+    {
+        var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(8L * cells, 1), 1, MaxPartials), Math.Max(chunks, 1));
+        var parts = new long[partials][];
+        pool.RunChunks(
+                partials,
+                part =>
+                {
+                    var mine = parts[part] = new long[cells];
+                    var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
+                    for (var chunk = first; chunk < end; chunk++)
                     {
-                        for (var c = 0; c < counts.Length; c++)
-                        {
-                            counts[c] += mine[c];
-                        }
+                        count(chunk, mine);
                     }
                 }
             )
             .GetAwaiter()
             .GetResult();
-        return counts;
+        var total = parts[0];
+        for (var p = 1; p < partials; p++)
+        {
+            for (var c = 0; c < cells; c++)
+            {
+                total[c] += parts[p][c];
+            }
+        }
+
+        return total;
     }
 
     /// <summary>
@@ -227,7 +250,7 @@ internal static class StatWork
         }
 
         var chunks = x.ChunkCount;
-        var perPartial = (long)cells * (32 + (8 * states));
+        var perPartial = (long)cells * (32 + (8 * states) + (customs.Count > 0 ? 4 : 0));
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(perPartial, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var parts = new Moments[partials];
         pool.RunChunks(
@@ -238,6 +261,8 @@ internal static class StatWork
                     var buffer = ArrayPool<double>.Shared.Rent(Column.ChunkLength);
                     var cellOf = customs.Count > 0 ? ArrayPool<int>.Shared.Rent(Column.ChunkLength) : [];
                     var sorted = customs.Count > 0 ? ArrayPool<double>.Shared.Rent(Column.ChunkLength) : [];
+                    var starts = customs.Count > 0 ? new int[cells] : [];
+                    var touched = customs.Count > 0 ? ArrayPool<int>.Shared.Rent(Column.ChunkLength) : [];
                     try
                     {
                         var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
@@ -260,32 +285,14 @@ internal static class StatWork
                                 mine.Add(cell, v);
                                 if (customs.Count > 0)
                                 {
-                                    (cellOf[kept], sorted[kept]) = (cell, v);
+                                    (cellOf[kept], values[kept]) = (cell, v);
                                     kept++;
                                 }
                             }
 
                             if (customs.Count > 0)
                             {
-                                // A cell's values of the chunk in one span (design §5.5.3: the sorting buffer).
-                                Array.Sort(cellOf, sorted, 0, kept);
-                                for (var run = 0; run < kept; )
-                                {
-                                    var stop = run;
-                                    while (stop < kept && cellOf[stop] == cellOf[run])
-                                    {
-                                        stop++;
-                                    }
-
-                                    var offset = 0;
-                                    foreach (var custom in customs)
-                                    {
-                                        custom.Fold(sorted.AsSpan(run, stop - run), mine.State(cellOf[run], offset, custom.StateLength));
-                                        offset += custom.StateLength;
-                                    }
-
-                                    run = stop;
-                                }
+                                FoldCells(customs, mine, cellOf, values, sorted, starts, touched, kept);
                             }
                         }
                     }
@@ -296,6 +303,7 @@ internal static class StatWork
                         {
                             ArrayPool<int>.Shared.Return(cellOf);
                             ArrayPool<double>.Shared.Return(sorted);
+                            ArrayPool<int>.Shared.Return(touched);
                         }
                     }
                 }
@@ -310,6 +318,64 @@ internal static class StatWork
         }
 
         return total;
+    }
+
+    /// <summary>
+    /// Folds a chunk's kept values into their cells' custom states (design §5.5.3): a counting sort over the cells the chunk
+    /// touches (their counts, their starts, the values scattered to them), so that each cell's values are one span; then the
+    /// touched cells' counts go back to 0. The work is the chunk's rows and touched cells, not all the cells.
+    /// </summary>
+    private static void FoldCells(
+        IReadOnlyList<IStat> customs,
+        Moments mine,
+        int[] cellOf,
+        Span<double> values,
+        double[] sorted,
+        int[] starts,
+        int[] touched,
+        int kept
+    )
+    {
+        // The counts of the cells, in starts, and the cells in the order they first come.
+        var cells = 0;
+        for (var i = 0; i < kept; i++)
+        {
+            if (starts[cellOf[i]]++ == 0)
+            {
+                touched[cells++] = cellOf[i];
+            }
+        }
+
+        // Each touched cell's start in sorted, then the values scattered in their rows' order.
+        var position = 0;
+        for (var t = 0; t < cells; t++)
+        {
+            var count = starts[touched[t]];
+            starts[touched[t]] = position;
+            position += count;
+        }
+
+        for (var i = 0; i < kept; i++)
+        {
+            sorted[starts[cellOf[i]]++] = values[i];
+        }
+
+        // After the scatter, each start is its cell's end: the span is the count before it.
+        var from = 0;
+        for (var t = 0; t < cells; t++)
+        {
+            var cell = touched[t];
+            var span = sorted.AsSpan(from, starts[cell] - from);
+            var offset = 0;
+            foreach (var custom in customs)
+            {
+                custom.Fold(span, mine.State(cell, offset, custom.StateLength));
+                offset += custom.StateLength;
+            }
+
+            from = starts[cell];
+            starts[cell] = 0;
+        }
     }
 
     /// <summary>
@@ -357,7 +423,7 @@ internal static class StatWork
         {
             var shift = 56 - (8 * pass);
             var histogramBytes = (long)cells * targets * 256 * 8;
-            var partials = (int)Math.Min(Math.Clamp((2 * QuantileBytes) / Math.Max(histogramBytes, 1), 1, MaxPartials), Math.Max(chunks, 1));
+            var partials = (int)Math.Min(Math.Clamp(QuantileBytes / Math.Max(histogramBytes, 1), 1, MaxPartials), Math.Max(chunks, 1));
             var parts = new long[partials][];
             var p = pass;
             pool.RunChunks(

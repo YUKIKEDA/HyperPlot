@@ -370,6 +370,22 @@ public sealed class StatTests
         Assert.Equal([2, 1, 1, 0, 2, 2], counts);
         var calendar = StatWork.Bin(x, groups, null, 0, [0, 10, 20, 30], uniform: false, pool);
         Assert.Equal(counts, calendar);
+
+        // Values on the edges of steps like 0.1, where the division by the step and the edges round apart by an ulp: each is in
+        // the bin to its right, as counted directly against the edges (the last bin closed).
+        foreach (
+            var (low, high, step) in (ReadOnlySpan<(double, double, double)>)[(0, 1, 0.1), (0.13, 5.9, 0.3), (-2.1, 3.3, 0.7), (0.001, 0.0871, 0.007)]
+        )
+        {
+            var edges = StatWork.Edges(low, high, Stat.Bin(step: step), 0);
+            using var onEdges = Column.Wrap(edges.ToArray());
+            var byEdges = StatWork.Bin(onEdges, null, null, 0, edges, uniform: true, pool);
+            for (var i = 0; i < byEdges.Length; i++)
+            {
+                var expected = edges.Count(v => v >= edges[i] && (i == byEdges.Length - 1 ? v <= edges[i + 1] : v < edges[i + 1]));
+                Assert.Equal(expected, byEdges[i]);
+            }
+        }
     }
 
     /// <summary>
@@ -424,7 +440,8 @@ public sealed class StatTests
     /// - Choose the edges with at most 10 bins.
     ///
     /// Expected:
-    /// - The first day of each quarter from 2020-01-01 to 2022-01-01, 8 bins of 90 to 92 days.
+    /// - The first day of each quarter from 2020-01-01 to 2022-01-01, 8 bins of 90 to 92 days; with the greatest value on
+    ///   2022-01-01, the same 8 bins.
     /// </remarks>
     [Fact]
     public void Bin_OnATimeX_TakesCalendarBoundaries()
@@ -435,6 +452,11 @@ public sealed class StatTests
         Assert.Equal(quarters.Select(d => d.Ticks), edges);
         var days = edges.Zip(edges.Skip(1), (a, b) => (b - a) / TimeSpan.TicksPerDay).Distinct().Order().ToArray();
         Assert.Equal([90, 91, 92], days);
+
+        // A greatest value on a boundary is in the last bin, closed on both sides: no extra bin past it.
+        var onBoundary = TimeTicks.BinEdges(min, new DateTime(2022, 1, 1).Ticks, Scale.Time(), 10);
+        Assert.Equal(new DateTime(2022, 1, 1).Ticks, onBoundary[^1]);
+        Assert.Equal(9, onBoundary.Length);
     }
 
     /// <summary>

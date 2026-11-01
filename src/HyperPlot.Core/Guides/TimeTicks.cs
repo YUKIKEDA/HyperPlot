@@ -106,14 +106,18 @@ internal static class TimeTicks
                 continue;
             }
 
-            // The greatest value lies in the last bin: the edge past it.
+            // The greatest value lies in the last bin, closed on both sides: on a boundary, it is the last edge.
             var first = Floor(step, low);
             var count = 0;
             var edge = first;
-            while (edge <= high && count <= maxBins)
+            while (true)
             {
                 edge = Next(step, edge);
                 count++;
+                if (!(edge < high && count <= maxBins))
+                {
+                    break;
+                }
             }
 
             if (count > maxBins || edge >= MaxInstant)
