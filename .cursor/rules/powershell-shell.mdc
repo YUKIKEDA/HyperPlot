@@ -10,6 +10,7 @@ The agent shell on this setup is PowerShell. Do not use bash-only constructs in 
 ## Forbidden in PowerShell
 
 - Heredoc: `$(cat <<'EOF' ... EOF)`
+- `Remove-Item` goes in a call of its own, with its path written out: in the same call as a command whose text holds a system path (`$env:PATH += ';C:\Program Files (x86)\...'`), the tool's safety check read the removal as one of a system path and stopped the whole call. PR #235's NativeAOT comparison lost a run so.
 - A heredoc passed to the Bash tool holds no apostrophe (`'`), even quoted as `<<'EOF'`: the tool stops with "unexpected EOF while looking for matching `''`". A script whose text has one (C# XML docs, English sentences with `R's`) is written to a file with the Write tool and run from there. PR #227's session rewrote three such scripts.
 - Unquoted git upstream: `@{u}` (PowerShell parses `@{...}` as a hashtable). Write `'@{u}'`.
 - `export FOO=bar`, bash arrays, `&&` chains that assume bash semantics for `$?`.
