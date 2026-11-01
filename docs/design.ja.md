@@ -1130,6 +1130,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **bin 2D の色**: セルの値は、層の連続の色の塗り（行 G7c の数の `FillBy` と同じ道）として `PlotSpec.ScaleColor` で写す。色のスケールが連続でなければ `ArgumentException`。凡例はカラーバー（§4.6）
   - **上限**: density の `Points` は 2〜4,096（格子 4,096 で積和が約 1.7e7 回）、smooth の `Points` は 2〜131,072（行ごとの仕事は窓の端の二分探索だけ）。bin 2D のセルの数（x の区切りの数 × y の区切りの数）は rect の上限 131,072 まで（行 G5b の区切りの数 × 群の数と同じく、数 0 のセルも数える。区切りは列の統計から決まるので、なめる前に確かめる）で、超えたら 2 つの区切りの数と上限を書いた `ArgumentException`。各軸の区切りの数は 10,000 まで（行 G5b）
   - **ビルダ**: `PlotBuilder.Density`（line と `Stat.Density`）、`Smooth`（line と `Stat.Smooth`）、`Bin2D`（rect と `Stat.Bin2D`。色はセルの値で決まり、凡例の行を持たないので `configure` を取らない）。density の area は仕様の型（`new AreaLayerSpec { X = …, Stat = Stat.Density() }`）で作る（行 G5b の bin の area と同じ）。`Stat.Density`（`bandwidth` が有限で正でない、`adjust` が有限で正でない、`points` が 2〜4,096 の外、`output` が定義にない）と `Stat.Smooth`（`window` が有限で正でない、`points` が 2〜131,072 の外）と `Stat.Bin2D`（`output` が定義にない）は `ArgumentOutOfRangeException`、`Stat.Bin2D` の `Output` が `Count` でない軸の `BinStatSpec` は `ArgumentException`。`with` で範囲の外を入れた仕様はコンパイルが `ArgumentException`
+  - **スクラッチのコンパイル**: この形（`StatOutput` への改名、`DensityStatSpec`・`SmoothStatSpec`・`Bin2DStatSpec`、`Stat.Density`・`Smooth`・`Bin2D`、`required` を外した line の `Y` と rect の 4 つのチャネル、`PlotBuilder` の 3 つの口と省略した引数、`with` で `Points` を変える写し、§4.9 の例）を Core の中のスクラッチと、それを使うスクラッチの実行ファイルでコンパイルし、NativeAOT の発行と実行で警告 0 だった。`FillBy` は `ColumnRef` を取るので、カテゴリは `CategoryRef.ToColumnRef()` で渡す（§4.9 の例）
 - **行 G3 の仕様**（Issue #111）: ガイドの設定は、§4.1 の表のとおりスケールに持つ（軸のタイトル・nice・書式）。`PlotSpec` の別の軸の仕様にしないのは、軸の中身がスケールの種類（数か日時か）で決まり、スケールと軸が 1 対 1 だからである（`design-decisions.md`）。§4.9 の例の `.Title("…")` は、`Title` のプロパティと同じ名前のメソッドを C# の型が持てないので、`WithTitle` にした。`WithTitle` は `WithDomain` と違い種類によらないので、拡張メソッド 1 つにする。`Title` と `Label` は null と空を「なし」とし、例外にしない。グリッドと軸を描くかはテーマ（§4.7）で決める。`LineLayerSpec.Style` の太さと破線の長さは、行 G3 から DIP で、`HeadlessRenderer` の `Scale`（§7.5）を掛けて記録する（倍率 1 なら行 G1 と同じ画素）
 
 ### 4.2 エンコーディングとスケール
@@ -1626,7 +1627,7 @@ var densities = Plot.Create(data)
 var stacked = new PlotSpec
 {
     Data = data,
-    Layers = [new AreaLayerSpec { X = data.Col<float>("load"), Stat = Stat.Density(output: StatOutput.Count), FillBy = data.Cat("sensor") }],
+    Layers = [new AreaLayerSpec { X = data.Col<float>("load"), Stat = Stat.Density(output: StatOutput.Count), FillBy = data.Cat("sensor").ToColumnRef() }],
 };
 
 var smoothed = Plot.Create(data)
