@@ -83,6 +83,61 @@ internal static class TimeTicks
         axis.ClearCandidate();
     }
 
+    /// <summary>
+    /// Returns the edges of the bins of a time x (design §4.1, row G5b), in the column's unit: the finest calendar step of the
+    /// ticks whose bins over [<paramref name="min"/>, <paramref name="max"/>] number at most <paramref name="maxBins"/>,
+    /// from the step's boundary at or before the least value to the one past the greatest. Months and years are calendar
+    /// boundaries, so the bins' widths differ. An empty array when no step fits, or the range leaves the years 1 to 9999.
+    /// </summary>
+    internal static long[] BinEdges(long min, long max, TimeScaleSpec scale, int maxBins)
+    {
+        var unit = UnitNanoseconds(scale.Unit);
+        var epoch = (Int128)scale.Epoch.Ticks * 100;
+        var (low, high) = (epoch + ((Int128)min * unit), epoch + ((Int128)max * unit));
+        if (low < 0 || high >= MaxInstant)
+        {
+            return [];
+        }
+
+        foreach (var step in Steps)
+        {
+            if (step.Kind == StepKind.SubDay && step.Nanoseconds % unit != 0)
+            {
+                continue;
+            }
+
+            // The greatest value lies in the last bin, closed on both sides: on a boundary, it is the last edge.
+            var first = Floor(step, low);
+            var count = 0;
+            var edge = first;
+            while (true)
+            {
+                edge = Next(step, edge);
+                count++;
+                if (!(edge < high && count <= maxBins))
+                {
+                    break;
+                }
+            }
+
+            if (count > maxBins || edge >= MaxInstant)
+            {
+                continue;
+            }
+
+            var edges = new long[count + 1];
+            edge = first;
+            for (var i = 0; i <= count; i++, edge = Next(step, edge))
+            {
+                edges[i] = (long)((edge - epoch) / unit);
+            }
+
+            return edges;
+        }
+
+        return [];
+    }
+
     /// <summary>The coarsest calendar boundary an instant lies on.</summary>
     internal static TimeInterval Boundary(Int128 instant)
     {

@@ -532,6 +532,144 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Adds a histogram: bars of the bins of a numeric x (design §4.1, row G5b).</summary>
+    /// <typeparam name="TX">The element type of the column.</typeparam>
+    /// <param name="x">The values: a column of the plot's table.</param>
+    /// <param name="bin">The bins, or null for <see cref="Stat.Bin"/>'s defaults.</param>
+    /// <param name="configure">Sets the fill, the label, the color channel, and the position; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">The reference is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Histogram<TX>(ColumnRef<TX> x, BinStatSpec? bin = null, Action<FillBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+    {
+        ThrowIfBuilt();
+        CheckReference(x, nameof(x));
+        var fill = new FillBuilder();
+        configure?.Invoke(fill);
+        _layers.Add(
+            new BarLayerSpec
+            {
+                X = x,
+                Fill = fill.FillColor,
+                Label = fill.LabelText,
+                ColorBy = Channel(fill.ColorByRef),
+                Position = fill.PositionValue,
+                Stat = bin ?? HyperPlot.Stat.Bin(),
+            }
+        );
+        return this;
+    }
+
+    /// <summary>Adds a bar of the number of rows of each category (design §4.1, row G5b).</summary>
+    /// <param name="x">The categorical column of the plot's table, on a band scale.</param>
+    /// <param name="configure">Sets the fill, the label, the color channel, and the position; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">The reference is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Count(CategoryRef x, Action<FillBuilder>? configure = null)
+    {
+        ThrowIfBuilt();
+        CheckReference(x.ToColumnRef(), nameof(x));
+        var fill = new FillBuilder();
+        configure?.Invoke(fill);
+        _layers.Add(
+            new BarLayerSpec
+            {
+                X = x.ToColumnRef(),
+                Fill = fill.FillColor,
+                Label = fill.LabelText,
+                ColorBy = Channel(fill.ColorByRef),
+                Position = fill.PositionValue,
+                Stat = HyperPlot.Stat.Count,
+            }
+        );
+        return this;
+    }
+
+    /// <summary>Adds a bar of a summary of each category's y values (design §4.1, row G5b).</summary>
+    /// <typeparam name="TY">The element type of the column.</typeparam>
+    /// <param name="x">The categorical column of the plot's table, on a band scale.</param>
+    /// <param name="y">The values: a stored <see cref="Column{T}"/>.</param>
+    /// <param name="value">The summary, or null for the mean.</param>
+    /// <param name="configure">Sets the fill, the label, the color channel, and the position; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table, or the Y column is not a <see cref="Column{T}"/>.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Summary<TY>(CategoryRef x, ColumnRef<TY> y, SummaryOp? value = null, Action<FillBuilder>? configure = null)
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x.ToColumnRef(), nameof(x));
+        CheckStored(y, nameof(y), "a summary's Y");
+        var fill = new FillBuilder();
+        configure?.Invoke(fill);
+        _layers.Add(
+            new BarLayerSpec
+            {
+                X = x.ToColumnRef(),
+                Y = y,
+                Fill = fill.FillColor,
+                Label = fill.LabelText,
+                ColorBy = Channel(fill.ColorByRef),
+                Position = fill.PositionValue,
+                Stat = HyperPlot.Stat.Summary(value),
+            }
+        );
+        return this;
+    }
+
+    /// <summary>Adds an error bar between two summaries of each category's y values (design §4.1, row G5b).</summary>
+    /// <typeparam name="TY">The element type of the column.</typeparam>
+    /// <param name="x">The categorical column of the plot's table, on a band scale.</param>
+    /// <param name="y">The values: a stored <see cref="Column{T}"/>.</param>
+    /// <param name="low">The lower end, or null for the least value.</param>
+    /// <param name="high">The upper end, or null for the greatest value.</param>
+    /// <param name="capWidth">The width of the caps in DIPs: finite and at least 0; 0 draws none.</param>
+    /// <param name="configure">Sets the stroke, the label, the color channel, and the position; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">
+    /// A reference is <see langword="default"/> or names another table, the Y column is not a <see cref="Column{T}"/>, or
+    /// the stroke is out of range.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="capWidth"/> is not finite and at least 0.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder SummaryRange<TY>(
+        CategoryRef x,
+        ColumnRef<TY> y,
+        SummaryOp? low = null,
+        SummaryOp? high = null,
+        float capWidth = 6,
+        Action<LineBuilder>? configure = null
+    )
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x.ToColumnRef(), nameof(x));
+        CheckStored(y, nameof(y), "a summary's Y");
+        if (!float.IsFinite(capWidth) || capWidth < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capWidth), capWidth, "The cap width is finite and at least 0.");
+        }
+
+        var style = Stroke(configure);
+        _layers.Add(
+            new ErrorBarLayerSpec
+            {
+                X = x.ToColumnRef(),
+                YMin = y,
+                YMax = y,
+                CapWidth = capWidth,
+                Style = style.Style,
+                Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
+                Stat = HyperPlot.Stat.Summary(low ?? SummaryOp.Min, high ?? SummaryOp.Max),
+            }
+        );
+        return this;
+    }
+
     /// <summary>Adds a user's geom (design §5.5.3).</summary>
     /// <param name="geom">The geom.</param>
     /// <param name="label">The legend's label; null or empty leaves the layer out of the legend.</param>

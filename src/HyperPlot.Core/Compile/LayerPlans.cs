@@ -28,6 +28,9 @@ internal abstract class LayerPlan
     /// </summary>
     public const int MaxTextRows = 4_096;
 
+    /// <summary>The most bins a stat makes (design §4.1, row G5b).</summary>
+    public const int MaxBins = 10_000;
+
     private Column[] _columns = [];
     private LayerSpec _spec;
 
@@ -89,13 +92,12 @@ internal abstract class LayerPlan
 
     /// <summary>Makes the plan of a layer: its pyramids and series join the plan's.</summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build) =>
-        Stacks(PositionOf(spec))
-            ? spec is BarLayerSpec { X.Column: CategoricalColumn } bar
-                ? new StackedCategoryBarPlan(bar)
+        spec.Stat is not null ? new StatPlan(spec, build)
+        : Stacks(PositionOf(spec))
+            ? spec is BarLayerSpec { X.Column: CategoricalColumn } bar ? new StackedCategoryBarPlan(bar)
                 : new StackedSeriesPlan(spec, build)
-            : SplitPlan.Splits(spec)
-                ? new SplitPlan(spec, build)
-                : Create(spec, build, RowRange.All);
+        : SplitPlan.Splits(spec) ? new SplitPlan(spec, build)
+        : Create(spec, build, RowRange.All);
 
     /// <summary>Makes the plan of a layer over a run of its columns' rows (row G7c): the series of one category.</summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows) =>
@@ -129,18 +131,27 @@ internal abstract class LayerPlan
             case LineLayerSpec l:
                 into[0] = ofX ? l.X : l.Y;
                 return 1;
+
+            // A layer binned or counted by its stat has no Y (row G5b).
             case StepLayerSpec s:
                 into[0] = ofX ? s.X : s.Y;
-                return 1;
+                return ofX || !NoY(s) ? 1 : 0;
             case AreaLayerSpec a:
                 into[0] = ofX ? a.X : a.Y;
-                return 1;
+                return ofX || !NoY(a) ? 1 : 0;
             case BarLayerSpec b:
                 into[0] = ofX ? b.X : b.Y;
-                return 1;
+                return ofX || !NoY(b) ? 1 : 0;
             case BandLayerSpec b:
                 return Two(ofX, b.X, b.YMin, b.YMax, into);
             case ErrorBarLayerSpec e:
+                // A summary's YMax may be the default: it summarizes YMin (row G5b).
+                if (!ofX && e.Stat is SummaryStatSpec && e.YMax.IsDefault)
+                {
+                    into[0] = e.YMin;
+                    return 1;
+                }
+
                 return Two(ofX, e.X, e.YMin, e.YMax, into);
             case RectLayerSpec r:
                 (into[0], into[1]) = ofX ? (r.XMin, r.XMax) : (r.YMin, r.YMax);
@@ -171,6 +182,17 @@ internal abstract class LayerPlan
             return 2;
         }
     }
+
+    /// <summary>Returns whether a layer takes no Y: binned or counted by its stat, with no Y given (row G5b).</summary>
+    public static bool NoY(LayerSpec layer) =>
+        layer.Stat is BinStatSpec or CountStatSpec
+        && layer switch
+        {
+            StepLayerSpec s => s.Y.IsDefault,
+            AreaLayerSpec a => a.Y.IsDefault,
+            BarLayerSpec b => b.Y.IsDefault,
+            _ => false,
+        };
 
     /// <summary>
     /// Throws unless a layer is one the plan compiles and its members are in range (design §4.8). Reads no data but the
@@ -231,7 +253,11 @@ internal abstract class LayerPlan
                 CheckStored(data, l.Y, index, "a line's Y");
                 break;
             case StepLayerSpec s:
-                CheckStored(data, s.Y, index, "a step's Y");
+                if (!NoY(s))
+                {
+                    CheckStored(data, s.Y, index, "a step's Y");
+                }
+
                 if ((uint)s.Mode > (uint)StepMode.Middle)
                 {
                     throw new ArgumentException($"The Mode of layer {index} is {s.Mode}, not a named value.");
@@ -239,7 +265,11 @@ internal abstract class LayerPlan
 
                 break;
             case AreaLayerSpec a:
-                CheckStored(data, a.Y, index, "an area's Y");
+                if (!NoY(a))
+                {
+                    CheckStored(data, a.Y, index, "an area's Y");
+                }
+
                 CheckFinite(a.Baseline, index, "Baseline");
                 break;
             case BandLayerSpec b:
@@ -247,7 +277,11 @@ internal abstract class LayerPlan
                 CheckStored(data, b.YMax, index, "a band's YMax");
                 break;
             case BarLayerSpec b:
-                CheckStored(data, b.Y, index, "a bar's Y");
+                if (!NoY(b))
+                {
+                    CheckStored(data, b.Y, index, "a bar's Y");
+                }
+
                 CheckFinite(b.Baseline, index, "Baseline");
                 if (b.X.Column is CategoricalColumn && b.Width is not null)
                 {
@@ -264,7 +298,11 @@ internal abstract class LayerPlan
                 break;
             case ErrorBarLayerSpec e:
                 CheckStored(data, e.YMin, index, "an error bar's YMin");
-                CheckStored(data, e.YMax, index, "an error bar's YMax");
+                if (!(e.Stat is SummaryStatSpec && e.YMax.IsDefault))
+                {
+                    CheckStored(data, e.YMax, index, "an error bar's YMax");
+                }
+
                 if (!float.IsFinite(e.CapWidth) || e.CapWidth < 0)
                 {
                     throw new ArgumentException($"The CapWidth of layer {index} is {e.CapWidth}; a cap is finite and at least 0 wide.");
@@ -291,6 +329,7 @@ internal abstract class LayerPlan
 
         ValidateColor(data, layer, index, buffer);
         ValidatePosition(layer, index);
+        ValidateStat(layer, index);
     }
 
     /// <summary>
@@ -317,11 +356,123 @@ internal abstract class LayerPlan
             _ => null,
         };
 
+    /// <summary>
+    /// Returns whether two stats make different tables (row G5b): another kind or other values. A stat's node identity is not
+    /// its value, so a new node of the same values is the same stat.
+    /// </summary>
+    public static bool StatsDiffer(StatSpec? before, StatSpec? after) =>
+        (before, after) switch
+        {
+            (null, null) => false,
+            (BinStatSpec b, BinStatSpec a) => b.MaxBins != a.MaxBins || b.Step != a.Step || b.Anchor != a.Anchor || b.Output != a.Output,
+            (CountStatSpec, CountStatSpec) => false,
+            (SummaryStatSpec b, SummaryStatSpec a) => b.Value != a.Value || b.Low != a.Low || b.High != a.High,
+            _ => true,
+        };
+
     /// <summary>Returns whether a position stacks: a stack or a fill (row G5a).</summary>
     public static bool Stacks(PositionKind kind) => kind is PositionKind.Stack or PositionKind.Fill;
 
     /// <summary>Returns the padding of a layer's dodge, or 0 (row G5a).</summary>
     public static double DodgePadding(LayerSpec layer) => layer.Position is DodgePositionSpec dodge ? dodge.Padding : 0;
+
+    /// <summary>
+    /// Throws unless a layer's stat is one its geom takes, with the channels it needs (design §4.1, §4.8, row G5b): bins on
+    /// bars, areas, and steps over a numeric x with no Y; counts on bars over categories with no Y; summaries on bars and
+    /// error bars over categories with their values; categories only in a stat layer's color channels. Allocates nothing
+    /// unless it throws.
+    /// </summary>
+    private static void ValidateStat(LayerSpec layer, int index)
+    {
+        if (layer.Stat is null)
+        {
+            return;
+        }
+
+        if (layer.Stat is not (BinStatSpec or CountStatSpec or SummaryStatSpec))
+        {
+            throw new ArgumentException(
+                $"The Stat of layer {index} is a {layer.Stat.GetType().Name}; the plot compiles the stats of row G5b (Bin, Count, Summary)."
+            );
+        }
+
+        var categories = layer switch
+        {
+            BarLayerSpec b => b.X.Column is CategoricalColumn,
+            ErrorBarLayerSpec e => e.X.Column is CategoricalColumn,
+            _ => false,
+        };
+        var takes = layer.Stat switch
+        {
+            BinStatSpec => layer is StepLayerSpec or AreaLayerSpec or (BarLayerSpec and not { X.Column: CategoricalColumn }),
+            CountStatSpec => layer is BarLayerSpec && categories,
+            _ => layer is BarLayerSpec or ErrorBarLayerSpec && categories,
+        };
+        if (!takes)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a {layer.GetType().Name} with a {layer.Stat.GetType().Name}; bins go on bars, areas, and steps over a numeric x, counts and summaries on bars over categories, summaries on error bars over categories too (design §4.1)."
+            );
+        }
+
+        if (layer.Stat is BinStatSpec or CountStatSpec && !NoY(layer))
+        {
+            throw new ArgumentException(
+                $"Layer {index} has a Y with a {layer.Stat.GetType().Name}; its y is the stat's output, so its Y is the default (design §4.1)."
+            );
+        }
+
+        if (layer is ErrorBarLayerSpec bars && !bars.YMax.IsDefault && bars.YMax != bars.YMin)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is an error bar with a summary and a YMax other than its YMin; a summary's values are its YMin (design §4.1)."
+            );
+        }
+
+        if ((layer.FillBy ?? layer.ColorBy) is { Column: not CategoricalColumn })
+        {
+            throw new ArgumentException(
+                $"Layer {index} has a stat and a color column of numbers; a stat's output has no row to color one by one, so its color column is categorical (design §4.1)."
+            );
+        }
+
+        switch (layer.Stat)
+        {
+            case BinStatSpec bin:
+                if (
+                    bin.MaxBins is < 1 or > MaxBins
+                    || (bin.Step is { } step && (!double.IsFinite(step) || step <= 0))
+                    || (bin.Anchor is { } anchor && !double.IsFinite(anchor))
+                    || (uint)bin.Output > (uint)BinOutput.Density
+                )
+                {
+                    throw new ArgumentException(
+                        $"The bins of layer {index} are out of range (MaxBins {bin.MaxBins}, Step {bin.Step}, Anchor {bin.Anchor}, Output {bin.Output}): MaxBins from 1 to {MaxBins}, a finite Step above 0, a finite Anchor, a named Output."
+                    );
+                }
+
+                if (layer is BarLayerSpec { Width: not null } or BarLayerSpec { Baseline: not 0 } or AreaLayerSpec { Baseline: not 0 })
+                {
+                    throw new ArgumentException(
+                        $"Layer {index} is a binned bar with a Width, or a binned bar or area with a Baseline other than 0; its counts start at 0 (design §5.5.3)."
+                    );
+                }
+
+                break;
+            case SummaryStatSpec summary:
+                foreach (var op in (ReadOnlySpan<SummaryOp?>)[summary.Value, summary.Low, summary.High])
+                {
+                    if (op is { Kind: SummaryKind.Custom, Stat: { } stat } && stat.StateLength is < 1 or > 64)
+                    {
+                        throw new ArgumentException(
+                            $"A custom summary of layer {index} has a StateLength of {stat.StateLength}; a state is from 1 to 64 doubles."
+                        );
+                    }
+                }
+
+                break;
+        }
+    }
 
     /// <summary>
     /// Throws unless a layer's position is one its geom takes (design §4.1, row G5a): a stack or a fill on bars and areas
@@ -537,6 +688,16 @@ internal abstract class LayerPlan
         // A color column splits the layer or colors its elements (design §4.8, row G7c): another one, or a split layer's
         // outline coming or going, makes its parts again.
         if (before.ColorBy != after.ColorBy || before.FillBy != after.FillBy)
+        {
+            return true;
+        }
+
+        // A stat is made by the workers (design §4.8, row G5b): another one, or another position of a stat layer (its bars'
+        // pieces are placed in the stat), makes the layer again.
+        if (
+            StatsDiffer(before.Stat, after.Stat)
+            || (after.Stat is not null && (PositionOf(before) != PositionOf(after) || !DodgePadding(before).Equals(DodgePadding(after))))
+        )
         {
             return true;
         }
@@ -810,9 +971,20 @@ internal sealed class PlanBuild(
     M4Batch batch,
     int capacity,
     PlotWorkerPool pool,
-    Func<Raster, RasterPyramid>? mipmap = null
+    Func<Raster, RasterPyramid>? mipmap = null,
+    ScaleSpec? xScale = null,
+    IScale? xTransform = null
 )
 {
+    /// <summary>Gets or sets the position in the spec of the layer being made: messages name it (row G5b).</summary>
+    public int Layer { get; set; }
+
+    /// <summary>Gets the plot's x scale, which bins are chosen in (row G5b).</summary>
+    public ScaleSpec? XScale => xScale;
+
+    /// <summary>Gets the x scale's transform to its space, or null for linear and time (row G5b).</summary>
+    public IScale? XTransform => xTransform;
+
     /// <summary>Returns the mipmap the plan holds over a raster, made the first time (row G9).</summary>
     public RasterPyramid Mipmap(Raster raster) => mipmap is null ? raster.MakePyramid() : mipmap(raster);
 

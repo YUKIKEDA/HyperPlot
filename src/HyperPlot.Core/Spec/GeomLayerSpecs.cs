@@ -21,8 +21,8 @@ public sealed record StepLayerSpec : LayerSpec
     /// <summary>Gets the X column: a <see cref="UniformColumn"/>, or a non-decreasing <see cref="Column{T}"/> with no NaN.</summary>
     public required ColumnRef X { get; init; }
 
-    /// <summary>Gets the Y column: a <see cref="Column{T}"/>. NaN breaks the line.</summary>
-    public required ColumnRef Y { get; init; }
+    /// <summary>Gets the Y column: a <see cref="Column{T}"/>. NaN breaks the line. A layer binned by its stat has none (row G5b).</summary>
+    public ColumnRef Y { get; init; }
 
     /// <summary>Gets the stroke, in DIPs: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
     public StrokeSpec Style { get; init; } = new(null);
@@ -37,8 +37,8 @@ public sealed record AreaLayerSpec : LayerSpec
     /// <summary>Gets the X column: a <see cref="UniformColumn"/>, or a non-decreasing <see cref="Column{T}"/> with no NaN.</summary>
     public required ColumnRef X { get; init; }
 
-    /// <summary>Gets the Y column: a <see cref="Column{T}"/>.</summary>
-    public required ColumnRef Y { get; init; }
+    /// <summary>Gets the Y column: a <see cref="Column{T}"/>. A layer binned by its stat has none (row G5b).</summary>
+    public ColumnRef Y { get; init; }
 
     /// <summary>Gets the fill, or null for the layer's series color at alpha 128 (design §4.1): it lies over other layers.</summary>
     public Color? Fill { get; init; }
@@ -75,8 +75,11 @@ public sealed record BarLayerSpec : LayerSpec
     /// <summary>Gets the X column: a <see cref="UniformColumn"/>, or a non-decreasing <see cref="Column{T}"/> with no NaN.</summary>
     public required ColumnRef X { get; init; }
 
-    /// <summary>Gets the Y column: a <see cref="Column{T}"/>.</summary>
-    public required ColumnRef Y { get; init; }
+    /// <summary>
+    /// Gets the Y column: a <see cref="Column{T}"/>. A layer binned or counted by its stat has none; a summary's are the values
+    /// it summarizes (row G5b).
+    /// </summary>
+    public ColumnRef Y { get; init; }
 
     /// <summary>Gets the fill, or null for the layer's series color, opaque (design §4.1).</summary>
     public Color? Fill { get; init; }
