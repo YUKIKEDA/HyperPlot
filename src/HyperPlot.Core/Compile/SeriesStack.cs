@@ -1,3 +1,5 @@
+using System.Buffers;
+
 namespace HyperPlot;
 
 /// <summary>One group's rows of a stacked layer over a numeric x (row G5a): a run of the layer's own columns, or its gathered ones.</summary>
@@ -280,11 +282,6 @@ internal sealed class SeriesStack : IDisposable
             (HasPositive, HasNegative) = (new bool[n], new bool[n]);
             (_positive, _negative) = (new Writer<double>?[n], new Writer<double>?[n]);
             (_xs, _ys) = (new double[n][], new double[n][]);
-            for (var s = 0; s < n; s++)
-            {
-                (_xs[s], _ys[s]) = (new double[Window], new double[Window]);
-            }
-
             (_windows, _lengths) = (new long[n], new int[n]);
             if (!write)
             {
@@ -322,8 +319,34 @@ internal sealed class SeriesStack : IDisposable
         /// <summary>Gets the greatest end of a piece that is not 0 the pass wrote, or −∞.</summary>
         public double Max { get; private set; } = double.NegativeInfinity;
 
-        /// <summary>Runs the pass over the segment.</summary>
+        /// <summary>
+        /// Runs the pass over the segment. The groups' windows are borrowed for the pass and given back at its end, so that
+        /// only the passes that run at once hold them: the workers' count × the groups × 64 KB.
+        /// </summary>
         public void Run()
+        {
+            for (var s = 0; s < _xs.Length; s++)
+            {
+                (_xs[s], _ys[s], _lengths[s]) = (ArrayPool<double>.Shared.Rent(Window), ArrayPool<double>.Shared.Rent(Window), 0);
+            }
+
+            try
+            {
+                Walk();
+            }
+            finally
+            {
+                for (var s = 0; s < _xs.Length; s++)
+                {
+                    ArrayPool<double>.Shared.Return(_xs[s]);
+                    ArrayPool<double>.Shared.Return(_ys[s]);
+                    (_xs[s], _ys[s]) = (null!, null!);
+                }
+            }
+        }
+
+        /// <summary>Walks the segment's points in order.</summary>
+        private void Walk()
         {
             var previous = Start();
             while (true)

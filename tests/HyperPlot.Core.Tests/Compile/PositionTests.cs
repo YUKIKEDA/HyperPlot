@@ -62,7 +62,8 @@ public sealed class PositionTests
     /// - Render each refused spec.
     ///
     /// Expected:
-    /// - ArgumentException naming the layer for each.
+    /// - ArgumentException naming the layer for each. A categorical error bar of 65,536 × 256 cells (2^24) is drawn; 65,537 × 256 is
+    ///   refused for error bars and stacked bars.
     /// </remarks>
     [Fact]
     public void Compile_RefusesPositionsAGeomDoesNotTake()
@@ -265,6 +266,45 @@ public sealed class PositionTests
             ScaleX = Scale.Band(),
         };
         _ = Assert.Throws<ArgumentException>(() => plan.Render(cells));
+
+        // Stacked bars split by color hold a cell a pair too; 65,536 × 256 = 2^24 cells exactly is drawn.
+        var stacked = cells with
+        {
+            Layers =
+            [
+                new BarLayerSpec
+                {
+                    X = wide.Cat("x").ToColumnRef(),
+                    Y = wide.Col<double>("y"),
+                    ColorBy = wide.Cat("c").ToColumnRef(),
+                },
+            ],
+        };
+        _ = Assert.Throws<ArgumentException>(() => plan.Render(stacked));
+        string[] fewer = [.. names.Take(65_536)];
+        var exact = DataTable
+            .Create()
+            .Add("x", Column.Categorical(["x0", "x1"], fewer))
+            .Add("c", Column.Categorical(["c0", "c1"], colors))
+            .Add("y", wide.Col<double>("y").Column)
+            .Build();
+        using var exactPlan = TestPlans.Create(pool, Size, Size);
+        _ = exactPlan.Render(
+            cells with
+            {
+                Data = exact,
+                Layers =
+                [
+                    new ErrorBarLayerSpec
+                    {
+                        X = exact.Cat("x").ToColumnRef(),
+                        YMin = exact.Col<double>("y"),
+                        YMax = exact.Col<double>("y"),
+                        ColorBy = exact.Cat("c").ToColumnRef(),
+                    },
+                ],
+            }
+        );
     }
 
     /// <summary>
@@ -1083,6 +1123,48 @@ public sealed class PositionTests
     }
 
     /// <summary>
+    /// A stacked area's outline is the outer edge of each group's piece only (design §5.5.3): a line a piece, none along an
+    /// inner edge, which is the next group's outer edge.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The numeric groups (a over b, all positive) as areas split by FillBy with an outline; domains of [0, 100] on a
+    ///   100 × 100 target without guides.
+    ///
+    /// Steps:
+    /// - Render stacked.
+    ///
+    /// Expected:
+    /// - Two polylines: group a's reaches the stack's top (the greatest a + b), group b's the greatest b.
+    /// </remarks>
+    [Fact]
+    public void AreaStack_OutlinesTheOuterEdgesOnly()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var data = Data.Create();
+        var t = data.Table;
+        using var plan = TestPlans.Create(pool, Size, Size);
+        var list = plan.Render(
+            Spec(
+                t,
+                new AreaLayerSpec
+                {
+                    X = t.Col<double>("nx"),
+                    Y = t.Col<double>("ny"),
+                    FillBy = t.Cat("ng").ToColumnRef(),
+                    Outline = new StrokeSpec(null),
+                }
+            )
+        );
+        Assert.Equal(2, list.Polylines.Length);
+        var (_, most) = data.NumericStackedEnds();
+        var b = Enumerable.Range(0, 15).Where(r => data.NumericGroups[r] == 1).Max(r => t.Col<double>("ny").Column.DifferenceAt(r, 0));
+        double Top(int polyline) => SegmentsOf(list, polyline).Min(s => Math.Min(s.Start.Y, s.End.Y));
+        Close(Size - most, Top(0));
+        Close(Size - b, Top(1));
+    }
+
+    /// <summary>
     /// In polar, a shape is one color (design §4.4, Issue #208): stacked groups, and bars colored by a number (row G7c), are
     /// each recorded in their own color, not all in the layer's last one.
     /// </summary>
@@ -1160,11 +1242,13 @@ public sealed class PositionTests
     /// - The stack test's categorical bars and the numeric groups' bars.
     ///
     /// Steps:
-    /// - Render Stack, Fill, Identity, Dodge, Dodge(0.3); change a value of Y and invalidate it; render again.
+    /// - Render Stack, Fill, Identity, Dodge, Dodge(0.3); change a value of Y and invalidate it; render again. Render with
+    ///   another color column.
     ///
     /// Expected:
     /// - A new layer plan after Stack → Fill and Fill → Identity, the same after Identity → Dodge → Dodge(0.3) with no
-    ///   extraction; after the invalidation, the new sums, and a new plan for the numeric stack.
+    ///   extraction; after the invalidation, the new sums, and a new plan for the numeric stack. With another color column,
+    ///   the records of a new plan.
     /// </remarks>
     [Fact]
     public void Diff_MakesTheLayerAgainForStacksOnly()
@@ -1223,6 +1307,15 @@ public sealed class PositionTests
         _ = plan.Render(numeric);
         Assert.NotSame(before, plan.Layers[0]);
         Assert.False(plan.Layers[0].Stale);
+
+        // Another color column: the groups are made again, as a new plan draws them.
+        var swapped = Of(Position.Stack) with
+        {
+            Layers = [bars with { ColorBy = t.Cat("g2").ToColumnRef(), Position = Position.Stack }],
+        };
+        _ = plan.Render(Of(Position.Stack));
+        using var fresh = TestPlans.Create(pool, Size, Size);
+        AssertSameList(fresh.Render(swapped), plan.Render(swapped));
     }
 
     /// <summary>Once warm, stacked bars and areas and dodged bars and error bars drawn again allocate nothing (design §4.8).</summary>
@@ -1453,6 +1546,7 @@ public sealed class PositionTests
                 .Create()
                 .Add("cx", Column.Categorical(Rows.Select(r => r.X < 0 ? null : $"x{r.X}").ToArray(), ["x0", "x1", "x2", "x3"]))
                 .Add("g", Column.Categorical(Rows.Select(r => r.G < 0 ? null : Groups[r.G]).ToArray(), Groups))
+                .Add("g2", Column.Categorical(Rows.Select(r => r.G < 0 ? null : Groups[2 - r.G]).ToArray(), Groups))
                 .Add("y", _yColumn)
                 .Add("y2", _y2Column)
                 .Add("x", _yColumn)

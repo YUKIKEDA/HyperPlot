@@ -53,7 +53,13 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 
         Release();
         Sum(pool);
-        _columns = new Column<double>[_anyNegative ? 2 * _groupCount : _groupCount];
+
+        // A column of no category has nothing to draw: no pyramid over empty arrays (rows G7b and G5a).
+        _columns = new Column<double>[
+            _x.CategoryCount == 0 ? 0
+            : _anyNegative ? 2 * _groupCount
+            : _groupCount
+        ];
         _pyramids = new MinMaxPyramid<double>[_columns.Length];
         for (var i = 0; i < _columns.Length; i++)
         {
@@ -91,7 +97,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 
     public override void Record(RecordContext context)
     {
-        if (_version < 0 || context.X.Band is not { } band)
+        if (_version < 0 || context.X.Band is not { Count: > 0 } band)
         {
             return;
         }
