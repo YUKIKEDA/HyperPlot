@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** G5c（G5b は #218 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** G5c
+- **ブランチ:** `docs/222-g5c-stat`（設計）
+- **Issue:** [#222](https://github.com/YUKIKEDA/HyperPlot/issues/222)（設計）
 
 ## ツールチェーン
 
