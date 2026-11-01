@@ -248,6 +248,86 @@ public sealed class PlotWorkerPool : IDisposable
     }
 
     /// <summary>
+    /// Extracts several batches in one pass (row G6a): each with its own origin and boundaries, all queued at once so that the
+    /// workers and the caller take the jobs of any of them, then waited for. A plot's pairs of scales are its batches: one at
+    /// a time would run a secondary scale's series after the primary's instead of beside them.
+    /// </summary>
+    /// <param name="batches">The batches; an empty one is skipped, the first is checked even when empty.</param>
+    /// <param name="origins">Each batch's origin.</param>
+    /// <param name="boundaries">Each batch's boundaries.</param>
+    /// <param name="count">The number of batches to take from the arrays.</param>
+    /// <exception cref="ArgumentException">A batch's boundaries are fewer than 2, not finite, or not strictly increasing.</exception>
+    /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
+    /// <exception cref="InvalidOperationException">Called on one of a pool's worker threads.</exception>
+    /// <remarks>After all have ended, the first failed series' exception of the first batch that has one is thrown again as it was.</remarks>
+    internal void ExtractTogether(M4Batch[] batches, ScaleOrigin[] origins, double[][] boundaries, int count)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_isWorkerThread)
+        {
+            throw new InvalidOperationException("A worker thread cannot extract a batch: it would wait for its own work.");
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            if (i == 0 || batches[i].Count > 0)
+            {
+                M4.ValidateBoundaries(boundaries[i]);
+            }
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            if (batches[i].Count == 0)
+            {
+                continue;
+            }
+
+            batches[i].Begin(origins[i], boundaries[i]);
+            lock (_gate)
+            {
+                batches[i].Next = _batches;
+                Volatile.Write(ref _batches, batches[i]);
+            }
+        }
+
+        try
+        {
+            Wake();
+            for (var i = 0; i < count; i++)
+            {
+                while (batches[i].Count > 0 && CallerTakesJobs && batches[i].TryRunOne()) { }
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                if (batches[i].Count > 0)
+                {
+                    batches[i].Wait();
+                }
+            }
+        }
+        finally
+        {
+            for (var i = 0; i < count; i++)
+            {
+                if (batches[i].Count > 0)
+                {
+                    Unlink(batches[i]);
+                }
+            }
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            if (batches[i].Count > 0 && batches[i].FirstError() is { } error)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+            }
+        }
+    }
+
+    /// <summary>
     /// Stops taking work, lets each thread finish the chunk it is building, and joins the threads (design §8.1). No chunk is
     /// built again afterwards, even after an Invalidate, so every pyramid of the pool gets
     /// <see cref="ObjectDisposedException"/> as its <see cref="MinMaxPyramid{T}.Fault"/>, built ones included (their

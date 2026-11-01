@@ -29,6 +29,8 @@ internal sealed class PlotPlan : IDisposable
     // The M4 batches of the pairs of scales a layer may lie on (row G6a): at (secondary x ? 1 : 0) + (secondary y ? 2 : 0).
     // The first is _batch, of the primary pair; the others hold series only when a layer lies on a secondary scale.
     private readonly M4Batch[] _batches;
+    private readonly ScaleOrigin[] _origins = new ScaleOrigin[4];
+    private readonly double[][] _pairBoundaries = new double[4][];
     private readonly RenderList _list = new();
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
@@ -335,17 +337,14 @@ internal sealed class PlotPlan : IDisposable
 
             if (extract || boundaries)
             {
-                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2).
-                _pool.Extract(_batch, new ScaleOrigin(_xTransform is null ? _x.Origin : 0, _yTransform is null ? _y.Origin : 0), _boundaries);
-
-                // A pair with a secondary scale runs over its own x boundaries and origins (row G6a).
-                for (var pair = 1; pair < _batches.Length; pair++)
+                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A pair
+                // with a secondary scale runs over its own x boundaries and origins, beside the primary pair (row G6a).
+                for (var pair = 0; pair < _batches.Length; pair++)
                 {
-                    if (_batches[pair].Count > 0)
-                    {
-                        _pool.Extract(_batches[pair], OriginOf(pair), (pair & 1) != 0 ? _boundaries2 : _boundaries);
-                    }
+                    (_origins[pair], _pairBoundaries[pair]) = (OriginOf(pair), (pair & 1) != 0 ? _boundaries2 : _boundaries);
                 }
+
+                _pool.ExtractTogether(_batches, _origins, _pairBoundaries, _batches.Length);
 
                 Extractions++;
                 foreach (var layer in _layers)
