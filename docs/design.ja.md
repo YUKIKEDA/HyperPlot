@@ -1124,7 +1124,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
 
 ### 4.3 Stat と変換
 
-- Stat（bin、count、summary、density、smooth）と変換（filter、calculate）はワーカーで動き、結果を版付きの派生の表として持つ
+- Stat（bin、count、summary、density、smooth）はワーカーで動き、結果を版付きの派生の表として持つ。変換（filter、calculate）は要件にないので作らない（Issue #214 でオーナーが決めた。要る使い手が出たら、要件から足す）
 - 利用者の計算は、チャンク単位のデリゲート（`(ReadOnlySpan<double> x, Span<double> result)` の形）で渡す。式木のコンパイルは使わない（AOT のため）
 - 大規模データのための集約（M4、密度）は Stat と同じ枠で表すが、ビューに依存するので、コンパイルの段ではなく描画の段（§5.5）で行う
 - **行 G5a の Position**（Issue #204）: 積み上げの結果（カテゴリの x のセルの和、数の x の累積の列）も、ワーカーが列の版ごとに作る派生の値である（§5.5.3）。Stat の枠（`IStat` と版付きの派生の表）は行 G5b で作り、行 G5a の積み上げはそれを待たずに、行 G7b のカテゴリごとの最小・最大と同じ、層の計画が持つ internal の仕事で作る。行 G5b の Stat の出力（bin の数など）を積むときは、Stat の派生の表を層の列として、同じ積み上げの道に渡す
