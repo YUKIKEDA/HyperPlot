@@ -407,6 +407,67 @@ public sealed class PositionTests
     }
 
     /// <summary>
+    /// A cell's sums do not depend on the number of workers or the order they end in (design §5.5.3): the chunks join in
+    /// fixed groups, in their order.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 3 · 2^20 rows (3 chunks) over 4 x categories and 2 groups, seeded values of many magnitudes, so that the order of
+    ///   the additions changes the last bits.
+    ///
+    /// Steps:
+    /// - Render the stacked bars with 1 worker and with 4, three times each.
+    ///
+    /// Expected:
+    /// - The same learned y domain, bit for bit, every time.
+    /// </remarks>
+    [Fact]
+    public void CategoryStack_SumsAlikeOnAnyNumberOfWorkers()
+    {
+        const int Rows = 3 << 20;
+        var random = new Random(11);
+        var values = new double[Rows];
+        for (var i = 0; i < Rows; i++)
+        {
+            values[i] = random.NextDouble() * Math.Pow(10, random.Next(-6, 6));
+        }
+
+        using var y = Column.Wrap(values);
+        var t = DataTable
+            .Create()
+            .Add("x", Column.Categorical(Enumerable.Range(0, Rows).Select(i => (string?)$"x{i % 4}").ToArray(), ["x0", "x1", "x2", "x3"]))
+            .Add("g", Column.Categorical(Enumerable.Range(0, Rows).Select(i => (string?)Groups[(i / 4) % 2]).ToArray(), Groups.AsSpan(0, 2)))
+            .Add("y", y)
+            .Build();
+        var spec = Spec(
+            t,
+            new BarLayerSpec
+            {
+                X = t.Cat("x").ToColumnRef(),
+                Y = t.Col<double>("y"),
+                ColorBy = t.Cat("g").ToColumnRef(),
+            }
+        ) with
+        {
+            ScaleX = Scale.Band(0, 0),
+            ScaleY = Scale.Linear(),
+        };
+
+        // The learned y domain's top is the greatest sum as a double: records in float pixels would hide its last bits.
+        using var one = new PlotWorkerPool(1);
+        using var reference = TestPlans.Create(one, Size, Size);
+        _ = reference.Render(spec);
+        var expected = Ends(reference.YDomain);
+        foreach (var workers in (int[])[1, 4, 4, 4])
+        {
+            using var pool = new PlotWorkerPool(workers);
+            using var plan = TestPlans.Create(pool, Size, Size);
+            _ = plan.Render(spec);
+            Assert.Equal(expected, Ends(plan.YDomain));
+        }
+    }
+
+    /// <summary>
     /// Bars over a numeric x stack the rows at equal x and only those (design §4.1, §5.5.3): an x one ulp away is a bar of
     /// its own; each group is drawn from its inner end, 0 under the last.
     /// </summary>
@@ -503,6 +564,93 @@ public sealed class PositionTests
                 (p, n) = (p + Math.Max(values[k], 0), n + Math.Min(values[k], 0));
                 Assert.Equal(p, stack.Positive[k]?.DifferenceAt(i, 0) ?? 0, 12);
                 Assert.Equal(n, stack.Negative[k]?.DifferenceAt(i, 0) ?? 0, 12);
+            }
+        }
+
+        // Filled: each side divided by its sum at the point, and 0 where the sum is 0 (x 0 from the left, before either group).
+        using var filled = SeriesStack.Build(
+            [new StackSeries(ax, ay, 0, 3), new StackSeries(bx, by, 0, 4)],
+            area: true,
+            fill: true,
+            integer: false,
+            origin: 0
+        );
+        for (var i = 0; i < u.Length; i++)
+        {
+            var up = stack.Positive[0]?.DifferenceAt(i, 0) ?? 0;
+            var down = stack.Negative[0]?.DifferenceAt(i, 0) ?? 0;
+            for (var k = 0; k < 2; k++)
+            {
+                var (p, n) = (stack.Positive[k]?.DifferenceAt(i, 0) ?? 0, stack.Negative[k]?.DifferenceAt(i, 0) ?? 0);
+                Assert.Equal(up == 0 ? 0 : p / up, filled.Positive[k]?.DifferenceAt(i, 0) ?? 0, 12);
+                Assert.Equal(down == 0 ? 0 : n / -down, filled.Negative[k]?.DifferenceAt(i, 0) ?? 0, 12);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The workers stack segments of x apart (design §5.5.3), and the columns are the same as one pass over all of it: each
+    /// segment starts from the state the rows before it leave, crossings of 0 in a gap included.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 3 groups of about a million rows each at x values of their own (whole numbers for the integer case), with seeded
+    ///   values around 0, NaN rows, and steps; areas and bars; double and integer x.
+    ///
+    /// Steps:
+    /// - Stack each without workers (one segment) and with 4 workers (several segments).
+    ///
+    /// Expected:
+    /// - The same union and the same P and N columns, bit for bit, and the same range.
+    /// </remarks>
+    [Fact]
+    public void SeriesStack_SegmentsMatchOnePass()
+    {
+        using var pool = new PlotWorkerPool(4);
+        foreach (var integer in (bool[])[false, true])
+        {
+            var random = new Random(integer ? 3 : 4);
+            var owned = new List<IDisposable>();
+            var series = new List<StackSeries>();
+            for (var g = 0; g < 3; g++)
+            {
+                var rows = 1_000_000 + (g * 37_123);
+                var xs = new double[rows];
+                var x = (double)g;
+                for (var i = 0; i < rows; i++)
+                {
+                    // Whole steps of 1 to 3 (a step of 0, a repeated x, now and then); fractions apart for doubles.
+                    x += random.Next(0, 4) == 0 ? 0 : random.Next(1, 4) + (integer ? 0 : g / 7.0);
+                    xs[i] = x;
+                }
+
+                var ys = Enumerable.Range(0, rows).Select(i => i % 997 == 0 ? double.NaN : Math.Sin(i * 0.001 * (g + 1)) * (1 + g)).ToArray();
+                Column xColumn = integer ? Column.Wrap(xs.Select(v => (long)v).ToArray()) : Column.Wrap(xs);
+                var yColumn = Column.Wrap(ys);
+                owned.AddRange([(IDisposable)xColumn, yColumn]);
+                series.Add(new StackSeries(xColumn, yColumn, 0, rows));
+            }
+
+            foreach (var area in (bool[])[true, false])
+            {
+                using var one = SeriesStack.Build(series, area, fill: false, integer, origin: 0);
+                using var many = SeriesStack.Build(series, area, fill: false, integer, origin: 0, pool);
+                Assert.Equal(one.Length, many.Length);
+                Assert.Equal(one.Range, many.Range);
+                for (var i = 0L; i < one.Length; i++)
+                {
+                    Assert.Equal(one.X.DifferenceAt(i, 0), many.X.DifferenceAt(i, 0));
+                    for (var k = 0; k < 3; k++)
+                    {
+                        Assert.Equal(one.Positive[k]?.GetValue(i), many.Positive[k]?.GetValue(i));
+                        Assert.Equal(one.Negative[k]?.GetValue(i), many.Negative[k]?.GetValue(i));
+                    }
+                }
+            }
+
+            foreach (var column in owned)
+            {
+                column.Dispose();
             }
         }
     }
@@ -932,6 +1080,75 @@ public sealed class PositionTests
         var sectors = polar.Render(spec with { Coord = Coord.Polar() }).Sectors.Length;
         var panel = empty.Render(spec with { Coord = Coord.Polar(), Layers = [] }).Sectors.Length;
         Assert.InRange(sectors - panel, count, int.MaxValue);
+    }
+
+    /// <summary>
+    /// In polar, a shape is one color (design §4.4, Issue #208): stacked groups, and bars colored by a number (row G7c), are
+    /// each recorded in their own color, not all in the layer's last one.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The stack test's bars split by 3 groups; 4 bars over a numeric x colored by 4 numbers through viridis; a polar
+    ///   system on a 100 × 100 target without guides.
+    ///
+    /// Steps:
+    /// - Render each; read the colors of the sector calls of the data (the panel's own calls first).
+    ///
+    /// Expected:
+    /// - The three groups' palette colors among the stacked calls; more than one color among the colored bars' calls.
+    /// </remarks>
+    [Fact]
+    public void Polar_GivesEachColorItsOwnShape()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var data = Data.Create();
+        var t = data.Table;
+        using var stacked = TestPlans.Create(pool, Size, Size);
+        var list = stacked.Render(
+            Spec(
+                t,
+                new BarLayerSpec
+                {
+                    X = t.Cat("cx").ToColumnRef(),
+                    Y = t.Col<double>("y"),
+                    ColorBy = t.Cat("g").ToColumnRef(),
+                }
+            ) with
+            {
+                ScaleX = Scale.Band(0, 0),
+                ScaleY = Scale.Linear().WithDomain(-50, 50),
+                Coord = Coord.Polar(),
+            }
+        );
+        var colors = list.SectorCalls.ToArray().Select(c => c.Color).ToHashSet();
+        foreach (var group in (Color[])[Palettes.Tab10[0], Palettes.Tab10[1], Palettes.Tab10[2]])
+        {
+            Assert.Contains(Premultiplied(group), colors);
+        }
+
+        using var x = Column.Wrap(new double[] { 10, 30, 50, 70 });
+        using var v = Column.Wrap(new double[] { 0, 1, 2, 3 });
+        using var heights = Column.Wrap(new double[] { 40, 60, 50, 70 });
+        var n = DataTable.Create().Add("x", x).Add("h", heights).Add("v", v).Build();
+        using var colored = TestPlans.Create(pool, Size, Size);
+        var bars = colored.Render(
+            Spec(
+                n,
+                new BarLayerSpec
+                {
+                    X = n.Col<double>("x"),
+                    Y = n.Col<double>("v"),
+                    Width = 10,
+                    ColorBy = n.Col<double>("v"),
+                }
+            ) with
+            {
+                Coord = Coord.Polar(),
+                ScaleColor = Scale.Sequential(ColorMaps.Viridis, Scale.Linear()),
+            }
+        );
+        var barColors = bars.SectorCalls.ToArray().Select(c => c.Color).Where(c => c != Premultiplied(TestPlans.Bare.PanelBackground)).ToHashSet();
+        Assert.True(barColors.Count > 1, $"{barColors.Count} colors");
     }
 
     /// <summary>

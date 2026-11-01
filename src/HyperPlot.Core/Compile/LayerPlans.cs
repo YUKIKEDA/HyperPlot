@@ -1014,8 +1014,8 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     /// <summary>
     /// Records the polar trapezoids of the rectangles drawn since the last flush as one shape (design §5.1): a layer's fills
-    /// are one call, so that bars that touch leave no seam. Called after each layer; a layer's rectangles share its fill, and
-    /// a layer that draws rectangles draws no line.
+    /// are one call, so that bars that touch leave no seam. Called after each layer, and by a rectangle of another fill than
+    /// the pending ones (rows G7c and G5a); a layer that draws rectangles draws no line.
     /// </summary>
     public void Flush()
     {
@@ -1057,6 +1057,12 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         {
             if (PolarMap.Rect(x0, x1, y0, y1, out var sector))
             {
+                // A shape is one fill: rectangles of another fill (a stacked group, a bar colored by its value) start one of their own.
+                if (_pendingSectors > 0 && _pendingFill != fill)
+                {
+                    Flush();
+                }
+
                 Ensure(ref _sectors, _pendingSectors + 1);
                 _sectors[_pendingSectors++] = sector;
                 _pendingFill = fill;

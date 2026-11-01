@@ -27,6 +27,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
     private double[][] _negative = [];
     private Column<double>[] _columns = [];
     private MinMaxPyramid<double>[] _pyramids = [];
+    private double[] _extremes = [];
     private long _version = -1;
     private (double Min, double Max)? _range;
     private bool _anyNegative;
@@ -41,12 +42,6 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         _fill = PositionOf(spec) == PositionKind.Fill;
         SetColumns(_groups is null ? [_x, _y] : [_x, _y, _groups]);
     }
-
-    /// <summary>Gets the accumulated positive sums of each group, by category. Tests only.</summary>
-    internal double[][] Positive => _positive;
-
-    /// <summary>Gets the accumulated negative sums of each group, by category. Tests only.</summary>
-    internal double[][] Negative => _negative;
 
     public override void WaitForIndexes(PlotWorkerPool pool)
     {
@@ -125,33 +120,57 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
             return;
         }
 
-        // Bands under a pixel: the categories whose band starts in a pixel column, from the pyramids' levels (row G7b).
+        // Bands under a pixel: the categories whose band starts in a pixel column, from the pyramids' levels (row G7b). Each
+        // accumulated array is asked once a column, for both ends: a group's top and the next group's bottom come from the
+        // same array. Then the pieces are drawn in the groups' order.
         var axis = context.X;
+        var arrays = _pyramids.Length;
+        if (_extremes.Length < 2 * arrays * axis.Size)
+        {
+            _extremes = new double[2 * arrays * axis.Size];
+        }
+
+        for (var c = 0; c < axis.Size; c++)
+        {
+            var column = axis.Offset + c;
+            var (first, last) =
+                a > 0
+                    ? (Math.Ceiling((column - b) / a), Math.Ceiling((column + 1 - b) / a) - 1)
+                    : (Math.Floor((column + 1 - b) / a) + 1, Math.Floor((column - b) / a));
+            var (from, to) = ((long)Math.Max(first, 0), (long)Math.Min(last, band.Count - 1));
+            for (var p = 0; p < arrays; p++)
+            {
+                var at = 2 * ((c * arrays) + p);
+                if (from > to)
+                {
+                    (_extremes[at], _extremes[at + 1]) = (double.NaN, double.NaN);
+                    continue;
+                }
+
+                var extremes = _pyramids[p].GetMinMax(band.Reverse ? band.Count - 1 - to : from, to - from + 1);
+                (_extremes[at], _extremes[at + 1]) = (extremes.Min, extremes.Max);
+            }
+        }
+
         for (var k = 0; k < _groupCount; k++)
         {
             var color = ColorOf(bar, k);
             for (var c = 0; c < axis.Size; c++)
             {
-                var column = axis.Offset + c;
-                var (first, last) =
-                    a > 0
-                        ? (Math.Ceiling((column - b) / a), Math.Ceiling((column + 1 - b) / a) - 1)
-                        : (Math.Floor((column + 1 - b) / a) + 1, Math.Floor((column - b) / a));
-                var (from, to) = ((long)Math.Max(first, 0), (long)Math.Min(last, band.Count - 1));
-                if (from > to)
+                var at = 2 * c * arrays;
+                if (double.IsNaN(_extremes[at]))
                 {
                     continue;
                 }
 
-                var start = band.Reverse ? band.Count - 1 - to : from;
-                var length = to - from + 1;
-                var top = _pyramids[k].GetMinMax(start, length).Max;
-                var bottom = k + 1 < _groupCount ? _pyramids[k + 1].GetMinMax(start, length).Min : 0;
+                var column = axis.Offset + c;
+                var top = _extremes[at + (2 * k) + 1];
+                var bottom = k + 1 < _groupCount ? _extremes[at + (2 * (k + 1))] : 0;
                 Piece(context, column, column + 1, bottom, top, color);
                 if (_anyNegative)
                 {
-                    var low = _pyramids[_groupCount + k].GetMinMax(start, length).Min;
-                    var high = k + 1 < _groupCount ? _pyramids[_groupCount + k + 1].GetMinMax(start, length).Max : 0;
+                    var low = _extremes[at + (2 * (_groupCount + k))];
+                    var high = k + 1 < _groupCount ? _extremes[at + (2 * (_groupCount + k + 1)) + 1] : 0;
                     Piece(context, column, column + 1, low, high, color);
                 }
             }
@@ -214,7 +233,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
                             var codes = _x.GetCodes(chunk);
                             var groups = _groups is null ? default : _groups.GetCodes(chunk);
                             var values = buffer.AsSpan(0, codes.Length);
-                            _y.ReadChunk(chunk, values);
+                            _y.ReadChunk(chunk, 0, values, 0);
                             for (var i = 0; i < codes.Length; i++)
                             {
                                 var (code, group, value) = (codes[i], groups.IsEmpty ? 0 : groups[i], values[i]);

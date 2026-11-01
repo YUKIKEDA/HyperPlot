@@ -227,12 +227,22 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     }
 
     /// <inheritdoc />
-    internal override void ReadChunk(int chunk, Span<double> destination)
+    internal override void ReadChunk(int chunk, int offset, Span<double> destination, long origin)
     {
-        var values = GetChunk(chunk);
+        var values = GetChunk(chunk).Slice(offset, destination.Length);
+        if (ScaleSpace.IsInteger<T>())
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = ScaleSpace.Difference(long.CreateTruncating(values[i]), origin);
+            }
+
+            return;
+        }
+
         for (var i = 0; i < values.Length; i++)
         {
-            destination[i] = double.CreateTruncating(values[i]);
+            destination[i] = double.CreateTruncating(values[i]) - origin;
         }
     }
 

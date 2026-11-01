@@ -131,6 +131,16 @@ public sealed class UniformColumn : Column
     }
 
     /// <inheritdoc />
+    internal override void ReadChunk(int chunk, int offset, Span<double> destination, long origin)
+    {
+        var first = ((long)chunk << ChunkShift) + offset;
+        for (var i = 0; i < destination.Length; i++)
+        {
+            destination[i] = IsInteger ? ScaleSpace.Difference(IntegerAt(first + i), origin) : Math.FusedMultiplyAdd(first + i, Step, Start) - origin;
+        }
+    }
+
+    /// <inheritdoc />
     internal override long LowerBound(double boundary, long origin) => new M4.UniformX(this, origin).LowerBound(boundary);
 
     /// <inheritdoc />

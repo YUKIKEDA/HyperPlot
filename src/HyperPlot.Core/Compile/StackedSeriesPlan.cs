@@ -40,7 +40,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
         var (series, categories, gathers) = Series(x, y, build.Pool);
         try
         {
-            _stack = SeriesStack.Build(series, spec is AreaLayerSpec, _fill, integer, origin);
+            _stack = SeriesStack.Build(series, spec is AreaLayerSpec, _fill, integer, origin, build.Pool);
         }
         finally
         {
@@ -106,9 +106,6 @@ internal sealed class StackedSeriesPlan : LayerPlan
             }
         }
     }
-
-    /// <summary>Gets the stacked columns. Tests only.</summary>
-    internal SeriesStack Stack => _stack;
 
     public override bool Stale
     {

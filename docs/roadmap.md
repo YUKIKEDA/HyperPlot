@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** B（GoG）
-- **作業中:** G5a（G5 を G5a・G5b・G5c に分けた。Issue #204）
-- **ブランチ:** `docs/204-g5a-position`（設計）
-- **Issue:** [#204](https://github.com/YUKIKEDA/HyperPlot/issues/204)（設計）
+- **作業中:** G5b（G5a は #208 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -61,7 +61,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G3b | 軸の端のラベルを描画先の内に収める配置（F を越えるラベルだけ内側へ寄せ、重なりは寄せた後の箱で測る。下と左の軸、flip と polar の半径の軸を含む、§4.6）。行 G7b の band の軸の長い名前で見つかった。時間の計測はしない（配置の段の数え方は変わらず、確保 0 はテストで見る） | done | [#165](https://github.com/YUKIKEDA/HyperPlot/issues/165)、[#176](https://github.com/YUKIKEDA/HyperPlot/issues/176)（設計）、[#180](https://github.com/YUKIKEDA/HyperPlot/issues/180) |
 | G8 | text の Geom（データのラベル: `CategoricalColumn` の名前か、数の列を書式で書いた文字列。プロットの text の層の行の総和 4,096 まで、重なりは避けない、整形のキャッシュの上限を 8,192 に、§4.1・§5.5.3）と、4,096 個のラベルの 1 フレームの CPU と GPU の時間の計測（NativeAOT の Release、1,920 × 1,080） | done | [#184](https://github.com/YUKIKEDA/HyperPlot/issues/184)（設計）、[#188](https://github.com/YUKIKEDA/HyperPlot/issues/188) |
 | G9 | image の Geom（ラスタの型 `Raster<T>` と RGBA、2 × 2 の平均のミップマップと 256 × 256 のタイル、`DrawImage`、常駐キャッシュ `ResidencyCache` と喪失の後の作り直し、1 フレーム 4 MB の転送と粗い段の仮の描画、§3.7・§5.2・§5.5.3）と、2 万 × 2 万の `float` のラスタ（メモリマップ）のミップマップを作る時間とパン・ズームの 1 フレームの時間と転送量の計測（NativeAOT の Release、1,920 × 1,080） | done | [#196](https://github.com/YUKIKEDA/HyperPlot/issues/196)（設計）、[#200](https://github.com/YUKIKEDA/HyperPlot/issues/200) |
-| G5a | Position（要件 G-5）: `PositionSpec`（identity・stack・dodge・fill）と `LayerSpec.Position`、色で分けた bar と area の既定の積み上げ（行 G7c から）、カテゴリの x の積み上げ（セルごとの正と負の和をワーカーが作る）と数の x の積み上げ（系列を併合した累積の列、area は ggplot2 の `stat_align` の補間）、fill、dodge（全体で固定の場所）、カテゴリの x の errorbar・縦の rule（行 G7b から）、flip と polar（§4.1・§4.2・§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。ワーカー（セルの和 1e8 行、色 8 × x 50 と 8 × 1e5。累積の列 1e8 点・8 系列、x がそろう場合とずれる場合の時間とメモリ）と、積んだ bar・area、並べた bar と errorbar の 1 フレームの CPU と GPU の時間 | in-progress | [#204](https://github.com/YUKIKEDA/HyperPlot/issues/204)（設計） |
+| G5a | Position（要件 G-5）: `PositionSpec`（identity・stack・dodge・fill）と `LayerSpec.Position`、色で分けた bar と area の既定の積み上げ（行 G7c から）、カテゴリの x の積み上げ（セルごとの正と負の和をワーカーが作る）と数の x の積み上げ（系列を併合した累積の列、area は ggplot2 の `stat_align` の補間）、fill、dodge（全体で固定の場所）、カテゴリの x の errorbar・縦の rule（行 G7b から）、flip と polar（§4.1・§4.2・§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、交互に 3 回。ワーカー（セルの和 1e8 行、色 8 × x 50 と 8 × 1e5。累積の列 1e8 点・8 系列、x がそろう場合とずれる場合の時間とメモリ）と、積んだ bar・area、並べた bar と errorbar の 1 フレームの CPU と GPU の時間 | done | [#204](https://github.com/YUKIKEDA/HyperPlot/issues/204)（設計）、[#208](https://github.com/YUKIKEDA/HyperPlot/issues/208) |
 | G5b | Stat の枠（`IStat`、ワーカーが作る版付きの派生の表、§4.3）と、bin（1D）・count・summary（mean・min・max・quantile）（要件 G-4） | not-started | |
 | G5c | 残りの Stat: density（KDE、1D）・smooth（移動平均）・bin（2D）（要件 G-4） | not-started | |
 | G6 | ファセットと複数のプロット、二次軸（要件 G-9）と上や右に置く軸（§4.6） | not-started | |
