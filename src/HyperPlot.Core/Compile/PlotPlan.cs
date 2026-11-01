@@ -99,6 +99,9 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Gets the facet's panels and their rows, or null without a facet (row G6b). Tests only.</summary>
     internal FacetData? Facet => _facet;
 
+    /// <summary>Gets the number of rasters' mipmaps the plan holds, one a raster however many panels draw it (row G6b). Tests only.</summary>
+    internal int RasterCount => _rasters.Count;
+
     /// <summary>Gets the panels (row G6b). Tests only.</summary>
     internal IReadOnlyList<PlotPanel> Panels => _panels;
 
