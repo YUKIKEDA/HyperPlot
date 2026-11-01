@@ -116,11 +116,22 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
-        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale);
-        var list = _plan.Render(plot);
-        using var frame = _backend.BeginFrame();
-        _target.Clear(plot.Theme.Background);
-        _backend.Draw(_target, list);
+        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+
+        // A headless image is the same whenever it is drawn: every visible tile of an image is sent, past a frame's budget
+        // (design §4.8, row G9).
+        _backend.Images.Unbounded = true;
+        try
+        {
+            var list = _plan.Render(plot);
+            using var frame = _backend.BeginFrame();
+            _target.Clear(plot.Theme.Background);
+            _backend.Draw(_target, list);
+        }
+        finally
+        {
+            _backend.Images.Unbounded = false;
+        }
     }
 
     /// <summary>

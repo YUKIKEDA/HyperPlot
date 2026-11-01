@@ -12,6 +12,11 @@ namespace HyperPlot;
 /// <remarks>One thread at a time uses a plan. It owns its pyramids; the columns stay with their owner, who disposes them after the plan.</remarks>
 internal sealed class PlotPlan : IDisposable
 {
+    /// <summary>The name a raster's range goes by in messages: it has no name in the table.</summary>
+    private const string RasterName = "an image's raster";
+
+    private readonly Dictionary<Raster, RasterPyramid> _rasters = [];
+    private readonly bool _ownImages;
     private readonly PlotWorkerPool _pool;
     private readonly float _scale;
     private readonly PlotGuides _guides;
@@ -54,12 +59,17 @@ internal sealed class PlotPlan : IDisposable
     /// Initializes a new instance of the <see cref="PlotPlan"/> class for a target of a size in physical pixels, measuring
     /// its text with a backend's engine, at a scale from DIPs to pixels (design §4.6).
     /// </summary>
-    internal PlotPlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale)
+    /// <remarks>
+    /// The residency cache is the backend's (row G9); without one, the plan keeps its own, which sends nothing and holds a
+    /// frame's tiles as if they were sent (the tests of Core).
+    /// </remarks>
+    internal PlotPlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale, ResidencyCache? images = null)
     {
         _pool = pool;
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
-        _context = new RecordContext(_guides, _batch, _list, new GeomFrame());
+        _context = new RecordContext(_guides, _batch, _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
+        _ownImages = images is null;
 
         // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10), and polar over the
         // outer circle, ⌈2πR⌉ with R at most half the smaller side (row G11).
@@ -68,6 +78,9 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>Gets the number of pyramids built, for the tests of the diff (design §4.8).</summary>
     internal int PyramidsBuilt { get; private set; }
+
+    /// <summary>Gets the residency cache the image layers ask for their tiles (row G9). Tests only.</summary>
+    internal ResidencyCache Images => _context.Images;
 
     /// <summary>Gets the number of M4 extractions, for the tests of the diff.</summary>
     internal int Extractions { get; private set; }
@@ -272,6 +285,12 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _pyramids.Clear();
+        foreach (var mipmap in _rasters.Values)
+        {
+            mipmap.Dispose();
+        }
+
+        _rasters.Clear();
         foreach (var layer in _layers)
         {
             layer.Release();
@@ -314,6 +333,40 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
+    /// Throws when a plot draws an image on axes it cannot be put on as a parallelogram (design §5.5.3, row G9): a polar
+    /// coordinate system, or an x or a y scale other than linear and time.
+    /// </summary>
+    private static void CheckImages(PlotSpec plot)
+    {
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            if (plot.Layers[i] is not ImageLayerSpec)
+            {
+                continue;
+            }
+
+            if (plot.Coord is PolarCoordSpec)
+            {
+                throw new ArgumentException(
+                    $"Layer {i} is an image, and the coordinate system is polar; an image is drawn on cartesian axes only (design §5.5.3)."
+                );
+            }
+
+            foreach (var (scale, name) in (ReadOnlySpan<(ScaleSpec, string)>)[(plot.ScaleX, "ScaleX"), (plot.ScaleY, "ScaleY")])
+            {
+                if (scale is not (LinearScaleSpec or TimeScaleSpec))
+                {
+                    throw new ArgumentException(
+                        $"Layer {i} is an image, and the {name} is a {scale.GetType().Name}; an image is drawn on linear and time scales only, where its rectangle stays a parallelogram (design §5.5.3)."
+                    );
+                }
+            }
+
+            return;
+        }
+    }
+
+    /// <summary>
     /// Throws when a text layer's size at the target's scale passes 512 pixels (design §4.1, row G8), as the theme's text
     /// sizes are checked: before the learning.
     /// </summary>
@@ -345,6 +398,7 @@ internal sealed class PlotPlan : IDisposable
         }
 
         CheckTextRows(plot);
+        CheckImages(plot);
         CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true);
         CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false);
         CheckColor(plot);
@@ -385,12 +439,37 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
+        var raster = -1;
+        for (var i = 0; i < plot.Layers.Count && raster < 0; i++)
+        {
+            raster = plot.Layers[i] is ImageLayerSpec { Raster.IsRgba: false } ? i : -1;
+        }
+
+        if (raster >= 0)
+        {
+            number ??= RasterName;
+        }
+
         if (categories is null && number is null)
         {
             return;
         }
 
         var scale = plot.ScaleColor ?? (categories is not null ? DefaultOrdinal : DefaultSequential);
+        if (raster >= 0 && scale is OrdinalScaleSpec)
+        {
+            throw new ArgumentException(
+                $"Layer {raster} draws a raster of numbers, and the ScaleColor is an ordinal scale; numbers take a sequential or a diverging scale (design §4.2)."
+            );
+        }
+
+        if (raster >= 0 && scale is SequentialScaleSpec { Scale: TransformScaleSpec } or DivergingScaleSpec { Scale: TransformScaleSpec })
+        {
+            throw new ArgumentException(
+                $"Layer {raster} draws a raster of numbers through a color scale of a user's IScale; a raster's colors are mapped on the GPU, which runs the linear, log, symlog, and pow transforms only (design §4.2)."
+            );
+        }
+
         switch (scale)
         {
             case OrdinalScaleSpec when number is not null:
@@ -433,6 +512,14 @@ internal sealed class PlotPlan : IDisposable
                             );
                         }
                     }
+
+                    // A raster of numbers is a color column too (row G9, PR #201's review).
+                    if (layer is ImageLayerSpec { Raster: { IsRgba: false, Values: not Column<long> } timed })
+                    {
+                        throw new ArgumentException(
+                            $"The color scale's inner scale is a time scale, and the raster of layer {i} is a {timed.Values.KindName}, not a long date-time column."
+                        );
+                    }
                 }
             }
         }
@@ -473,6 +560,12 @@ internal sealed class PlotPlan : IDisposable
                 {
                     _sink.AddColumn(reference.Column, spec.Data.GetName(reference.Index));
                 }
+            }
+
+            // A raster of numbers adds its column's range (design §4.2, row G9).
+            if (layer is ImageLayerSpec { Raster: { IsRgba: false } raster })
+            {
+                _sink.AddColumn(raster.Values, RasterName);
             }
         }
 
@@ -919,7 +1012,8 @@ internal sealed class PlotPlan : IDisposable
     {
         _batch.Clear();
         var used = new HashSet<Column>();
-        var build = new PlanBuild(Pyramid, column => _pyramids.GetValueOrDefault(column), _batch, _capacity, _pool);
+        var rasters = new HashSet<Raster>();
+        var build = new PlanBuild(Pyramid, column => _pyramids.GetValueOrDefault(column), _batch, _capacity, _pool, Mipmap);
         var layers = new LayerPlan[spec.Layers.Count];
         for (var i = 0; i < layers.Length; i++)
         {
@@ -935,12 +1029,33 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
+        foreach (var raster in _rasters.Keys.ToArray())
+        {
+            if (!rasters.Contains(raster))
+            {
+                _rasters[raster].Dispose();
+                _ = _rasters.Remove(raster);
+            }
+        }
+
         foreach (var old in _layers)
         {
             old.Release();
         }
 
         _layers = layers;
+
+        RasterPyramid Mipmap(Raster raster)
+        {
+            _ = rasters.Add(raster);
+            if (!_rasters.TryGetValue(raster, out var mipmap))
+            {
+                mipmap = raster.MakePyramid();
+                _rasters.Add(raster, mipmap);
+            }
+
+            return mipmap;
+        }
 
         PlotPyramid Pyramid(Column y)
         {
@@ -965,6 +1080,12 @@ internal sealed class PlotPlan : IDisposable
         foreach (var pyramid in _pyramids.Values)
         {
             pyramid.WhenComplete().GetAwaiter().GetResult();
+        }
+
+        // The rasters' mipmaps: the rows of the chunks that changed, on the workers (design §3.7, row G9).
+        foreach (var mipmap in _rasters.Values)
+        {
+            mipmap.Update(_pool);
         }
 
         foreach (var layer in _layers)
@@ -1005,6 +1126,13 @@ internal sealed class PlotPlan : IDisposable
         };
         _list.Clear();
         _context.Theme = spec.Theme;
+        if (_ownImages)
+        {
+            // No backend sends the plan's own cache: what the last frame staged counts as sent.
+            _context.Images.Sent();
+        }
+
+        _context.Images.BeginFrame();
         _guides.RecordBehind(_list, spec);
         var (left, top, width, height) = (_guides.Left, _guides.Top, _guides.Width, _guides.Height);
         if (_guides.Polar is { } polar)

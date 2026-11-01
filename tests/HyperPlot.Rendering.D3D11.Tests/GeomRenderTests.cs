@@ -485,6 +485,136 @@ public sealed class GeomRenderTests
         Check(spec, pool, "text-labels.png");
     }
 
+    /// <summary>
+    /// A raster of numbers magnified (§10.1 scene 17, row G9): 40 × 24 floats of sin · cos with a small rectangle of NaN, in
+    /// viridis through a sequential scale, read nearest, with its color bar.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The raster above; the fake text backend; Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/image-nearest.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void ImageNearest_MatchesBaseline()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var values = Column.Wrap(Field());
+        var spec = Plot.Create(DataTable.Create().Build())
+            .Image(Raster.Of(values, 40))
+            .ScaleX(Scale.Linear().WithTitle("Column"))
+            .ScaleY(Scale.Linear().WithTitle("Row"))
+            .ScaleColor(Scale.Sequential(ColorMaps.Viridis, Scale.Linear().WithTitle("Value")))
+            .Title("Image, nearest")
+            .Build();
+
+        Check(spec, pool, "image-nearest.png");
+    }
+
+    /// <summary>
+    /// The same raster read bilinear, row 0 at the bottom, and turned over left to right by its extent (§10.1 scene 18).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The raster of scene 17; RasterOrigin.Lower; the extent (40, 0, 0, 24); Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/image-bilinear.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void ImageBilinear_MatchesBaseline()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var values = Column.Wrap(Field());
+        var spec = Plot.Create(DataTable.Create().Build())
+            .Image(Raster.Of(values, 40), i => i.Interpolation(RasterInterpolation.Bilinear).Origin(RasterOrigin.Lower).Extent(40, 0, 0, 24))
+            .ScaleColor(Scale.Sequential(ColorMaps.Viridis, Scale.Linear().WithTitle("Value")))
+            .Title("Image, bilinear")
+            .Build();
+
+        Check(spec, pool, "image-bilinear.png");
+    }
+
+    /// <summary>
+    /// An RGBA image over a filled rectangle (§10.1 scene 19): 64 × 48 pixels of a color grid and bands of alpha 0, 128, and
+    /// 255, at an opacity of 0.8.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The image above over a gray rectangle covering its left half; Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/image-rgba.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void ImageRgba_MatchesBaseline()
+    {
+        const int Width = 64;
+        const int Height = 48;
+        var pixels = new byte[Width * Height * 4];
+        for (var y = 0; y < Height; y++)
+        {
+            for (var x = 0; x < Width; x++)
+            {
+                var i = ((y * Width) + x) * 4;
+                pixels[i] = (byte)(x * 4);
+                pixels[i + 1] = (byte)(y * 5);
+                pixels[i + 2] = (byte)(((x / 8) + (y / 8)) % 2 == 0 ? 200 : 40);
+                pixels[i + 3] =
+                    y < 16 ? (byte)255
+                    : y < 32 ? (byte)128
+                    : (byte)0;
+            }
+        }
+
+        using var pool = new PlotWorkerPool(2);
+        using var bytes = Column.Wrap(pixels);
+        using var x0 = Column.Wrap(new double[] { 0 });
+        using var x1 = Column.Wrap(new double[] { 32 });
+        using var y0 = Column.Wrap(new double[] { 0 });
+        using var y1 = Column.Wrap(new double[] { 48 });
+        var table = DataTable.Create().Add("x0", x0).Add("x1", x1).Add("y0", y0).Add("y1", y1).Build();
+        var spec = Plot.Create(table)
+            .Rect(
+                table.Col<double>("x0"),
+                table.Col<double>("x1"),
+                table.Col<double>("y0"),
+                table.Col<double>("y1"),
+                r => r.Fill(new Color(128, 128, 128, 255))
+            )
+            .Image(Raster.Rgba(bytes, Width), i => i.Extent(0, 64, 0, 48).Opacity(0.8))
+            .Title("RGBA image")
+            .Build();
+
+        Check(spec, pool, "image-rgba.png");
+    }
+
+    /// <summary>Returns 40 × 24 values of sin · cos, row 0 first, with NaN over columns 30 to 33 of rows 4 to 7.</summary>
+    private static float[] Field()
+    {
+        var values = new float[40 * 24];
+        for (var row = 0; row < 24; row++)
+        {
+            for (var column = 0; column < 40; column++)
+            {
+                values[(row * 40) + column] =
+                    column is >= 30 and < 34 && row is >= 4 and < 8 ? float.NaN : (float)(Math.Sin(column / 6.0) * Math.Cos(row / 4.0));
+            }
+        }
+
+        return values;
+    }
+
     private static void Check(PlotSpec spec, PlotWorkerPool pool, string baseline)
     {
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));

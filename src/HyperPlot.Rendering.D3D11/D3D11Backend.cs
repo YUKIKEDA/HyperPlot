@@ -27,6 +27,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly D3D11RectPipeline _rects;
     private readonly D3D11ColumnPipeline _columns;
     private readonly D3D11SectorPipeline _sectors;
+    private readonly D3D11ImagePipeline _images;
     private readonly DWriteTextBackend? _directWrite;
     private readonly D3D11FrameTimer _timer;
     private long[] _open = new long[8];
@@ -47,6 +48,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _rects = new D3D11RectPipeline(this);
         _columns = new D3D11ColumnPipeline(this);
         _sectors = new D3D11SectorPipeline(this);
+        _images = new D3D11ImagePipeline(this);
         _timer = new D3D11FrameTimer(this);
         if (text is null)
         {
@@ -89,6 +91,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     /// <inheritdoc />
     /// <remarks>Shapes and rasterizes with DirectWrite (design §5.6).</remarks>
     public TextEngine Text { get; }
+
+    /// <inheritdoc />
+    public ResidencyCache Images { get; } = new();
 
     /// <summary>Gets or sets a test hook that replaces the HRESULT of a checked call; the name of the call comes first.</summary>
     internal Func<string, int, int>? CheckResult { get; set; }
@@ -190,6 +195,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         Text.Prepare(list, width, height);
         var steps = Text.Steps;
         _glyphs.Upload(Text.Atlas, Text.Instances);
+
+        // The tiles the frame sends go before the steps are looked at: the cache's staging is free once sent (row G9).
+        _images.Upload(Images, list.Images);
         if (steps.IsEmpty)
         {
             return;
@@ -222,6 +230,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     case DrawStepKind.Sectors:
                         _sectors.Bind(own);
                         break;
+                    case DrawStepKind.Images:
+                        _images.Bind(own);
+                        break;
                     default:
                         _columns.Bind(own);
                         break;
@@ -243,6 +254,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     break;
                 case DrawStepKind.Sectors:
                     _sectors.Draw(own, sectorCalls[step.Index]);
+                    break;
+                case DrawStepKind.Images:
+                    _images.Draw(own, step);
                     break;
                 default:
                     _columns.Draw(own, step);
@@ -272,6 +286,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                 break;
             case DrawStepKind.Sectors:
                 _sectors.Unbind();
+                break;
+            case DrawStepKind.Images:
+                _images.Unbind();
                 break;
             default:
                 break;
@@ -378,6 +395,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
 
         ReleaseDevice();
+
+        // The tiles were on the lost device: the cache forgets them and sends the visible ones again (invariant 10).
+        Images.Reset();
         _state = State.Lost;
         throw new GpuDeviceLostException(message, result, reason);
     }
@@ -430,6 +450,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             _rects.Make();
             _columns.Make();
             _sectors.Make();
+            _images.Make();
             _timer.Make();
         }
         catch (InvalidOperationException)
@@ -479,6 +500,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private void ReleaseDevice()
     {
         _timer.Release();
+        _images.Release();
         _sectors.Release();
         _columns.Release();
         _rects.Release();

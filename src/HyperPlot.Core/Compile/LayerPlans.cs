@@ -94,6 +94,7 @@ internal abstract class LayerPlan
             RectLayerSpec rect => new RectPlan(rect, rows),
             SegmentLayerSpec segment => new SegmentPlan(segment, rows),
             TextLayerSpec text => new TextPlan(text, rows),
+            ImageLayerSpec image => new ImagePlan(image, build),
             _ => new CustomPlan((CustomLayerSpec)spec),
         };
 
@@ -168,6 +169,7 @@ internal abstract class LayerPlan
             case RectLayerSpec:
             case SegmentLayerSpec:
             case TextLayerSpec:
+            case ImageLayerSpec:
             case CustomLayerSpec:
                 break;
             case RuleLayerSpec rule:
@@ -258,6 +260,9 @@ internal abstract class LayerPlan
             case TextLayerSpec t:
                 ValidateText(data, t, index);
                 break;
+            case ImageLayerSpec image:
+                ValidateImage(image, index);
+                break;
             case CustomLayerSpec c when c.Geom is null:
                 throw new ArgumentNullException(nameof(layer), $"The Geom of layer {index} is null.");
             default:
@@ -279,10 +284,10 @@ internal abstract class LayerPlan
             return;
         }
 
-        if (layer is CustomLayerSpec)
+        if (layer is CustomLayerSpec or ImageLayerSpec)
         {
             throw new ArgumentException(
-                $"Layer {index} is a CustomLayerSpec with a color channel; a user's geom reads its own columns and is not split (design §4.1)."
+                $"Layer {index} is a {layer.GetType().Name} with a color channel; a user's geom reads its own columns, and an image is colored by its raster (design §4.1)."
             );
         }
 
@@ -391,6 +396,12 @@ internal abstract class LayerPlan
             return !ReferenceEquals(custom.Geom, ((CustomLayerSpec)after).Geom);
         }
 
+        // An image reads its raster (row G9).
+        if (before is ImageLayerSpec image && !ReferenceEquals(image.Raster, ((ImageLayerSpec)after).Raster))
+        {
+            return true;
+        }
+
         // A text layer reads its labels' column too (row G8).
         if (before is TextLayerSpec text && text.Text != ((TextLayerSpec)after).Text)
         {
@@ -447,6 +458,7 @@ internal abstract class LayerPlan
         {
             (AreaLayerSpec b, AreaLayerSpec a) => !b.Baseline.Equals(a.Baseline),
             (BarLayerSpec b, BarLayerSpec a) => !b.Baseline.Equals(a.Baseline) || b.Width != a.Width,
+            (ImageLayerSpec b, ImageLayerSpec a) => b.Extent != a.Extent,
 
             // A new node of the same geom is how a user says its content changed: it learns again.
             (CustomLayerSpec, CustomLayerSpec) => true,
@@ -598,6 +610,38 @@ internal abstract class LayerPlan
         }
     }
 
+    /// <summary>
+    /// Throws unless an image layer's raster and looks are ones row G9 draws (design §4.1): a raster, and an extent, an
+    /// origin, a reading, and an opacity in range. The names in the messages are made only to throw.
+    /// </summary>
+    private static void ValidateImage(ImageLayerSpec image, int index)
+    {
+        if (image.Raster is null)
+        {
+            throw new ArgumentNullException(nameof(image), $"The Raster of layer {index} is null.");
+        }
+
+        if (image.Extent is { } extent && !ImageBuilder.IsExtent(extent))
+        {
+            ImageBuilder.CheckExtent(extent, $"Layers[{index}].Extent");
+        }
+
+        if ((uint)image.Origin > (uint)RasterOrigin.Lower)
+        {
+            ImageBuilder.CheckOrigin(image.Origin, $"Layers[{index}].Origin");
+        }
+
+        if ((uint)image.Interpolation > (uint)RasterInterpolation.Bilinear)
+        {
+            ImageBuilder.CheckInterpolation(image.Interpolation, $"Layers[{index}].Interpolation");
+        }
+
+        if (!ImageBuilder.IsOpacity(image.Opacity))
+        {
+            ImageBuilder.CheckOpacity(image.Opacity, $"Layers[{index}].Opacity");
+        }
+    }
+
     private static void CheckCount(long count, int layer)
     {
         if (count > MaxElements)
@@ -610,8 +654,18 @@ internal abstract class LayerPlan
 }
 
 /// <summary>What a layer's plan needs from the plan while it is made: the shared pyramids and the M4 batch.</summary>
-internal sealed class PlanBuild(Func<Column, PlotPyramid> pyramid, Func<Column, PlotPyramid?> held, M4Batch batch, int capacity, PlotWorkerPool pool)
+internal sealed class PlanBuild(
+    Func<Column, PlotPyramid> pyramid,
+    Func<Column, PlotPyramid?> held,
+    M4Batch batch,
+    int capacity,
+    PlotWorkerPool pool,
+    Func<Raster, RasterPyramid>? mipmap = null
+)
 {
+    /// <summary>Returns the mipmap the plan holds over a raster, made the first time (row G9).</summary>
+    public RasterPyramid Mipmap(Raster raster) => mipmap is null ? raster.MakePyramid() : mipmap(raster);
+
     /// <summary>Gets the workers that split layers find their categories' runs and gather their rows on (row G7c).</summary>
     public PlotWorkerPool Pool => pool;
 
@@ -752,6 +806,9 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     /// <summary>Gets the text engine the guides measure with (row G8): a text layer measures its labels with it.</summary>
     public TextEngine Text => guides.Text;
+
+    /// <summary>Gets the residency cache the image layers ask for their tiles (row G9): the backend's, or the plan's own.</summary>
+    public ResidencyCache Images { get; init; } = new();
 
     /// <summary>Gets or sets the spec's theme, set before each recording (row G8): a text layer's font and locale.</summary>
     public Theme Theme { get; set; } = Theme.Light;

@@ -21,6 +21,8 @@ public sealed class RenderList
     private ClipRect[] _columnClips = new ClipRect[16];
     private SectorInstance[] _sectors = new SectorInstance[16];
     private SectorCall[] _sectorCalls = new SectorCall[4];
+    private ImageInstance[] _images = new ImageInstance[4];
+    private (int Page, ClipRect Clip)[] _imageCalls = new (int, ClipRect)[4];
     private int _polylineCount;
     private int _segmentCount;
     private int _pieceCount;
@@ -29,6 +31,7 @@ public sealed class RenderList
     private int _columnCount;
     private int _sectorCount;
     private int _sectorCallCount;
+    private int _imageCount;
     private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
@@ -62,7 +65,13 @@ public sealed class RenderList
     /// <summary>Gets the recorded sector calls, in order: each is one shape (design §5.1, row G11).</summary>
     internal ReadOnlySpan<SectorCall> SectorCalls => _sectorCalls.AsSpan(0, _sectorCallCount);
 
-    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, or a sector call.</summary>
+    /// <summary>Gets the recorded image tiles, in order, as the GPU reads them (design §5.1, row G9).</summary>
+    internal ReadOnlySpan<ImageInstance> Images => _images.AsSpan(0, _imageCount);
+
+    /// <summary>Gets the page of the residency cache each recorded image tile reads, and its clip.</summary>
+    internal ReadOnlySpan<(int Page, ClipRect Clip)> ImageCalls => _imageCalls.AsSpan(0, _imageCount);
+
+    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, a sector call, or an image tile.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
@@ -76,8 +85,26 @@ public sealed class RenderList
         _columnCount = 0;
         _sectorCount = 0;
         _sectorCallCount = 0;
+        _imageCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
+    }
+
+    /// <summary>
+    /// Records a tile of an image (design §5.1, row G9): its record and the residency cache's page it reads. Internal in row G9:
+    /// a user's geom draws no image yet.
+    /// </summary>
+    internal void DrawImage(in ImageInstance image, int page)
+    {
+        if (_imageCount == _images.Length)
+        {
+            Array.Resize(ref _images, _images.Length * 2);
+            Array.Resize(ref _imageCalls, _imageCalls.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.Image, _imageCount));
+        _images[_imageCount] = image;
+        _imageCalls[_imageCount++] = (page, _clip);
     }
 
     /// <summary>Clips the commands that follow to a rectangle of whole pixels; only its part inside the target is used.</summary>
@@ -874,6 +901,64 @@ internal enum RenderCommandKind : byte
 
     /// <summary>One shape of polar trapezoids: the index is into <see cref="RenderList.SectorCalls"/> (row G11).</summary>
     Sectors,
+
+    /// <summary>A tile of an image: the index is into <see cref="RenderList.Images"/> (row G9).</summary>
+    Image,
+}
+
+/// <summary>
+/// One tile of an image as the GPU reads it (design §5.1, §5.3, row G9): the target point of the tile's texel corner (0, 0)
+/// and the target vectors of one texel along its columns and rows, which flip and a turned-over extent set; the range of
+/// texels drawn; where they are read in the slot's face (an ancestor's part when the tile is not there yet); and how the
+/// texel is painted. 96 bytes, laid out as the HLSL structure of Image.hlsl.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal struct ImageInstance
+{
+    /// <summary>The target point of the tile's texel corner (0, 0), in physical pixels.</summary>
+    public Vector2 Origin;
+
+    /// <summary>The target vector of one texel along the tile's columns.</summary>
+    public Vector2 AlongU;
+
+    /// <summary>The target vector of one texel along the tile's rows.</summary>
+    public Vector2 AlongV;
+
+    /// <summary>The texels drawn: u0, v0, u1, v1, in the tile's texels, the ends past the image's edge cut.</summary>
+    public Vector4 Range;
+
+    /// <summary>The face texel (border left out) that tile texel (0, 0) reads.</summary>
+    public Vector2 SampleOrigin;
+
+    /// <summary>The face texels a tile texel spans: 1, or 1 / 2^k for an ancestor k levels up.</summary>
+    public float SampleScale;
+
+    /// <summary>The slot's slice in its page.</summary>
+    public uint Slice;
+
+    /// <summary>Bit 0 bilinear; bit 1 RGBA; bits 2 and 3 the transform (linear, log, symlog, pow); bit 4 diverging; bit 5 reversed.</summary>
+    public uint Flags;
+
+    /// <summary>The row of the color table.</summary>
+    public uint Table;
+
+    /// <summary>The symlog constant or the pow exponent.</summary>
+    public float Constant;
+
+    /// <summary>The low end of the color domain in the scale space, less the tile's origin.</summary>
+    public float Low;
+
+    /// <summary>The high end of the color domain.</summary>
+    public float High;
+
+    /// <summary>The diverging middle.</summary>
+    public float Middle;
+
+    /// <summary>The alpha the image is drawn with.</summary>
+    public float Opacity;
+
+    /// <summary>Pads the record to 96 bytes.</summary>
+    public Vector3 Padding;
 }
 
 /// <summary>One recorded command: its kind and the index of its record.</summary>

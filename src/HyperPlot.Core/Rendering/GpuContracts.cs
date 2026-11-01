@@ -91,6 +91,12 @@ public interface IGpuBackend : IDisposable
     /// (design §5.6). One for the backend's life.
     /// </summary>
     TextEngine Text { get; }
+
+    /// <summary>
+    /// Gets the backend's residency cache: the slots of the image tiles and color tables it keeps on the GPU, which Core
+    /// fills and <see cref="Draw"/> sends (design §5.2, row G9). One for the backend's life.
+    /// </summary>
+    ResidencyCache Images { get; }
 }
 
 /// <summary>A texture a backend draws into (design §5.2).</summary>

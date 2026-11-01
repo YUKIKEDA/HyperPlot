@@ -232,6 +232,8 @@ public sealed class HeadlessRendererTests
 
         public TextEngine Text { get; } = new(new FakeTextBackend());
 
+        public ResidencyCache Images { get; } = new();
+
         public int Frames { get; private set; }
 
         public FrameScope BeginFrame()

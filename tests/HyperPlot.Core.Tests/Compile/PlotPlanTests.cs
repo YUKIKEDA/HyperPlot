@@ -692,6 +692,8 @@ public sealed class PlotPlanTests
 
         public TextEngine Text { get; } = new(new FakeTextBackend());
 
+        public ResidencyCache Images { get; } = new();
+
         public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => new Target(description);
 
         public FrameScope BeginFrame() => new(this, 1);

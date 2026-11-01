@@ -310,7 +310,7 @@ internal sealed class PlotGuides
         var style = Style(theme, theme.LegendSize);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            if (spec.Layers[i].Label is { Length: > 0 } label && !SplitPlan.Splits(spec.Layers[i]))
+            if (spec.Layers[i].Label is { Length: > 0 } label && !SplitPlan.Splits(spec.Layers[i]) && spec.Layers[i] is not ImageLayerSpec)
             {
                 widest = MathF.Max(widest, _text.Measure(label, style).Width);
             }
@@ -745,7 +745,7 @@ internal sealed class PlotGuides
         {
             // An index, not foreach: the interface's enumerator would be boxed on every recording.
             var layer = spec.Layers[i];
-            if (layer.Label is not { Length: > 0 } label || SplitPlan.Splits(layer))
+            if (layer.Label is not { Length: > 0 } label || SplitPlan.Splits(layer) || layer is ImageLayerSpec)
             {
                 // A split layer's rows are its categories' (design §4.6, row G7c).
                 continue;
