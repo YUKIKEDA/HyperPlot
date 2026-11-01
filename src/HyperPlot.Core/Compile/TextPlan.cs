@@ -29,7 +29,7 @@ internal sealed class TextPlan : LayerPlan
         // Categories of x are the band's: its domain comes from them (design §4.2).
         if (channel.Column is not CategoricalColumn)
         {
-            sink.AddColumn(channel.Column, data.GetName(channel.Index));
+            AddColumn(sink, channel.Column, data.GetName(channel.Index));
         }
     }
 

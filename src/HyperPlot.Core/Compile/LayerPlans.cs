@@ -37,6 +37,9 @@ internal abstract class LayerPlan
     private Column[] _columns = [];
     private LayerSpec _spec;
 
+    // The ranges of the layer's columns over its run of rows (row G6b), kept with the version they were read at.
+    private RunRange[] _runRanges = [];
+
     protected LayerPlan(LayerSpec spec)
         : this(spec, RowRange.All) { }
 
@@ -48,6 +51,9 @@ internal abstract class LayerPlan
 
     /// <summary>Gets the rows the layer draws: all of them, or the run of one category (design §5.5.3, row G7c).</summary>
     public RowRange Rows { get; }
+
+    /// <summary>Gets the number of times a column's range over the layer's run was read, not taken from the kept ones. Tests only.</summary>
+    public int RunRangeReads { get; private set; }
 
     /// <summary>Gets the layer's node: a new node of the same columns is taken without building again.</summary>
     public LayerSpec Spec => _spec;
@@ -94,16 +100,22 @@ internal abstract class LayerPlan
     public long[] Extracted { get; private set; } = [];
 
     /// <summary>Makes the plan of a layer: its pyramids and series join the plan's.</summary>
-    public static LayerPlan Create(LayerSpec spec, PlanBuild build) =>
-        spec.Stat is not null ? new StatPlan(spec, build)
-        : Stacks(PositionOf(spec))
-            ? spec is BarLayerSpec { X.Column: CategoricalColumn } bar ? new StackedCategoryBarPlan(bar)
-                : new StackedSeriesPlan(spec, build)
-        : SplitPlan.Splits(spec) ? new SplitPlan(spec, build)
-        : Create(spec, build, RowRange.All);
+    public static LayerPlan Create(LayerSpec spec, PlanBuild build) => Create(spec, build, RowRange.All, null);
 
-    /// <summary>Makes the plan of a layer over a run of its columns' rows (row G7c): the series of one category.</summary>
-    public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows) =>
+    /// <summary>
+    /// Makes the plan of a layer over a run of its columns' rows (row G6b): a facet panel's. A stat, a stack, and a split read
+    /// only the run; a stat's edges and ranges come from <paramref name="source"/>, or from the run when it is null.
+    /// </summary>
+    public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows, StatSource? source) =>
+        spec.Stat is not null ? new StatPlan(spec, build, rows, source)
+        : Stacks(PositionOf(spec))
+            ? spec is BarLayerSpec { X.Column: CategoricalColumn } bar ? new StackedCategoryBarPlan(bar, rows)
+                : new StackedSeriesPlan(spec, build, rows)
+        : SplitPlan.Splits(spec) ? new SplitPlan(spec, build, rows)
+        : CreateGeom(spec, build, rows);
+
+    /// <summary>Makes the plan of a geom over a run of its columns' rows (row G7c): the series of one category, without a stat, a stack, or a split.</summary>
+    public static LayerPlan CreateGeom(LayerSpec spec, PlanBuild build, RowRange rows) =>
         spec switch
         {
             LineLayerSpec line => new LinePlan(line, build, rows),
@@ -915,6 +927,67 @@ internal abstract class LayerPlan
     /// <summary>Adds the layer's ranges on one axis (design §4.2).</summary>
     public abstract void AddRanges(RangeSink sink, bool ofX, DataTable data);
 
+    /// <summary>
+    /// Adds a column's range over the layer's rows (design §5.5.3, row G6b): the whole column's statistics, or the range of its
+    /// run, read once a version of the column and kept, so that learning again reads nothing. Allocates only the first time a
+    /// column is read.
+    /// </summary>
+    protected void AddColumn(RangeSink sink, Column column, string name)
+    {
+        if (Rows == RowRange.All)
+        {
+            sink.AddColumn(column, name);
+            return;
+        }
+
+        if (TryGetRange(column, out var low, out var high))
+        {
+            sink.AddEnds(low, high, name);
+        }
+    }
+
+    /// <summary>
+    /// Returns a column's range over the layer's rows (row G6b): the whole column's statistics, or its run's range, kept for
+    /// the version it was read at.
+    /// </summary>
+    protected bool TryGetRange(Column column, out ScaleEnd low, out ScaleEnd high)
+    {
+        if (Rows == RowRange.All)
+        {
+            return column.TryGetRange(out low, out high);
+        }
+
+        var version = column.Version;
+        var at = -1;
+        for (var i = 0; i < _runRanges.Length; i++)
+        {
+            if (ReferenceEquals(_runRanges[i].Column, column))
+            {
+                at = i;
+                break;
+            }
+        }
+
+        if (at < 0 || _runRanges[at].Version != version)
+        {
+            var found = column.TryGetRange(Rows, out var min, out var max);
+            RunRangeReads++;
+            if (at < 0)
+            {
+                at = _runRanges.Length;
+                Array.Resize(ref _runRanges, at + 1);
+            }
+
+            _runRanges[at] = new RunRange(column, version, found, min, max);
+        }
+
+        (low, high) = (_runRanges[at].Min, _runRanges[at].Max);
+        return _runRanges[at].Found;
+    }
+
+    /// <summary>Returns the number of the layer's rows in a column of a length: all of them, or its run's.</summary>
+    protected long RowCount(long length) => Rows.EndIn(length) - Math.Min(Rows.Start, length);
+
     /// <summary>Records the layer into the panel (design §5.5.3).</summary>
     public abstract void Record(RecordContext context);
 
@@ -1081,6 +1154,9 @@ internal abstract class LayerPlan
     }
 }
 
+/// <summary>A column's range over a layer's run of rows, and the version it was read at (row G6b).</summary>
+internal readonly record struct RunRange(Column Column, long Version, bool Found, ScaleEnd Min, ScaleEnd Max);
+
 /// <summary>What a layer's plan needs from the plan while it is made: the shared pyramids and the M4 batch.</summary>
 internal sealed class PlanBuild(
     Func<Column, PlotPyramid> pyramid,
@@ -1183,15 +1259,21 @@ internal sealed class RangeSink
     {
         if (column.TryGetRange(out var low, out var high))
         {
-            if (!double.IsFinite(low.Value) || !double.IsFinite(high.Value))
-            {
-                throw new InvalidOperationException(
-                    $"The column \"{name}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
-                );
-            }
-
-            Add(low, high, name);
+            AddEnds(low, high, name);
         }
+    }
+
+    /// <summary>Adds a column's range of values that are not NaN; throws for an infinite end.</summary>
+    public void AddEnds(ScaleEnd low, ScaleEnd high, string name)
+    {
+        if (!double.IsFinite(low.Value) || !double.IsFinite(high.Value))
+        {
+            throw new InvalidOperationException(
+                $"The column \"{name}\" holds {(double.IsFinite(low.Value) ? high.Value : low.Value)}, so a learned domain would have an infinite end; give the scale a domain with WithDomain."
+            );
+        }
+
+        Add(low, high, name);
     }
 
     /// <summary>Adds a range of ends.</summary>

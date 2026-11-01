@@ -43,15 +43,32 @@ internal sealed class CategoryRuns
             return known;
         }
 
+        var runs = Find(column, pool, RowRange.All);
+        return Interlocked.CompareExchange(ref column.Runs, runs, null) ?? runs;
+    }
+
+    /// <summary>
+    /// Returns the runs of a column's categories inside a run of its rows (row G6b): a facet panel's. The whole column's are the
+    /// column's, found once; a run's are found each time, by a pass over its chunks only, and the layer keeps them.
+    /// </summary>
+    public static CategoryRuns Of(CategoricalColumn column, PlotWorkerPool pool, RowRange rows) =>
+        rows == RowRange.All ? Of(column, pool) : Find(column, pool, rows);
+
+    /// <summary>Finds the runs over a run of a column's rows: a pass of the workers over the chunks it lies in.</summary>
+    private static CategoryRuns Find(CategoricalColumn column, PlotWorkerPool pool, RowRange rows)
+    {
         var n = column.CategoryCount;
         var runs = new CategoryRuns(n, column.ChunkCount);
         var sync = new object();
+        var (firstChunk, endChunk) = StatWork.ChunksOf(column, rows);
         pool.RunChunks(
-                column.ChunkCount,
-                chunk =>
+                endChunk - firstChunk,
+                at =>
                 {
-                    var codes = column.GetCodes(chunk);
-                    var start = (long)chunk << Column.ChunkShift;
+                    var chunk = firstChunk + at;
+                    var (lo, hi) = StatWork.PartOf(column, chunk, rows);
+                    var codes = column.GetCodes(chunk)[lo..hi];
+                    var start = ((long)chunk << Column.ChunkShift) + lo;
                     var counts = runs.ChunkCounts.AsSpan(chunk * n, n);
                     Span<long> first = n <= 256 ? stackalloc long[n] : new long[n];
                     Span<long> last = n <= 256 ? stackalloc long[n] : new long[n];
@@ -81,7 +98,7 @@ internal sealed class CategoryRuns
             )
             .GetAwaiter()
             .GetResult();
-        return Interlocked.CompareExchange(ref column.Runs, runs, null) ?? runs;
+        return runs;
     }
 }
 
@@ -102,8 +119,11 @@ internal abstract class GatherChannel : IDisposable
     /// </summary>
     public static GatherChannel For(Column source, ReadOnlySpan<long> counts) => source.MakeGather(counts);
 
-    /// <summary>Writes a chunk's rows of the gathered categories at their positions, which it moves on.</summary>
-    public abstract void Copy(int chunk, ReadOnlySpan<int> codes, Span<long> positions);
+    /// <summary>
+    /// Writes a chunk's rows of the gathered categories at their positions, which it moves on: the rows from
+    /// <paramref name="offset"/>, one a code.
+    /// </summary>
+    public abstract void Copy(int chunk, int offset, ReadOnlySpan<int> codes, Span<long> positions);
 
     /// <summary>Invalidates the gathered columns after a pass wrote them.</summary>
     public abstract void Invalidate();
@@ -133,9 +153,9 @@ internal abstract class GatherChannel : IDisposable
 
         public override Column? Target(int category) => _columns[category];
 
-        public override void Copy(int chunk, ReadOnlySpan<int> codes, Span<long> positions)
+        public override void Copy(int chunk, int offset, ReadOnlySpan<int> codes, Span<long> positions)
         {
-            var values = _source.GetChunk(chunk);
+            var values = _source.GetChunk(chunk)[offset..];
             for (var i = 0; i < codes.Length; i++)
             {
                 var code = codes[i];
@@ -186,9 +206,9 @@ internal abstract class GatherChannel : IDisposable
 
         public override Column? Target(int category) => _columns[category];
 
-        public override void Copy(int chunk, ReadOnlySpan<int> codes, Span<long> positions)
+        public override void Copy(int chunk, int offset, ReadOnlySpan<int> codes, Span<long> positions)
         {
-            var start = (long)chunk << Column.ChunkShift;
+            var start = ((long)chunk << Column.ChunkShift) + offset;
             for (var i = 0; i < codes.Length; i++)
             {
                 var code = codes[i];
@@ -242,9 +262,9 @@ internal abstract class GatherChannel : IDisposable
 
         public override Column? Target(int category) => _columns[category];
 
-        public override void Copy(int chunk, ReadOnlySpan<int> codes, Span<long> positions)
+        public override void Copy(int chunk, int offset, ReadOnlySpan<int> codes, Span<long> positions)
         {
-            var values = _source.GetCodes(chunk);
+            var values = _source.GetCodes(chunk)[offset..];
             for (var i = 0; i < codes.Length; i++)
             {
                 var code = codes[i];
@@ -287,14 +307,18 @@ internal sealed class SplitPlan : LayerPlan
     private long[] _starts = [];
 
     public SplitPlan(LayerSpec spec, PlanBuild build)
-        : base(spec)
+        : this(spec, build, RowRange.All) { }
+
+    /// <summary>Initializes a new instance of the <see cref="SplitPlan"/> class over a run of rows (row G6b): a facet panel's.</summary>
+    public SplitPlan(LayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         // Which column splits what: the fill by FillBy (or ColorBy), a fill geom's outline by ColorBy, a line by ColorBy.
         var fillBy = IsFill(spec) ? (spec.FillBy ?? spec.ColorBy) : null;
         var strokeBy = spec.ColorBy;
         var split = (fillBy ?? strokeBy)!.Value;
         _categories = (CategoricalColumn)split.Column;
-        _runs = CategoryRuns.Of(_categories, build.Pool);
+        _runs = CategoryRuns.Of(_categories, build.Pool, rows);
 
         // The source columns: every channel's, once each, then the categories.
         var channels = new ColumnRef[4];
@@ -359,7 +383,7 @@ internal sealed class SplitPlan : LayerPlan
                 else
                 {
                     // Another column of the same categories: its own runs and gathers come with a split of its own.
-                    _parts.Add(new Part(-1, new SplitPlan(line with { ColorBy = byStroke }, build), null, MakeOutline(index, byStroke)));
+                    _parts.Add(new Part(-1, new SplitPlan(line with { ColorBy = byStroke }, build, rows), null, MakeOutline(index, byStroke)));
                 }
             }
         }
@@ -369,7 +393,7 @@ internal sealed class SplitPlan : LayerPlan
             var lines = OutlineLines(spec);
             for (var index = 0; index < lines.Length; index++)
             {
-                _parts.Add(new Part(-1, Create(lines[index], build), null, MakeOutline(index, null)));
+                _parts.Add(new Part(-1, CreateGeom(lines[index], build, rows), null, MakeOutline(index, null)));
             }
         }
 
@@ -616,7 +640,7 @@ internal sealed class SplitPlan : LayerPlan
             if (runs.IsRun(c))
             {
                 _parts.Add(
-                    new Part(c, Create(Remap(spec, r => r), build, new RowRange(runs.First[c], runs.Last[c] + 1)), null, MakeChild(spec, r => r))
+                    new Part(c, CreateGeom(Remap(spec, r => r), build, new RowRange(runs.First[c], runs.Last[c] + 1)), null, MakeChild(spec, r => r))
                 );
                 continue;
             }
@@ -630,7 +654,7 @@ internal sealed class SplitPlan : LayerPlan
 
             var built = table.Build();
             ColumnRef Map(ColumnRef r) => new(built, Array.IndexOf(_sources, r.Column));
-            var plan = Create(Remap(spec, Map), build);
+            var plan = CreateGeom(Remap(spec, Map), build, RowRange.All);
             _parts.Add(new Part(c, plan, built, MakeChild(spec, Map)));
             foreach (var column in plan.Columns)
             {
@@ -650,7 +674,7 @@ internal sealed class SplitPlan : LayerPlan
             _gatheredVersions[s] = _sources[s].Version;
         }
 
-        GatherRows(pool, _categories!, _runs!, _gathers, ref _starts);
+        GatherRows(pool, _categories!, _runs!, _gathers, ref _starts, Rows);
     }
 
     /// <summary>
@@ -662,7 +686,8 @@ internal sealed class SplitPlan : LayerPlan
         CategoricalColumn categories,
         CategoryRuns runs,
         GatherChannel[] gathers,
-        ref long[] chunkStarts
+        ref long[] chunkStarts,
+        RowRange rows
     )
     {
         var n = categories.CategoryCount;
@@ -682,17 +707,21 @@ internal sealed class SplitPlan : LayerPlan
             }
         }
 
+        // Only the chunks the run lies in, and only its rows: the counts a chunk holds are the run's (row G6b).
+        var (firstChunk, endChunk) = StatWork.ChunksOf(categories, rows);
         pool.RunChunks(
-                categories.ChunkCount,
-                chunk =>
+                endChunk - firstChunk,
+                at =>
                 {
+                    var chunk = firstChunk + at;
+                    var (lo, hi) = StatWork.PartOf(categories, chunk, rows);
                     var start = starts.AsSpan(chunk * n, n);
                     Span<long> positions = n <= 256 ? stackalloc long[n] : new long[n];
-                    var codes = categories.GetCodes(chunk);
+                    var codes = categories.GetCodes(chunk)[lo..hi];
                     foreach (var gather in gathers)
                     {
                         start.CopyTo(positions);
-                        gather.Copy(chunk, codes, positions);
+                        gather.Copy(chunk, lo, codes, positions);
                     }
                 }
             )

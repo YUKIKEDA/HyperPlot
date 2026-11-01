@@ -15,9 +15,10 @@ internal sealed class StackedSeriesPlan : LayerPlan
     private readonly long[] _built;
     private readonly CategoricalColumn? _groups;
     private readonly bool _fill;
+    private readonly double _defaultWidth;
 
-    public StackedSeriesPlan(LayerSpec spec, PlanBuild build)
-        : base(spec)
+    public StackedSeriesPlan(LayerSpec spec, PlanBuild build, RowRange rows)
+        : base(spec, rows)
     {
         var (x, y) = spec switch
         {
@@ -37,6 +38,12 @@ internal sealed class StackedSeriesPlan : LayerPlan
         // An integer x stays exact: its values are read as differences from its least one and written back as longs.
         var integer = x is UniformColumn { IsInteger: true } || (x.TryGetRange(out var low, out _) && low.IsInteger);
         var origin = integer && x.TryGetRange(out var least, out _) ? least.Integer : 0;
+
+        // A bar's default width is its rows' mean spacing (design §5.5.3): a facet panel's own (row G6b).
+        _defaultWidth =
+            x is UniformColumn uniform ? uniform.Step * 0.9
+            : TryGetRange(x, out var min, out var max) ? BarPlan.DefaultWidth(min.Value, max.Value, RowCount(x.Length))
+            : 0.9;
         var (series, categories, gathers) = Series(x, y, build.Pool);
         try
         {
@@ -78,7 +85,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
 
                 var side = up ? _stack.Positive : _stack.Negative;
                 var (outer, inner) = (side[k]!, side[k + 1]);
-                var make = Piece(data, Ref(data, _stack.X), Ref(data, outer), inner is null ? null : Ref(data, inner), up);
+                var make = Piece(Ref(data, _stack.X), Ref(data, outer), inner is null ? null : Ref(data, inner), up);
                 _parts.Add(new Part(categories[k], MakePlan(make(spec), inner is null ? null : Ref(data, inner), build), make));
             }
         }
@@ -136,8 +143,8 @@ internal sealed class StackedSeriesPlan : LayerPlan
         if (ofX)
         {
             var reference = Spec is BarLayerSpec bar ? bar.X : ((AreaLayerSpec)Spec).X;
-            sink.AddColumn(reference.Column, data.GetName(reference.Index));
-            if (Spec is BarLayerSpec bars && reference.Column.TryGetRange(out var min, out var max))
+            AddColumn(sink, reference.Column, data.GetName(reference.Index));
+            if (Spec is BarLayerSpec bars && TryGetRange(reference.Column, out var min, out var max))
             {
                 // Half a bar past each end, as unstacked bars (design §4.2).
                 var half = Width(bars) / 2;
@@ -200,8 +207,8 @@ internal sealed class StackedSeriesPlan : LayerPlan
         }
     }
 
-    /// <summary>Returns a bar layer's width: the one given, or the default of its x (design §5.5.3).</summary>
-    private static double Width(BarLayerSpec bar) => bar.Width ?? BarPlan.DefaultWidth(bar.X.Column);
+    /// <summary>Returns a bar layer's width: the one given, or the default of its rows' x (design §5.5.3).</summary>
+    private double Width(BarLayerSpec bar) => bar.Width ?? _defaultWidth;
 
     /// <summary>Returns the category whose color an outline takes: the group's when ColorBy splits it, else the layer's own (−1).</summary>
     private static int OutlineCategory(LayerSpec spec, int category) => spec.ColorBy is { Column: CategoricalColumn } ? category : -1;
@@ -210,7 +217,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
     /// Returns how a piece's node is made from the layer's: an area or a band between the piece's ends, a bar from 0 or a
     /// floating bar, with the layer's fill and width.
     /// </summary>
-    private static Func<LayerSpec, LayerSpec> Piece(DataTable data, ColumnRef x, ColumnRef outer, ColumnRef? inner, bool up) =>
+    private Func<LayerSpec, LayerSpec> Piece(ColumnRef x, ColumnRef outer, ColumnRef? inner, bool up) =>
         layer =>
             (layer, inner) switch
             {
@@ -239,7 +246,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
 
     /// <summary>Makes a piece's plan: a floating bar from its inner end or 0, or an area's or a band's own plan.</summary>
     private static LayerPlan MakePlan(LayerSpec piece, ColumnRef? inner, PlanBuild build) =>
-        piece is BarLayerSpec bar ? new FloatingBarPlan(bar, inner, build) : Create(piece, build, RowRange.All);
+        piece is BarLayerSpec bar ? new FloatingBarPlan(bar, inner, build) : CreateGeom(piece, build, RowRange.All);
 
     /// <summary>
     /// Returns each group's rows, and its category (−1 for a layer that is not split): a category's run of the layer's own
@@ -249,10 +256,11 @@ internal sealed class StackedSeriesPlan : LayerPlan
     {
         if (_groups is null)
         {
-            return ([new StackSeries(x, y, 0, Math.Min(x.Length, y.Length))], [-1], []);
+            var length = Math.Min(x.Length, y.Length);
+            return ([new StackSeries(x, y, Math.Min(Rows.Start, length), Rows.EndIn(length))], [-1], []);
         }
 
-        var runs = CategoryRuns.Of(_groups, pool);
+        var runs = CategoryRuns.Of(_groups, pool, Rows);
         var counts = new long[_groups.CategoryCount];
         for (var c = 0; c < counts.Length; c++)
         {
@@ -264,7 +272,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
         {
             gathers = [GatherChannel.For(x, counts), GatherChannel.For(y, counts)];
             long[] starts = [];
-            SplitPlan.GatherRows(pool, _groups, runs, gathers, ref starts);
+            SplitPlan.GatherRows(pool, _groups, runs, gathers, ref starts, Rows);
         }
 
         // Every category is a group, used or not, so that the stack's order is the categories' (design §4.1).

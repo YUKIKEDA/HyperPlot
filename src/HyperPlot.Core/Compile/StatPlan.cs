@@ -15,9 +15,18 @@ internal sealed class StatPlan : LayerPlan
     private readonly DataTable _table;
     private readonly Func<LayerSpec, LayerSpec> _make;
     private readonly (double Min, double Max)? _xEnds;
+    private readonly StatSource _source;
 
     public StatPlan(LayerSpec spec, PlanBuild build)
-        : base(spec)
+        : this(spec, build, RowRange.All, null) { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="StatPlan"/> class over a run of rows (row G6b): a facet panel's. The bins'
+    /// edges and a density's or a moving average's range come from <paramref name="source"/>: the whole layer's columns when the
+    /// panels share the axis, else the run itself (design §4.5).
+    /// </summary>
+    public StatPlan(LayerSpec spec, PlanBuild build, RowRange rows, StatSource? source)
+        : base(spec, rows)
     {
         var groups = SplitPlan.Splits(spec) ? (CategoricalColumn)(spec.FillBy ?? spec.ColorBy)!.Value.Column : null;
         var (x, y) = spec switch
@@ -42,6 +51,7 @@ internal sealed class StatPlan : LayerPlan
         }
 
         SetColumns([.. columns]);
+        _source = source ?? new StatSource(x, y, rows);
         _built = new long[Columns.Length];
         for (var i = 0; i < _built.Length; i++)
         {
@@ -51,10 +61,10 @@ internal sealed class StatPlan : LayerPlan
         var made = spec.Stat switch
         {
             BinStatSpec bin => Bins(spec, bin, x, groups, build),
-            CountStatSpec => Counts(spec, (CategoricalColumn)x, groups, build.Pool),
+            CountStatSpec => Counts((CategoricalColumn)x, groups, build.Pool),
             DensityStatSpec density => Densities(spec, density, x, groups, build),
             SmoothStatSpec smooth => Smooths(spec, smooth, x, y!, groups, build),
-            Bin2DStatSpec cells => Cells(spec, cells, x, y!, build),
+            Bin2DStatSpec cells => Cells(cells, x, y!, build),
             _ => Summaries(spec, (SummaryStatSpec)spec.Stat!, (CategoricalColumn)x, groups, y!, build.Pool, build.Layer),
         };
         (_table, _make, _xEnds) = (made.Table, made.Make, made.XEnds);
@@ -181,7 +191,7 @@ internal sealed class StatPlan : LayerPlan
         var pool = build.Pool;
         var time = build.XScale as TimeScaleSpec;
         var transform = time is null ? build.XTransform : null;
-        var (edges, origin, uniform) = BinEdges(x, bin, time, transform, build);
+        var (edges, origin, uniform) = BinEdges(_source.X, _source.Rows, bin, time, transform, build);
 
         var bins = Math.Max(edges.Length - 1, 0);
         var nk = groups?.CategoryCount ?? 1;
@@ -192,7 +202,7 @@ internal sealed class StatPlan : LayerPlan
             );
         }
 
-        var counts = bins == 0 ? [] : StatWork.Bin(x, groups, transform, origin, edges, uniform, pool);
+        var counts = bins == 0 ? [] : StatWork.Bin(x, groups, transform, origin, edges, uniform, pool, Rows);
         var values = new double[counts.Length];
         for (var k = 0; k < nk; k++)
         {
@@ -268,6 +278,7 @@ internal sealed class StatPlan : LayerPlan
     /// </summary>
     private static (double[] Edges, long Origin, bool Uniform) BinEdges(
         Column x,
+        RowRange rows,
         BinStatSpec bin,
         TimeScaleSpec? time,
         IScale? transform,
@@ -277,7 +288,7 @@ internal sealed class StatPlan : LayerPlan
         if (time is not null)
         {
             // Calendar steps in the column's unit, or the given step from the least value; differences from the first edge.
-            if (!x.TryGetRange(out var low, out var high))
+            if (!x.TryGetRange(rows, out var low, out var high))
             {
                 return ([], 0, true);
             }
@@ -292,28 +303,28 @@ internal sealed class StatPlan : LayerPlan
             return (StatWork.Edges(0, high.Integer - low.Integer, bin with { Anchor = bin.Anchor - low.Integer }, build.Layer), low.Integer, true);
         }
 
-        var (min, max) = FiniteRange(x, transform, build.Pool);
+        var (min, max) = FiniteRange(x, rows, transform, build.Pool);
         return (min <= max ? StatWork.Edges(min, max, bin, build.Layer) : [], 0, true);
     }
 
     /// <summary>Returns the least and greatest finite value of a column in the scale space: from its statistics when they are finite and no transform maps them.</summary>
-    private static (double Min, double Max) FiniteRange(Column x, IScale? transform, PlotWorkerPool pool) =>
-        transform is null && x.TryGetRange(out var low, out var high) && double.IsFinite(low.Value) && double.IsFinite(high.Value)
+    private static (double Min, double Max) FiniteRange(Column x, RowRange rows, IScale? transform, PlotWorkerPool pool) =>
+        transform is null && x.TryGetRange(rows, out var low, out var high) && double.IsFinite(low.Value) && double.IsFinite(high.Value)
             ? (low.Value, high.Value)
-            : StatWork.FiniteRange(x, transform, 0, pool);
+            : StatWork.FiniteRange(x, transform, 0, pool, rows);
 
     /// <summary>
     /// Returns the range [from, to] of a density or a moving average in the scale space (design §4.1, row G5c), and the
     /// origin a time column's values are read as differences from: its least value.
     /// </summary>
-    private static (double From, double To, long Origin) RangeOf(Column x, bool time, IScale? transform, PlotWorkerPool pool)
+    private static (double From, double To, long Origin) RangeOf(Column x, RowRange rows, bool time, IScale? transform, PlotWorkerPool pool)
     {
         if (time)
         {
-            return x.TryGetRange(out var low, out var high) ? (0, high.Integer - low.Integer, low.Integer) : (1, 0, 0);
+            return x.TryGetRange(rows, out var low, out var high) ? (0, high.Integer - low.Integer, low.Integer) : (1, 0, 0);
         }
 
-        var (min, max) = FiniteRange(x, transform, pool);
+        var (min, max) = FiniteRange(x, rows, transform, pool);
         return (min, max, 0);
     }
 
@@ -347,16 +358,26 @@ internal sealed class StatPlan : LayerPlan
         StatWork.Spread? spread = null;
         if (density.Bandwidth is { } given)
         {
-            (from, to, origin) = RangeOf(x, time, transform, pool);
+            (from, to, origin) = RangeOf(_source.X, _source.Rows, time, transform, pool);
             h.AsSpan().Fill(given * density.Adjust);
             drawn.AsSpan().Fill(true);
         }
         else
         {
-            origin = time && x.TryGetRange(out var low, out _) ? low.Integer : 0;
-            spread = StatWork.SpreadOf(x, groups, transform, origin, pool);
-            (from, to) = (spread.Min, spread.Max);
-            ChooseBandwidths(x, groups, spread, time, transform, origin, density.Adjust, h, drawn, pool);
+            // The bandwidths come from the layer's own rows; a range the panels share comes from the whole layer (row G6b).
+            var own = _source.Rows == Rows && ReferenceEquals(_source.X, x);
+            origin = time && _source.X.TryGetRange(_source.Rows, out var low, out _) ? low.Integer : 0;
+            spread = StatWork.SpreadOf(x, groups, transform, origin, pool, Rows);
+            if (own)
+            {
+                (from, to) = (spread.Min, spread.Max);
+            }
+            else
+            {
+                (from, to, _) = RangeOf(_source.X, _source.Rows, time, transform, pool);
+            }
+
+            ChooseBandwidths(x, Rows, groups, spread, time, transform, origin, density.Adjust, h, drawn, pool);
         }
 
         Bandwidths = h;
@@ -386,7 +407,7 @@ internal sealed class StatPlan : LayerPlan
             (lo[k], delta[k]) = drawn[k] ? (from - (4 * h[k]), (to - from + (8 * h[k])) / (m - 1)) : (double.NaN, double.NaN);
         }
 
-        var weights = StatWork.SpreadOnGrids(x, groups, transform, origin, lo, delta, m, pool);
+        var weights = StatWork.SpreadOnGrids(x, groups, transform, origin, lo, delta, m, pool, Rows);
         var values = new double[nk * points];
         pool.RunChunks(
                 nk,
@@ -456,6 +477,7 @@ internal sealed class StatPlan : LayerPlan
     /// </summary>
     private static void ChooseBandwidths(
         Column x,
+        RowRange rows,
         CategoricalColumn? groups,
         StatWork.Spread spread,
         bool time,
@@ -468,7 +490,7 @@ internal sealed class StatPlan : LayerPlan
     )
     {
         var (low, high) = time || spread.RawMin > spread.RawMax ? (0UL, ulong.MaxValue) : (x.KeyOfValue(spread.RawMin), x.KeyOfValue(spread.RawMax));
-        var ranks = StatWork.Select(null, groups, x, spread.Count, [0.25, 0.75], pool, low, high);
+        var ranks = StatWork.Select(null, groups, x, spread.Count, [0.25, 0.75], pool, rows, low, high);
         var data = ToData(null);
         for (var k = 0; k < h.Length; k++)
         {
@@ -540,7 +562,7 @@ internal sealed class StatPlan : LayerPlan
         var time = build.XScale is TimeScaleSpec;
         var transform = time ? null : build.XTransform;
         var nk = groups?.CategoryCount ?? 1;
-        var (from, to, origin) = RangeOf(x, time, transform, pool);
+        var (from, to, origin) = RangeOf(_source.X, _source.Rows, time, transform, pool);
         var points = smooth.Points;
         if (!(from <= to))
         {
@@ -556,7 +578,7 @@ internal sealed class StatPlan : LayerPlan
         var half = smooth.Window / 2;
         var edges = middles.Select(v => v - half).Concat(middles.Select(v => v + half)).Order().Distinct().ToArray();
         var intervals = edges.Length - 1;
-        var sums = StatWork.WindowSums(x, y, groups, transform, origin, edges, pool);
+        var sums = StatWork.WindowSums(x, y, groups, transform, origin, edges, pool, Rows);
         var data = ToData(transform);
         var xs = new List<double>();
         var ys = new List<double>();
@@ -650,12 +672,12 @@ internal sealed class StatPlan : LayerPlan
     /// filled by its count or density through the color scale.
     /// </summary>
     /// <exception cref="ArgumentException">More cells than a rect layer draws.</exception>
-    private Made Cells(LayerSpec spec, Bin2DStatSpec cells, Column x, Column y, PlanBuild build)
+    private Made Cells(Bin2DStatSpec cells, Column x, Column y, PlanBuild build)
     {
         var (timeX, timeY) = (build.XScale as TimeScaleSpec, build.YScale as TimeScaleSpec);
         var (tx, ty) = (timeX is null ? build.XTransform : null, timeY is null ? build.YTransform : null);
-        var (ex, ox, ux) = BinEdges(x, cells.X, timeX, tx, build);
-        var (ey, oy, uy) = BinEdges(y, cells.Y, timeY, ty, build);
+        var (ex, ox, ux) = BinEdges(_source.X, _source.Rows, cells.X, timeX, tx, build);
+        var (ey, oy, uy) = BinEdges(_source.Y!, _source.Rows, cells.Y, timeY, ty, build);
         var (bx, by) = (Math.Max(ex.Length - 1, 0), Math.Max(ey.Length - 1, 0));
         if ((long)bx * by > MaxElements)
         {
@@ -664,7 +686,7 @@ internal sealed class StatPlan : LayerPlan
             );
         }
 
-        var counts = bx * by == 0 ? [] : StatWork.Bin2D(x, y, new(ex, ux, ox, tx), new(ey, uy, oy, ty), build.Pool);
+        var counts = bx * by == 0 ? [] : StatWork.Bin2D(x, y, new(ex, ux, ox, tx), new(ey, uy, oy, ty), build.Pool, Rows);
         var n = 0L;
         foreach (var c in counts)
         {
@@ -672,7 +694,7 @@ internal sealed class StatPlan : LayerPlan
         }
 
         var (dataX, dataY) = (ToData(tx), ToData(ty));
-        var rows = new List<(double XMin, double XMax, double YMin, double YMax, double Value)>();
+        var cellRows = new List<(double XMin, double XMax, double YMin, double YMax, double Value)>();
         for (var j = 0; j < by; j++)
         {
             for (var i = 0; i < bx; i++)
@@ -681,18 +703,18 @@ internal sealed class StatPlan : LayerPlan
                 if (c > 0)
                 {
                     var value = cells.Output == StatOutput.Density ? c / (n * (ex[i + 1] - ex[i]) * (ey[j + 1] - ey[j])) : c;
-                    rows.Add((dataX(ex[i]), dataX(ex[i + 1]), dataY(ey[j]), dataY(ey[j + 1]), value));
+                    cellRows.Add((dataX(ex[i]), dataX(ex[i + 1]), dataY(ey[j]), dataY(ey[j + 1]), value));
                 }
             }
         }
 
-        var values = Own(Column.Wrap(rows.Select(r => r.Value).ToArray()));
+        var values = Own(Column.Wrap(cellRows.Select(r => r.Value).ToArray()));
         CellValues = values;
         var table = Table(
-            ("xmin", XColumn([.. rows.Select(r => r.XMin)], timeX is not null, ox)),
-            ("xmax", XColumn([.. rows.Select(r => r.XMax)], timeX is not null, ox)),
-            ("ymin", XColumn([.. rows.Select(r => r.YMin)], timeY is not null, oy)),
-            ("ymax", XColumn([.. rows.Select(r => r.YMax)], timeY is not null, oy)),
+            ("xmin", XColumn([.. cellRows.Select(r => r.XMin)], timeX is not null, ox)),
+            ("xmax", XColumn([.. cellRows.Select(r => r.XMax)], timeX is not null, ox)),
+            ("ymin", XColumn([.. cellRows.Select(r => r.YMin)], timeY is not null, oy)),
+            ("ymax", XColumn([.. cellRows.Select(r => r.YMax)], timeY is not null, oy)),
             ("value", values)
         );
         var refs = (new ColumnRef(table, 0), new ColumnRef(table, 1), new ColumnRef(table, 2), new ColumnRef(table, 3), new ColumnRef(table, 4));
@@ -790,9 +812,9 @@ internal sealed class StatPlan : LayerPlan
     }
 
     /// <summary>The count of each cell of categories (design §5.5.3): a bar a cell with rows, by the categorical bar's path.</summary>
-    private Made Counts(LayerSpec spec, CategoricalColumn x, CategoricalColumn? groups, PlotWorkerPool pool)
+    private Made Counts(CategoricalColumn x, CategoricalColumn? groups, PlotWorkerPool pool)
     {
-        var counts = StatWork.Count(x, groups, pool);
+        var counts = StatWork.Count(x, groups, pool, Rows);
         var cells = new List<(int X, int G, double Y)>();
         for (var c = 0; c < counts.Length; c++)
         {
@@ -829,8 +851,8 @@ internal sealed class StatPlan : LayerPlan
             );
         }
 
-        var moments = StatWork.Summarize(x, groups, y, customs, pool);
-        var ranks = ps.Count == 0 ? [] : StatWork.Select(x, groups, y, moments.Count, ps, pool);
+        var moments = StatWork.Summarize(x, groups, y, customs, pool, Rows);
+        var ranks = ps.Count == 0 ? [] : StatWork.Select(x, groups, y, moments.Count, ps, pool, Rows);
         var cells = new List<(int X, int G, double Y)>();
         var highs = new List<double>();
         for (var c = 0; c < moments.Count.Length; c++)
@@ -951,3 +973,9 @@ internal sealed class StatPlan : LayerPlan
     /// <summary>A stat's derived table, how the inner layer's node is made from the layer's, and an area's or a step's x ends.</summary>
     private readonly record struct Made(DataTable Table, Func<LayerSpec, LayerSpec> Make, (double Min, double Max)? XEnds);
 }
+
+/// <summary>
+/// Where a stat's bins' edges and a density's or a moving average's range come from (design §4.5, row G6b): the layer's
+/// columns X and Y (2D bins) over a run of rows. A facet panel takes the whole layer's when the panels share the axis.
+/// </summary>
+internal sealed record StatSource(Column X, Column? Y, RowRange Rows);

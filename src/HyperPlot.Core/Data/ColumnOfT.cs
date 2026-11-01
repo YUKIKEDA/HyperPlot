@@ -193,6 +193,37 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     }
 
     /// <inheritdoc />
+    internal override bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max)
+    {
+        var (start, end) = (Math.Max(rows.Start, 0), rows.EndIn(Length));
+        if (start == 0 && end == Length)
+        {
+            return TryGetRange(out min, out max);
+        }
+
+        var total = ChunkStats<T>.Empty;
+        var first = true;
+        while (start < end)
+        {
+            // A whole chunk reads its statistics; a part of one at an end of the run is passed over.
+            var chunk = (int)(start >> ChunkShift);
+            var chunkStart = (long)chunk << ChunkShift;
+            var stop = Math.Min(end, chunkStart + ChunkLengthOf(chunk));
+            var stats =
+                start == chunkStart && stop == chunkStart + ChunkLengthOf(chunk)
+                    ? GetStats(chunk)
+                    : ChunkStatsKernel.Compute(GetChunk(chunk)[(int)(start - chunkStart)..(int)(stop - chunkStart)]);
+            total = first ? stats : ChunkStats<T>.Combine(total, stats);
+            (first, start) = (false, stop);
+        }
+
+        (min, max) = ScaleSpace.IsInteger<T>()
+            ? (ScaleEnd.Of(long.CreateTruncating(total.Min)), ScaleEnd.Of(long.CreateTruncating(total.Max)))
+            : (ScaleEnd.Of(double.CreateTruncating(total.Min)), ScaleEnd.Of(double.CreateTruncating(total.Max)));
+        return total.Count > 0;
+    }
+
+    /// <inheritdoc />
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => TryIsNonDecreasing(out _) ? null : pool.PrecomputeStats(this);
 
     /// <inheritdoc />

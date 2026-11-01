@@ -105,6 +105,23 @@ public sealed class UniformColumn : Column
     }
 
     /// <inheritdoc />
+    internal override bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max)
+    {
+        // The step is above 0: the run's first and last rows are its ends.
+        var (start, end) = (Math.Max(rows.Start, 0), rows.EndIn(Length));
+        if (start >= end)
+        {
+            (min, max) = (default, default);
+            return false;
+        }
+
+        (min, max) = IsInteger
+            ? (ScaleEnd.Of(IntegerAt(start)), ScaleEnd.Of(IntegerAt(end - 1)))
+            : (ScaleEnd.Of(GetValue(start)), ScaleEnd.Of(GetValue(end - 1)));
+        return true;
+    }
+
+    /// <inheritdoc />
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => null;
 
     /// <inheritdoc />

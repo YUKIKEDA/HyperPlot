@@ -371,11 +371,11 @@ public sealed class StatTests
         string?[] gs = ["a", "a", "a", "b", "b", "b", "a", "a", "a", "b", null, "b"];
         using var x = Column.Wrap(xs);
         var groups = Column.Categorical(gs, ["a", "b"]);
-        var counts = StatWork.Bin(x, groups, null, 0, [0, 10, 20, 30], uniform: true, pool);
+        var counts = StatWork.Bin(x, groups, null, 0, [0, 10, 20, 30], uniform: true, pool, RowRange.All);
 
         // a: 0, 5 | 10 | 30 → [2, 1, 1]; b: 10, 19.999 | 20, 25 → [0, 2, 2].
         Assert.Equal([2, 1, 1, 0, 2, 2], counts);
-        var calendar = StatWork.Bin(x, groups, null, 0, [0, 10, 20, 30], uniform: false, pool);
+        var calendar = StatWork.Bin(x, groups, null, 0, [0, 10, 20, 30], uniform: false, pool, RowRange.All);
         Assert.Equal(counts, calendar);
 
         // Values on the edges of steps like 0.1, where the division by the step and the edges round apart by an ulp: each is in
@@ -386,7 +386,7 @@ public sealed class StatTests
         {
             var edges = StatWork.Edges(low, high, Stat.Bin(step: step), 0);
             using var onEdges = Column.Wrap(edges.ToArray());
-            var byEdges = StatWork.Bin(onEdges, null, null, 0, edges, uniform: true, pool);
+            var byEdges = StatWork.Bin(onEdges, null, null, 0, edges, uniform: true, pool, RowRange.All);
             for (var i = 0; i < byEdges.Length; i++)
             {
                 var expected = edges.Count(v => v >= edges[i] && (i == byEdges.Length - 1 ? v <= edges[i + 1] : v < edges[i + 1]));
@@ -617,11 +617,11 @@ public sealed class StatTests
         using var y = Column.Wrap(values);
         var x = Column.Categorical(Enumerable.Range(0, Rows).Select(i => (string?)Cats[i % 4]).ToArray(), Cats);
         using var one = new PlotWorkerPool(1);
-        var expected = StatWork.Summarize(x, null, y, [], one).Sum;
+        var expected = StatWork.Summarize(x, null, y, [], one, RowRange.All).Sum;
         foreach (var workers in (int[])[4, 4, 4])
         {
             using var pool = new PlotWorkerPool(workers);
-            Assert.Equal(expected, StatWork.Summarize(x, null, y, [], pool).Sum);
+            Assert.Equal(expected, StatWork.Summarize(x, null, y, [], pool, RowRange.All).Sum);
         }
     }
 
@@ -643,8 +643,8 @@ public sealed class StatTests
         using var data = Data.Create();
         var x = (CategoricalColumn)data.Table.Cat("cx").ToColumnRef().Column;
         var g = (CategoricalColumn)data.Table.Cat("g").ToColumnRef().Column;
-        var split = StatWork.Count(x, g, pool);
-        var whole = StatWork.Count(x, null, pool);
+        var split = StatWork.Count(x, g, pool, RowRange.All);
+        var whole = StatWork.Count(x, null, pool, RowRange.All);
         for (var k = 0; k < Groups.Length; k++)
         {
             for (var c = 0; c < Cats.Length; c++)
@@ -706,10 +706,10 @@ public sealed class StatTests
         };
         foreach (var (column, round) in columns)
         {
-            var moments = StatWork.Summarize(x, null, column, [], one);
-            var ranks = StatWork.Select(x, null, column, moments.Count, ps, one);
-            Assert.Equal(ranks, StatWork.Select(x, null, column, moments.Count, ps, four));
-            Assert.Equal(moments.Sum, StatWork.Summarize(x, null, column, [], four).Sum);
+            var moments = StatWork.Summarize(x, null, column, [], one, RowRange.All);
+            var ranks = StatWork.Select(x, null, column, moments.Count, ps, one, RowRange.All);
+            Assert.Equal(ranks, StatWork.Select(x, null, column, moments.Count, ps, four, RowRange.All));
+            Assert.Equal(moments.Sum, StatWork.Summarize(x, null, column, [], four, RowRange.All).Sum);
             for (var c = 0; c < Cats.Length; c++)
             {
                 var values = Enumerable

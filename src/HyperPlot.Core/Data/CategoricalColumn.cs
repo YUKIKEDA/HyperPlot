@@ -120,6 +120,9 @@ public sealed class CategoricalColumn : Column
     }
 
     /// <inheritdoc />
+    internal override bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max) => TryGetRange(out min, out max);
+
+    /// <inheritdoc />
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => null;
 
     /// <inheritdoc />

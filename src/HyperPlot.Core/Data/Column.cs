@@ -221,6 +221,13 @@ public abstract class Column
     internal abstract bool TryGetRange(out ScaleEnd min, out ScaleEnd max);
 
     /// <summary>
+    /// Returns the range of the values that are not NaN in a run of rows (design §5.5.3, row G6b): false when there is none.
+    /// The whole column reads <see cref="TryGetRange(out ScaleEnd, out ScaleEnd)"/>; a run combines the statistics of the
+    /// chunks it covers with a pass over its rows in the chunks at its two ends. An integer column's ends are exact.
+    /// </summary>
+    internal abstract bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max);
+
+    /// <summary>
     /// Starts computing the chunk statistics that M4 needs of this column as X (design §5.5.1), or returns null when they are
     /// all there or the column needs none.
     /// </summary>

@@ -22,7 +22,7 @@ internal sealed class LinePlan : LayerPlan
     {
         var line = (LineLayerSpec)Spec;
         var reference = ofX ? line.X : line.Y;
-        sink.AddColumn(reference.Column, data.GetName(reference.Index));
+        AddColumn(sink, reference.Column, data.GetName(reference.Index));
     }
 
     public override void Record(RecordContext context)
@@ -52,7 +52,7 @@ internal sealed class StepPlan : LayerPlan
     {
         var step = (StepLayerSpec)Spec;
         var reference = ofX ? step.X : step.Y;
-        sink.AddColumn(reference.Column, data.GetName(reference.Index));
+        AddColumn(sink, reference.Column, data.GetName(reference.Index));
     }
 
     public override void Record(RecordContext context)
@@ -114,7 +114,7 @@ internal sealed class AreaPlan : LayerPlan
     {
         var area = (AreaLayerSpec)Spec;
         var reference = ofX ? area.X : area.Y;
-        sink.AddColumn(reference.Column, data.GetName(reference.Index));
+        AddColumn(sink, reference.Column, data.GetName(reference.Index));
         if (!ofX)
         {
             sink.AddBaseline(area.Baseline);
@@ -206,12 +206,12 @@ internal sealed class BandPlan : LayerPlan
         var band = (BandLayerSpec)Spec;
         if (ofX)
         {
-            sink.AddColumn(band.X.Column, data.GetName(band.X.Index));
+            AddColumn(sink, band.X.Column, data.GetName(band.X.Index));
             return;
         }
 
-        sink.AddColumn(band.YMin.Column, data.GetName(band.YMin.Index));
-        sink.AddColumn(band.YMax.Column, data.GetName(band.YMax.Index));
+        AddColumn(sink, band.YMin.Column, data.GetName(band.YMin.Index));
+        AddColumn(sink, band.YMax.Column, data.GetName(band.YMax.Index));
     }
 
     public override void Record(RecordContext context)
@@ -289,7 +289,13 @@ internal sealed class BarPlan : LayerPlan
     }
 
     /// <summary>Gets the width the bars are drawn with, in data units: read from the X's statistics, so after the wait.</summary>
-    private double Width => ((BarLayerSpec)Spec).Width ?? DefaultWidth(Columns[0]);
+    private double Width =>
+        ((BarLayerSpec)Spec).Width
+        ?? (
+            Columns[0] is UniformColumn uniform ? uniform.Step * 0.9
+            : TryGetRange(Columns[0], out var min, out var max) ? DefaultWidth(min.Value, max.Value, RowCount(Columns[0].Length))
+            : 0.9
+        );
 
     /// <summary>
     /// Returns the default width (design §5.5.3): 0.9 times a uniform X's step or a stored X's mean spacing, or 0.9 when a
@@ -302,10 +308,11 @@ internal sealed class BarPlan : LayerPlan
             return uniform.Step * 0.9;
         }
 
-        return x.Length > 1 && x.TryGetRange(out var min, out var max) && max.Value > min.Value
-            ? (max.Value - min.Value) / (x.Length - 1) * 0.9
-            : 0.9;
+        return x.TryGetRange(out var min, out var max) ? DefaultWidth(min.Value, max.Value, x.Length) : 0.9;
     }
+
+    /// <summary>Returns the default width of a stored X of a range and a number of rows: 0.9 times its mean spacing, or 0.9.</summary>
+    internal static double DefaultWidth(double min, double max, long count) => count > 1 && max > min ? (max - min) / (count - 1) * 0.9 : 0.9;
 
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
 
@@ -314,13 +321,13 @@ internal sealed class BarPlan : LayerPlan
         var bar = (BarLayerSpec)Spec;
         if (!ofX)
         {
-            sink.AddColumn(bar.Y.Column, data.GetName(bar.Y.Index));
+            AddColumn(sink, bar.Y.Column, data.GetName(bar.Y.Index));
             sink.AddBaseline(bar.Baseline);
             return;
         }
 
-        sink.AddColumn(bar.X.Column, data.GetName(bar.X.Index));
-        if (bar.X.Column.TryGetRange(out var min, out var max))
+        AddColumn(sink, bar.X.Column, data.GetName(bar.X.Index));
+        if (TryGetRange(bar.X.Column, out var min, out var max))
         {
             // Half a bar past each end, so that the end bars are not cut (design §4.2).
             var half = Width / 2;
@@ -450,7 +457,7 @@ internal sealed class CategoryBarPlan : LayerPlan
         }
 
         var bar = (BarLayerSpec)Spec;
-        sink.AddColumn(bar.Y.Column, data.GetName(bar.Y.Index));
+        AddColumn(sink, bar.Y.Column, data.GetName(bar.Y.Index));
         sink.AddBaseline(bar.Baseline);
     }
 
@@ -587,12 +594,12 @@ internal sealed class ErrorBarPlan : LayerPlan
         var bars = (ErrorBarLayerSpec)Spec;
         if (ofX)
         {
-            sink.AddColumn(bars.X.Column, data.GetName(bars.X.Index));
+            AddColumn(sink, bars.X.Column, data.GetName(bars.X.Index));
             return;
         }
 
-        sink.AddColumn(bars.YMin.Column, data.GetName(bars.YMin.Index));
-        sink.AddColumn(bars.YMax.Column, data.GetName(bars.YMax.Index));
+        AddColumn(sink, bars.YMin.Column, data.GetName(bars.YMin.Index));
+        AddColumn(sink, bars.YMax.Column, data.GetName(bars.YMax.Index));
     }
 
     public override void Record(RecordContext context)
@@ -690,7 +697,7 @@ internal sealed class RulePlan : LayerPlan
         var reference = ofX ? rule.X : rule.Y;
         if (!reference.IsDefault)
         {
-            sink.AddColumn(reference.Column, data.GetName(reference.Index));
+            AddColumn(sink, reference.Column, data.GetName(reference.Index));
         }
     }
 
@@ -749,8 +756,8 @@ internal sealed class RectPlan : LayerPlan
     {
         var rect = (RectLayerSpec)Spec;
         var (a, b) = ofX ? (rect.XMin, rect.XMax) : (rect.YMin, rect.YMax);
-        sink.AddColumn(a.Column, data.GetName(a.Index));
-        sink.AddColumn(b.Column, data.GetName(b.Index));
+        AddColumn(sink, a.Column, data.GetName(a.Index));
+        AddColumn(sink, b.Column, data.GetName(b.Index));
     }
 
     public override void Record(RecordContext context)
@@ -789,8 +796,8 @@ internal sealed class SegmentPlan : LayerPlan
     {
         var segment = (SegmentLayerSpec)Spec;
         var (a, b) = ofX ? (segment.X, segment.XEnd) : (segment.Y, segment.YEnd);
-        sink.AddColumn(a.Column, data.GetName(a.Index));
-        sink.AddColumn(b.Column, data.GetName(b.Index));
+        AddColumn(sink, a.Column, data.GetName(a.Index));
+        AddColumn(sink, b.Column, data.GetName(b.Index));
     }
 
     public override void Record(RecordContext context)
