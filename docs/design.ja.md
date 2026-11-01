@@ -474,6 +474,7 @@ public abstract record LayerSpec : SpecNode             // 新しく作るコン
     public ColumnRef? ColorBy { get; init; }            // 行 G7c。色を分ける列（下の「行 G7c の色のチャネル」）。null なら分けない
     public ColumnRef? FillBy { get; init; }             // 行 G7c。塗りだけを分ける列。塗りの Geom で ColorBy より優先
     public PositionSpec? Position { get; init; }        // 行 G5a。null なら Geom の既定（下の「行 G5a の Position」）
+    public StatSpec? Stat { get; init; }                // 行 G5b。null なら identity（下の「行 G5b の Stat」）
 }
 
 // 行 G5a: 層の中の要素の置き直し（要件 G-5、Issue #204）。グループは ColorBy か FillBy のカテゴリ
@@ -492,6 +493,60 @@ public static class Position                            // 行 G5a
     public static StackPositionSpec Stack { get; }
     public static FillPositionSpec Fill { get; }
     public static DodgePositionSpec Dodge(double padding = 0);   // 範囲の外は ArgumentOutOfRangeException
+}
+
+// 行 G5b: 層の Stat（要件 G-4、Issue #214）。結果はワーカーが作る派生の表で、層はその上で描く
+public abstract record StatSpec : SpecNode              // 新しく作るコンストラクタは private protected
+
+public enum BinOutput { Count, Density }                // 区切りの度数か、密度（度数 / (n · 幅)）
+
+public sealed record BinStatSpec : StatSpec             // 数の x を区切って数える
+{
+    public int MaxBins { get; init; } = 10;             // 区切りの数の上限。1 以上 10,000 以下。Step を与えたら使わない
+    public double? Step { get; init; }                  // 区切りの幅（x のスケールの空間）。null なら選ぶ。与えるなら有限で正
+    public double? Anchor { get; init; }                // 区切りの端が通る値（x のスケールの空間）。null なら刻みの倍数。有限
+    public BinOutput Output { get; init; }              // 既定は Count
+}
+
+public sealed record CountStatSpec : StatSpec;          // カテゴリの x の行を数える
+
+public sealed record SummaryStatSpec : StatSpec         // カテゴリの x ごとに y をまとめる
+{
+    public SummaryOp? Value { get; init; }              // bar の値。null なら Mean
+    public SummaryOp? Low { get; init; }                // errorbar の下端。null なら Min
+    public SummaryOp? High { get; init; }               // errorbar の上端。null なら Max
+}
+
+public enum SummaryKind { Mean, Min, Max, Quantile, Custom }
+
+public sealed record SummaryOp                          // コンストラクタは private
+{
+    public static SummaryOp Mean { get; }
+    public static SummaryOp Min { get; }
+    public static SummaryOp Max { get; }
+    public static SummaryOp Median { get; }             // Quantile(0.5)
+    public static SummaryOp Quantile(double p);         // 0 以上 1 以下。外れれば ArgumentOutOfRangeException
+    public static SummaryOp Custom(IStat stat);         // null は ArgumentNullException
+    public SummaryKind Kind { get; }
+    public double P { get; }                            // Quantile の p。ほかは 0
+    public IStat? Stat { get; }                         // Custom の IStat。ほかは null
+}
+
+public interface IStat                                  // 利用者の Stat（要件 N-6）: セルごとに畳んで合わせる
+{
+    int StateLength { get; }                            // セルの状態の double の数。1 以上 64 以下
+    void Fold(ReadOnlySpan<double> values, Span<double> state);   // セルの値の一続き（NaN を除いた、あるチャンクの分）を畳む
+    void Merge(ReadOnlySpan<double> other, Span<double> state);   // 別の状態を合わせる
+    double Result(ReadOnlySpan<double> state);          // 状態からセルの値
+}
+
+public static class Stat                                // 行 G5b
+{
+    public static CountStatSpec Count { get; }
+    public static BinStatSpec Bin(int maxBins = 10, double? step = null, double? anchor = null, BinOutput output = BinOutput.Count);
+                                                        // 範囲の外は ArgumentOutOfRangeException
+    public static SummaryStatSpec Summary(SummaryOp? value = null);            // bar
+    public static SummaryStatSpec Summary(SummaryOp low, SummaryOp high);      // errorbar。null は ArgumentNullException
 }
 
 public sealed record LineLayerSpec : LayerSpec
@@ -515,7 +570,7 @@ public enum StepMode { After, Before, Middle }         // After: 横に進んで
 public sealed record StepLayerSpec : LayerSpec
 {
     public required ColumnRef X { get; init; }          // 単調非減少（LineLayerSpec と同じ）
-    public required ColumnRef Y { get; init; }          // Column<T>
+    public ColumnRef Y { get; init; }                   // Column<T>。行 G5b から required でない（bin の Stat の層は持たない）
     public StrokeSpec Style { get; init; }              // 既定は色なし、太さ 1
     public StepMode Mode { get; init; }                 // 既定は After
 }
@@ -523,7 +578,7 @@ public sealed record StepLayerSpec : LayerSpec
 public sealed record AreaLayerSpec : LayerSpec
 {
     public required ColumnRef X { get; init; }          // 単調非減少
-    public required ColumnRef Y { get; init; }          // Column<T>
+    public ColumnRef Y { get; init; }                   // Column<T>。行 G5b から required でない（bin の Stat の層は持たない）
     public Color? Fill { get; init; }                   // 行 G7a から Color?。null ならパレットの色をアルファ 128 で
     public double Baseline { get; init; }               // 塗りの下の端の y（データの単位）。既定 0、有限
     public StrokeSpec? Outline { get; init; }           // y の線。null なら描かない。色が null ならパレットの色（不透明）
@@ -541,7 +596,7 @@ public sealed record BandLayerSpec : LayerSpec
 public sealed record BarLayerSpec : LayerSpec
 {
     public required ColumnRef X { get; init; }          // 単調非減少
-    public required ColumnRef Y { get; init; }          // Column<T>
+    public ColumnRef Y { get; init; }                   // Column<T>。行 G5b から required でない（bin と count の Stat の層は持たない）
     public Color? Fill { get; init; }                   // null ならパレットの色（不透明）
     public double Baseline { get; init; }               // 棒の根元の y。既定 0、有限
     public double? Width { get; init; }                 // データの単位。null なら既定（§5.5.3）、与えるなら有限で正
@@ -860,6 +915,13 @@ public sealed class PlotBuilder
     public PlotBuilder ErrorBar<TY>(CategoryRef x, ColumnRef<TY> yMin, ColumnRef<TY> yMax, float capWidth = 6, Action<LineBuilder>? configure = null);
                                                         // 行 G5a。カテゴリごとに 1 本（§5.5.3）
     public PlotBuilder VRule(CategoryRef x, Action<LineBuilder>? configure = null);   // 行 G5a。行のあるカテゴリの band の真ん中
+    public PlotBuilder Histogram<TX>(ColumnRef<TX> x, BinStatSpec? bin = null, Action<FillBuilder>? configure = null);
+                                                        // 行 G5b。bar と bin。bin が null なら Stat.Bin()
+    public PlotBuilder Count(CategoryRef x, Action<FillBuilder>? configure = null);   // 行 G5b。カテゴリの x の bar と count
+    public PlotBuilder Summary<TY>(CategoryRef x, ColumnRef<TY> y, SummaryOp? value = null, Action<FillBuilder>? configure = null);
+                                                        // 行 G5b。カテゴリの x の bar と summary（既定は Mean）
+    public PlotBuilder SummaryRange<TY>(CategoryRef x, ColumnRef<TY> y, SummaryOp? low = null, SummaryOp? high = null, float capWidth = 6, Action<LineBuilder>? configure = null);
+                                                        // 行 G5b。カテゴリの x の errorbar と summary（既定は Min と Max）
     public PlotBuilder Custom(IGeom geom, string? label = null);
     // 行 G8: x は数の列かカテゴリの列、ラベルはカテゴリの列か数の列の 4 通り。TX・TY・TL は Line と同じ制約
     public PlotBuilder Text<TX, TY, TL>(ColumnRef<TX> x, ColumnRef<TY> y, ColumnRef<TL> text, Action<TextBuilder>? configure = null);
@@ -994,6 +1056,26 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **カテゴリの x の errorbar と縦の rule**（行 G7b から）: errorbar はカテゴリごとに 1 本で、YMin の最小から YMax の最大までの線と端を、band の真ん中（dodge なら場所の真ん中）に引く。縦の rule は、行のあるカテゴリ（分けた層では、そのグループの行があるセル）の band の真ん中に、パネルの高さいっぱいの線を引く。描き方は §5.5.3
   - **名前**: 静的クラス `Position` と、`LayerSpec.Position` とビルダの `Position` メソッドは同じ名前である。利用者のコードの `b.Position(Position.Stack)` は、メンバーの呼び出しと型の名前に分かれて通る。ライブラリの中で、`LayerSpec` とビルダの型の中から静的クラスを使うときは `HyperPlot.Position` と書く（`PlotSpec.Coord` と静的クラス `Coord` と同じ）
   - **スクラッチのコンパイル**: この形（`PositionSpec` と 4 つの派生、`Position`、`LayerSpec.Position`、3 つのビルダの `Position`、`PlotBuilder.ErrorBar(CategoryRef, …)`・`VRule(CategoryRef, …)`、`with` で `Padding` を変える写し）を Core の中のスクラッチと、それを使うスクラッチの実行ファイルでコンパイルし、NativeAOT の発行でも警告 0 で動いた。`private protected` のコンストラクタの summary は StyleCop の SA1642 の決まった文で始める
+- **行 G5b の Stat**（Issue #214）: 層の列から、描く値の表を作る（要件 G-4）。Stat の結果は、ワーカーが列の版ごとにデータ全体から作る派生の表で、層はその表の上で、Geom のふだんの道と Position（行 G5a）で描く（§4.3・§5.5.3）。ggplot2 と同じく、Stat を層に置き（`geom_bar(stat = "count")`、`geom_histogram` は bar と bin、`R/stat-.R`）、Vega-Lite のようにチャネルの `bin` と `aggregate` には書かない（`design-decisions.md`）
+  - **y**: Stat を持つ層は、y を Stat の出力から取る。bin と count の層は `Y` を持たない（`default`。与えたら `ArgumentException`）。summary の層は、まとめる値の列を `Y`（bar）か `YMin`（errorbar。`YMax` は `default` か `YMin` と同じ列）に持つ。そのため step・area・bar の `Y` は、行 G5b から `required` でない。Stat のない層で `Y` が `default` なら、コンパイルが層の番号を書いた `ArgumentException`
+  - **Geom**: bin は bar・area・step、count はカテゴリの x の bar、summary はカテゴリの x の bar（`Value` の 1 つの値）と errorbar（`Low` から `High`）が取る。ほかの組（数の x の count・summary、カテゴリの x の bin、line・band・rect・rule・segment・text・image・独自 Geom の Stat）は、層の番号と Geom と Stat の種類を書いた `ArgumentException`。ggplot2 の `stat_count` は数の x でも値ごとに数える（`R/stat-count.R`）が、1e9 行では値の種類に上限がないので取らない。ggplot2 の `stat_summary` の既定の Geom は pointrange（`R/stat-summary.R`）だが、点の Geom は行 R3 で、そのときに足す
+  - **グループと Position**: Stat は層の色のグループ（`ColorBy` か `FillBy` のカテゴリ、行 G5a）ごとに計算し、その後で Position を当てる。ggplot2 も、グループごとに Stat を計算してから Position を当てる（`R/plot-build.R` の `compute_statistic` の後の `compute_position`）。そのため、色で分けたヒストグラムは既定で積み上がる
+  - **bin の区切り**: Vega の刻み（`vega-statistics/src/bin.js`）で選ぶ。範囲の幅 span から level = ⌈log₁₀ `MaxBins`⌉、刻み = 10^(round(log₁₀ span) − level) とし、⌈span / 刻み⌉ が `MaxBins` を超える間は 10 倍する。次に、刻みを 5 で割って区切りの数が `MaxBins` 以下に収まればそれを取り、続けてその刻みを 2 で割って収まればそれを取る（`divide` [5, 2] を順に試す）。端は刻みの倍数に丸める（下端は ⌊min / 刻み⌋ · 刻み、上端は ⌈max / 刻み⌉ · 刻み）。`Step` を与えたらそれを刻みに、`Anchor` を与えたら端がその値を通るようにずらす。Vega-Lite の既定 `maxbins` 10 と `nice` と同じで、端が軸の目盛りと同じきりのよい数になる。ggplot2 の既定 30 個（範囲から決め、使うよう促す表示を出す、`R/bin.R` の `fix_bin_params`）と、numpy・matplotlib の 10 個（範囲の端そのもの）は取らない（`design-decisions.md`）
+  - **区間**: [a, b) とし、最後の区間だけ [a, b]（最大の値は最後の区間に入る）。numpy（`histogram` の「The last bin includes the right edge」）、matplotlib、Vega（最大の値を最後の区間に寄せる、`Bin.js`）と同じ。ggplot2 は (a, b]（`closed = "right"`）
+  - **数えない値**: NaN と ±∞ は数えない（ggplot2 は数えずに警告する、`R/stat-.R` の `remove_missing`）。番号 −1 の色のカテゴリの行も数えない
+  - **区切りの共有**: 区切りは、層の x 全体の範囲（列の統計）で 1 つにし、色のグループに共有する。ggplot2 もパネルの範囲で区切る（`R/bin.R` の `compute_bins`）ので、積み上げた棒の位置がそろう
+  - **y の値**: `Output` が `Count` なら区切りの度数、`Density` なら度数 / (n · 幅)（n はそのグループの数えた値の数、幅はデータの単位。ggplot2 の `density`、numpy の `density=True` と同じ）。ggplot2 の `ncount`・`ndensity` は作らない
+  - **スケールの空間**: 区切りは x のスケールの空間で選ぶ（log の x では log の値で等間隔。ggplot2 も変換した後の値で区切る）。time の x では、刻みを行 G3 の日時の目盛りの段（§4.6）から、区切りの数が `MaxBins` 以下に収まる最も細かい段で選び、端は暦の境（月・年は長さが違うので、区切りの幅もそろわない）。`Step` を time の x に与えたら、time のスケールの単位の幅として使う
+  - **count**: カテゴリの x のカテゴリごと（色で分けたらセルごと）に行を数える。x の番号 −1 の行は数えない
+  - **summary**: カテゴリの x のセルごとに、`SummaryOp` で値をまとめる。NaN の値は数えない。値のないセルは描かない
+    - `Mean`・`Min`・`Max`: 平均・最小・最大
+    - `Quantile(p)`: 厳密な type 7（Hyndman と Fan）。値を小さい順に並べた n 個の x₍₁₎…x₍ₙ₎ で、h = (n − 1) p、x₍⌊h⌋+1₎ + (h − ⌊h⌋)(x₍⌊h⌋+2₎ − x₍⌊h⌋+1₎)。numpy の既定の `linear`、R の既定、d3、Vega（`vega-statistics/src/quantiles.js`）と同じ値になる。近似（t-digest、KLL、Spark の Greenwald-Khanna）は取らない（`design-decisions.md`）
+    - `Custom(IStat)`: 利用者の Stat（下の「`IStat`」）
+    - ggplot2 の既定の `mean_se`（平均 ± 標準誤差、`R/stat-summary.R`）は、標準偏差が要件 G-4 にないので作らない。`IStat` で書ける
+  - **`IStat`**（要件 N-6）: セルの状態（`StateLength` 個の double、0 で始まる）に、そのセルの値（NaN を除く）の一続きを `Fold` で畳み、ワーカーの部分の状態を `Merge` で合わせ、`Result` でセルの値にする。和や積率のように、部分から合わせられる量を書ける。quantile のような、全部の値が要る量は書けない。合わせる順は、チャンクを決まった数の組に分け、組ごとにチャンクの順に畳んでから、組の順に合わせる（行 G5a のセルの和と同じ。ワーカーの数で結果が変わらない）。`Fold`・`Merge`・`Result` はワーカーのスレッドから呼ぶので、`IStat` の実装は自分の状態だけを読み書きする（XML に書く）。投げた例外は、ワーカーの仕事の失敗として `Render` から出る（§4.8）。§4.3 の「チャンク単位のデリゲート」はこの形で作る
+  - **ビルダ**: `PlotBuilder.Histogram`（bar と `Stat.Bin`）、`Count`（カテゴリの x の bar と `Stat.Count`）、`Summary`（カテゴリの x の bar と `Stat.Summary(value)`）、`SummaryRange`（カテゴリの x の errorbar と `Stat.Summary(low, high)`）。area と step の bin は、仕様の型（`new AreaLayerSpec { X = …, Stat = Stat.Bin() }`）で作る（`PlotBuilder.Area` は y の列を取るので）。`Stat.Bin` の引数（`maxBins` が 1 から 10,000 の外、`step` が有限で正でない、`anchor` が有限でない、`Output` が定義にない）は `ArgumentOutOfRangeException`。`with` で範囲の外を入れた仕様はコンパイルが `ArgumentException`
+  - **名前**: 静的クラス `Stat` と `LayerSpec.Stat` は同じ名前で、`Position`（行 G5a）と同じ扱い（ライブラリの中では `HyperPlot.Stat` と書く）
+  - **スクラッチのコンパイル**: この形（`StatSpec` と 3 つの派生、`BinOutput`、`SummaryOp`・`SummaryKind`、`IStat` を実装した型、`Stat`、`LayerSpec.Stat`、`required` を外した step・area・bar の `Y`、`PlotBuilder` の 4 つの口と省略した引数、`with` で `MaxBins` を変える写し）を Core の中のスクラッチと、それを使うスクラッチの実行ファイルでコンパイルし、NativeAOT の発行と実行で警告 0 だった。`Stat.Summary()` は 1 つめの多重定義に決まる
 - **行 G3 の仕様**（Issue #111）: ガイドの設定は、§4.1 の表のとおりスケールに持つ（軸のタイトル・nice・書式）。`PlotSpec` の別の軸の仕様にしないのは、軸の中身がスケールの種類（数か日時か）で決まり、スケールと軸が 1 対 1 だからである（`design-decisions.md`）。§4.9 の例の `.Title("…")` は、`Title` のプロパティと同じ名前のメソッドを C# の型が持てないので、`WithTitle` にした。`WithTitle` は `WithDomain` と違い種類によらないので、拡張メソッド 1 つにする。`Title` と `Label` は null と空を「なし」とし、例外にしない。グリッドと軸を描くかはテーマ（§4.7）で決める。`LineLayerSpec.Style` の太さと破線の長さは、行 G3 から DIP で、`HeadlessRenderer` の `Scale`（§7.5）を掛けて記録する（倍率 1 なら行 G1 と同じ画素）
 
 ### 4.2 エンコーディングとスケール
@@ -1025,6 +1107,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **clamp**: 既定は偽で、すべてが持つ。真なら、写した値を domain の両端に寄せてから画素にする。M4 の範囲の外の点（`Before`・`After`、§5.5.1）も端に寄るので、線は画面の端に沿う。偽なら今のとおり、端の外の点へ線を延ばし、描画先で切る。y の clamp も同じで、domain の外の min / max は上端か下端に寄る
 - **行 G4 の学習**（Issue #120）: x と y の domain は、そのスケールを使うすべてのレイヤーのチャネルの範囲の和である。チャネルは、Step・Area・Bar の X と Y、Band と ErrorBar の X・YMin・YMax、Rect の XMin・XMax（x）と YMin・YMax（y）、Segment の X・XEnd（x）と Y・YEnd（y）、縦の Rule の X（x だけ）、横の Rule の Y（y だけ）。Area と Bar は `Baseline` も y に含め、Bar は x の範囲を棒の幅の半分ずつ外へ広げる（端の棒が半分切れないように）。`CustomLayerSpec` は `IGeom.Learn` が `GeomRanges` に足した範囲で、何も足さなければ寄与しない。範囲の読み方（チャンクの統計、`UniformColumn` の両端、`long` の正確な比べ方、値なし・値が 1 つ・無限大）は線と同じ。`Baseline` は、スケールが有限の値に写さないとき（log の 0）は学習に含めない。描くときにパネルの端に寄せる値（§5.5.3）で、含めると log の y の既定の area と bar が学習で投げる（Issue #124）。整数の `Baseline` は、`long` の範囲なら整数の端として足し、`long` の列の domain を正確なままにする
 - **行 G5a の学習**（Issue #204）: 積んだ層（§4.1 の「行 G5a の Position」の `Stack`）の y の範囲は、列の統計でなく、積んだ結果の範囲（正の累積の最大と、負の累積の最小）と 0 の和である。積んだ結果はワーカーが作る（§5.5.3）ので、学習はその後になる（コンパイルは待ちの段の後に学ぶ、§4.8）。ワーカーは作るときに範囲も持ち、学習は O(1) で読む。`Fill` の y の範囲は、負の値がなければ [0, 1]、あれば [−1, 1]（[0, 1] の端は 0 と 1 の正確な値）。積んだ層の x の範囲は、積まないときと同じ（列の統計。数の x の bar は棒の幅の半分ずつ外へ）。`Dodge` は x も y も範囲を変えない（場所は band の中、数の x の bar の場所は x ± Width/2 の中）。y のスケールが log なら、積んだ範囲の 0 は学習に含めない（`Baseline` の 0 と同じ扱い、上の「行 G4 の学習」）
+- **行 G5b の学習**（Issue #214）: Stat を持つ層は、派生の表（§4.3）から学ぶ。bin の x は区切りの端から端まで（bar の層と、区切りの真ん中に点を置く area と step の層のどちらも）、count と summary の x は band。y は Stat の出力の範囲と 0（count と bin は 0 から、summary は値の範囲で、bar は `Baseline` を含む）。積んだ層は行 G5a のとおり、積んだ結果の範囲と 0 から学ぶ。派生の表はワーカーが作るので、学習はその後になる（待ちの段の後、§4.8）
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
   - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない
@@ -1045,6 +1128,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
 - 利用者の計算は、チャンク単位のデリゲート（`(ReadOnlySpan<double> x, Span<double> result)` の形）で渡す。式木のコンパイルは使わない（AOT のため）
 - 大規模データのための集約（M4、密度）は Stat と同じ枠で表すが、ビューに依存するので、コンパイルの段ではなく描画の段（§5.5）で行う
 - **行 G5a の Position**（Issue #204）: 積み上げの結果（カテゴリの x のセルの和、数の x の累積の列）も、ワーカーが列の版ごとに作る派生の値である（§5.5.3）。Stat の枠（`IStat` と版付きの派生の表）は行 G5b で作り、行 G5a の積み上げはそれを待たずに、行 G7b のカテゴリごとの最小・最大と同じ、層の計画が持つ internal の仕事で作る。行 G5b の Stat の出力（bin の数など）を積むときは、Stat の派生の表を層の列として、同じ積み上げの道に渡す
+- **行 G5b の Stat**（Issue #214）: 上の「版付きの派生の表」を作る。Stat を持つ層の計画は、ワーカーに Stat の仕事を出し、その結果を小さな派生の表（ネイティブの列。行の数は区切りかセルの数で、データの行の数によらない）にして、同じ層の Stat のない仕様をその表の上で作り、Geom のふだんの道と Position で描く（§5.5.3）。列の版が変わったら、派生の表と層の計画を作り直す（行 G5a の数の x の積み上げと同じ）。利用者の計算は `IStat`（§4.1）で、チャンクの値の一続き（`ReadOnlySpan<double>`）を状態に畳む形が、上のデリゲートの形にあたる
 
 ### 4.4 座標系
 
@@ -1327,6 +1411,9 @@ public sealed record Theme                    // コンストラクタは privat
 - **検査（行 G5a）**: §4.1 の「行 G5a の Position」の例外（Geom が取らない種類の Position（area の `Dodge`、errorbar と縦の rule の `Stack`・`Fill`、Position を取らない Geom の `Identity` でない Position）、errorbar と縦の rule の数の x の `Dodge`、連続の色と `Stack`・`Fill`、0 でない `Baseline` と `Stack`・`Fill`、`Padding` の範囲、写しのコンストラクタで派生した知らない `PositionSpec`（型の名前））を、学習の前にコンパイルが確かめる。カテゴリの x の積み上げと、カテゴリの x の errorbar を色で分けるときのセルの上限（nk × nx ≤ 2^24、行 G7c と同じ数と文）も、学習の前に確かめる
 - **索引（行 G5a）**: 積んだ層とカテゴリの x の errorbar・縦の rule は、ワーカーの仕事（§5.5.3 のセルの和・セルの最小と最大・累積の列と、そのピラミッド）を、行 G7b のカテゴリごとの最小・最大と同じく待ちの段で待ち、その後に学ぶ。作り直すのは、層の X・Y（YMin・YMax）・色のカテゴリの列のどれかの版が変わったときで、待ちの段で待つ（暫定の表示とホストへの通知は、ほかのワーカーの仕事と同じく行 W1）。数の x の積み上げは、累積の列の長さが版で変わりうるので、層の計画を作るときに作り、層の列の版が変わったら、描く前に層の計画を作り直す（行 G5a の実装）
 - **差分（行 G5a）**: `Stack` か `Fill` が関わる `Position` の変化（`Identity` か `Dodge` と `Stack`・`Fill` の間、`Stack` と `Fill` の間）は「データ」の段（ワーカーの仕事か作る値が変わる）。`Identity` と `Dodge` の間の変化と、`Dodge` の `Padding` だけの変化は「見た目」の段（配置と記録だけ）。並べは置く場所を変えるだけで、ワーカーの仕事（カテゴリの x の errorbar・縦の rule の結果を含む）も domain も変わらない（§5.5.3）。同じ種類の新しいノード（`Stack` を新しく作り直した仕様）は何もしない
+- **検査（行 G5b）**: §4.1 の「行 G5b の Stat」の例外（Geom と Stat の組、bin と count の層の `Y`、summary の errorbar の `YMax`、Stat のない層の `default` の `Y`、`BinStatSpec` の値、`SummaryOp` の p、`IStat` の `StateLength`、写しのコンストラクタで派生した知らない `StatSpec`（型の名前））を、学習の前にコンパイルが確かめる。quantile のメモリの上限（セル × 順位 × 2 KB が 256 MB、§5.5.3）と、bin の区切りの数の上限（10,000）は、列のカテゴリの数と統計で決まるので、待ちの段の前に確かめる。time の x の bin は、そのスケールの列が `long` の日時であること（行 G2 の time の検査と同じ）
+- **索引（行 G5b）**: Stat を持つ層は、ワーカーの Stat の仕事（§5.5.3）を待ちの段で待ち、派生の表の上で層の計画を作ってから学ぶ。作り直すのは、層の列（X・Y・色のカテゴリ）のどれかの版が変わったとき（行 G5a の `Stale` と同じ形で、層の計画ごと作り直す）。`IStat` が投げた例外は、ワーカーの仕事の失敗として、包まずに `Render` から出る（ピラミッドの失敗と同じ）
+- **差分（行 G5b）**: Stat の種類か引数（`BinStatSpec` の値、`SummaryOp`、`IStat` の参照）が変わったら「データ」の段（派生の表を作り直す）。同じ値の新しいノードは何もしない
 - **描く**: §5.5.3 の道で、レイヤーの順に、パネルで切り抜いて記録する。ピラミッドは、Y・YMin・YMax の列ごとに 1 つで、同じ列を指すチャネルは共有する（線と同じ）
 
 **行 G3 のコンパイル**（Issue #111）: 5（配置、§4.6）を足す。順は、1 → 4（索引。ワーカーの仕事を待つ）→ 2（学習）→ 5（配置: y の目盛り、x の目盛り、nice）→ M4 → 記録で、nice が広げた domain で M4 を引く。
@@ -1437,6 +1524,36 @@ var shares = Plot.Create(data)
     .Area(data.Col<long>("t"), data.Col<float>("load"), configure: a => a.FillBy(data.Cat("sensor")).Position(Position.Fill))
     .ScaleX(Scale.Time())
     .Build();
+```
+
+- 行 G5b は、`StatSpec` と `BinStatSpec`・`CountStatSpec`・`SummaryStatSpec`、`BinOutput`、`SummaryOp`・`SummaryKind`、`IStat`、`Stat`、`LayerSpec.Stat`、`PlotBuilder.Histogram`・`Count`・`Summary`・`SummaryRange` を公開し、step・area・bar の `Y` の `required` を外す（Issue #214）。行 G5b で書ける形は次のとおり（スクラッチでコンパイルした、§4.1）
+
+```csharp
+// 行 G5b: センサーごとに積んだ値のヒストグラム、都市ごとの件数、都市ごとの平均と四分位の範囲、利用者の Stat
+var histogram = Plot.Create(data)
+    .Histogram(data.Col<float>("load"), Stat.Bin(maxBins: 20), b => b.ColorBy(data.Cat("sensor")))
+    .Build();
+
+var counts = Plot.Create(data)
+    .Count(data.Cat("city"))
+    .Build();
+
+var spread = Plot.Create(data)
+    .Summary(data.Cat("city"), data.Col<double>("sales"))
+    .SummaryRange(data.Cat("city"), data.Col<double>("sales"), SummaryOp.Quantile(0.25), SummaryOp.Quantile(0.75))
+    .Build();
+
+var squares = Plot.Create(data)
+    .Summary(data.Cat("city"), data.Col<double>("sales"), SummaryOp.Custom(new SumOfSquares()))
+    .Build();
+
+sealed class SumOfSquares : IStat
+{
+    public int StateLength => 1;
+    public void Fold(ReadOnlySpan<double> values, Span<double> state) { foreach (var v in values) { state[0] += v * v; } }
+    public void Merge(ReadOnlySpan<double> other, Span<double> state) => state[0] += other[0];
+    public double Result(ReadOnlySpan<double> state) => state[0];
+}
 ```
 
 ```csharp
@@ -1916,6 +2033,23 @@ public sealed class PlotWorkerPool
     - **計測**（Issue #204）: NativeAOT の Release、1,920 × 1,080、交互に 3 回で、要件 P-1（CPU と GPU の p95 が 8 ms 以下）と比べる。記録は `docs/benchmarks/g5a-position.md`
       - **ワーカー**: カテゴリの x のセルの和を 1e8 行で（色 8 × x 50 と、色 8 × x 1e5）。数の x の累積の列を 1e8 点・8 系列で、x がそろう場合（同じ時刻）とずれる場合（系列ごとに時刻をずらす）の、作る時間とメモリ
       - **フレーム**: 積み上げた bar（カテゴリの x、色 8 × x 50 と 1e5）、積み上げた area（8 系列 × 1.25e7 点、そろう場合）、並べた bar と errorbar（色 8 × x 50）の 1 フレームの CPU と GPU の時間。温まった後の確保 0
+  - **Stat**（行 G5b、Issue #214）: ワーカーが Stat の派生の表（§4.3）を作り、層はその表の上の Stat のない層として、Geom のふだんの道で描く。1 フレームの仕事は区切りかセルの数で、行の数によらない。行の数で働くのはワーカーだけである
+    - **派生の層**: Stat ごとに、派生の表と、その上の層の形が決まる
+      - **bin の bar**: 区切り i・群 k ごとの矩形 [左端, 右端] × [下端, 上端] を、rect の層（色の群で分ける、行 G7c）で描く。区切りの幅は、log と time の x では区切りごとに違うので、棒の幅 1 つの bar では描けない。どの群も同じ区切りなので、Position は Stat の中で当てる（stack と fill は区切りごとに群の順に積み、dodge は区切りを群の数で等分する。積む順・正と負は行 G5a と同じで、度数と密度は負にならない）。矩形の数（区切りの数 × 群の数）は rect の上限 131,072 まで（§5.5.3 の rect）で、超えたら、区切りの数と群の数と上限を書いた `ArgumentException`
+      - **bin の area と step**: 区切りの真ん中（x のスケールの空間の真ん中をデータへ戻した値）に、群ごとの値の点を置いた長い形の表（x・y・群）を、area か step の層で描く。area の積み上げは行 G5a の数の x の積み上げ（どの群も同じ x なので、和集合は区切りの数）
+      - **count と summary の bar**: セルごとの値の長い形の表（カテゴリの x・y・群）を、カテゴリの x の bar の層（行 G7b、Position は行 G5a）で描く。セルに 1 行なので、カテゴリの x の bar の「行の最大」は値そのものになる
+      - **summary の errorbar**: セルごとの（カテゴリの x・下端・上端・群）の表を、カテゴリの x の errorbar の層（行 G5a）で描く
+    - **bin の仕事**: ワーカーが X の列と色のカテゴリの列をチャンクごとに 1 度なめ（O(N)）、値を x のスケールの空間へ写して区切りの番号を求め、群ごと・区切りごとに数える（整数の数なので、足す順で結果が変わらない）。区切りの端は、列の統計（§3.2）の最小と最大から先に決める。メモリは群の数 × 区切りの数 × 8 B
+    - **count の仕事**: x のカテゴリの番号と色のカテゴリの番号を 1 度なめ、セルごとに数える。分けない層では、カテゴリの列が持つカテゴリごとの行の数（行 G7c の「区間を調べる」）をそのまま使う
+    - **summary の仕事**（`Mean`・`Min`・`Max`・`Custom`）: セルごとに、和と数と最小と最大（`Custom` は `IStat` の状態）を 1 度なめで作る。和と `IStat` の状態は、行 G5a のセルの和と同じく、チャンクを決まった数の組に分けて組ごとに畳み、組の順に合わせる。メモリはセルの数 × (32 B + 状態の大きさ)
+    - **quantile の仕事**（radix select）: セルごと・求める順位ごとに、値を順序を保つ整数の鍵（`double` と `float` は符号のビットで並びを直したビット列、整数は最小の値を引いた数）にし、上の 8 ビットから順に絞る
+      - 1 段目は、セルごとに鍵の最上位のバイトの 256 区間の度数と、NaN でない値の数 n を数える。n から type 7 の順位（⌊h⌋ + 1 と ⌊h⌋ + 2、h = (n − 1) p）を決め、度数を足して、その順位の値がある区間を選ぶ
+      - 2 段目からは、それまでに選んだ上位のバイトと同じ鍵の値だけを、次のバイトの 256 区間で数えて絞る
+      - 段の数は値の型のバイト数（`float` 4、`double` 8、`long` 8、`int` 4、`byte` 1）で、最後の段で順位の値が厳密に決まる。type 7 は 2 つの順位の値から補間する
+      - メモリはセル × 順位（quantile 1 つにつき 2）× 256 × 8 B = 2 KB ずつで、256 MB を上限にする（quantile 2 つ、順位 4 つなら 32,768 セル）。超えたら、セルの数と順位の数と上限を書いた `ArgumentException`（§4.8）
+      - 値を集めてセルごとに並べる形は、メモリがデータと同じ桁になり、要件 P-8 の考え（索引は元の 10 % 以下）に合わない。近似は値が厳密でない（`design-decisions.md`）
+    - **作り直し**: 派生の表は、それを作った列の版を持ち、どれかの版が変わったら作り直す（待ちの段で待つ、§4.8）
+    - **計測**（Issue #214）: NativeAOT の Release、1,920 × 1,080、3 回で、要件 P-2（構築は 1 GB/s 以上）と P-1（1 フレームの p95 が 8 ms 以下）と比べる。1e9 点の `float`（メモリマップ）のヒストグラム（1 群と 8 群）、count（1e9 行、カテゴリ 50 と 1e5）、summary（1e9 行・カテゴリ 50 の平均・最小・最大と、quantile 2 つ）を作る時間と、それぞれの 1 フレームの CPU と GPU の時間。記録は `docs/benchmarks/g5b-stat.md`
   - **errorbar**: X は単調非減少。見える要素が 4W 以下なら、要素ごとに YMin から YMax への縦の線と、`CapWidth` · s の幅の端の横線 2 本を記録する。4W を超えたら、画素列ごとに YMin の min から YMax の max への縦の線を記録し、端は描かない
   - **rule**: 縦の線（X）は X が単調非減少で、見える線が 4W 以下なら線ごとにパネルの高さいっぱいに、4W を超えたら、要素のある画素列ごとに列の中央に 1 本を記録する（境界の二分探索で、列に要素があるかを数える）。横の線（Y）は Y が単調非減少で、同じことを画素の行ごと（4H）に行う
   - **segment と rect**: 並びを求めない。要素の総数が 131,072（2^17）以下なら、毎フレームすべての要素を写して記録する（走査と記録は定数で抑えられ、rect の記録で 4 MB。要件 R-1 の「1 フレームの転送は数 MB 以下」は画素の数でなく量の条件なので、上限はパネルの大きさに依らない。パネルの大きさに依ると、ウィンドウを縮めただけで投げることになり、行 G3 の小さい描画先の扱いと逆になる。PR #121 のレビュー、オーナーの決定 2026-10-30）。超えたら、要素の数と上限を書いた `InvalidOperationException`。見える要素だけを数えると毎フレーム全要素の走査になり、不変条件 2 を破るので、総数で決める（Issue #120）。大きなデータの道（密度）は行 R3。rect は 2 つの角を写し、小さい方を左上にして `DrawRect` で記録する（reverse と log でも向きによらない）
@@ -2198,6 +2332,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 | text の Geom（G8） | ビルダ（Core）: 4 つの多重定義それぞれで、別の表と `default` の参照で `ArgumentException`。`Size` の 0・負・NaN・∞・512 を超える値、`Offset` の NaN と ∞、`TextAlign`・`TextBaseline`・`TextRotation` の定義にない値で `ArgumentOutOfRangeException`。カテゴリのラベルに `Format` を与えて `ArgumentException`。仕様の既定（大きさ 12、中央・真ん中、ずらし 0、回転なし、色 null）。検査（Core、仕様を直接作る）: 同じ不正な値で同じ例外、`Size` 400 を倍率 1.5 で描くと層の番号と値を書いた `ArgumentException`（倍率 1 では描ける）、カテゴリの y、数の列の `ColorBy`、`FillBy`、`Color` と `ColorBy` の両方で `ArgumentException`。行の数が 4,096 で描け、4,097 で、行の数と上限を書いた `InvalidOperationException`（`ColorBy` で分けた層も分ける前の数で）。2 つの text の層の行の和が 4,097（2,048 と 2,049）で、層ごとの数と和を書いた同じ例外、和が 4,096 で描ける。書式: 既定の `"G6"`（1234567 → "1.23457E+06"、0.1、−0、整数の列の値）、利用者の書式の結果、偽を返す書式と `charsWritten` が 65 の書式で `InvalidOperationException`、書式が投げた例外がそのまま出る、0 文字のラベルを描かない。記録（Core、偽の `ITextBackend`）: 行ごとの `DrawText` の文字列と `Position` が §5.5.3 の式（揃えの横 3 × 縦 4、ずらし、回転 3 通りで、回した箱の揃えの点が基準点に来る、倍率 1.5）、カテゴリの x の band の真ん中（`Reverse` を含む）、カテゴリのラベルが列の名前の同じ参照、パネルの外の基準点と、NaN・log の 0 以下・欠けたカテゴリ（x・`Text`・`ColorBy`）・NaN の数のラベルの行を描かない、端のちょうど上の基準点を描く、色（定数、系列の色、`ColorBy` のカテゴリの色を、区間に並ぶカテゴリと混ざるカテゴリの両方で）、行の順（`ColorBy` ではカテゴリの番号の順、その中で行の順）。flip と polar で基準点が `GeomFrame.Map` の点で、文字を回さない。学習: domain が基準点の列の範囲で、ラベルの大きさによらない。文字列を作る時: `Text` の列を `Invalidate` すると数のラベルが新しい値になり、`Format` だけを変えた仕様で書き直し、同じデリゲートを持つ新しいノードでは書き直さない（確保 0）。差分: `Color`・`Size`・揃え・ずらし・回転・`Label`（凡例があるまま、同じ幅の文字に変える）で配置 1・M4 0・記録 1。凡例: 見本の「a」が層の色と `LegendSize` で見本の真ん中にあり、`ColorBy` でカテゴリの行の見本も「a」。整形のキャッシュ: 4,096 のラベルと軸と凡例の文字列（合わせて 4,096 を超える）を描いた 2 フレーム目に、整形を呼ばない（偽の `ITextBackend` で数える）。確保: 温まった後、4,096 のラベル（数とカテゴリ）の描き直しが確保しない。ゴールデン画像: §10.1 の場面 (16) |
 | ラスタと image の Geom（G9） | ラスタ（Core）: `Raster.Of` と `Raster.Rgba` の幅・高さ・`Values`・`IsRgba`、長さが幅 × 高さ（RGBA は 4 倍）で割り切れない列・幅 0 と負・null で、それぞれ `ArgumentException`・`ArgumentOutOfRangeException`・`ArgumentNullException`、`Invalidate(firstRow, rowCount)` が列の要素の範囲を書き換えたことにし、範囲の外で `ArgumentOutOfRangeException`。ミップマップ（Core、ワーカー）: 段 1 から上の各画素が 2 × 2 の平均（`float` の NaN を除く・4 つとも NaN で NaN、整数の丸め（ちょうど半分）、`long` の大きな値であふれない、RGBA は前乗算の平均）で、CPU で数えた基準と一致（奇数の幅と高さの端の画素、最上の段が 256 以下）。段 1 から上の要素の数が元の 1/3 未満。列の一部の `Invalidate` で、そのチャンクの行のタイルと上の段だけを作り直し（作り直したタイルの数を数える）、作り直した段が全体から作ったものと一致。ビルダ（Core）: `Extent` の NaN・∞・左右か上下の等しい値、`Opacity` の −0.1・1.1・NaN、定義にない `RasterOrigin`・`RasterInterpolation` で `ArgumentOutOfRangeException`、null の `raster` で `ArgumentNullException`。検査（Core、仕様を直接作る）: 同じ不正な値で同じ例外、polar、log の x と y、`ColorBy`・`FillBy`、ordinal の色のスケールと数のラスタ、`TransformScaleSpec` の色のスケールと数のラスタ、time の中のスケールと `long` でない数のラスタで `ArgumentException`。1 つのバックエンドで 65 個めの写像の数のラスタで `InvalidOperationException`。学習: x と y の domain が `Extent`（既定の (−0.5, 幅 − 0.5, −0.5, 高さ − 0.5)、裏返した `Extent`）、色の domain がラスタの列の範囲とほかの数の色の列の和。記録（Core、`DrawImage` の記録を読む）: 段の選び方（sx と sy の組で ℓ の境、拡大で段 0、最上の段で止まる）、見えるタイル（パンでパネルの外のタイルを記録しない、1,920 × 1,080 で 160 以下）、タイルの角が `Extent` と `Origin` と flip の写しの点、テクセルの範囲、送る予算（1 フレームの送る量が 4 MB 以下、置いていないタイルの所に上の段のタイルの範囲、最上の段は最初のフレームで置く、何フレームかで仮の描画がなくなる）、ヘッドレスは最初の 1 回ですべて置く。常駐キャッシュ（Core）: 同じ記述子で同じ場所、帯の印か原点が変わると送り直す、予算を超えると最も古く使った場所を使い（今のフレームの場所は使わない）、喪失で記述子をすべて捨てて送り直す。GPU（D3D11、WARP）: nearest と bilinear の画素がシェーダの式を CPU で写した基準と一致（タイルの継ぎ目を含む）、数のタイルの色が `ColorMap.Map` と同じ添字（linear・log・symlog・pow、diverging の中点、domain の外の端の色、NaN の透明）、`Opacity`、RGBA の前乗算。差分: `Raster` の参照でデータの段、`Extent` でスケールの段、`Origin`・`Interpolation`・`Opacity`・`Label` で配置 1・M4 0・記録 1、列の版で学び直し。凡例: 数のラスタでカラーバー、RGBA でなし、`Label` の行なし。確保: 温まった後、見えるタイルを置いた後の描き直しとパンが確保しない。ゴールデン画像: §10.1 の場面 (17)・(18)・(19) |
 | Position（G5a） | 仕様（Core）: `Position.Dodge` の 0 以上 1 未満の外（負・1・NaN）で `ArgumentOutOfRangeException`、`Identity`・`Stack`・`Fill` が同じ値を返す、3 つのビルダの `Position(null)` で `ArgumentNullException`、`ErrorBar(CategoryRef, …)`・`VRule(CategoryRef, …)` の列の検査（`Bar(CategoryRef, …)` と同じ）。コンパイル: Position を取らない 9 つの Geom（line・step・band・rect・横の rule・segment・text・image・独自 Geom）それぞれに `Stack` と `Dodge`、area の `Dodge`、errorbar と縦の rule の `Stack` と `Fill`、数の x の errorbar と縦の rule の `Dodge`、連続の色の bar の `Stack`・`Fill`、0 でない `Baseline` の `Stack`・`Fill`（bar と area）、`with` で入れた範囲の外の `Padding`、写しのコンストラクタで派生した `PositionSpec` で、層の番号と種類を書いた `ArgumentException`。カテゴリの x の errorbar のセルの上限（65,536 × 256 = 2^24 は描き、65,537 × 256 は errorbar と積み上げた bar の両方で `ArgumentException`）。既定: 分けた bar と area は積み、分けない bar・area と分けた line は積まない（記録で見る）。積み上げ（記録の矩形と band の端を、CPU の基準と比べる）: カテゴリの x の基準は行を 1 本ずつ、カテゴリの番号の大きい方から正と負を別に積んだ矩形（ggplot2 の `pos_stack` と同じ数え方。同じセルに 3 行、NaN の行、番号 −1 の x と色の行、負の値、すべて 0 の x を含む）。`Fill` の正 0〜1・負 −1〜0、和が 0 の x の 0。数の x の bar の等しい x（`double` の X で 1 ulp 違う x は別の棒）。数の x の area の基準は、和集合の各点で、各系列を生のデータから直に線形に補間して（点が x の左右のどちらの値かを含めて）正と負に分けて足した値（併合を使わない）で、`SeriesStack` の P と N の列と比べる。系列の範囲の外の 0、範囲の端の縦の辺、系列の中の同じ x の 2 行、0 をまたぐ系列の正と負の段の境が 0 を通ること、x がそろう系列とずれる系列、積んだ area の `Outline` が段の外側の縁の 2 本だけであること。画素より多いカテゴリ（nx = 5,000、band が 1 画素未満）で、画素列ごとの段を、区間をなめた基準と比べる。dodge: カテゴリの x の bar・errorbar・縦の rule の場所（nk = 3 で値のない色の場所が空く、`Padding` 0.2、`Reverse` の band）、数の x の bar の式、band が 1 画素未満と 4W を超えた数の x で重ねて描くこと。カテゴリの x の errorbar のセルの最小と最大、縦の rule の行のあるカテゴリ（分けない層と分けた層）。学習: 積んだ y の範囲（正の累積の最大・負の累積の最小・0）、`Fill` の [0, 1] と [−1, 1]、`Dodge` の範囲の不変、log の y で 0 を含めない。flip と polar の記録（積み上げた bar の段の向き。polar では群ごとの色の形、数の値で塗る bar の要素ごとの色（行 G7c、Issue #208））。差分: `Stack`・`Fill` が関わる変化で作り直し、`Identity` と `Dodge` の間と `Padding` だけの変化で配置と記録だけ（ワーカーの仕事 0）。作り直し: Y の `Invalidate` の後の描画が新しい和を描く、色のカテゴリの列の差し替え（新しい計画と同じ記録）。温まった後の確保 0（積んだ bar と area、並べた bar と errorbar）。ミュータント: 積む順、正と負の分け、和が 0 の割り算、補間の端と 0 との交点、dodge の場所の式、band が 1 画素の境で、それぞれ 1 つ以上のテストが落ちる。描く（WARP）: 場面 (20)〜(24) |
+| Stat（G5b） | 仕様（Core）: `Stat.Bin` の `maxBins` 0 と 10,001・`step` の 0・負・NaN・∞・`anchor` の NaN・∞・定義にない `BinOutput` で `ArgumentOutOfRangeException`、`SummaryOp.Quantile` の −0.01・1.01・NaN で `ArgumentOutOfRangeException`、`Custom(null)` と `Stat.Summary(null!, …)` で `ArgumentNullException`、`Stat.Count` が同じ値を返す、`Median` が `Quantile(0.5)` と等しい、4 つのビルダの列の検査。コンパイル: Geom と Stat の取らない組それぞれ（line・band・rect・rule・segment・text・image・独自 Geom の 3 つの Stat、カテゴリの x の bin、数の x の count と summary）、bin と count の層の `Y`、`YMin` と違う `YMax` の summary の errorbar、Stat のない層の `default` の `Y`、`with` で入れた範囲の外の `BinStatSpec`、`StateLength` の 0 と 65、写しのコンストラクタで派生した `StatSpec`、quantile のメモリ（quantile 2 つで 32,768 セルは描き、32,769 は `ArgumentException`）、区切りの数 × 群の数の 131,072 と 131,073、`long` でない列の time の x の bin で、層の番号を書いた `ArgumentException`。bin: 区切りの端を、Vega の `bin.js` に同じ範囲と `maxbins` を与えた値（テストの表に写す）と比べる（範囲 [0, 97] と 10 で刻み 10、[0.013, 0.0871] と 10、[−3, 3] と 4、値が 1 つ、`Step` と `Anchor` を与えた場合）。区間の境の値（ちょうど端の値は右の区間、最大の値は最後の区間）、NaN と ±∞ と番号 −1 の群を数えない、群に共有する区切り、密度（度数 / (群の n · 幅)）、log の x の等しい log 幅、time の x の月の境（長さの違う区切り）。count: カテゴリごと、番号 −1 を数えない、色のセル。summary: 平均・最小・最大を CPU の値と、quantile（p = 0、0.25、0.5、0.9、1）を値を並べて type 7 の式で求めた値と、ビットまで比べる（同じ値の重なり、負と −0、NaN の行、値が 1 つと 2 つのセル、`float`・`double`・`long`・`int`・`byte` の列。radix select の段の数がそれぞれ違う）。`Custom` の `IStat`（平方和）、`IStat` の例外が `Render` から出る、ワーカーの数（1 と 4）で結果がビットまで同じ。Position: 積んだヒストグラムの矩形（群の順、fill、dodge）、積んだ bin の area。学習: bin の x が区切りの端から端まで、y が度数と 0。差分: Stat の引数の変化で作り直し、同じ値の新しいノードで何もしない、Y の `Invalidate` で作り直す。温まった後の確保 0（ヒストグラム、count、summary）。ミュータント: 区間の閉じ方、最後の区間、radix select の区間の選び方、type 7 の補間、密度の割る数、チャンクの組の合わせる順で、それぞれ 1 つ以上のテストが落ちる。描く（WARP）: 場面 (25)〜(29) |
 | ガイドと配置（G3） | 目盛り（Core、偽の `ITextBackend` で測る）: 拡張アルゴリズムの探し方が、枝刈りなしの総当たり（j ≤ 8、k ≤ 30、z は §5 の最初から 6 つ上まで、start は §5 の範囲）と同じ候補を選ぶ（乱数の範囲・軸の長さ・目標の間隔で 100 通り）。点数の 4 項が §4.6 の式の値で、重みが 0.25・0.2・0.5・0.05（疑似コードの入れ替えた重みと違う候補になる範囲を 1 つ含める）、v が 0 を含む目盛りで 1。`Nice` が偽で目盛りがすべて domain の中にあり「埋める」条件を満たし、真で domain を覆い、domain が [lmin, lmax] になる。軸が短くてすべて重なるとき目盛りを描かない。重なりの値の 3 つの場合（1.5 em ちょうど、その間、重なり）。値が M · 10^e で正確（0.1 刻みの 0.3 が "0.3"）。負の範囲・0 をまたぐ範囲・1e300 と 1e-300 の大きさ。pow と sqrt と利用者の `IScale` の目盛りの画素が `Forward` の位置。log: 1 桁に満たない範囲で linear の選び方、3 桁に満たない範囲で {1, 2, 5} · 10^k、多い桁で j 個おき、重ならない、目盛りが 2 つを下回る j で止まる、nice が 10 の冪に広げる、nice の候補の当たる条件を広げた domain の画素で測る（広げる前の画素では当たり、広げた後は重なる候補を選ばない。symlog と time も）、広げた domain で当たる候補がなければ nice なしの選び方になり domain は学習したまま（log の 0.3〜3,000 を 250 画素、間隔 90）。symlog: 0 を含み両側、10 · C に届かない domain で linear。time: 各段（ns から年まで）が選ばれる範囲、置き方（7 日が月曜、月の 3 と 6 が 1 月から、年が倍数、日の 2 が 0001 年からの日数）、ns の単位で 2262 年の近くまで正確、`Ticks` の単位で 100 ns の倍数でない刻みを使わず、ms の単位で ms より細かい刻みを使わない、起点より前（1969 年）が ⌊⌋ で分かれる、`boundary` が目盛りごとに最も粗い境、`DateTime` の範囲の外の domain が `InvalidOperationException`（`ShowAxes` と `ShowGrid` が偽なら投げない）、nice が刻みの目盛りに広げる。書式: 拡張アルゴリズムの軸で小数の桁がそろう、log で目盛りごと、12 文字を超えると軸のすべてが指数の形、負の 0 を書かない、time の 9 つの境の形。利用者の書式: 偽・64 を超える `charsWritten`・負の `charsWritten` が `InvalidOperationException`、投げた例外がそのまま出る、0 文字のラベル（`DrawText` を記録せず、重なりでは幅 0 として隣のラベルとの間を測る）。文字列の表: 当たれば `string` を作らない、4,097 個目で最も古いものを捨てる。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: タイトルあり・なし、凡例あり・なし、軸のタイトルあり・なし、倍率 1 と 1.5（丸め）、`ShowAxes` が偽、y を x より先に選ぶ（y のラベルの幅が W を決める）、小さい描画先で背景だけを描き例外を投げない。記録（`RenderList` の命令の列を見る）: §4.6 の描く順、パネルの切り抜き、太さ 1 と 2 の線の位置（奇数は ⌊p⌋ + 0.5、偶数は ⌊p + 0.5⌋）、太さ 1 と 2 の軸の線がパネルの画素に重ならない（WARP で、パネルの最後の行と最初の列が軸の色を持たず、そのすぐ外が持つ）、目盛りが軸の線の中心から始まり、丸い端を含めた外の端がパネルの辺から T、凡例の見本が `Style` の s 倍、文字のスタイルが `Foreground`・大きさ · s・`FontFamily`・`Locale`。テーマの検査（メンバーごとの範囲の外、s を掛けて 512 を超える大きさ、null のテーマ）。`HeadlessRenderer` の `scale` の 0・負・NaN・∞。倍率: 1.5 でデータの線の太さと破線の長さ（`On`・`Off`・`Offset`）が 1.5 倍で記録され、1 で行 G1 と同じ値で記録される。倍率 1.5 の `HeadlessRenderer` の `Render(RenderList)` の画素と `MeasureText` の値が、倍率 1 のものと同じ。`WithTitle` の null の scale と `PlotBuilder.Theme(null)` が `ArgumentNullException`。`PlotSpec.Title`・`Label`・スケールの `Title` が null のときと空のときのどちらも「なし」で、タイトルの帯・凡例の行・軸のタイトルの帯を取らない。差分（数え口）: 同じ仕様の描き直しは配置 0・M4 0・記録 0、タイトル・テーマ・ラベル・書式・軸のタイトルだけは配置 1・M4 0・記録 1、W を変えるテーマ（`Padding`）は M4 1、`Nice` は M4 1。矩形（WARP）: CPU の基準（§5.1 の ox · oy を背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（整数の端、端数の端、1 画素より小さい矩形、半透明の 2 つの重なり）。幅か高さ 0 は何も描かない、切り抜き、§5.1 の引数の例外、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、同じ仕様の描き直しが確保しない。2 つの domain を交互に描くと、両方を一度描いた後は確保しない。ゴールデン画像: §10.1 の場面 (6) と (7)。サンプル（`SpecPlot`）は NativeAOT で発行して警告 0、実行して 2 枚の PNG を書く。行 G1 と G2 の行の「手で組んだ記録との比較」と確保のテストは、§4.8 のガイドのないテーマで描く |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
@@ -2257,7 +2392,7 @@ public sealed class ImageMismatchException : Exception
 - **合わないとき**: `<名前>` は `baselinePath` のファイル名から拡張子を除いたもの（基準をどこに置いても同じ）。`outputDirectory`（なければ作る）に `<名前>.actual.png`（実際の画像）と `<名前>.diff.png`（差の画像）を書き、`ImageMismatchException` を投げる。差の画像は、`Channel` を超えた画素を不透明の赤（255, 0, 0, 255）に、それ以外を基準の画素の輝度を薄めた灰色（`255 − (255 − Y) / 4`、Y は Rec. 709 の係数で 8 ビットに丸めた輝度、不透明）にする。メッセージには、基準のパス、超えた画素の数と許容の数、差の最大、最初に超えた画素の位置、書いた 2 つのファイルのパスを書く。大きさが基準と違うときは、両方の大きさを書き、実際の画像だけを書く（差の画像は作らない）
 - **PNG**: 書くのは `HeadlessRenderer` と同じ書き手（§7.5）。読むのは `HyperPlot.Testing` の internal の復号器で、§7.5 の書き手が書く形（8 ビットの RGBA、カラータイプ 6、インターレースなし、行のフィルタ 0）だけを読む。それ以外の形、壊れたチャンク（CRC の不一致、`IDAT` の展開の失敗、足りない長さ）は、理由を書いた `InvalidDataException` にする。外部のライブラリは使わない（§0 の表、`design-decisions.md`）。今テストの中にある復号器（`tests/HyperPlot.Core.Tests/Rendering/PngDecoder.cs`）をここへ移し、Core と D3D11 のテストは `InternalsVisibleTo` でそれを使う（チャンクの並びと CRC を見る §7.5 の PNG のテストも含む）
 - **引数**: `actual`・`expected` の長さが `width × height × 4` でない、`width`・`height` が 1 未満なら `ArgumentException`。パスと `renderer` が null なら `ArgumentNullException`。基準の PNG が読めないとき（§10.1 の「PNG」の形の外、壊れたチャンク）は、`AssertMatches` は復号器の `InvalidDataException` をそのまま投げ、`ImageMismatchException` に包まない（合わないのでなく、基準のファイルが壊れている）。`AssertMatches(HeadlessRenderer, ...)` は、`renderer` の大きさで 1 枚分を確保して `ReadPixels` で読む（テストの経路で、フレームの経路ではない）
-- **ゴールデン画像の場面**（`tests/HyperPlot.Rendering.D3D11.Tests`、WARP、Windows のみ）: (1) `HelloPlot` の場面（§2.1。4 系列の正弦波＋シードつきの雑音＋NaN の欠け、ピラミッド・`M4Batch`・格子・M4 の線、1,280 × 720）を 1e5 点で描いたもの。場面の組み立ては `samples/Shared` にあり、`HelloPlot` とテストが同じコードで描く。点の数を引数にし、欠けの位置と正弦波の周波数は点の数に対する割合で決める。場面を出す前と後で、`HelloPlot`（1e6 点）の PNG が画素まで同じことを、行 S3 の実装の PR で確かめる。(2) R2 の線の種類（太さ 0.5・1・1.5・3、破線、切り抜き、半透明の重なり）を 1 枚に並べた場面。R2 の各ケースは CPU の基準と比べているので（§10 の表）、画像では持たない。(3) 行 G1 の線のプロット（`HeadlessRenderer.Render(PlotSpec)`、640 × 360、1e5 点の 2 レイヤー: 等間隔の X と NaN の欠けのある `float` の Y、保存された X と破線の `double` の Y）。同じテストが、手で組んだ `M4Batch` と `RenderList` の画素と一致することも確かめる（§10 の G1 の行）。(4) 行 G2 の位置のスケール（640 × 360、1e5 点: 1970 年起点の ns で 1 µs 刻みの `Column<long>` の X を `Scale.Time(TimeUnit.Nanoseconds)` で、0.1〜約 1,000 の `float` の Y を NaN の欠けつきで `Scale.Log()` で、`Golden/plot-scales.png`）。画素の正しさは §10 の G2 の行の手で組んだ記録との比較が見る。(5) 行 T1 のテキスト（640 × 360、偽の `ITextBackend` で: 横 3 通り × 縦 4 通りの揃え、回転 3 通り、2 行と 3 行の束、`Golden/text.png`）。DirectWrite の画素は OS のフォントと版に依るので、基準に入れない（§5.6、不変条件 11 の例外）。(6) 行 G3 のガイドのライトテーマ（640 × 360、偽の `ITextBackend`、倍率 1、1e5 点の 2 レイヤー: ns の time の x とタイトル、nice の linear の y とタイトル、破線のレイヤーを含む 2 つのラベルの凡例、プロットのタイトル、`Theme.Light`、`Golden/guides-light.png`）。(7) 行 G3 のガイドのダークテーマ（640 × 360、偽の `ITextBackend`、倍率 1.5、log の y を nice で、sqrt の x、`Theme.Dark`、`Golden/guides-dark.png`）。行 G3 から、(3) と (4) は §4.8 のガイドのないテーマで描き、基準は変わらない。(8) 行 G4 の塗りの Geom（640 × 360、偽の `ITextBackend`、`Theme.Light`、100 点の X に、`Baseline` 0 と縁つきの area、band、20 本の bar、4 つの rect）、`Golden/geoms-fill.png`。(9) 行 G4 の線の Geom（同じ大きさで、3 つの `Mode` の step、縦と横の rule、segment、端つきの errorbar）、`Golden/geoms-line.png`。(10) 行 R4 の線の結合と端（640 × 360、`RenderList` で直接: 3 つの結合 × 3 つの端の太さ 12 の折れ線の格子、`MiterLimit` の前後の鋭い角、2・4・6・8 区間の平らな端の破線の見本（四角の端は太さより狭い隙間を埋めるので、見本には使わない）、半透明の自分と重なる折れ線、傾き 1/5 付近の太さ 1 のマイターの直線）、`Golden/lines-joins.png`。(11) 行 G10 の flip（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつきで、flip した線・area・bar・縦と横の rule・端つきの errorbar）、`Golden/coord-flip.png`。(12) 行 G11 の polar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）の 2 枚: theta = x の線・area・bar（バラ図）と、theta = y の bar（ドーナツ、`InnerRadius` 0.4）、`Golden/coord-polar.png` と `Golden/coord-polar-donut.png`。大きなデータの道（4W を超える要素）は、§10 の G4 の行の記録の比べ方で見る。ゴールデン画像の役目は、記録から readback までの経路全体が知らないうちに変わったのを見つけることである。行 G7a で線と塗りの既定の色がパレットの色になるが、場面 (1)〜(12) の層はどれも色を指定している（(1)・(2)・(5)・(10) は `RenderList` に直接描き、(3)・(4)・(6)・(7)・(8)・(9)・(11)・(12) の層は `.Color` か `.Fill` を持つ）ので、どの基準も変わらない。行 G7a の実装の PR は、基準が変わらないことを確かめる。色を指定しない層は `GuideRenderTests.AxisLines_StayOffThePanel` の線だけで、これは基準の画像と比べない。(13) 行 G7b のカテゴリの x の bar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 12 カテゴリの bar で、1 カテゴリに複数の行と負の値を含み、ラベルが重なって k 個おきに間引かれる幅、`Golden/categorical-bar.png`。行 G7b は場面 (1)〜(12) の基準を変えない（カテゴリの列を使う場面がない）。(14) 行 G7c のカテゴリで分けた層（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 3 カテゴリが行ごとに混ざった線（集める道）と、カテゴリの順に並んだ bar（区間の道）、ordinal のスケールのタイトルとカテゴリ名の凡例、`Golden/color-categorical.png`。(15) 行 G7c の連続の色（同じ大きさ）: viridis の sequential で色を付けた rect の格子と、タイトルつきのカラーバー、`Golden/color-continuous.png`。行 G7c は場面 (1)〜(13) の基準を変えない（色のチャネルを使う場面がなく、凡例は色の項がなければ今のまま）。行 G3b は場面 (13) の基準を変える: 最初のラベル "Category 01" が F の左端を 0.6 画素越えているので、F の左端にそろう（今の場面のテストに一時的な検査を入れて数えた。ほかの場面のラベルは F を越えない）。Issue #190 で、band の軸の目盛り・ラベル・グリッドが 1 カテゴリ左にずれていた（目盛りの画素を domain の原点を引かずに求めていた）のを直し、場面 (13) の基準を書き直した。目盛りは棒の真ん中に移り、最初のラベルは F を越えなくなった。(16) 行 G8 の text（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 6 カテゴリの x の bar に、棒の上に値の数のラベル（`Bottom`、上へ 4 DIP ずらし、書式 "N0"）と、棒の中に `Clockwise90` で回したカテゴリ名のラベル（`ColorBy` でカテゴリの色、y は棒の高さの半分の列）、`Golden/text-labels.png`。y の domain は `WithDomain(0, 最大の値 · 1.2)` で上に余裕を取り、一番高い棒の値のラベルもパネルの中に描く（domain はラベルの箱を入れないので、余裕がないと基準点がパネルの上端に来て、ラベルが切れる。PR #185 のレビュー）。行 G8 は場面 (1)〜(15) の基準を変えない（text の層を持つ場面がなく、整形のキャッシュの上限は記録を変えない）。(17) 行 G9 の数のラスタの拡大（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 40 × 24 の `float` のラスタ（sin · cos の値と、NaN の小さな矩形）を viridis の sequential で、`Nearest` で拡大し、カラーバーつき、`Golden/image-nearest.png`。(18) 同じラスタを `Bilinear` と `Origin` の `Lower`、裏返した x の `Extent` で、`Golden/image-bilinear.png`。(19) RGBA の画像（64 × 48 の色の格子と、アルファが 0・128・255 の帯）を、塗りの矩形の上に `Opacity` 0.8 で、`Golden/image-rgba.png`。縮小（ミップマップの段）は、場面でなく §10 の G9 の行の CPU の基準で見る。行 G9 は場面 (1)〜(16) の基準を変えない（image の層を持つ場面がない）。(20) 行 G5a の積み上げた bar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 6 カテゴリの x を 3 色で積み、負の値の段と、ある色の値がないカテゴリを含む、`Golden/position-stack.png`。(21) 積み上げた area: 3 系列の x をずらし（1 系列は範囲が短い）、1 系列が 0 をまたぐ、`Golden/position-area.png`。(22) 並べた bar と errorbar: 5 カテゴリ × 3 色の bar を `Dodge(0.1)` で、同じセルの errorbar と、ある色の値がないカテゴリの空いた場所、`Golden/position-dodge.png`。(23) `Fill` の bar を flip で（横の 100 % の積み上げ）、`Golden/position-fill-flip.png`。(24) 積み上げた bar を polar で（積んだ扇形）、`Golden/position-polar.png`。場面 (14) は分けた bar を持つが、どの x にも 1 色の行しかないので、既定の積み上げでも画像は変わらない（行 G5a の実装で基準と比べて確かめる）
+- **ゴールデン画像の場面**（`tests/HyperPlot.Rendering.D3D11.Tests`、WARP、Windows のみ）: (1) `HelloPlot` の場面（§2.1。4 系列の正弦波＋シードつきの雑音＋NaN の欠け、ピラミッド・`M4Batch`・格子・M4 の線、1,280 × 720）を 1e5 点で描いたもの。場面の組み立ては `samples/Shared` にあり、`HelloPlot` とテストが同じコードで描く。点の数を引数にし、欠けの位置と正弦波の周波数は点の数に対する割合で決める。場面を出す前と後で、`HelloPlot`（1e6 点）の PNG が画素まで同じことを、行 S3 の実装の PR で確かめる。(2) R2 の線の種類（太さ 0.5・1・1.5・3、破線、切り抜き、半透明の重なり）を 1 枚に並べた場面。R2 の各ケースは CPU の基準と比べているので（§10 の表）、画像では持たない。(3) 行 G1 の線のプロット（`HeadlessRenderer.Render(PlotSpec)`、640 × 360、1e5 点の 2 レイヤー: 等間隔の X と NaN の欠けのある `float` の Y、保存された X と破線の `double` の Y）。同じテストが、手で組んだ `M4Batch` と `RenderList` の画素と一致することも確かめる（§10 の G1 の行）。(4) 行 G2 の位置のスケール（640 × 360、1e5 点: 1970 年起点の ns で 1 µs 刻みの `Column<long>` の X を `Scale.Time(TimeUnit.Nanoseconds)` で、0.1〜約 1,000 の `float` の Y を NaN の欠けつきで `Scale.Log()` で、`Golden/plot-scales.png`）。画素の正しさは §10 の G2 の行の手で組んだ記録との比較が見る。(5) 行 T1 のテキスト（640 × 360、偽の `ITextBackend` で: 横 3 通り × 縦 4 通りの揃え、回転 3 通り、2 行と 3 行の束、`Golden/text.png`）。DirectWrite の画素は OS のフォントと版に依るので、基準に入れない（§5.6、不変条件 11 の例外）。(6) 行 G3 のガイドのライトテーマ（640 × 360、偽の `ITextBackend`、倍率 1、1e5 点の 2 レイヤー: ns の time の x とタイトル、nice の linear の y とタイトル、破線のレイヤーを含む 2 つのラベルの凡例、プロットのタイトル、`Theme.Light`、`Golden/guides-light.png`）。(7) 行 G3 のガイドのダークテーマ（640 × 360、偽の `ITextBackend`、倍率 1.5、log の y を nice で、sqrt の x、`Theme.Dark`、`Golden/guides-dark.png`）。行 G3 から、(3) と (4) は §4.8 のガイドのないテーマで描き、基準は変わらない。(8) 行 G4 の塗りの Geom（640 × 360、偽の `ITextBackend`、`Theme.Light`、100 点の X に、`Baseline` 0 と縁つきの area、band、20 本の bar、4 つの rect）、`Golden/geoms-fill.png`。(9) 行 G4 の線の Geom（同じ大きさで、3 つの `Mode` の step、縦と横の rule、segment、端つきの errorbar）、`Golden/geoms-line.png`。(10) 行 R4 の線の結合と端（640 × 360、`RenderList` で直接: 3 つの結合 × 3 つの端の太さ 12 の折れ線の格子、`MiterLimit` の前後の鋭い角、2・4・6・8 区間の平らな端の破線の見本（四角の端は太さより狭い隙間を埋めるので、見本には使わない）、半透明の自分と重なる折れ線、傾き 1/5 付近の太さ 1 のマイターの直線）、`Golden/lines-joins.png`。(11) 行 G10 の flip（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつきで、flip した線・area・bar・縦と横の rule・端つきの errorbar）、`Golden/coord-flip.png`。(12) 行 G11 の polar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）の 2 枚: theta = x の線・area・bar（バラ図）と、theta = y の bar（ドーナツ、`InnerRadius` 0.4）、`Golden/coord-polar.png` と `Golden/coord-polar-donut.png`。大きなデータの道（4W を超える要素）は、§10 の G4 の行の記録の比べ方で見る。ゴールデン画像の役目は、記録から readback までの経路全体が知らないうちに変わったのを見つけることである。行 G7a で線と塗りの既定の色がパレットの色になるが、場面 (1)〜(12) の層はどれも色を指定している（(1)・(2)・(5)・(10) は `RenderList` に直接描き、(3)・(4)・(6)・(7)・(8)・(9)・(11)・(12) の層は `.Color` か `.Fill` を持つ）ので、どの基準も変わらない。行 G7a の実装の PR は、基準が変わらないことを確かめる。色を指定しない層は `GuideRenderTests.AxisLines_StayOffThePanel` の線だけで、これは基準の画像と比べない。(13) 行 G7b のカテゴリの x の bar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 12 カテゴリの bar で、1 カテゴリに複数の行と負の値を含み、ラベルが重なって k 個おきに間引かれる幅、`Golden/categorical-bar.png`。行 G7b は場面 (1)〜(12) の基準を変えない（カテゴリの列を使う場面がない）。(14) 行 G7c のカテゴリで分けた層（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 3 カテゴリが行ごとに混ざった線（集める道）と、カテゴリの順に並んだ bar（区間の道）、ordinal のスケールのタイトルとカテゴリ名の凡例、`Golden/color-categorical.png`。(15) 行 G7c の連続の色（同じ大きさ）: viridis の sequential で色を付けた rect の格子と、タイトルつきのカラーバー、`Golden/color-continuous.png`。行 G7c は場面 (1)〜(13) の基準を変えない（色のチャネルを使う場面がなく、凡例は色の項がなければ今のまま）。行 G3b は場面 (13) の基準を変える: 最初のラベル "Category 01" が F の左端を 0.6 画素越えているので、F の左端にそろう（今の場面のテストに一時的な検査を入れて数えた。ほかの場面のラベルは F を越えない）。Issue #190 で、band の軸の目盛り・ラベル・グリッドが 1 カテゴリ左にずれていた（目盛りの画素を domain の原点を引かずに求めていた）のを直し、場面 (13) の基準を書き直した。目盛りは棒の真ん中に移り、最初のラベルは F を越えなくなった。(16) 行 G8 の text（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 6 カテゴリの x の bar に、棒の上に値の数のラベル（`Bottom`、上へ 4 DIP ずらし、書式 "N0"）と、棒の中に `Clockwise90` で回したカテゴリ名のラベル（`ColorBy` でカテゴリの色、y は棒の高さの半分の列）、`Golden/text-labels.png`。y の domain は `WithDomain(0, 最大の値 · 1.2)` で上に余裕を取り、一番高い棒の値のラベルもパネルの中に描く（domain はラベルの箱を入れないので、余裕がないと基準点がパネルの上端に来て、ラベルが切れる。PR #185 のレビュー）。行 G8 は場面 (1)〜(15) の基準を変えない（text の層を持つ場面がなく、整形のキャッシュの上限は記録を変えない）。(17) 行 G9 の数のラスタの拡大（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 40 × 24 の `float` のラスタ（sin · cos の値と、NaN の小さな矩形）を viridis の sequential で、`Nearest` で拡大し、カラーバーつき、`Golden/image-nearest.png`。(18) 同じラスタを `Bilinear` と `Origin` の `Lower`、裏返した x の `Extent` で、`Golden/image-bilinear.png`。(19) RGBA の画像（64 × 48 の色の格子と、アルファが 0・128・255 の帯）を、塗りの矩形の上に `Opacity` 0.8 で、`Golden/image-rgba.png`。縮小（ミップマップの段）は、場面でなく §10 の G9 の行の CPU の基準で見る。行 G9 は場面 (1)〜(16) の基準を変えない（image の層を持つ場面がない）。(20) 行 G5a の積み上げた bar（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: 6 カテゴリの x を 3 色で積み、負の値の段と、ある色の値がないカテゴリを含む、`Golden/position-stack.png`。(21) 積み上げた area: 3 系列の x をずらし（1 系列は範囲が短い）、1 系列が 0 をまたぐ、`Golden/position-area.png`。(22) 並べた bar と errorbar: 5 カテゴリ × 3 色の bar を `Dodge(0.1)` で、同じセルの errorbar と、ある色の値がないカテゴリの空いた場所、`Golden/position-dodge.png`。(23) `Fill` の bar を flip で（横の 100 % の積み上げ）、`Golden/position-fill-flip.png`。(24) 積み上げた bar を polar で（積んだ扇形）、`Golden/position-polar.png`。場面 (14) は分けた bar を持つが、どの x にも 1 色の行しかないので、既定の積み上げでも画像は変わらない（行 G5a の実装で基準と比べて確かめる）。(25) 行 G5b の積んだヒストグラム（640 × 360、偽の `ITextBackend`、`Theme.Light`、軸とタイトルつき）: シードつきの 3 群（正規分布に近い値、群ごとに平均をずらす）を既定の区切りで、`Golden/stat-histogram.png`。(26) 密度のヒストグラムを log の x で（対数正規分布に近い値）、`Golden/stat-histogram-log.png`。(27) count の bar を色の 3 群で積む（6 カテゴリ、ある群のないカテゴリ）、`Golden/stat-count.png`。(28) summary の平均の bar と、四分位の範囲の errorbar を重ねる（6 カテゴリ）、`Golden/stat-summary.png`。(29) time の x のヒストグラム（2 年の日時、月の区切り）、`Golden/stat-histogram-time.png`
 - **CI**: Windows の回は、ゴールデン画像のテストが書いた `golden-output/`（テストの実行のフォルダの下）を artifact として上げる
 
 ## 11. 不変条件

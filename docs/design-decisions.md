@@ -635,3 +635,22 @@ Rejected:
   - 負の値を絶対値にして上へ積む fill（vega の normalize）: 負の値が正と区別できず、和が 0 の x で NaN を出す
   - 分けない bar も既定で積む（Vega-Lite）: 行 G7b のカテゴリごとの最大と最小の棒の意味が変わる
   - 数の x の errorbar と縦の rule を並べる: ずらす幅をデータの単位で決めるものがない（ggplot2 は `position_dodge(width = …)` で与えさせる）
+
+## Stat: 層ごとの指定、ワーカーが作る派生の表、Vega の刻み、厳密な type 7（行 G5b）
+
+Decision:
+  行 G5b は、層ごとの `LayerSpec.Stat`（bin・count・summary）と `IStat` を作る。Stat の結果はワーカーが列の版ごとに作る派生の表で、層はその表の上で Geom のふだんの道と Position で描く。bin は Vega の刻み（最大 10 個、[a, b)、最後は [a, b]）、quantile は厳密な type 7 を radix select で求める（Issue #214）
+
+Reason:
+  §4.1 の表と要件 G-1 が Stat を層の要素に数え、G5a の Position と同じ置き方になる。派生の表は区切りかセルの数の大きさで、フレームの仕事が行の数によらない。区切りの端が軸の目盛りと同じきりのよい数になる。参照にした実装（numpy・R・d3・Vega）の quantile はどれも厳密な type 7 で、radix select はメモリを値の数でなくセルの数で抑える
+
+Rejected:
+  - Vega-Lite の形（x の `bin`、y の `aggregate`）: チャネルが増え、§4.1 の表の「層の Stat」と合わない
+  - ggplot2 の既定の 30 個の区切り（`R/bin.R`）: 端が範囲から決まる半端な数で、ggplot2 自身も既定のまま使わないよう促す表示を出す
+  - numpy と matplotlib の、範囲の端そのものの 10 個: 端が半端な数になり、軸の目盛りと合わない
+  - (a, b] の区間（ggplot2 の `closed = "right"`）: numpy・matplotlib・Vega の [a, b) と逆になる
+  - 数の x の count（ggplot2 の `stat_count` は値ごとに数える）: 1e9 行では値の種類に上限がない。区切って数えるのは bin
+  - 近似の quantile（t-digest、KLL、Spark の Greenwald-Khanna、Vaex の格子）: 値が厳密でなく、参照にした実装の値と合わない
+  - セルごとに値を集めて並べる quantile: メモリがデータと同じ桁になり、要件 P-8 の考え（索引は元の 10 % 以下）に合わない
+  - ggplot2 の既定の `mean_se`: 標準偏差が要件 G-4 にない。`IStat` で書ける
+  - bin の bar を棒の幅 1 つの bar の層で描く: log と time の x では区切りの幅がそろわない。矩形で描き、Position は Stat の中で当てる
