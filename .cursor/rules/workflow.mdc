@@ -22,6 +22,7 @@ Grill (when the design branches) → Issue → branch → work → PR → human 
    - A decision the owner makes while a PR is open, and that the PR then carries, is written into the Issue's Decision and Sections to change in the same push. G-14 entered PR #4 without a line on Issue #3, and the review had to ask.
    - The details a review settles (a recommendation the PR takes) go into the Issue's Decision in the same push too. PR #43 added them only after the merge, when a review asked.
    - A row's design PR leaves the row `in-progress` and the current-row marker on it, and says so in its body; the row's last implementation PR sets it to `done` and moves the marker.
+   - A design PR fills the current-row block's branch and Issue (`docs/<n>-<slug>` and the design Issue, marked as the design's), as rows G5a and G5b did. PR #223 left them at "—", and the review found it.
    - An acceptance figure says what it measures and how, and is one that the compared libraries can meet. The bound of a rounding or a tolerance is not a quantity measured from pixels or timings.
 5. Branch from `main`: `type/<issue-number>-<slug>`, for example `feat/12-column-chunks`. `type` is a Conventional Commits type.
 6. Open the PR in the same turn that the branch is pushed. Use `.github/pull_request_template.md` (`.cursor/rules/pull-requests.mdc`). `Closes #N` stands alone on a line under `## Related` (`.cursor/rules/github-closing.mdc`).
