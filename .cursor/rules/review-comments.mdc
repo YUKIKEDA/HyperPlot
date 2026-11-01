@@ -21,7 +21,7 @@ A review the owner asks for is posted on the pull request, in the same turn, wit
 
 Before calling a PR ready, before reporting that a PR waits for review, and whenever the owner asks for the next step, read the reviews and inline comments of every open PR (`gh pr view <n> --json reviews,comments` and `gh api repos/{owner}/{repo}/pulls/<n>/comments`). PR #146's report said that its checks had passed and that it waited for review; a review with two findings was already on it, and the owner had to point to it.
 
-A reply that says a finding was fixed is checked against the pushed diff first (`git show <sha>` holds the change). In PR #100 an edit of `PlotPlan.Render`'s XML was lost to a later edit, and the reply said it was done.
+A reply that says a finding was fixed is checked against the pushed diff first (`git show <sha>` holds the change). In PR #100 an edit of `PlotPlan.Render`'s XML was lost to a later edit, and the reply said it was done. In PR #219 a reply said that a test of a binned area's `Baseline` was added; the pushed commit had the check without the test, and the re-review found it. Each "added" or "fixed" in a reply names what in the diff holds it.
 
 Read the pull request's comments again just before posting a reply to a review: a re-review can land while the reply waits for the checks, and a reply posted without reading it answers a review that is no longer the latest.
 
