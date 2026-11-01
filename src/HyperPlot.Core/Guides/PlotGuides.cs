@@ -283,6 +283,16 @@ internal sealed class PlotGuides
 
     private static bool HasText(string? text) => !string.IsNullOrEmpty(text);
 
+    /// <summary>
+    /// Returns the label of a layer's own row in the legend, or null for none (design §4.6): a layer with a label, not split by
+    /// categories (its rows are theirs, row G7c), and not colored by its values, an image (row G9) or 2D bins (row G5c), whose
+    /// legend is the color bar.
+    /// </summary>
+    private static string? RowLabel(LayerSpec layer) =>
+        layer.Label is { Length: > 0 } label && !SplitPlan.Splits(layer) && layer is not ImageLayerSpec && layer.Stat is not Bin2DStatSpec
+            ? label
+            : null;
+
     private static int Ceiling(float value) => (int)MathF.Ceiling(value);
 
     /// <summary>Puts a line's position on pixels (design §4.6): ⌊p⌋ + 0.5 for an odd rounded width, ⌊p + 0.5⌋ for an even one.</summary>
@@ -310,7 +320,7 @@ internal sealed class PlotGuides
         var style = Style(theme, theme.LegendSize);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            if (spec.Layers[i].Label is { Length: > 0 } label && !SplitPlan.Splits(spec.Layers[i]) && spec.Layers[i] is not ImageLayerSpec)
+            if (RowLabel(spec.Layers[i]) is { } label)
             {
                 widest = MathF.Max(widest, _text.Measure(label, style).Width);
             }
@@ -745,7 +755,7 @@ internal sealed class PlotGuides
         {
             // An index, not foreach: the interface's enumerator would be boxed on every recording.
             var layer = spec.Layers[i];
-            if (layer.Label is not { Length: > 0 } label || SplitPlan.Splits(layer) || layer is ImageLayerSpec)
+            if (RowLabel(layer) is not { } label)
             {
                 // A split layer's rows are its categories' (design §4.6, row G7c).
                 continue;

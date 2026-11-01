@@ -35,7 +35,7 @@ public sealed class StatTests
             () => Stat.Bin(step: double.PositiveInfinity),
             () => Stat.Bin(anchor: double.NaN),
             () => Stat.Bin(anchor: double.NegativeInfinity),
-            () => Stat.Bin(output: (BinOutput)5),
+            () => Stat.Bin(output: (StatOutput)5),
             () => SummaryOp.Quantile(-0.01),
             () => SummaryOp.Quantile(1.01),
             () => SummaryOp.Quantile(double.NaN),
@@ -418,7 +418,7 @@ public sealed class StatTests
         var t = DataTable.Create().Add("x", x).Build();
         using var plan = TestPlans.Create(pool, Size, Size);
         _ = plan.Render(
-            Spec(t, new BarLayerSpec { X = t.Col<double>("x"), Stat = Stat.Bin(maxBins: 4, output: BinOutput.Density) }) with
+            Spec(t, new BarLayerSpec { X = t.Col<double>("x"), Stat = Stat.Bin(maxBins: 4, output: StatOutput.Density) }) with
             {
                 ScaleX = Scale.Log(),
                 ScaleY = Scale.Linear(),
@@ -579,7 +579,7 @@ public sealed class StatTests
         using (var plan = TestPlans.Create(pool, Size, Size))
         {
             _ = plan.Render(
-                Spec(b, new BarLayerSpec { X = b.Col<double>("x"), Stat = Stat.Bin(step: 10, output: BinOutput.Density) }) with
+                Spec(b, new BarLayerSpec { X = b.Col<double>("x"), Stat = Stat.Bin(step: 10, output: StatOutput.Density) }) with
                 {
                     ScaleX = Scale.Linear(),
                     ScaleY = Scale.Linear(),

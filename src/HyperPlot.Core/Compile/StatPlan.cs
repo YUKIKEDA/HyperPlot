@@ -3,9 +3,9 @@ using HyperPlot.Rendering;
 namespace HyperPlot;
 
 /// <summary>
-/// A layer with a stat (design §4.3, §5.5.3, row G5b): the workers make the stat's result as a small derived table when
-/// the layer is made, and an inner layer without the stat draws it by the geom's usual path and the layer's position. A
-/// column's new version makes the layer again (<see cref="Stale"/>).
+/// A layer with a stat (design §4.3, §5.5.3, rows G5b and G5c): the workers make the stat's result as a small derived
+/// table when the layer is made, and an inner layer without the stat draws it by the geom's usual path and the layer's
+/// position. A column's new version makes the layer again (<see cref="Stale"/>).
 /// </summary>
 internal sealed class StatPlan : LayerPlan
 {
@@ -26,6 +26,8 @@ internal sealed class StatPlan : LayerPlan
             AreaLayerSpec a => (a.X.Column, null),
             StepLayerSpec s => (s.X.Column, null),
             ErrorBarLayerSpec e => (e.X.Column, e.YMin.Column),
+            LineLayerSpec l => (l.X.Column, l.Y.IsDefault ? null : l.Y.Column),
+            RectLayerSpec r => (r.XMin.Column, r.YMin.Column),
             _ => throw new InvalidOperationException($"A {spec.GetType().Name} takes no stat."),
         };
         var columns = new List<Column> { x };
@@ -50,11 +52,23 @@ internal sealed class StatPlan : LayerPlan
         {
             BinStatSpec bin => Bins(spec, bin, x, groups, build),
             CountStatSpec => Counts(spec, (CategoricalColumn)x, groups, build.Pool),
+            DensityStatSpec density => Densities(spec, density, x, groups, build),
+            SmoothStatSpec smooth => Smooths(spec, smooth, x, y!, groups, build),
+            Bin2DStatSpec cells => Cells(spec, cells, x, y!, build),
             _ => Summaries(spec, (SummaryStatSpec)spec.Stat!, (CategoricalColumn)x, groups, y!, build.Pool, build.Layer),
         };
         (_table, _make, _xEnds) = (made.Table, made.Make, made.XEnds);
         _inner = Create(_make(spec), build);
     }
+
+    /// <summary>Gets the derived table the inner layer draws (rows G5b and G5c).</summary>
+    public DataTable Derived => _table;
+
+    /// <summary>Gets each group's bandwidth of a density, in the x scale's space (row G5c): empty for other stats.</summary>
+    public double[] Bandwidths { get; private set; } = [];
+
+    /// <summary>Gets the column of the values of 2D bins' cells, which the color scale learns from (row G5c), or null.</summary>
+    public Column? CellValues { get; private set; }
 
     public override bool Stale
     {
@@ -80,8 +94,9 @@ internal sealed class StatPlan : LayerPlan
     {
         _inner.AddRanges(sink, ofX, _table);
 
-        // Counts and bins start at 0 (design §4.2): a step has no baseline of its own. A log y leaves it out, as a baseline.
-        if (!ofX && Spec.Stat is BinStatSpec or CountStatSpec)
+        // Counts, bins, and densities start at 0 (design §4.2): a step or a line has no baseline of its own. A log y leaves it
+        // out, as a baseline.
+        if (!ofX && Spec.Stat is BinStatSpec or CountStatSpec or DensityStatSpec)
         {
             sink.AddBaseline(0);
         }
@@ -166,37 +181,7 @@ internal sealed class StatPlan : LayerPlan
         var pool = build.Pool;
         var time = build.XScale as TimeScaleSpec;
         var transform = time is null ? build.XTransform : null;
-        double[] edges;
-        long origin = 0;
-        var uniform = true;
-        if (time is not null)
-        {
-            // Calendar steps in the column's unit, or the given step from the least value; differences from the first edge.
-            if (!x.TryGetRange(out var low, out var high))
-            {
-                edges = [];
-            }
-            else if (bin.Step is null)
-            {
-                var calendar = TimeTicks.BinEdges(low.Integer, high.Integer, time, bin.MaxBins);
-                origin = calendar.Length > 0 ? calendar[0] : 0;
-                edges = [.. calendar.Select(e => (double)(e - origin))];
-                uniform = false;
-            }
-            else
-            {
-                origin = low.Integer;
-                edges = StatWork.Edges(0, high.Integer - low.Integer, bin with { Anchor = bin.Anchor - origin }, build.Layer);
-            }
-        }
-        else
-        {
-            var (min, max) =
-                transform is null && x.TryGetRange(out var low, out var high) && double.IsFinite(low.Value) && double.IsFinite(high.Value)
-                    ? (low.Value, high.Value)
-                    : StatWork.FiniteRange(x, transform, 0, pool);
-            edges = min <= max ? StatWork.Edges(min, max, bin, build.Layer) : [];
-        }
+        var (edges, origin, uniform) = BinEdges(x, bin, time, transform, build);
 
         var bins = Math.Max(edges.Length - 1, 0);
         var nk = groups?.CategoryCount ?? 1;
@@ -220,31 +205,14 @@ internal sealed class StatPlan : LayerPlan
             for (var i = 0; i < bins; i++)
             {
                 var c = counts[(k * bins) + i];
-                values[(k * bins) + i] = bin.Output == BinOutput.Density && c > 0 ? c / (n * (edges[i + 1] - edges[i])) : c;
+                values[(k * bins) + i] = bin.Output == StatOutput.Density && c > 0 ? c / (n * (edges[i + 1] - edges[i])) : c;
             }
         }
 
-        double Data(double s)
-        {
-            // A time x stays a difference from the first edge until its column adds the origin as a long.
-            if (time is not null)
-            {
-                return s;
-            }
-
-            if (transform is null)
-            {
-                return s;
-            }
-
-            Span<double> one = [s];
-            transform.Inverse(one, one);
-            return one[0];
-        }
-
+        var toData = ToData(transform);
         if (spec is BarLayerSpec bar)
         {
-            return Rects(bar, edges, values, nk, groups, Data, time is not null, origin);
+            return Rects(bar, edges, values, nk, groups, toData, time is not null, origin);
         }
 
         // Points at the bins' middles, the groups in turn at each (design §5.5.3).
@@ -253,7 +221,7 @@ internal sealed class StatPlan : LayerPlan
         var codes = new int[bins * nk];
         for (var i = 0; i < bins; i++)
         {
-            var middle = Data((edges[i] + edges[i + 1]) / 2);
+            var middle = toData((edges[i] + edges[i + 1]) / 2);
             for (var k = 0; k < nk; k++)
             {
                 (xs[(i * nk) + k], ys[(i * nk) + k], codes[(i * nk) + k]) = (middle, values[(k * bins) + i], k);
@@ -262,7 +230,7 @@ internal sealed class StatPlan : LayerPlan
 
         var table = Table(("x", XColumn(xs, time is not null, origin)), ("y", Own(Column.Wrap(ys))), ("g", groups?.WithCodes(codes)));
         var (xRef, yRef, gRef) = (new ColumnRef(table, 0), new ColumnRef(table, 1), groups is null ? (ColumnRef?)null : new ColumnRef(table, 2));
-        (double, double)? ends = bins == 0 ? null : (Data(edges[0]) + (time is null ? 0 : origin), Data(edges[^1]) + (time is null ? 0 : origin));
+        (double, double)? ends = bins == 0 ? null : (toData(edges[0]) + (time is null ? 0 : origin), toData(edges[^1]) + (time is null ? 0 : origin));
         return new Made(
             table,
             layer =>
@@ -291,6 +259,455 @@ internal sealed class StatPlan : LayerPlan
                     _ => throw new InvalidOperationException($"A {layer.GetType().Name} is not binned as points."),
                 },
             ends
+        );
+    }
+
+    /// <summary>
+    /// Returns the edges of the bins of a column in its scale's space (design §4.1, rows G5b and G5c): calendar steps in the
+    /// column's unit on a time scale, as differences from the first edge (the origin), or Vega's steps over the finite range.
+    /// </summary>
+    private static (double[] Edges, long Origin, bool Uniform) BinEdges(
+        Column x,
+        BinStatSpec bin,
+        TimeScaleSpec? time,
+        IScale? transform,
+        PlanBuild build
+    )
+    {
+        if (time is not null)
+        {
+            // Calendar steps in the column's unit, or the given step from the least value; differences from the first edge.
+            if (!x.TryGetRange(out var low, out var high))
+            {
+                return ([], 0, true);
+            }
+
+            if (bin.Step is null)
+            {
+                var calendar = TimeTicks.BinEdges(low.Integer, high.Integer, time, bin.MaxBins);
+                var origin = calendar.Length > 0 ? calendar[0] : 0;
+                return ([.. calendar.Select(e => (double)(e - origin))], origin, false);
+            }
+
+            return (StatWork.Edges(0, high.Integer - low.Integer, bin with { Anchor = bin.Anchor - low.Integer }, build.Layer), low.Integer, true);
+        }
+
+        var (min, max) = FiniteRange(x, transform, build.Pool);
+        return (min <= max ? StatWork.Edges(min, max, bin, build.Layer) : [], 0, true);
+    }
+
+    /// <summary>Returns the least and greatest finite value of a column in the scale space: from its statistics when they are finite and no transform maps them.</summary>
+    private static (double Min, double Max) FiniteRange(Column x, IScale? transform, PlotWorkerPool pool) =>
+        transform is null && x.TryGetRange(out var low, out var high) && double.IsFinite(low.Value) && double.IsFinite(high.Value)
+            ? (low.Value, high.Value)
+            : StatWork.FiniteRange(x, transform, 0, pool);
+
+    /// <summary>
+    /// Returns the range [from, to] of a density or a moving average in the scale space (design §4.1, row G5c), and the
+    /// origin a time column's values are read as differences from: its least value.
+    /// </summary>
+    private static (double From, double To, long Origin) RangeOf(Column x, bool time, IScale? transform, PlotWorkerPool pool)
+    {
+        if (time)
+        {
+            return x.TryGetRange(out var low, out var high) ? (0, high.Integer - low.Integer, low.Integer) : (1, 0, 0);
+        }
+
+        var (min, max) = FiniteRange(x, transform, pool);
+        return (min, max, 0);
+    }
+
+    /// <summary>Returns how a value of the scale space goes back to the data: the transform's inverse, or itself (a time column adds its origin as a long).</summary>
+    private static Func<double, double> ToData(IScale? transform) =>
+        transform is null
+            ? s => s
+            : s =>
+            {
+                Span<double> one = [s];
+                transform.Inverse(one, one);
+                return one[0];
+            };
+
+    /// <summary>
+    /// A kernel density estimate of each group (design §4.1, §5.5.3, row G5c), by R's <c>density()</c>: the bandwidth (given,
+    /// or each group's <c>bw.nrd0</c>), the values spread linearly onto a grid, the grid convolved with a Gaussian kernel, and
+    /// the result interpolated at the points over the layer's range. A line or an area draws it.
+    /// </summary>
+    private Made Densities(LayerSpec spec, DensityStatSpec density, Column x, CategoricalColumn? groups, PlanBuild build)
+    {
+        var pool = build.Pool;
+        var time = build.XScale is TimeScaleSpec;
+        var transform = time ? null : build.XTransform;
+        var nk = groups?.CategoryCount ?? 1;
+        var h = new double[nk];
+        var drawn = new bool[nk];
+        double from,
+            to;
+        long origin;
+        StatWork.Spread? spread = null;
+        if (density.Bandwidth is { } given)
+        {
+            (from, to, origin) = RangeOf(x, time, transform, pool);
+            h.AsSpan().Fill(given * density.Adjust);
+            drawn.AsSpan().Fill(true);
+        }
+        else
+        {
+            origin = time && x.TryGetRange(out var low, out _) ? low.Integer : 0;
+            spread = StatWork.SpreadOf(x, groups, transform, origin, pool);
+            (from, to) = (spread.Min, spread.Max);
+            ChooseBandwidths(x, groups, spread, time, transform, origin, density.Adjust, h, drawn, pool);
+        }
+
+        Bandwidths = h;
+        var points = density.Points;
+        if (!(from <= to) || !drawn.Contains(true))
+        {
+            return Curves(spec, [], [], [], groups, time, origin);
+        }
+
+        // A range of one value spans R's default of 3 bandwidths each side (design §4.1).
+        if (from == to)
+        {
+            var widest = 0.0;
+            for (var k = 0; k < nk; k++)
+            {
+                widest = drawn[k] ? Math.Max(widest, h[k]) : widest;
+            }
+
+            (from, to) = (from - (3 * widest), to + (3 * widest));
+        }
+
+        // R's grid: max(n, 512) points, a power of 2 above 512, from 4 bandwidths below the range to 4 above.
+        var m = points <= 512 ? 512 : 1 << (int)Math.Ceiling(Math.Log2(points));
+        var (lo, delta) = (new double[nk], new double[nk]);
+        for (var k = 0; k < nk; k++)
+        {
+            (lo[k], delta[k]) = drawn[k] ? (from - (4 * h[k]), (to - from + (8 * h[k])) / (m - 1)) : (double.NaN, double.NaN);
+        }
+
+        var weights = StatWork.SpreadOnGrids(x, groups, transform, origin, lo, delta, m, pool);
+        var values = new double[nk * points];
+        pool.RunChunks(
+                nk,
+                k =>
+                {
+                    var row = weights.AsSpan(k * m, m);
+                    var n = spread?.Count[k] ?? Sum(row);
+                    if (!drawn[k] || n == 0)
+                    {
+                        drawn[k] = false;
+                        return;
+                    }
+
+                    for (var i = 0; i < m; i++)
+                    {
+                        row[i] /= n;
+                    }
+
+                    var grid = StatWork.Convolve(row, delta[k], h[k]);
+                    var up = to + (4 * h[k]);
+                    for (var t = 0; t < points; t++)
+                    {
+                        var at = from + (t * (to - from) / (points - 1));
+                        values[(k * points) + t] = Interpolate(grid, lo[k], up, at) * (density.Output == StatOutput.Count ? n : 1);
+                    }
+                }
+            )
+            .GetAwaiter()
+            .GetResult();
+
+        var data = ToData(transform);
+        var xs = new List<double>();
+        var ys = new List<double>();
+        var codes = new List<int>();
+        for (var t = 0; t < points; t++)
+        {
+            var at = data(from + (t * (to - from) / (points - 1)));
+            for (var k = 0; k < nk; k++)
+            {
+                if (drawn[k])
+                {
+                    xs.Add(at);
+                    ys.Add(values[(k * points) + t]);
+                    codes.Add(k);
+                }
+            }
+        }
+
+        return Curves(spec, [.. xs], [.. ys], [.. codes], groups, time, origin);
+
+        static double Sum(ReadOnlySpan<double> row)
+        {
+            var sum = 0.0;
+            foreach (var w in row)
+            {
+                sum += w;
+            }
+
+            return sum;
+        }
+    }
+
+    /// <summary>
+    /// Sets each group's bandwidth by R's <c>bw.nrd0</c> (design §4.1, row G5c): 0.9 · min(s, IQR / 1.34) · n^(−1/5), or s, or
+    /// the first value's magnitude, or 1 where the one before is 0; times the adjust. A group of fewer than 2 values is not
+    /// drawn. The quartiles are the exact type 7 of the values the transform maps to finite numbers.
+    /// </summary>
+    private static void ChooseBandwidths(
+        Column x,
+        CategoricalColumn? groups,
+        StatWork.Spread spread,
+        bool time,
+        IScale? transform,
+        long origin,
+        double adjust,
+        double[] h,
+        bool[] drawn,
+        PlotWorkerPool pool
+    )
+    {
+        var (low, high) = time || spread.RawMin > spread.RawMax ? (0UL, ulong.MaxValue) : (x.KeyOfValue(spread.RawMin), x.KeyOfValue(spread.RawMax));
+        var ranks = StatWork.Select(null, groups, x, spread.Count, [0.25, 0.75], pool, low, high);
+        var data = ToData(null);
+        for (var k = 0; k < h.Length; k++)
+        {
+            var n = spread.Count[k];
+            if (n < 2)
+            {
+                continue;
+            }
+
+            var quartiles = new double[2];
+            for (var q = 0; q < 2; q++)
+            {
+                var p = q == 0 ? 0.25 : 0.75;
+                var at = (n - 1) * p;
+                var (a, b) = (Space(ranks[(k * 4) + (2 * q)]), Space(ranks[(k * 4) + (2 * q) + 1]));
+                quartiles[q] = a + ((at - Math.Floor(at)) * (b - a));
+            }
+
+            var s = Math.Sqrt(spread.Squares[k] / (n - 1));
+            var least = Math.Min(s, (quartiles[1] - quartiles[0]) / 1.34);
+            if (!(least > 0))
+            {
+                least =
+                    s > 0 ? s
+                    : Math.Abs(spread.First[k]) > 0 ? Math.Abs(spread.First[k])
+                    : 1;
+            }
+
+            (h[k], drawn[k]) = (0.9 * least * Math.Pow(n, -0.2) * adjust, true);
+        }
+
+        double Space(double value)
+        {
+            if (time)
+            {
+                return value - origin;
+            }
+
+            if (transform is null)
+            {
+                return data(value);
+            }
+
+            Span<double> one = [value];
+            transform.Forward(one, one);
+            return one[0];
+        }
+    }
+
+    /// <summary>Returns the grid's value at a point by linear interpolation, as R's <c>approx</c> does: the grid's m points span [lo, up].</summary>
+    private static double Interpolate(double[] grid, double lo, double up, double at)
+    {
+        var m = grid.Length;
+        var step = (up - lo) / (m - 1);
+        var i = Math.Clamp((int)Math.Floor((at - lo) / step), 0, m - 2);
+        var (left, right) = (lo + (i * step), lo + ((i + 1) * step));
+        return grid[i] + ((at - left) / (right - left) * (grid[i + 1] - grid[i]));
+    }
+
+    /// <summary>
+    /// A moving average of each group (design §4.1, §5.5.3, row G5c): the windows' 2 · points edges sorted, each row's y added
+    /// to the interval of edges its x lies in, and each point's mean the sums of its window's intervals over their numbers;
+    /// NaN where no row lies. The intervals' running sums are kept in two doubles, so that a window's difference keeps its
+    /// digits.
+    /// </summary>
+    private Made Smooths(LayerSpec spec, SmoothStatSpec smooth, Column x, Column y, CategoricalColumn? groups, PlanBuild build)
+    {
+        var pool = build.Pool;
+        var time = build.XScale is TimeScaleSpec;
+        var transform = time ? null : build.XTransform;
+        var nk = groups?.CategoryCount ?? 1;
+        var (from, to, origin) = RangeOf(x, time, transform, pool);
+        var points = smooth.Points;
+        if (!(from <= to))
+        {
+            return Curves(spec, [], [], [], groups, time, origin);
+        }
+
+        var middles = new double[points];
+        for (var t = 0; t < points; t++)
+        {
+            middles[t] = from + (t * (to - from) / (points - 1));
+        }
+
+        var half = smooth.Window / 2;
+        var edges = middles.Select(v => v - half).Concat(middles.Select(v => v + half)).Order().Distinct().ToArray();
+        var intervals = edges.Length - 1;
+        var sums = StatWork.WindowSums(x, y, groups, transform, origin, edges, pool);
+        var data = ToData(transform);
+        var xs = new List<double>();
+        var ys = new List<double>();
+        var codes = new List<int>();
+        var (high, low, count) = (new double[intervals + 1], new double[intervals + 1], new double[intervals + 1]);
+        var means = new double[nk * points];
+        var any = new bool[nk];
+        for (var k = 0; k < nk; k++)
+        {
+            for (var r = 0; r < intervals; r++)
+            {
+                var at = ((k * intervals) + r) * 2;
+                (high[r + 1], low[r + 1]) = TwoSum(high[r], low[r], sums[at]);
+                count[r + 1] = count[r] + sums[at + 1];
+            }
+
+            any[k] = count[intervals] > 0;
+            for (var t = 0; t < points; t++)
+            {
+                var (a, b) = (Array.BinarySearch(edges, middles[t] - half), Array.BinarySearch(edges, middles[t] + half));
+                var n = count[b] - count[a];
+                means[(k * points) + t] = n > 0 ? ((high[b] - high[a]) + (low[b] - low[a])) / n : double.NaN;
+            }
+        }
+
+        for (var t = 0; t < points; t++)
+        {
+            var at = data(middles[t]);
+            for (var k = 0; k < nk; k++)
+            {
+                if (any[k])
+                {
+                    xs.Add(at);
+                    ys.Add(means[(k * points) + t]);
+                    codes.Add(k);
+                }
+            }
+        }
+
+        return Curves(spec, [.. xs], [.. ys], [.. codes], groups, time, origin);
+
+        // A running sum in two doubles: the sum and the rounding it lost (Knuth's TwoSum).
+        static (double High, double Low) TwoSum(double high, double low, double add)
+        {
+            var sum = high + add;
+            var back = sum - high;
+            var error = (high - (sum - back)) + (add - back);
+            return (sum, low + error);
+        }
+    }
+
+    /// <summary>
+    /// A curve a group at the same points (row G5c): the long table of x, y, and group, drawn by a line or an area over it.
+    /// </summary>
+    private Made Curves(LayerSpec spec, double[] xs, double[] ys, int[] codes, CategoricalColumn? groups, bool time, long origin)
+    {
+        var table = Table(("x", XColumn(xs, time, origin)), ("y", Own(Column.Wrap(ys))), ("g", groups?.WithCodes(codes)));
+        var (xRef, yRef, gRef) = (new ColumnRef(table, 0), new ColumnRef(table, 1), groups is null ? (ColumnRef?)null : new ColumnRef(table, 2));
+        return new Made(
+            table,
+            layer =>
+                layer switch
+                {
+                    LineLayerSpec line => new LineLayerSpec
+                    {
+                        X = xRef,
+                        Y = yRef,
+                        Style = line.Style,
+                        Label = line.Label,
+                        ColorBy = line.ColorBy is null ? null : gRef,
+                    },
+                    AreaLayerSpec area => new AreaLayerSpec
+                    {
+                        X = xRef,
+                        Y = yRef,
+                        Fill = area.Fill,
+                        Outline = area.Outline,
+                        Label = area.Label,
+                        Position = area.Position,
+                        FillBy = area.FillBy is null ? null : gRef,
+                        ColorBy = area.ColorBy is null ? null : gRef,
+                    },
+                    _ => throw new InvalidOperationException($"A {layer.GetType().Name} does not draw a curve of a stat."),
+                },
+            null
+        );
+    }
+
+    /// <summary>
+    /// The cells of 2D bins (design §4.1, §5.5.3, row G5c): each axis binned in its scale's space, a rect a cell with values,
+    /// filled by its count or density through the color scale.
+    /// </summary>
+    /// <exception cref="ArgumentException">More cells than a rect layer draws.</exception>
+    private Made Cells(LayerSpec spec, Bin2DStatSpec cells, Column x, Column y, PlanBuild build)
+    {
+        var (timeX, timeY) = (build.XScale as TimeScaleSpec, build.YScale as TimeScaleSpec);
+        var (tx, ty) = (timeX is null ? build.XTransform : null, timeY is null ? build.YTransform : null);
+        var (ex, ox, ux) = BinEdges(x, cells.X, timeX, tx, build);
+        var (ey, oy, uy) = BinEdges(y, cells.Y, timeY, ty, build);
+        var (bx, by) = (Math.Max(ex.Length - 1, 0), Math.Max(ey.Length - 1, 0));
+        if ((long)bx * by > MaxElements)
+        {
+            throw new ArgumentException(
+                $"Layer {build.Layer} has {bx} x bins and {by} y bins; 2D bins draw at most {MaxElements} cells (design §4.1). Give fewer bins."
+            );
+        }
+
+        var counts = bx * by == 0 ? [] : StatWork.Bin2D(x, y, new(ex, ux, ox, tx), new(ey, uy, oy, ty), build.Pool);
+        var n = 0L;
+        foreach (var c in counts)
+        {
+            n += c;
+        }
+
+        var (dataX, dataY) = (ToData(tx), ToData(ty));
+        var rows = new List<(double XMin, double XMax, double YMin, double YMax, double Value)>();
+        for (var j = 0; j < by; j++)
+        {
+            for (var i = 0; i < bx; i++)
+            {
+                var c = counts[(j * bx) + i];
+                if (c > 0)
+                {
+                    var value = cells.Output == StatOutput.Density ? c / (n * (ex[i + 1] - ex[i]) * (ey[j + 1] - ey[j])) : c;
+                    rows.Add((dataX(ex[i]), dataX(ex[i + 1]), dataY(ey[j]), dataY(ey[j + 1]), value));
+                }
+            }
+        }
+
+        var values = Own(Column.Wrap(rows.Select(r => r.Value).ToArray()));
+        CellValues = values;
+        var table = Table(
+            ("xmin", XColumn([.. rows.Select(r => r.XMin)], timeX is not null, ox)),
+            ("xmax", XColumn([.. rows.Select(r => r.XMax)], timeX is not null, ox)),
+            ("ymin", XColumn([.. rows.Select(r => r.YMin)], timeY is not null, oy)),
+            ("ymax", XColumn([.. rows.Select(r => r.YMax)], timeY is not null, oy)),
+            ("value", values)
+        );
+        var refs = (new ColumnRef(table, 0), new ColumnRef(table, 1), new ColumnRef(table, 2), new ColumnRef(table, 3), new ColumnRef(table, 4));
+        return new Made(
+            table,
+            layer => new RectLayerSpec
+            {
+                XMin = refs.Item1,
+                XMax = refs.Item2,
+                YMin = refs.Item3,
+                YMax = refs.Item4,
+                FillBy = refs.Item5,
+                Label = layer.Label,
+            },
+            null
         );
     }
 
@@ -510,8 +927,8 @@ internal sealed class StatPlan : LayerPlan
     }
 
     /// <summary>
-    /// Returns a derived x column (row G5b): longs for a time x, as its own columns (design §4.2, a time scale's columns are
-    /// long), else doubles.
+    /// Returns a derived position column (rows G5b and G5c): longs for a time axis, as its own columns (design §4.2, a time
+    /// scale's columns are long), else doubles.
     /// </summary>
     private Column XColumn(double[] values, bool time, long origin)
     {

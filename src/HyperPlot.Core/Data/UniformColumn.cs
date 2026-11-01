@@ -144,6 +144,26 @@ public sealed class UniformColumn : Column
     internal override long LowerBound(double boundary, long origin) => new M4.UniformX(this, origin).LowerBound(boundary);
 
     /// <inheritdoc />
+    /// <remarks>A uniform column's keys are a long's or a double's (row G5c): a density's quantiles select over them.</remarks>
+    internal override int KeyBytes => 8;
+
+    /// <inheritdoc />
+    internal override void ReadKeys(int chunk, int offset, Span<ulong> destination)
+    {
+        var first = ((long)chunk << ChunkShift) + offset;
+        for (var i = 0; i < destination.Length; i++)
+        {
+            destination[i] = IsInteger ? (ulong)IntegerAt(first + i) ^ (1UL << 63) : DoubleKey(GetValue(first + i));
+        }
+    }
+
+    /// <inheritdoc />
+    internal override double ValueOfKey(ulong key) => IsInteger ? (long)(key ^ (1UL << 63)) : KeyDouble(key);
+
+    /// <inheritdoc />
+    internal override ulong KeyOfValue(double value) => IsInteger ? (ulong)(long)value ^ (1UL << 63) : DoubleKey(value);
+
+    /// <inheritdoc />
     internal override bool IsNonDecreasing(PlotWorkerPool pool) => true;
 
     /// <inheritdoc />
