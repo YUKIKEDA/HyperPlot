@@ -690,6 +690,42 @@ public sealed class AxisSideTests : IDisposable
         Assert.Equal(layouts, same.Layouts);
     }
 
+    /// <summary>
+    /// A band x checks and reads only the layers on it (design §4.1, row G6a, Issue #248): a numeric line on ScaleX2 goes with
+    /// counts over a band, the band's categories are the counts' x, and ScaleX2 learns from the line alone; a categorical x
+    /// on the secondary x is still refused.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's table: counts of k (2 categories) over a band x, and a line of a over u on ScaleX2.
+    ///
+    /// Steps:
+    /// - Render; then render the counts put on the secondary x.
+    ///
+    /// Expected:
+    /// - Two band positions; ScaleX2's domain u's range, [0, 998]; ArgumentException for the counts on the secondary x.
+    /// </remarks>
+    [Fact]
+    public void BandX_ReadsOnlyItsLayers()
+    {
+        var spec = Plot.Create(_table)
+            .Count(_table.Cat("k"))
+            .Line(_table.Col<double>("u"), _table.Col<float>("a"), l => l.SecondaryX())
+            .ScaleX(Scale.Band())
+            .ScaleX2(Scale.Linear())
+            .Build();
+        using var plan = Plan(1);
+        _ = plan.Render(spec);
+        Assert.Equal(2, plan.Guides.X.TickLabels.Length);
+        var x2 = plan.Guides.X2.FinalDomain;
+        Assert.Equal((0.0, 2.0 * (Length - 1)), (x2.Origin + x2.Lower, x2.Origin + x2.Upper));
+
+        using var refused = Plan(1);
+        _ = Assert.Throws<ArgumentException>(() =>
+            refused.Render(spec with { Layers = [spec.Layers[0] with { SecondaryX = true }, spec.Layers[1]] })
+        );
+    }
+
     /// <summary>Once warm, the axes of row G6a drawn again over two domains in turn allocate nothing (design §4.8).</summary>
     /// <remarks>
     /// Preconditions:
