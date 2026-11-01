@@ -333,8 +333,9 @@ internal sealed class PlotGuides
         var (low, high) = (final.Origin + final.Lower, final.Origin + final.Upper);
         var (a, b) = (primary.Inverse(low), primary.Inverse(high));
         var (ta, tb) = (Apply(derived.Transform, a, forward: true), Apply(derived.Transform, b, forward: true));
-        CheckRoundTrip(derived.Transform, a, ta, ofX);
-        CheckRoundTrip(derived.Transform, b, tb, ofX);
+        var magnitude = Math.Max(Math.Abs(a), Math.Abs(b));
+        CheckRoundTrip(derived.Transform, a, ta, magnitude, ofX);
+        CheckRoundTrip(derived.Transform, b, tb, magnitude, ofX);
         var decreasing = tb < ta;
         var composed = ofX ? _secondaryX : _secondaryY;
         composed.Set(primary.Transform, derived.Transform, decreasing);
@@ -387,10 +388,12 @@ internal sealed class PlotGuides
             return one[0];
         }
 
-        static void CheckRoundTrip(IScale? transform, double value, double mapped, bool ofX)
+        // Within 1e-9 of the larger end's magnitude: an end at 0 is the most usual one, and a transform that offsets and scales
+        // brings it back a few ulps of the offset away.
+        static void CheckRoundTrip(IScale? transform, double value, double mapped, double magnitude, bool ofX)
         {
             var back = Apply(transform, mapped, forward: false);
-            if (!double.IsFinite(mapped) || !(Math.Abs(back - value) <= 1e-9 * Math.Max(Math.Abs(value), double.Epsilon)))
+            if (!double.IsFinite(mapped) || !(Math.Abs(back - value) <= 1e-9 * magnitude))
             {
                 throw new ArgumentException(
                     $"The {(ofX ? "ScaleX" : "ScaleY")}'s secondary axis maps the domain's end {value} to {mapped} and back to {back}; its transform is strictly monotonic over the domain (design §4.1)."

@@ -497,6 +497,13 @@ internal sealed class PlotPlan : IDisposable
                 );
             }
 
+            if (primary is TimeScaleSpec { SecondaryAxis: not null })
+            {
+                throw new ArgumentException(
+                    $"The {name} is a time scale with a secondary axis; a time scale takes none, its values are dates, not doubles (design §4.1)."
+                );
+            }
+
             if (secondary is { SecondaryAxis: not null })
             {
                 throw new ArgumentException($"The {secondName} has a secondary axis; a transform's axis belongs to a primary scale (design §4.1).");
@@ -505,7 +512,9 @@ internal sealed class PlotPlan : IDisposable
             if (on >= 0 && off < 0 && !Given(primary))
             {
                 throw new ArgumentException(
-                    $"Every layer lies on the {secondName}, and the {name} has no domain given; give it one with WithDomain, or put a layer on it (design §4.1)."
+                    primary is BandScaleSpec
+                        ? $"Every layer lies on the {secondName}, and the {name} is a band scale with no layer; put a layer on it (design §4.1)."
+                        : $"Every layer lies on the {secondName}, and the {name} has no domain given; give it one with WithDomain, or put a layer on it (design §4.1)."
                 );
             }
 
@@ -543,14 +552,6 @@ internal sealed class PlotPlan : IDisposable
                 "The color scale's inner scale has a side or a secondary axis; the color bar is a legend, not an axis (design §4.1)."
             );
         }
-
-        static AxisSide? SideOf(ScaleSpec scale) =>
-            scale switch
-            {
-                ContinuousScaleSpec c => c.Side,
-                BandScaleSpec b => b.Side,
-                _ => null,
-            };
 
         static bool Far(AxisSide side) => side is AxisSide.Top or AxisSide.Right;
 
@@ -1137,15 +1138,16 @@ internal sealed class PlotPlan : IDisposable
                 || !string.Equals(axis.Title, next.Title, StringComparison.Ordinal)
                 || !Equals(axis.TickFormat, next.TickFormat)
             );
-
-        static AxisSide? SideOf(ScaleSpec? scale) =>
-            scale switch
-            {
-                ContinuousScaleSpec c => c.Side,
-                BandScaleSpec b => b.Side,
-                _ => null,
-            };
     }
+
+    /// <summary>Returns the side a scale's axis is given (row G6a), or null for the default and a scale without one.</summary>
+    private static AxisSide? SideOf(ScaleSpec? scale) =>
+        scale switch
+        {
+            ContinuousScaleSpec c => c.Side,
+            BandScaleSpec b => b.Side,
+            _ => null,
+        };
 
     /// <summary>
     /// Learns a domain (design §4.2) as an origin and differences (§3.6): the one given, or the union of the ranges of every
@@ -1271,10 +1273,8 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over an x domain into the plan's buffer, or throws when they do not
-    /// increase in double (design §4.8). Without a transform they are differences from the domain's origin; with one they are
-    /// made in the scale space and mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase
-    /// (design §4.2). Allocates nothing, so that a new x domain costs no garbage.
+    /// Writes the W + 1 boundaries of the pixel columns over the primary x domain into the plan's buffers (design §4.8): a
+    /// new width takes kept buffers or new ones in the place of the least recent.
     /// </summary>
     private void MakeBoundaries(ScaleRange domain, int width)
     {
@@ -1286,7 +1286,35 @@ internal sealed class PlotPlan : IDisposable
             (_boundaries, _scaleBoundaries) = Buffers(width + 1);
         }
 
-        var target = _xTransform is null ? _boundaries : _scaleBoundaries;
+        WriteBoundaries(domain, width, _boundaries, _scaleBoundaries, _xTransform);
+        _x = domain;
+    }
+
+    /// <summary>
+    /// Writes the boundaries of the pixel columns over the secondary x domain (row G6a), as <see cref="MakeBoundaries"/> does
+    /// over the primary: a new width makes new buffers, which is not the steady state.
+    /// </summary>
+    private void MakeSecondaryBoundaries(ScaleRange domain, int width)
+    {
+        _x2 = ScaleRange.None;
+        if (_boundaries2.Length != width + 1)
+        {
+            (_boundaries2, _scaleBoundaries2) = (new double[width + 1], new double[width + 1]);
+        }
+
+        WriteBoundaries(domain, width, _boundaries2, _scaleBoundaries2, _xTransform2);
+        _x2 = domain;
+    }
+
+    /// <summary>
+    /// Writes the W + 1 boundaries of the pixel columns over an x domain, or throws when they do not increase in double (design
+    /// §4.8). Without a transform they are differences from the domain's origin; with one they are made in the scale space and
+    /// mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase (design §4.2). Allocates nothing,
+    /// so that a new x domain costs no garbage.
+    /// </summary>
+    private static void WriteBoundaries(ScaleRange domain, int width, double[] boundaries, double[] scaleBoundaries, IScale? transform)
+    {
+        var target = transform is null ? boundaries : scaleBoundaries;
         for (var k = 0; k <= width; k++)
         {
             target[k] = domain.Lower + ((domain.Upper - domain.Lower) * k / width);
@@ -1298,52 +1326,26 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
-        if (_xTransform is not null)
+        if (transform is null)
         {
-            for (var k = 0; k <= width; k++)
+            return;
+        }
+
+        for (var k = 0; k <= width; k++)
+        {
+            scaleBoundaries[k] += domain.Origin;
+        }
+
+        transform.Inverse(scaleBoundaries, boundaries);
+        for (var k = 0; k <= width; k++)
+        {
+            if (!double.IsFinite(boundaries[k]) || (k > 0 && !(boundaries[k - 1] < boundaries[k])))
             {
-                _scaleBoundaries[k] += domain.Origin;
-            }
-
-            _xTransform.Inverse(_scaleBoundaries, _boundaries);
-            for (var k = 0; k <= width; k++)
-            {
-                if (!double.IsFinite(_boundaries[k]) || (k > 0 && !(_boundaries[k - 1] < _boundaries[k])))
-                {
-                    throw new ArgumentException(
-                        $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] of the scale space is too narrow for {width} pixel columns: its boundaries, mapped back to data units, do not increase in double."
-                    );
-                }
+                throw new ArgumentException(
+                    $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] of the scale space is too narrow for {width} pixel columns: its boundaries, mapped back to data units, do not increase in double."
+                );
             }
         }
-
-        _x = domain;
-    }
-
-    /// <summary>
-    /// Writes the boundaries of the pixel columns over the secondary x domain (row G6a), as <see cref="MakeBoundaries"/> does
-    /// over the primary: a new length makes new buffers, which is not the steady state.
-    /// </summary>
-    private void MakeSecondaryBoundaries(ScaleRange domain, int width)
-    {
-        var (primary, primaryScale, transform, kept) = (_boundaries, _scaleBoundaries, _xTransform, _x);
-        if (_boundaries2.Length != width + 1)
-        {
-            (_boundaries2, _scaleBoundaries2) = (new double[width + 1], new double[width + 1]);
-        }
-
-        // MakeBoundaries writes the plan's buffers with the plan's transform: lend it the secondary ones for the call.
-        (_boundaries, _scaleBoundaries, _xTransform) = (_boundaries2, _scaleBoundaries2, _xTransform2);
-        try
-        {
-            MakeBoundaries(domain, width);
-        }
-        finally
-        {
-            (_boundaries, _scaleBoundaries, _xTransform, _x) = (primary, primaryScale, transform, kept);
-        }
-
-        _x2 = domain;
     }
 
     /// <summary>Returns the number of a layer's pair of scales (row G6a): (secondary x ? 1 : 0) + (secondary y ? 2 : 0).</summary>

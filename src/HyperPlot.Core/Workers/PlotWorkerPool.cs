@@ -252,7 +252,10 @@ public sealed class PlotWorkerPool : IDisposable
     /// workers and the caller take the jobs of any of them, then waited for. A plot's pairs of scales are its batches: one at
     /// a time would run a secondary scale's series after the primary's instead of beside them.
     /// </summary>
-    /// <param name="batches">The batches; an empty one is skipped, the first is checked even when empty.</param>
+    /// <param name="batches">
+    /// The batches; an empty one is skipped. The first one's boundaries are checked even when it is empty, as
+    /// <see cref="Extract"/> checks them: a plot without series still refuses a primary x domain too narrow for its columns.
+    /// </param>
     /// <param name="origins">Each batch's origin.</param>
     /// <param name="boundaries">Each batch's boundaries.</param>
     /// <param name="count">The number of batches to take from the arrays.</param>

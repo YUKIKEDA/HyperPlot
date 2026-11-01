@@ -17,6 +17,7 @@ public sealed class AxisSideTests : IDisposable
     private readonly Column<float> _b;
     private readonly Column<double> _c;
     private readonly Column<double> _rule;
+    private readonly Column<double> _tens;
     private readonly DataTable _table;
 
     public AxisSideTests()
@@ -25,6 +26,7 @@ public sealed class AxisSideTests : IDisposable
         _b = Column.Wrap(Enumerable.Range(0, Length).Select(i => (float)Math.Cos(i / 30.0)).ToArray());
         _c = Column.Wrap(Enumerable.Range(0, Length).Select(i => 1 + (i / (Length - 1.0))).ToArray());
         _rule = Column.Wrap(Enumerable.Repeat(10.0, Length).ToArray());
+        _tens = Column.Wrap(Enumerable.Range(0, Length).Select(i => (double)(i % 10)).ToArray());
         _table = DataTable
             .Create()
             .Add("t", Column.Uniform(0, 1, Length))
@@ -33,6 +35,8 @@ public sealed class AxisSideTests : IDisposable
             .Add("b", _b)
             .Add("c", _c)
             .Add("ten", _rule)
+            .Add("ticks", Column.UniformInteger(0, 1, Length))
+            .Add("tens", _tens)
             .Add("k", Column.Categorical([.. Enumerable.Range(0, Length).Select(i => (string?)(i % 2 == 0 ? "p" : "q"))], ["p", "q"]))
             .Build();
     }
@@ -43,6 +47,7 @@ public sealed class AxisSideTests : IDisposable
         _b.Dispose();
         _c.Dispose();
         _rule.Dispose();
+        _tens.Dispose();
         _pool.Dispose();
     }
 
@@ -96,7 +101,8 @@ public sealed class AxisSideTests : IDisposable
     /// The compile refuses axes that do not go together (design §4.1, §4.8): a layer on a missing secondary scale, a secondary
     /// scale with no layer, two second axes in a direction, sides of the other direction, a secondary scale on its primary's
     /// side, a transform's axis on a secondary scale or a color scale's inner scale, a side on a color scale, axes in polar,
-    /// categories on a secondary x, a transform that does not map its ends back, and a primary no layer lies on.
+    /// categories on a secondary x, a transform that does not map its ends back, a time primary given a secondary axis with
+    /// <c>with</c>, and a primary no layer lies on; a monotonic transform round an end at 0 passes.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -106,7 +112,8 @@ public sealed class AxisSideTests : IDisposable
     /// - Render each.
     ///
     /// Expected:
-    /// - ArgumentException each; the all-secondary spec with a primary domain given is drawn.
+    /// - ArgumentException each, x's and y's; the axis of (v + 0.1) · 3 over [0, 10] and the all-secondary spec with a primary
+    ///   domain given are drawn.
     /// </remarks>
     [Fact]
     public void Compile_RefusesAxesThatDoNotGoTogether()
@@ -118,9 +125,24 @@ public sealed class AxisSideTests : IDisposable
             SecondaryY = true,
         };
         var off = new LineLayerSpec { X = _table.Col<double>("t"), Y = _table.Col<float>("a") };
+        var onX = new LineLayerSpec
+        {
+            X = _table.Col<double>("t"),
+            Y = _table.Col<float>("b"),
+            SecondaryX = true,
+        };
         PlotSpec[] refused =
         [
             Spec(off, on),
+            Spec(off, onX),
+            Spec(off) with
+            {
+                ScaleX2 = Scale.Linear(),
+            },
+            Spec(new LineLayerSpec { X = _table.Col<long>("ticks"), Y = _table.Col<float>("a") }) with
+            {
+                ScaleX = Scale.Time() with { SecondaryAxis = new SecondaryAxisSpec { Transform = new Times(2) } },
+            },
             Spec(off) with
             {
                 ScaleY2 = Scale.Linear(),
@@ -222,6 +244,11 @@ public sealed class AxisSideTests : IDisposable
             using var plan = Plan(1);
             _ = Assert.Throws<ArgumentException>(() => plan.Render(spec));
         }
+
+        // A transform that offsets and scales maps an end at 0 back a few ulps of the offset away: it passes.
+        using var offset = Plan(1);
+        _ = offset.Render(Spec(off) with { ScaleX = Scale.Linear().WithDomain(0, 10).WithSecondaryAxis(new Affine(0.1, 3)) });
+        Assert.True(offset.Guides.X2.Count > 0);
 
         using var given = Plan(1);
         _ = given.Render(Spec(on) with { ScaleY = Scale.Linear().WithDomain(0, 1), ScaleY2 = Scale.Linear() });
@@ -343,7 +370,7 @@ public sealed class AxisSideTests : IDisposable
     ///
     /// Expected:
     /// - The primary y a's range; the secondary y [0, 2] (the bars' baseline); the primary x [0, 998] with the bars' half
-    ///   width, which takes u.
+    ///   width, which takes u. Bins of a step of 1 over i mod 10 on the secondary y: [0, 100], the greatest count.
     /// </remarks>
     [Fact]
     public void SecondaryScales_LearnFromTheirLayers()
@@ -373,6 +400,31 @@ public sealed class AxisSideTests : IDisposable
         var y2 = plan.Guides.Y2.FinalDomain;
         Assert.Equal((0.0, 2.0), (y2.Origin + y2.Lower, y2.Origin + y2.Upper));
         Assert.True(GeomTesting.Ends(plan.XDomain).Max >= 998);
+
+        // A stat on the secondary y learns there from its derived table: bins of a step of 1 over 0 to 9, 50 values each and
+        // 100 in the last, closed on both sides.
+        using var binned = Plan(1);
+        _ = binned.Render(
+            new PlotSpec
+            {
+                Data = _table,
+                Layers =
+                [
+                    new LineLayerSpec { X = _table.Col<double>("t"), Y = _table.Col<float>("a") },
+                    new BarLayerSpec
+                    {
+                        X = _table.Col<double>("tens"),
+                        Stat = Stat.Bin(step: 1),
+                        SecondaryY = true,
+                    },
+                ],
+                ScaleY2 = Scale.Linear(),
+                Theme = Theme.Light with { ShowAxes = false, ShowGrid = false },
+            }
+        );
+        var counts = binned.Guides.Y2.FinalDomain;
+        Assert.Equal((0.0, 100.0), (counts.Origin + counts.Lower, counts.Origin + counts.Upper));
+        Assert.Equal((a.Min(), a.Max()), ((float)GeomTesting.Ends(binned.YDomain).Min, (float)GeomTesting.Ends(binned.YDomain).Max));
     }
 
     /// <summary>
@@ -506,6 +558,8 @@ public sealed class AxisSideTests : IDisposable
     /// - Each y2 label at x = left + width + T + G, aligned left and in the middle; each x2 label aligned at its bottom at y =
     ///   top − T − G, inside [P, width − P]; "Y2" turned clockwise at x = the target's width − P − the legend's band, its top
     ///   centered on the panel; "min" at y = P + the title's band. Flipped, y2's labels lie above the panel and x2's right of it.
+    ///   The top line from the left line to the right one, the right line from the top to the bottom, each snapped half the
+    ///   axis width outside the panel; each tick from its line out to the panel's edge plus T less half the tick's width.
     /// </remarks>
     [Fact]
     public void Record_TopAndRightMirrorTheBottomAndLeft()
@@ -546,6 +600,46 @@ public sealed class AxisSideTests : IDisposable
         var flippedTexts = flippedList.Texts.ToArray();
         Assert.All(f.Y2.TickLabels.ToArray(), label => Assert.Contains(flippedTexts, x => x.Text == label && x.Position.Y <= f.Top));
         Assert.All(f.X2.TickLabels.ToArray(), label => Assert.Contains(flippedTexts, x => x.Text == label && x.Position.X >= f.Left + f.Width));
+
+        // The lines: the top one's center half its width above the panel, the right one's half its width right of it, from
+        // the line beside to the line beside; the ticks out from them T long, to their round ends.
+        var (axisWidth, tickWidth) = (Round(theme.AxisWidth), Round(theme.TickWidth));
+        var halfTick = theme.TickWidth / 2;
+        var segments = list.Segments.ToArray();
+        var top = Snap(guides.Top - (axisWidth / 2.0), axisWidth);
+        var rightLine = Snap(guides.Left + guides.Width + (axisWidth / 2.0), axisWidth);
+        var left = Snap(guides.Left - (axisWidth / 2.0), axisWidth);
+        var bottom = Snap(guides.Top + guides.Height + (axisWidth / 2.0), axisWidth);
+        Assert.Contains(segments, x => x.Start == new System.Numerics.Vector2(left, top) && x.End == new System.Numerics.Vector2(rightLine, top));
+        Assert.Contains(
+            segments,
+            x => x.Start == new System.Numerics.Vector2(rightLine, top) && x.End == new System.Numerics.Vector2(rightLine, bottom)
+        );
+        foreach (var pixel in guides.X2.Pixels)
+        {
+            var at = Snap(guides.Left + pixel, tickWidth);
+            Assert.Contains(
+                segments,
+                x =>
+                    x.Start == new System.Numerics.Vector2(at, top)
+                    && x.End == new System.Numerics.Vector2(at, Math.Min(top, guides.Top - t + halfTick))
+            );
+        }
+
+        foreach (var pixel in guides.Y2.Pixels)
+        {
+            var at = Snap(guides.Top + guides.Height - pixel, tickWidth);
+            Assert.Contains(
+                segments,
+                x =>
+                    x.Start == new System.Numerics.Vector2(rightLine, at)
+                    && x.End == new System.Numerics.Vector2(Math.Max(rightLine, guides.Left + guides.Width + t - halfTick), at)
+            );
+        }
+
+        static int Round(float dips) => (int)Math.Floor(dips + 0.5f);
+
+        static float Snap(double position, int width) => (float)(width % 2 == 1 ? Math.Floor(position) + 0.5 : Math.Floor(position + 0.5));
     }
 
     /// <summary>
@@ -671,6 +765,26 @@ public sealed class AxisSideTests : IDisposable
             for (var i = 0; i < values.Length; i++)
             {
                 destination[i] = values[i] / factor;
+            }
+        }
+    }
+
+    /// <summary>(v + offset) · factor, whose inverse is t / factor − offset: monotonic, its round trip a few ulps of the offset away.</summary>
+    private sealed class Affine(double offset, double factor) : IScale
+    {
+        public void Forward(ReadOnlySpan<double> values, Span<double> destination)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = (values[i] + offset) * factor;
+            }
+        }
+
+        public void Inverse(ReadOnlySpan<double> values, Span<double> destination)
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = (values[i] / factor) - offset;
             }
         }
     }
