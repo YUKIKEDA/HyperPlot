@@ -161,6 +161,13 @@ public sealed class UniformColumn : Column
     internal override long LowerBound(double boundary, long origin) => new M4.UniformX(this, origin).LowerBound(boundary);
 
     /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin, RowRange rows) =>
+        new M4.UniformX(this, origin).LowerBound(boundary, Math.Clamp(rows.Start, 0, Length), rows.EndIn(Length));
+
+    /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool, RowRange rows) => true;
+
+    /// <inheritdoc />
     /// <remarks>A uniform column's keys are a long's or a double's (row G5c): a density's quantiles select over them.</remarks>
     internal override int KeyBytes => 8;
 

@@ -1372,7 +1372,7 @@ internal sealed class PlotPlan : IDisposable
     /// image or a user's geom as it is in every panel; nothing in an empty cell. A stat's edges and ranges come from the whole
     /// layer along a shared direction and from the panel's rows along a free one.
     /// </summary>
-    private LayerPlan PanelLayer(PlotSpec spec, LayerSpec layer, PanelData? data, PlanBuild build)
+    private static LayerPlan PanelLayer(LayerSpec layer, PanelData? data, PlanBuild build, (StatRange? X, StatRange? Y) shared)
     {
         if (data is null || FacetData.Rowless(layer))
         {
@@ -1388,18 +1388,56 @@ internal sealed class PlotPlan : IDisposable
         StatSource? source = null;
         if (layer.Stat is not null)
         {
-            var arrangement = _facet!.Arrangement;
-            var (wholeX, wholeY) = StatPlan.StatColumns(layer);
             var (ownX, ownY) = StatPlan.StatColumns(mapped);
             source = new StatSource(
-                arrangement.FreeX ? ownX : wholeX,
-                arrangement.FreeX ? data.Rows : RowRange.All,
-                arrangement.FreeY ? ownY : wholeY,
-                arrangement.FreeY ? data.Rows : RowRange.All
+                shared.X ?? new StatRange([(ownX, data.Rows)]),
+                ownY is null ? null : shared.Y ?? new StatRange([(ownY, data.Rows)])
             );
         }
 
         return LayerPlan.Create(mapped, build, data.Rows, source);
+    }
+
+    /// <summary>
+    /// Returns each stat layer's ranges along a facet's shared directions (design §4.5, row G6b): the union of every panel's
+    /// rows, a run or a gathered table each, made once a layer so that its panels read it once. Rows in no panel are left
+    /// out. Null along a free direction, and for a layer without a stat or a plot without a facet.
+    /// </summary>
+    private (StatRange? X, StatRange? Y)[] SharedSources(PlotSpec spec)
+    {
+        var shared = new (StatRange?, StatRange?)[spec.Layers.Count];
+        if (_facet is not { } facet)
+        {
+            return shared;
+        }
+
+        for (var i = 0; i < shared.Length; i++)
+        {
+            var layer = spec.Layers[i];
+            if (layer.Stat is null || FacetData.Rowless(layer))
+            {
+                continue;
+            }
+
+            var xs = new List<(Column, RowRange)>();
+            var ys = new List<(Column, RowRange)>();
+            foreach (var data in facet.Panels)
+            {
+                if (!data.Empty)
+                {
+                    var (x, y) = StatPlan.StatColumns(data.Map is { } map ? FacetData.Remap(layer, map) : layer);
+                    xs.Add((x, data.Rows));
+                    if (y is not null)
+                    {
+                        ys.Add((y, data.Rows));
+                    }
+                }
+            }
+
+            shared[i] = (facet.Arrangement.FreeX ? null : new StatRange(xs), facet.Arrangement.FreeY || ys.Count == 0 ? null : new StatRange(ys));
+        }
+
+        return shared;
     }
 
     /// <summary>Returns whether a layer has a stat, whose edges a facet's new scales move (row G6b).</summary>
@@ -1478,6 +1516,7 @@ internal sealed class PlotPlan : IDisposable
             _learned = new PanelDomains[count];
         }
 
+        var shared = SharedSources(spec);
         for (var p = 0; p < count; p++)
         {
             var panel = _panels[p];
@@ -1512,7 +1551,7 @@ internal sealed class PlotPlan : IDisposable
                     layer.SecondaryY ? spec.ScaleY2 : spec.ScaleY,
                     layer.SecondaryY ? _yTransform2 : _yTransform
                 );
-                layers[i] = PanelLayer(spec, layer, panel.Data, build);
+                layers[i] = PanelLayer(layer, panel.Data, build, shared[i]);
             }
 
             olds.AddRange(panel.Layers);

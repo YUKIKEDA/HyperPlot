@@ -167,6 +167,10 @@ public static class M4
     /// Extracts the M4 points of the rows [start, end) of a series, as if the rows outside were not there (design §5.5.1, row
     /// G7c): the series of a category whose rows lie in one run. Checks nothing the public form checks; allocates nothing.
     /// </summary>
+    /// <remarks>
+    /// Only the run's X need be non-decreasing (row G6b): a facet's long data restarts its times in each panel's run. The
+    /// caller checks the run and gives the result, null while the statistics are not computed.
+    /// </remarks>
     internal static M4Result Extract<TX, TY>(
         Column<TX> x,
         MinMaxPyramid<TY> y,
@@ -174,16 +178,17 @@ public static class M4
         ReadOnlySpan<double> boundaries,
         Span<M4Point> destination,
         M4Options options,
-        RowRange rows
+        RowRange rows,
+        bool? runNonDecreasing
     )
         where TX : unmanaged, INumber<TX>
         where TY : unmanaged, INumber<TY>
     {
         Validate(x, y, boundaries, destination);
-        var statsReady = x.TryIsNonDecreasing(out var nonDecreasing);
-        if (statsReady && !nonDecreasing)
+        var statsReady = runNonDecreasing.HasValue;
+        if (runNonDecreasing == false)
         {
-            throw new InvalidOperationException("The X column must be non-decreasing and hold no NaN.");
+            throw new InvalidOperationException("The X column must be non-decreasing and hold no NaN over the series' rows.");
         }
 
         var source = new ColumnX<TX>(x, origin.X);
@@ -287,12 +292,12 @@ public static class M4
     {
         var column = y.Column;
 
-        // The rows of the series: the whole column, or one run of it (row G7c). X is non-decreasing over the whole column,
-        // so a boundary's position inside the run is its position in the column, held to the run.
+        // The rows of the series: the whole column, or one run of it (row G7c). X is non-decreasing over the run, not
+        // always over the column (row G6b): a boundary is searched inside the run, after the one before it.
         var (low, length) = (rows.Start, Math.Min(rows.End, column.Length));
         var writer = new Writer(destination, gaps);
         var provisional = false;
-        var start = Math.Clamp(x.LowerBound(boundaries[0]), low, length);
+        var start = x.LowerBound(boundaries[0], low, length);
         if (start > low)
         {
             var before = gaps == M4Gaps.Break ? start - 1 : Known(y.FindNumber(low, start, fromEnd: true, ref provisional), start - 1);
@@ -305,7 +310,7 @@ public static class M4
         Span<Candidate> candidates = stackalloc Candidate[4];
         for (var k = 1; k < boundaries.Length; k++)
         {
-            var end = Math.Clamp(x.LowerBound(boundaries[k]), low, length);
+            var end = x.LowerBound(boundaries[k], start, length);
             var count = end - start;
             if (count > 0 && count <= 4)
             {
@@ -404,6 +409,16 @@ public static class M4
         /// <param name="boundary">The boundary, as a difference from the X origin.</param>
         /// <returns>The position of the boundary.</returns>
         long LowerBound(double boundary);
+
+        /// <summary>
+        /// Returns the least i in [<paramref name="low"/>, <paramref name="high"/>) with d(x(i)) ≥ <paramref name="boundary"/>,
+        /// or <paramref name="high"/> when there is none (row G6b): X need be non-decreasing over those rows only.
+        /// </summary>
+        /// <param name="boundary">The boundary, as a difference from the X origin.</param>
+        /// <param name="low">The first row searched.</param>
+        /// <param name="high">The row past the last searched.</param>
+        /// <returns>The position of the boundary.</returns>
+        long LowerBound(double boundary, long low, long high);
     }
 
     private readonly record struct Candidate(long Index, double Y, M4Roles Roles);
@@ -412,6 +427,9 @@ public static class M4
     {
         public double ValueAt(long index) =>
             column.IsInteger ? ScaleSpace.Difference(column.IntegerAt(index), origin) : column.GetValue(index) - origin;
+
+        // An evenly spaced column increases throughout: the column's position held to the rows.
+        public long LowerBound(double boundary, long low, long high) => Math.Clamp(LowerBound(boundary), low, high);
 
         public long LowerBound(double boundary)
         {
@@ -445,6 +463,31 @@ public static class M4
         where TX : unmanaged, INumber<TX>
     {
         public double ValueAt(long index) => ScaleSpace.Difference(column.GetValue(index), origin);
+
+        public long LowerBound(double boundary, long low, long high)
+        {
+            // The whole column's search reads its chunks' statistics; a run's searches its elements, O(log n) reads.
+            if (low <= 0 && high >= column.Length)
+            {
+                return Math.Clamp(LowerBound(boundary), low, high);
+            }
+
+            var (first, last) = (low, high);
+            while (first < last)
+            {
+                var middle = first + ((last - first) >>> 1);
+                if (ScaleSpace.Difference(column.GetValue(middle), origin) >= boundary)
+                {
+                    last = middle;
+                }
+                else
+                {
+                    first = middle + 1;
+                }
+            }
+
+            return first;
+        }
 
         public long LowerBound(double boundary)
         {

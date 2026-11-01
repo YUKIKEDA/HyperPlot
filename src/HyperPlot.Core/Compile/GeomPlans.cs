@@ -16,6 +16,9 @@ internal sealed class LinePlan : LayerPlan
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
+    /// <summary>Returns the line's M4 points of the last extraction from its batch. Tests only.</summary>
+    internal ReadOnlySpan<M4Point> Points(M4Batch batch) => _output.AsSpan(0, batch.GetResult(_series).Count);
+
     public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
@@ -342,8 +345,8 @@ internal sealed class BarPlan : LayerPlan
         var y = bar.Y.Column;
         var boundaries = context.Boundaries;
         var half = Width / 2;
-        var first = Rows.Hold(x.LowerBound(boundaries[0] - half, context.XOrigin), x.Length);
-        var end = Rows.Hold(x.LowerBound(boundaries[^1] + half, context.XOrigin), x.Length);
+        var first = x.LowerBound(boundaries[0] - half, context.XOrigin, Rows);
+        var end = x.LowerBound(boundaries[^1] + half, context.XOrigin, Rows);
         var baseline = context.BaselinePixel(bar.Baseline);
         var barFill = FillOf(bar.Fill, translucent: false);
         if (ElementColors is { } colors)
@@ -606,8 +609,8 @@ internal sealed class ErrorBarPlan : LayerPlan
     {
         var bars = (ErrorBarLayerSpec)Spec;
         var x = bars.X.Column;
-        var first = Rows.Hold(x.LowerBound(context.Boundaries[0], context.XOrigin), x.Length);
-        var end = Rows.Hold(x.LowerBound(context.Boundaries[^1], context.XOrigin), x.Length);
+        var first = x.LowerBound(context.Boundaries[0], context.XOrigin, Rows);
+        var end = x.LowerBound(context.Boundaries[^1], context.XOrigin, Rows);
         if (end - first <= 4L * context.X.Size)
         {
             var half = bars.CapWidth * context.Scale / 2;
@@ -674,6 +677,8 @@ internal sealed class ErrorBarPlan : LayerPlan
 /// </summary>
 internal sealed class RulePlan : LayerPlan
 {
+    private long _checked = -1;
+
     public RulePlan(RuleLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(Channel(spec).Column);
 
@@ -681,14 +686,23 @@ internal sealed class RulePlan : LayerPlan
 
     public override void WaitForIndexes(PlotWorkerPool pool)
     {
+        // The rows a rule searches, the run of a facet's panel or a split's category (row G6b), checked once a version.
         var rule = (RuleLayerSpec)Spec;
         var column = Columns[0];
-        if (!column.IsNonDecreasing(pool))
+        var version = column.Version;
+        if (version == _checked)
+        {
+            return;
+        }
+
+        if (!column.IsNonDecreasing(pool, Rows))
         {
             throw new InvalidOperationException(
                 $"The {(rule.X.IsDefault ? "Y" : "X")} column of a rule layer is not non-decreasing without NaN; a rule's lines are found by searching it (design §5.5.3)."
             );
         }
+
+        _checked = version;
     }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
@@ -710,8 +724,8 @@ internal sealed class RulePlan : LayerPlan
         var across = vertical ? context.Y : context.X;
         var origin = vertical ? context.XOrigin : context.YOrigin;
         ReadOnlySpan<double> boundaries = vertical ? context.Boundaries : context.YBoundaries();
-        var first = Rows.Hold(column.LowerBound(boundaries[0], origin), column.Length);
-        var end = Rows.Hold(column.LowerBound(boundaries[^1], origin), column.Length);
+        var first = column.LowerBound(boundaries[0], origin, Rows);
+        var end = column.LowerBound(boundaries[^1], origin, Rows);
         var (from, to) = ((float)across.Offset, (float)(across.Offset + across.Size));
         var many = end - first > 4L * axis.Size;
         var buffer = context.Points(3 * (int)(many ? axis.Size : end - first));
@@ -730,7 +744,7 @@ internal sealed class RulePlan : LayerPlan
             var start = first;
             for (var k = 0; k < axis.Size; k++)
             {
-                var next = Rows.Hold(column.LowerBound(boundaries[k + 1], origin), column.Length);
+                var next = column.LowerBound(boundaries[k + 1], origin, Rows);
                 if (next > start)
                 {
                     // The boundaries run with the data; a descending axis runs the pixels the other way.

@@ -42,7 +42,7 @@ internal sealed class StatPlan : LayerPlan
         }
 
         SetColumns([.. columns]);
-        _source = source ?? new StatSource(x, rows, y, rows);
+        _source = source ?? StatSource.Own(x, y, rows);
         _built = new long[Columns.Length];
         for (var i = 0; i < _built.Length; i++)
         {
@@ -195,7 +195,7 @@ internal sealed class StatPlan : LayerPlan
         var pool = build.Pool;
         var time = build.XScale as TimeScaleSpec;
         var transform = time is null ? build.XTransform : null;
-        var (edges, origin, uniform) = BinEdges(_source.X, _source.XRows, bin, time, transform, build);
+        var (edges, origin, uniform) = BinEdges(_source.X, bin, time, transform, build);
 
         var bins = Math.Max(edges.Length - 1, 0);
         var nk = groups?.CategoryCount ?? 1;
@@ -281,8 +281,7 @@ internal sealed class StatPlan : LayerPlan
     /// column's unit on a time scale, as differences from the first edge (the origin), or Vega's steps over the finite range.
     /// </summary>
     private static (double[] Edges, long Origin, bool Uniform) BinEdges(
-        Column x,
-        RowRange rows,
+        StatRange x,
         BinStatSpec bin,
         TimeScaleSpec? time,
         IScale? transform,
@@ -292,7 +291,7 @@ internal sealed class StatPlan : LayerPlan
         if (time is not null)
         {
             // Calendar steps in the column's unit, or the given step from the least value; differences from the first edge.
-            if (!x.TryGetRange(rows, out var low, out var high))
+            if (!x.TryGetRange(out var low, out var high))
             {
                 return ([], 0, true);
             }
@@ -307,28 +306,22 @@ internal sealed class StatPlan : LayerPlan
             return (StatWork.Edges(0, high.Integer - low.Integer, bin with { Anchor = bin.Anchor - low.Integer }, build.Layer), low.Integer, true);
         }
 
-        var (min, max) = FiniteRange(x, rows, transform, build.Pool);
+        var (min, max) = x.FiniteRange(transform, build.Pool);
         return (min <= max ? StatWork.Edges(min, max, bin, build.Layer) : [], 0, true);
     }
-
-    /// <summary>Returns the least and greatest finite value of a column in the scale space: from its statistics when they are finite and no transform maps them.</summary>
-    private static (double Min, double Max) FiniteRange(Column x, RowRange rows, IScale? transform, PlotWorkerPool pool) =>
-        transform is null && x.TryGetRange(rows, out var low, out var high) && double.IsFinite(low.Value) && double.IsFinite(high.Value)
-            ? (low.Value, high.Value)
-            : StatWork.FiniteRange(x, transform, 0, pool, rows);
 
     /// <summary>
     /// Returns the range [from, to] of a density or a moving average in the scale space (design §4.1, row G5c), and the
     /// origin a time column's values are read as differences from: its least value.
     /// </summary>
-    private static (double From, double To, long Origin) RangeOf(Column x, RowRange rows, bool time, IScale? transform, PlotWorkerPool pool)
+    private static (double From, double To, long Origin) RangeOf(StatRange x, bool time, IScale? transform, PlotWorkerPool pool)
     {
         if (time)
         {
-            return x.TryGetRange(rows, out var low, out var high) ? (0, high.Integer - low.Integer, low.Integer) : (1, 0, 0);
+            return x.TryGetRange(out var low, out var high) ? (0, high.Integer - low.Integer, low.Integer) : (1, 0, 0);
         }
 
-        var (min, max) = FiniteRange(x, rows, transform, pool);
+        var (min, max) = x.FiniteRange(transform, pool);
         return (min, max, 0);
     }
 
@@ -362,15 +355,15 @@ internal sealed class StatPlan : LayerPlan
         StatWork.Spread? spread = null;
         if (density.Bandwidth is { } given)
         {
-            (from, to, origin) = RangeOf(_source.X, _source.XRows, time, transform, pool);
+            (from, to, origin) = RangeOf(_source.X, time, transform, pool);
             h.AsSpan().Fill(given * density.Adjust);
             drawn.AsSpan().Fill(true);
         }
         else
         {
             // The bandwidths come from the layer's own rows; a range the panels share comes from the whole layer (row G6b).
-            var own = _source.XRows == Rows && ReferenceEquals(_source.X, x);
-            origin = time && _source.X.TryGetRange(_source.XRows, out var low, out _) ? low.Integer : 0;
+            var own = _source.X.IsOwn(x, Rows);
+            origin = time && _source.X.TryGetRange(out var low, out _) ? low.Integer : 0;
             spread = StatWork.SpreadOf(x, groups, transform, origin, pool, Rows);
             if (own)
             {
@@ -378,7 +371,7 @@ internal sealed class StatPlan : LayerPlan
             }
             else
             {
-                (from, to, _) = RangeOf(_source.X, _source.XRows, time, transform, pool);
+                (from, to, _) = RangeOf(_source.X, time, transform, pool);
             }
 
             ChooseBandwidths(x, Rows, groups, spread, time, transform, origin, density.Adjust, h, drawn, pool);
@@ -566,7 +559,7 @@ internal sealed class StatPlan : LayerPlan
         var time = build.XScale is TimeScaleSpec;
         var transform = time ? null : build.XTransform;
         var nk = groups?.CategoryCount ?? 1;
-        var (from, to, origin) = RangeOf(_source.X, _source.XRows, time, transform, pool);
+        var (from, to, origin) = RangeOf(_source.X, time, transform, pool);
         var points = smooth.Points;
         if (!(from <= to))
         {
@@ -680,8 +673,8 @@ internal sealed class StatPlan : LayerPlan
     {
         var (timeX, timeY) = (build.XScale as TimeScaleSpec, build.YScale as TimeScaleSpec);
         var (tx, ty) = (timeX is null ? build.XTransform : null, timeY is null ? build.YTransform : null);
-        var (ex, ox, ux) = BinEdges(_source.X, _source.XRows, cells.X, timeX, tx, build);
-        var (ey, oy, uy) = BinEdges(_source.Y!, _source.YRows, cells.Y, timeY, ty, build);
+        var (ex, ox, ux) = BinEdges(_source.X, cells.X, timeX, tx, build);
+        var (ey, oy, uy) = BinEdges(_source.Y!, cells.Y, timeY, ty, build);
         var (bx, by) = (Math.Max(ex.Length - 1, 0), Math.Max(ey.Length - 1, 0));
         if ((long)bx * by > MaxElements)
         {
@@ -979,7 +972,86 @@ internal sealed class StatPlan : LayerPlan
 }
 
 /// <summary>
-/// Where a stat's bins' edges and a density's or a moving average's range come from (design §4.5, row G6b): the layer's
-/// columns X and Y (2D bins), each over a run of rows. A facet panel takes the whole layer's of an axis the panels share.
+/// Where a stat's bins' edges and a density's or a moving average's range come from (design §4.5, row G6b): its x's and,
+/// for 2D bins, its y's. A facet panel's own rows along a free direction; every panel's rows along a shared one.
 /// </summary>
-internal sealed record StatSource(Column X, RowRange XRows, Column? Y, RowRange YRows);
+internal sealed class StatSource(StatRange x, StatRange? y)
+{
+    /// <summary>Gets the range of x.</summary>
+    public StatRange X => x;
+
+    /// <summary>Gets the range of y, or null for a stat of x only.</summary>
+    public StatRange? Y => y;
+
+    /// <summary>Returns the source of a layer's own rows: the whole columns, or a run of them.</summary>
+    public static StatSource Own(Column x, Column? y, RowRange rows) =>
+        new(new StatRange([(x, rows)]), y is null ? null : new StatRange([(y, rows)]));
+}
+
+/// <summary>
+/// The rows an axis's range comes from (row G6b): pieces of columns, each over a run of rows; their union, found once and
+/// kept, so that the panels that share it read it once.
+/// </summary>
+internal sealed class StatRange(IReadOnlyList<(Column Column, RowRange Rows)> pieces)
+{
+    private bool _ranged;
+    private bool _found;
+    private ScaleEnd _low;
+    private ScaleEnd _high;
+    private bool _finiteKnown;
+    private IScale? _finiteTransform;
+    private (double Min, double Max) _finite;
+
+    /// <summary>Returns whether the range is a column's own over the rows a plan reads: a stat's of its own rows.</summary>
+    public bool IsOwn(Column column, RowRange rows) => pieces.Count == 1 && ReferenceEquals(pieces[0].Column, column) && pieces[0].Rows == rows;
+
+    /// <summary>Returns the union of the pieces' ranges of values that are not NaN; false when there is none.</summary>
+    public bool TryGetRange(out ScaleEnd low, out ScaleEnd high)
+    {
+        if (!_ranged)
+        {
+            foreach (var (column, rows) in pieces)
+            {
+                if (!column.TryGetRange(rows, out var min, out var max))
+                {
+                    continue;
+                }
+
+                (_low, _high) = _found ? (Less(min, _low) ? min : _low, Less(_high, max) ? max : _high) : (min, max);
+                _found = true;
+            }
+
+            _ranged = true;
+        }
+
+        (low, high) = (_low, _high);
+        return _found;
+    }
+
+    /// <summary>
+    /// Returns the least and greatest finite value of the pieces in the scale space (design §4.1): from their statistics when
+    /// they are finite and no transform maps them, else by a pass of the workers; (+∞, −∞) for none.
+    /// </summary>
+    public (double Min, double Max) FiniteRange(IScale? transform, PlotWorkerPool pool)
+    {
+        if (_finiteKnown && ReferenceEquals(_finiteTransform, transform))
+        {
+            return _finite;
+        }
+
+        var (least, greatest) = (double.PositiveInfinity, double.NegativeInfinity);
+        foreach (var (column, rows) in pieces)
+        {
+            var (min, max) =
+                transform is null && column.TryGetRange(rows, out var low, out var high) && double.IsFinite(low.Value) && double.IsFinite(high.Value)
+                    ? (low.Value, high.Value)
+                    : StatWork.FiniteRange(column, transform, 0, pool, rows);
+            (least, greatest) = (Math.Min(least, min), Math.Max(greatest, max));
+        }
+
+        (_finiteKnown, _finiteTransform, _finite) = (true, transform, (least, greatest));
+        return _finite;
+    }
+
+    private static bool Less(ScaleEnd a, ScaleEnd b) => a.IsInteger && b.IsInteger ? a.Integer < b.Integer : a.Value < b.Value;
+}

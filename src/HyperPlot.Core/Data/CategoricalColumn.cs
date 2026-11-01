@@ -145,6 +145,12 @@ public sealed class CategoricalColumn : Column
     internal override bool IsNonDecreasing(PlotWorkerPool pool) => false;
 
     /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool, RowRange rows) => false;
+
+    /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin, RowRange rows) => LowerBound(boundary, origin);
+
+    /// <inheritdoc />
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>
         throw new InvalidOperationException("A categorical column is not an X of M4: the compile keeps it to a band scale's bars.");
 

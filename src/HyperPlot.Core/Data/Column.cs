@@ -249,6 +249,18 @@ public abstract class Column
     internal abstract bool IsNonDecreasing(PlotWorkerPool pool);
 
     /// <summary>
+    /// Returns whether a run's values are non-decreasing with no NaN (row G6b): a facet's long data restarts its times in each
+    /// panel's run. Computes the statistics the check reads.
+    /// </summary>
+    internal abstract bool IsNonDecreasing(PlotWorkerPool pool, RowRange rows);
+
+    /// <summary>
+    /// Returns the least row of a run with d(v(i)) ≥ <paramref name="boundary"/>, or the run's end (row G6b): the values need
+    /// be non-decreasing over the run only.
+    /// </summary>
+    internal abstract long LowerBound(double boundary, long origin, RowRange rows);
+
+    /// <summary>
     /// Starts the pass that finds each category's least and greatest value of this column as Y (design §5.5.3, row G7b);
     /// only a <see cref="Column{T}"/> has values to read.
     /// </summary>

@@ -179,6 +179,47 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
         return true;
     }
 
+    /// <summary>
+    /// Gets whether a run's values are non-decreasing with no NaN (row G6b): the statistics of the chunks it covers and a pass
+    /// over its rows in the chunks at its ends; false when a covered chunk's statistics are not computed.
+    /// </summary>
+    internal bool TryIsNonDecreasing(RowRange rows, out bool nonDecreasing)
+    {
+        var (start, end) = (Math.Clamp(rows.Start, 0, Length), rows.EndIn(Length));
+        if (start == 0 && end == Length)
+        {
+            return TryIsNonDecreasing(out nonDecreasing);
+        }
+
+        nonDecreasing = true;
+        var total = ChunkStats<T>.Empty;
+        var first = true;
+        while (start < end)
+        {
+            var chunk = (int)(start >> ChunkShift);
+            var chunkStart = (long)chunk << ChunkShift;
+            var stop = Math.Min(end, chunkStart + ChunkLengthOf(chunk));
+            ChunkStats<T> stats;
+            if (start == chunkStart && stop == chunkStart + ChunkLengthOf(chunk))
+            {
+                if (!TryGetStoredStats(chunk, out stats))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                stats = ChunkStatsKernel.Compute(GetChunk(chunk)[(int)(start - chunkStart)..(int)(stop - chunkStart)]);
+            }
+
+            total = first ? stats : ChunkStats<T>.Combine(total, stats);
+            (first, start) = (false, stop);
+        }
+
+        nonDecreasing = total.IsNonDecreasing;
+        return true;
+    }
+
     /// <inheritdoc />
     internal override string KindName => $"Column<{typeof(T).Name}>";
 
@@ -370,6 +411,17 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
 
     /// <inheritdoc />
     internal override long LowerBound(double boundary, long origin) => new M4.ColumnX<T>(this, origin).LowerBound(boundary);
+
+    /// <inheritdoc />
+    internal override long LowerBound(double boundary, long origin, RowRange rows) =>
+        new M4.ColumnX<T>(this, origin).LowerBound(boundary, Math.Clamp(rows.Start, 0, Length), rows.EndIn(Length));
+
+    /// <inheritdoc />
+    internal override bool IsNonDecreasing(PlotWorkerPool pool, RowRange rows)
+    {
+        PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+        return TryIsNonDecreasing(rows, out var nonDecreasing) && nonDecreasing;
+    }
 
     /// <inheritdoc />
     internal override bool IsNonDecreasing(PlotWorkerPool pool)
