@@ -10,6 +10,20 @@ public sealed class LineBuilder
 {
     internal LineBuilder() { }
 
+    /// <summary>Gets the position set so far: null for the geom's default (row G5a).</summary>
+    internal PositionSpec? PositionValue { get; private set; }
+
+    /// <summary>Sets how the layer places its elements against each other (design §4.1, row G5a): a dodge of error bars and vertical rules over a categorical x.</summary>
+    /// <param name="position">The position, made with <see cref="HyperPlot.Position"/>. The compile checks it against the geom.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="position"/> is null.</exception>
+    public LineBuilder Position(PositionSpec position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        PositionValue = position;
+        return this;
+    }
+
     /// <summary>Gets the stroke set so far: by default the layer's series color (design §4.1), 1 wide, solid.</summary>
     internal StrokeSpec Style { get; private set; } = new(null);
 

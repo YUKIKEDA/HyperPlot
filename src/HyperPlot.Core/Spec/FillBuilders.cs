@@ -8,6 +8,20 @@ public sealed class AreaBuilder
 {
     internal AreaBuilder() { }
 
+    /// <summary>Gets the position set so far: null for the geom's default (row G5a).</summary>
+    internal PositionSpec? PositionValue { get; private set; }
+
+    /// <summary>Sets how the layer places its elements against each other (design §4.1, row G5a): a stack or a fill of areas.</summary>
+    /// <param name="position">The position, made with <see cref="HyperPlot.Position"/>. The compile checks it against the geom.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="position"/> is null.</exception>
+    public AreaBuilder Position(PositionSpec position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        PositionValue = position;
+        return this;
+    }
+
     /// <summary>Gets the fill set so far: null for the layer's series color (design §4.1).</summary>
     internal Color? FillColor { get; private set; }
 
@@ -73,6 +87,20 @@ public sealed class AreaBuilder
 public sealed class FillBuilder
 {
     internal FillBuilder() { }
+
+    /// <summary>Gets the position set so far: null for the geom's default (row G5a).</summary>
+    internal PositionSpec? PositionValue { get; private set; }
+
+    /// <summary>Sets how the layer places its elements against each other (design §4.1, row G5a): a stack, a fill, or a dodge of bars.</summary>
+    /// <param name="position">The position, made with <see cref="HyperPlot.Position"/>. The compile checks it against the geom.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="position"/> is null.</exception>
+    public FillBuilder Position(PositionSpec position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        PositionValue = position;
+        return this;
+    }
 
     /// <summary>Gets the fill set so far: null for the layer's series color (design §4.1).</summary>
     internal Color? FillColor { get; private set; }

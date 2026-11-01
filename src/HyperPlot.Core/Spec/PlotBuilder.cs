@@ -59,6 +59,7 @@ public sealed class PlotBuilder
                 Style = style.Style,
                 Label = style.LabelText,
                 ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
             }
         );
         return this;
@@ -100,6 +101,7 @@ public sealed class PlotBuilder
                 Mode = mode,
                 Label = style.LabelText,
                 ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
             }
         );
         return this;
@@ -138,6 +140,7 @@ public sealed class PlotBuilder
                 Outline = area.OutlineStyle,
                 Label = area.LabelText,
                 ColorBy = Channel(area.ColorByRef),
+                Position = area.PositionValue,
                 FillBy = Channel(area.FillByRef),
             }
         );
@@ -176,6 +179,7 @@ public sealed class PlotBuilder
                 Outline = area.OutlineStyle,
                 Label = area.LabelText,
                 ColorBy = Channel(area.ColorByRef),
+                Position = area.PositionValue,
                 FillBy = Channel(area.FillByRef),
             }
         );
@@ -215,6 +219,7 @@ public sealed class PlotBuilder
                 Fill = fill.FillColor,
                 Label = fill.LabelText,
                 ColorBy = Channel(fill.ColorByRef),
+                Position = fill.PositionValue,
             }
         );
         return this;
@@ -259,6 +264,7 @@ public sealed class PlotBuilder
                 Fill = fill.FillColor,
                 Label = fill.LabelText,
                 ColorBy = Channel(fill.ColorByRef),
+                Position = fill.PositionValue,
             }
         );
         return this;
@@ -302,6 +308,7 @@ public sealed class PlotBuilder
                 Fill = fill.FillColor,
                 Label = fill.LabelText,
                 ColorBy = Channel(fill.ColorByRef),
+                Position = fill.PositionValue,
             }
         );
         return this;
@@ -327,6 +334,7 @@ public sealed class PlotBuilder
                 Style = style.Style,
                 Label = style.LabelText,
                 ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
             }
         );
         return this;
@@ -352,6 +360,7 @@ public sealed class PlotBuilder
                 Style = style.Style,
                 Label = style.LabelText,
                 ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
             }
         );
         return this;
@@ -394,6 +403,7 @@ public sealed class PlotBuilder
                 Style = style.Style,
                 Label = style.LabelText,
                 ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
             }
         );
         return this;
@@ -444,6 +454,79 @@ public sealed class PlotBuilder
                 Style = style.Style,
                 Label = style.LabelText,
                 ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
+            }
+        );
+        return this;
+    }
+
+    /// <summary>
+    /// Adds an error bar a category, from the least yMin of its rows to the greatest yMax, in the middle of its band (design
+    /// §5.5.3, row G5a).
+    /// </summary>
+    /// <typeparam name="TY">The element type of the two columns.</typeparam>
+    /// <param name="x">The categorical column of the plot's table, on a band scale.</param>
+    /// <param name="yMin">The lower column: a stored <see cref="Column{T}"/>.</param>
+    /// <param name="yMax">The upper column: a stored <see cref="Column{T}"/>.</param>
+    /// <param name="capWidth">The width of the caps in DIPs: finite and at least 0; 0 draws none.</param>
+    /// <param name="configure">Sets the stroke, the label, the color channel, and the position; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">
+    /// A reference is <see langword="default"/> or names another table, a Y column is not a <see cref="Column{T}"/>, or the
+    /// stroke is out of range.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="capWidth"/> is not finite and at least 0.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder ErrorBar<TY>(CategoryRef x, ColumnRef<TY> yMin, ColumnRef<TY> yMax, float capWidth = 6, Action<LineBuilder>? configure = null)
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x.ToColumnRef(), nameof(x));
+        CheckStored(yMin, nameof(yMin), "an error bar's YMin");
+        CheckStored(yMax, nameof(yMax), "an error bar's YMax");
+        if (!float.IsFinite(capWidth) || capWidth < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(capWidth), capWidth, "The cap width is finite and at least 0.");
+        }
+
+        var style = Stroke(configure);
+        _layers.Add(
+            new ErrorBarLayerSpec
+            {
+                X = x.ToColumnRef(),
+                YMin = yMin,
+                YMax = yMax,
+                CapWidth = capWidth,
+                Style = style.Style,
+                Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
+            }
+        );
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a vertical line in the middle of the band of each category that has a row (design §5.5.3, row G5a).
+    /// </summary>
+    /// <param name="x">The categorical column of the plot's table, on a band scale.</param>
+    /// <param name="configure">Sets the stroke, the label, the color channel, and the position; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">The reference is <see langword="default"/> or names another table, or the stroke is out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder VRule(CategoryRef x, Action<LineBuilder>? configure = null)
+    {
+        ThrowIfBuilt();
+        CheckReference(x.ToColumnRef(), nameof(x));
+        var style = Stroke(configure);
+        _layers.Add(
+            new RuleLayerSpec
+            {
+                X = x.ToColumnRef(),
+                Style = style.Style,
+                Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
             }
         );
         return this;

@@ -227,6 +227,26 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     }
 
     /// <inheritdoc />
+    internal override void ReadChunk(int chunk, int offset, Span<double> destination, long origin)
+    {
+        var values = GetChunk(chunk).Slice(offset, destination.Length);
+        if (ScaleSpace.IsInteger<T>())
+        {
+            for (var i = 0; i < values.Length; i++)
+            {
+                destination[i] = ScaleSpace.Difference(long.CreateTruncating(values[i]), origin);
+            }
+
+            return;
+        }
+
+        for (var i = 0; i < values.Length; i++)
+        {
+            destination[i] = double.CreateTruncating(values[i]) - origin;
+        }
+    }
+
+    /// <inheritdoc />
     internal override long LowerBound(double boundary, long origin) => new M4.ColumnX<T>(this, origin).LowerBound(boundary);
 
     /// <inheritdoc />

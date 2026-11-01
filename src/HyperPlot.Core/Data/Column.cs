@@ -248,6 +248,14 @@ public abstract class Column
     internal virtual CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool, RowRange rows) =>
         throw new InvalidOperationException($"A {KindName} is not a Y column of bars.");
 
+    /// <summary>
+    /// Writes d(v(i)) of a chunk's elements from <paramref name="offset"/> into <paramref name="destination"/>, as many as it
+    /// holds (row G5a), as <see cref="DifferenceAt"/> does: exact for integer columns. A stored or a uniform column has values
+    /// to read.
+    /// </summary>
+    internal virtual void ReadChunk(int chunk, int offset, Span<double> destination, long origin) =>
+        throw new InvalidOperationException($"A {KindName} has no values to stack.");
+
     /// <summary>Returns the gather of the rows of a split layer's categories that do not lie in one run (design §5.5.3, row G7c).</summary>
     internal abstract GatherChannel MakeGather(ReadOnlySpan<long> counts);
 

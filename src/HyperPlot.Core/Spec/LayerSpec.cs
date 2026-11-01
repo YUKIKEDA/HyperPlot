@@ -36,4 +36,15 @@ public abstract record LayerSpec : SpecNode
     /// geoms take it. Null leaves the fill to <see cref="ColorBy"/>.
     /// </summary>
     public ColumnRef? FillBy { get; init; }
+
+    /// <summary>
+    /// Gets how the layer places its elements against each other (design §4.1, row G5a); null for the geom's default: a
+    /// stack for bars and areas split by categories, the elements as they are otherwise.
+    /// </summary>
+    /// <remarks>
+    /// A stack over a numeric x keeps, on the workers, the union of the groups' x values and two cumulative columns a group:
+    /// as many bytes as the union's length times (an x value plus 16 a group), with their pyramids. It is made again when a
+    /// column of the layer changes.
+    /// </remarks>
+    public PositionSpec? Position { get; init; }
 }

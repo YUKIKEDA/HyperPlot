@@ -363,11 +363,15 @@ internal sealed class BarPlan : LayerPlan
 
         if (end - first <= 4L * context.X.Size)
         {
+            // A dodged part (row G5a): its place of the width, in data units, x + Width · ((k + 0.5) / n − 0.5).
+            var (shift, drawn) = DodgeSlot is { } slot
+                ? (Width * (((slot.Index + 0.5) / slot.Count) - 0.5), Width / slot.Count * (1 - DodgePadding(bar)) / 2)
+                : (0.0, half);
             for (var i = first; i < end; i++)
             {
-                var d = x.DifferenceAt(i, context.XOrigin);
-                var left = context.PixelX(d - half);
-                var right = context.PixelX(d + half);
+                var d = x.DifferenceAt(i, context.XOrigin) + shift;
+                var left = context.PixelX(d - drawn);
+                var right = context.PixelX(d + drawn);
                 var top = context.ElementY(y, i);
                 context.DrawRect(left, right, top, baseline, barFill);
             }
@@ -494,7 +498,8 @@ internal sealed class CategoryBarPlan : LayerPlan
             for (var category = 0; category < band.Count; category++)
             {
                 var j = band.Position(category);
-                Bars(context, (a * j) + b, (a * (j + band.Width)) + b, extremes.Min[category], extremes.Max[category], baseline, fill);
+                var (from, to) = Place((a * j) + b, (a * (j + band.Width)) + b);
+                Bars(context, from, to, extremes.Min[category], extremes.Max[category], baseline, fill);
             }
 
             return;

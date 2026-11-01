@@ -437,6 +437,7 @@ public sealed class ColorChannelTests
                     X = x,
                     Y = y,
                     ColorBy = cat,
+                    Position = Position.Identity,
                 },
                 c => new AreaLayerSpec
                 {
@@ -469,6 +470,7 @@ public sealed class ColorChannelTests
                     X = x,
                     Y = y,
                     ColorBy = cat,
+                    Position = Position.Identity,
                     Width = 0.05,
                 },
                 c => new BarLayerSpec
@@ -678,6 +680,7 @@ public sealed class ColorChannelTests
             Outline = new StrokeSpec(null),
             FillBy = t.Cat("code").ToColumnRef(),
             ColorBy = t.Cat("mixed").ToColumnRef(),
+            Position = Position.Identity,
         };
         using var plan = TestPlans.Create(pool, Size, Size);
         var list = plan.Render(Spec(t, area));
@@ -867,6 +870,7 @@ public sealed class ColorChannelTests
                 X = t.Cat("x").ToColumnRef(),
                 Y = t.Col<double>("y"),
                 ColorBy = t.Cat("c").ToColumnRef(),
+                Position = Position.Identity,
             }
         ) with
         {
