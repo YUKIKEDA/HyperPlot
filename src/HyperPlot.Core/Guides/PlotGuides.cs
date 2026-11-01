@@ -358,6 +358,13 @@ internal sealed class PlotGuides
             return;
         }
 
+        // A copy of the axis (no transform) shows the primary's ticks as they are, whatever its kind (ggplot2's dup_axis).
+        if (derived.Transform is null)
+        {
+            axis.CopyTicks(primary);
+            return;
+        }
+
         axis.Choose(nice: false);
 
         static double Apply(IScale? transform, double value, bool forward)

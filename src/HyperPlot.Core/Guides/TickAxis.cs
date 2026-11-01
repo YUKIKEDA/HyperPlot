@@ -237,6 +237,24 @@ internal sealed class TickAxis
     internal void SetFinalDomain(in ScaleRange domain) => FinalDomain = domain;
 
     /// <summary>
+    /// Takes another axis's chosen ticks, their pixels, labels, and extents, and its final domain (row G6a): a copy of an axis
+    /// on the opposite side. Allocates only to grow the buffers.
+    /// </summary>
+    internal void CopyTicks(TickAxis other)
+    {
+        _count = 0;
+        for (var i = 0; i < other._count; i++)
+        {
+            Grow();
+            (_pixels[i], _labels[i], _extents[i]) = (other._pixels[i], other._labels[i], other._extents[i]);
+            (_numbers[i], _times[i], _boundaries[i]) = (other._numbers[i], other._times[i], other._boundaries[i]);
+            _count++;
+        }
+
+        FinalDomain = other.FinalDomain;
+    }
+
+    /// <summary>
     /// Writes the candidate numeric ticks' labels (design §4.6) and returns the overlap value of Talbot et al. 2010 §4.4.4:
     /// −∞ when two labels overlap. <paramref name="sameDecimals"/> keeps the decimals alike over the axis (the extended
     /// search); otherwise each label takes its own (log, symlog).

@@ -438,9 +438,15 @@ internal sealed class PlotPlan : IDisposable
                 );
             }
 
-            foreach (var (scale, name) in (ReadOnlySpan<(ScaleSpec, string)>)[(plot.ScaleX, "ScaleX"), (plot.ScaleY, "ScaleY")])
+            var image = plot.Layers[i];
+            ReadOnlySpan<(ScaleSpec?, string)> scales =
+            [
+                image.SecondaryX ? (plot.ScaleX2, "ScaleX2") : (plot.ScaleX, "ScaleX"),
+                image.SecondaryY ? (plot.ScaleY2, "ScaleY2") : (plot.ScaleY, "ScaleY"),
+            ];
+            foreach (var (scale, name) in scales)
             {
-                if (scale is not (LinearScaleSpec or TimeScaleSpec))
+                if (scale is not (null or LinearScaleSpec or TimeScaleSpec))
                 {
                     throw new ArgumentException(
                         $"Layer {i} is an image, and the {name} is a {scale.GetType().Name}; an image is drawn on linear and time scales only, where its rectangle stays a parallelogram (design §5.5.3)."
@@ -451,6 +457,119 @@ internal sealed class PlotPlan : IDisposable
             return;
         }
     }
+
+    /// <summary>
+    /// Throws unless the axes' sides and the secondary scales and axes go together (design §4.1, §4.8, row G6a): a layer on a
+    /// secondary scale has one, a secondary scale has a layer on it, a direction has one second axis, a side fits its
+    /// direction and a secondary scale lies opposite its primary, a transform's axis belongs to a primary, a color scale's
+    /// inner scale has no axis, a polar plot has none of these, and a primary that no layer lies on has a domain given.
+    /// </summary>
+    private static void CheckAxes(PlotSpec plot)
+    {
+        foreach (var ofX in (ReadOnlySpan<bool>)[true, false])
+        {
+            var (primary, secondary, name, secondName) = ofX
+                ? (plot.ScaleX, plot.ScaleX2, "ScaleX", "ScaleX2")
+                : (plot.ScaleY, plot.ScaleY2, "ScaleY", "ScaleY2");
+            var (on, off) = (-1, -1);
+            for (var i = 0; i < plot.Layers.Count; i++)
+            {
+                (on, off) = On(plot.Layers[i], ofX) ? (on < 0 ? i : on, off) : (on, off < 0 ? i : off);
+            }
+
+            if (on >= 0 && secondary is null)
+            {
+                throw new ArgumentException(
+                    $"Layer {on} lies on the secondary {(ofX ? "x" : "y")} scale, and the {secondName} is null (design §4.1)."
+                );
+            }
+
+            if (secondary is not null && on < 0)
+            {
+                throw new ArgumentException(
+                    $"The {secondName} has no layer on it to learn from; put one there with Secondary{(ofX ? "X" : "Y")} (design §4.1)."
+                );
+            }
+
+            if (secondary is not null && primary is ContinuousScaleSpec { SecondaryAxis: not null })
+            {
+                throw new ArgumentException(
+                    $"The {name} has a secondary axis, and the {secondName} is given too; the side opposite the primary holds one axis (design §4.1)."
+                );
+            }
+
+            if (secondary is { SecondaryAxis: not null })
+            {
+                throw new ArgumentException($"The {secondName} has a secondary axis; a transform's axis belongs to a primary scale (design §4.1).");
+            }
+
+            if (on >= 0 && off < 0 && !Given(primary))
+            {
+                throw new ArgumentException(
+                    $"Every layer lies on the {secondName}, and the {name} has no domain given; give it one with WithDomain, or put a layer on it (design §4.1)."
+                );
+            }
+
+            var side = SideOf(primary);
+            CheckSide(side, ofX, name);
+            CheckSide(secondary?.Side, ofX, secondName);
+            var primaryFar = side is { } given && Far(given);
+            if (secondary?.Side is { } secondSide && Far(secondSide) == primaryFar)
+            {
+                throw new ArgumentException(
+                    $"The {secondName}'s axis is on the {secondary!.Side}, the side of the {name}'s; a secondary scale lies opposite its primary (design §4.1)."
+                );
+            }
+
+            if (
+                plot.Coord is PolarCoordSpec
+                && (side is not null || secondary is not null || primary is ContinuousScaleSpec { SecondaryAxis: not null })
+            )
+            {
+                throw new ArgumentException(
+                    $"The coordinate system is polar, and the {name} has a side or a secondary axis, or the {secondName} is given; the angle's and the radius's axes have no sides (design §4.1)."
+                );
+            }
+        }
+
+        var inner = plot.ScaleColor switch
+        {
+            SequentialScaleSpec sequential => sequential.Scale,
+            DivergingScaleSpec diverging => diverging.Scale,
+            _ => null,
+        };
+        if (inner is not null && (inner.Side is not null || inner.SecondaryAxis is not null))
+        {
+            throw new ArgumentException(
+                "The color scale's inner scale has a side or a secondary axis; the color bar is a legend, not an axis (design §4.1)."
+            );
+        }
+
+        static AxisSide? SideOf(ScaleSpec scale) =>
+            scale switch
+            {
+                ContinuousScaleSpec c => c.Side,
+                BandScaleSpec b => b.Side,
+                _ => null,
+            };
+
+        static bool Far(AxisSide side) => side is AxisSide.Top or AxisSide.Right;
+
+        static bool Given(ScaleSpec scale) => scale is TimeScaleSpec { Domain: not null } || scale is ContinuousScaleSpec { GivenDomain: not null };
+
+        static void CheckSide(AxisSide? side, bool ofX, string name)
+        {
+            if (side is { } value && (ofX ? value is not (AxisSide.Bottom or AxisSide.Top) : value is not (AxisSide.Left or AxisSide.Right)))
+            {
+                throw new ArgumentException(
+                    $"The {name}'s axis is on the {value}; {(ofX ? "x goes on the Bottom or the Top" : "y goes on the Left or the Right")} (design §4.1)."
+                );
+            }
+        }
+    }
+
+    /// <summary>Returns whether a layer lies on an axis's secondary scale (row G6a).</summary>
+    private static bool On(LayerSpec layer, bool ofX) => ofX ? layer.SecondaryX : layer.SecondaryY;
 
     /// <summary>
     /// Throws when a text layer's size at the target's scale passes 512 pixels (design §4.1, row G8), as the theme's text
@@ -485,8 +604,19 @@ internal sealed class PlotPlan : IDisposable
 
         CheckTextRows(plot);
         CheckImages(plot);
-        CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true);
-        CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false);
+        CheckAxes(plot);
+        CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true, secondary: false);
+        CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false, secondary: false);
+        if (plot.ScaleX2 is { } x2)
+        {
+            CheckScale(plot, x2, _spec?.ScaleX2, "ScaleX2", ofX: true, secondary: true);
+        }
+
+        if (plot.ScaleY2 is { } y2)
+        {
+            CheckScale(plot, y2, _spec?.ScaleY2, "ScaleY2", ofX: false, secondary: true);
+        }
+
         CheckColor(plot);
     }
 
@@ -675,7 +805,7 @@ internal sealed class PlotPlan : IDisposable
     /// and a time scale reads long date-time columns. A user cannot derive a new continuous kind: its base has internal
     /// abstract members.
     /// </summary>
-    private void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX)
+    private void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX, bool secondary)
     {
         if (ofX && scale is BandScaleSpec band)
         {
@@ -690,9 +820,15 @@ internal sealed class PlotPlan : IDisposable
             );
         }
 
-        // A continuous scale reads numbers: a categorical column needs a band scale (design §4.2, row G7b).
+        // A continuous scale reads numbers: a categorical column needs a band scale (design §4.2, row G7b). A scale reads the
+        // layers it maps (row G6a).
         for (var i = 0; i < plot.Layers.Count; i++)
         {
+            if (On(plot.Layers[i], ofX) != secondary)
+            {
+                continue;
+            }
+
             var count = LayerPlan.AxisChannels(plot.Layers[i], ofX, _channels);
             for (var c = 0; c < count; c++)
             {
@@ -719,6 +855,11 @@ internal sealed class PlotPlan : IDisposable
         // An index, not foreach: the interface's enumerator would be boxed on every Render.
         for (var i = 0; i < plot.Layers.Count; i++)
         {
+            if (On(plot.Layers[i], ofX) != secondary)
+            {
+                continue;
+            }
+
             var count = LayerPlan.AxisChannels(plot.Layers[i], ofX, _channels);
             for (var c = 0; c < count; c++)
             {
