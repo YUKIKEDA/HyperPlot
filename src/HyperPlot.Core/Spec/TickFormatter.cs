@@ -116,7 +116,10 @@ public static class ScaleSpecExtensions
             throw new ArgumentException("A time scale takes no secondary axis of a transform: its values are dates, not doubles.", nameof(scale));
         }
 
-        return scale with { SecondaryAxis = new SecondaryAxisSpec { Transform = transform, Title = title } };
+        return scale with
+        {
+            SecondaryAxis = new SecondaryAxisSpec { Transform = transform, Title = title },
+        };
     }
 
     /// <summary>Returns a copy of a band scale with an axis title (row G7b).</summary>

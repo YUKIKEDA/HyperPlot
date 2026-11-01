@@ -803,6 +803,12 @@ internal abstract class LayerPlan
             return true;
         }
 
+        // A layer put on the other scale is mapped and extracted by it (design §4.8, row G6a).
+        if (before.SecondaryX != after.SecondaryX || before.SecondaryY != after.SecondaryY)
+        {
+            return true;
+        }
+
         // A stat is made by the workers (design §4.8, row G5b): another one, or another position of a stat layer (its bars'
         // pieces are placed in the stat), makes the layer again.
         if (
@@ -1092,17 +1098,24 @@ internal sealed class PlanBuild(
     /// <summary>Gets or sets the position in the spec of the layer being made: messages name it (row G5b).</summary>
     public int Layer { get; set; }
 
-    /// <summary>Gets the plot's x scale, which bins are chosen in (row G5b).</summary>
+    /// <summary>Gets the x scale of the layer being made, which bins are chosen in (row G5b): the primary or the secondary (row G6a).</summary>
     public ScaleSpec? XScale => xScale;
 
     /// <summary>Gets the x scale's transform to its space, or null for linear and time (row G5b).</summary>
     public IScale? XTransform => xTransform;
 
-    /// <summary>Gets the plot's y scale, which 2D bins choose their y bins in (row G5c).</summary>
+    /// <summary>Gets the y scale of the layer being made, which 2D bins choose their y bins in (row G5c).</summary>
     public ScaleSpec? YScale => yScale;
 
     /// <summary>Gets the y scale's transform to its space, or null for linear and time (row G5c).</summary>
     public IScale? YTransform => yTransform;
+
+    /// <summary>
+    /// Sets the scales and the M4 batch of the layer being made (row G6a): its x and its y on the primary or the secondary
+    /// scale, and the batch of that pair, which M4 runs over with that pair's origins and its x scale's boundaries.
+    /// </summary>
+    public void Use(M4Batch layerBatch, ScaleSpec? layerX, IScale? layerXTransform, ScaleSpec? layerY, IScale? layerYTransform) =>
+        (batch, xScale, xTransform, yScale, yTransform) = (layerBatch, layerX, layerXTransform, layerY, layerYTransform);
 
     /// <summary>Returns the mipmap the plan holds over a raster, made the first time (row G9).</summary>
     public RasterPyramid Mipmap(Raster raster) => mipmap is null ? raster.MakePyramid() : mipmap(raster);
@@ -1239,7 +1252,8 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     public RenderList List => list;
 
-    public M4Batch Batch => batch;
+    /// <summary>Gets the M4 batch the layer being recorded reads its series' results from: its pair of scales' (row G6a).</summary>
+    public M4Batch Batch { get; private set; } = batch;
 
     public PlotGuides Guides => guides;
 
@@ -1299,6 +1313,9 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         XOrigin = x.Transform is null ? x.Domain.Origin : 0;
         YOrigin = y.Transform is null ? y.Domain.Origin : 0;
     }
+
+    /// <summary>Sets the M4 batch of the layer about to be recorded (row G6a): the batch of its pair of scales.</summary>
+    public void Use(M4Batch layerBatch) => Batch = layerBatch;
 
     /// <summary>Sets the panel's clip back, after a layer that may have changed it.</summary>
     public void ClipToPanel() => list.SetClip(Panel.Left, Panel.Top, Panel.Width, Panel.Height);

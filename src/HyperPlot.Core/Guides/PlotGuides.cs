@@ -17,15 +17,35 @@ internal sealed class PlotGuides
     /// <summary>The legend's sample of a text layer (design §5.5.3, row G8).</summary>
     private const string SampleText = "a";
 
+    // The panel's sides, the places of the axes (row G6a).
+    private const int SideBottom = 0;
+    private const int SideTop = 1;
+    private const int SideLeft = 2;
+    private const int SideRight = 3;
+
     private readonly TextEngine _text;
     private readonly float _scale;
     private readonly int _width;
     private readonly int _height;
     private readonly LabelTable _labels = new();
     private readonly Vector2[] _segment = new Vector2[2];
+    private readonly SecondaryTransform _secondaryX = new();
+    private readonly SecondaryTransform _secondaryY = new();
+
+    // The axes on the panel's four sides (row G6a): at Bottom, Top, Left, Right; a side with no axis holds a null axis.
+    private readonly SideAxis[] _sides = new SideAxis[4];
     private Vector2[] _curve = new Vector2[256];
     private CategoricalColumn? _categories;
     private ColorScale? _color;
+
+    // The scales the secondary axes of a transform format their labels with, kept while their format is the same (row G6a).
+    private LinearScaleSpec? _formatX;
+    private LinearScaleSpec? _formatY;
+
+    // The bands of the last layout that the recording reads (row G6a): the title's, the right axis's, and the legend's.
+    private int _titleBand;
+    private int _rightBand;
+    private int _legendBand;
 
     /// <summary>Gets the text engine the guides measure with.</summary>
     internal TextEngine Text => _text;
@@ -37,6 +57,10 @@ internal sealed class PlotGuides
         X.Labels = _labels;
         Y.Text = text;
         Y.Labels = _labels;
+        X2.Text = text;
+        X2.Labels = _labels;
+        Y2.Text = text;
+        Y2.Labels = _labels;
         ColorBar.Text = text;
         ColorBar.Labels = _labels;
     }
@@ -52,6 +76,15 @@ internal sealed class PlotGuides
 
     /// <summary>Gets the ticks of y.</summary>
     internal TickAxis Y { get; } = new();
+
+    /// <summary>
+    /// Gets the ticks of x's second axis (row G6a): the secondary x scale's, over its own domain, or those of a transform of x
+    /// on the side opposite x.
+    /// </summary>
+    internal TickAxis X2 { get; } = new();
+
+    /// <summary>Gets the ticks of y's second axis (row G6a).</summary>
+    internal TickAxis Y2 { get; } = new();
 
     /// <summary>Gets a value indicating whether the last layout put x on the left and y on the bottom (row G10).</summary>
     internal bool Flipped { get; private set; }
@@ -98,25 +131,49 @@ internal sealed class PlotGuides
         IScale? yTransform,
         ScaleRange y,
         CategoricalColumn? categories,
-        ColorScale? color = null
+        ColorScale? color = null,
+        SecondaryDomains secondary = default
     )
     {
         _categories = categories;
         _color = color;
         var theme = spec.Theme;
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
-        (Polar, ThetaBand, X.Circular, Y.Circular) = (null, 0, false, false);
+        (Polar, ThetaBand, X.Circular, Y.Circular, _titleBand, _rightBand, _legendBand) = (null, 0, false, false, 0, 0, 0);
         if (spec.Coord is PolarCoordSpec polar)
         {
             LayoutPolar(spec, polar, xTransform, x, yTransform, y);
             return;
         }
 
-        var (bottom, bottomScale) = Bottom(spec);
-        var (side, sideScale) = Side(spec);
-        var (bottomTransform, bottomDomain, sideTransform, sideDomain) = Flipped ? (yTransform, y, xTransform, x) : (xTransform, x, yTransform, y);
-        bottom.Horizontal = true;
-        side.Horizontal = false;
+        LayoutSides(spec, theme, xTransform, x, yTransform, y, secondary);
+    }
+
+    /// <summary>
+    /// Lays a cartesian plot out on its four sides (design §4.6, row G6a): the top and bottom bands, which do not depend on
+    /// ticks; the ticks of the left and right axes over the panel's height, their bands; the ticks of the bottom and top axes
+    /// over its width. Each axis's ticks are chosen once, a primary axis before the axis of a transform of it. With the axes
+    /// only on the bottom and the left, the steps are those of row G3.
+    /// </summary>
+    private void LayoutSides(
+        PlotSpec spec,
+        Theme theme,
+        IScale? xTransform,
+        ScaleRange x,
+        IScale? yTransform,
+        ScaleRange y,
+        SecondaryDomains secondary
+    )
+    {
+        AssignSides(spec);
+        var (horizontal, vertical) = Flipped ? (Y, X) : (X, Y);
+        var (horizontalSecond, verticalSecond) = Flipped ? (Y2, X2) : (X2, Y2);
+        (horizontal.Horizontal, vertical.Horizontal, horizontalSecond.Horizontal, verticalSecond.Horizontal) = (true, false, true, false);
+        X2.Circular = Y2.Circular = false;
+        var (bottomScale0, sideScale0) = (new AxisScale(Flipped ? spec.ScaleY : spec.ScaleX), new AxisScale(Flipped ? spec.ScaleX : spec.ScaleY));
+        var (horizontalTransform, horizontalDomain, verticalTransform, verticalDomain) = Flipped
+            ? (yTransform, y, xTransform, x)
+            : (xTransform, x, yTransform, y);
         var padding = Round(theme.Padding);
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
@@ -128,65 +185,244 @@ internal sealed class PlotGuides
         var titleStyle = Style(theme, theme.AxisTitleSize);
         var lineHeight = _text.Measure("0", tickStyle).Height;
         var titleHeight = _text.Measure("0", titleStyle).Height;
-        var bottomBand = 0;
+        var (bottomBand, topBand) = (0, 0);
         if (theme.ShowAxes)
         {
-            bottomBand = tick + gap + Ceiling(lineHeight) + (HasText(bottomScale.Title) ? gap + Ceiling(titleHeight) : 0);
+            bottomBand = HorizontalBand(_sides[SideBottom], tick, gap, lineHeight, titleHeight);
+            topBand = HorizontalBand(_sides[SideTop], tick, gap, lineHeight, titleHeight);
         }
 
-        // The bottom band does not depend on ticks, so the panel's height is known before the legend: the color bar's length
-        // comes from it, and its ticks' labels from that (design §4.6, row G7c).
-        Top = figureTop + titleBand;
+        // The horizontal bands do not depend on ticks, so the panel's height is known before the legend: the color bar's
+        // length comes from it, and its ticks' labels from that (design §4.6, row G7c).
+        _titleBand = titleBand;
+        Top = figureTop + titleBand + topBand;
         Height = figureBottom - bottomBand - Top;
-        var legendBand = LegendBand(spec, theme, gap, tick, Height, tickStyle, lineHeight);
+        _legendBand = LegendBand(spec, theme, gap, tick, Height, tickStyle, lineHeight);
 
-        // The left axis runs up from the panel's bottom, down when reversed: below it the bottom band, above it the title's.
+        // The vertical axes run up from the panel's bottom, down when reversed: below them the bottom band, above them the
+        // title's and the top one.
         var (below, above) = (figureBottom - (Top + Height), Top - figureTop);
         Prepare(
-            side,
-            sideScale,
-            sideTransform,
-            sideDomain,
+            vertical,
+            sideScale0,
+            verticalTransform,
+            verticalDomain,
             Height,
             theme.TickSpacingY,
             tickStyle,
             lineHeight,
             theme,
-            room: sideScale.Reverse ? (above, below) : (below, above)
+            room: sideScale0.Reverse ? (above, below) : (below, above)
         );
-        var sideBand = 0;
+        PrepareSecond(spec, horizontal: false, Height, theme, tickStyle, lineHeight, (below, above), secondary);
+        var (leftBand, rightBand) = (0, 0);
         if (theme.ShowAxes)
         {
-            var widest = 0f;
-            foreach (var label in side.TickLabels)
-            {
-                widest = label.Length == 0 ? widest : MathF.Max(widest, _text.Measure(label, tickStyle).Width);
-            }
-
-            sideBand = tick + gap + Ceiling(widest) + (HasText(sideScale.Title) ? gap + Ceiling(titleHeight) : 0);
+            leftBand = VerticalBand(_sides[SideLeft], tick, gap, tickStyle, titleHeight);
+            rightBand = VerticalBand(_sides[SideRight], tick, gap, tickStyle, titleHeight);
         }
 
-        Left = figureLeft + sideBand;
-        Width = figureRight - legendBand - Left;
+        _rightBand = rightBand;
+        Left = figureLeft + leftBand;
+        Width = figureRight - _legendBand - rightBand - Left;
         if (Empty)
         {
             return;
         }
 
-        // The bottom axis runs right from the panel's left, left when reversed: the left band before it, the legend's after.
+        // The horizontal axes run right from the panel's left, left when reversed: the left band before them, the right one
+        // and the legend's after.
         var (before, after) = (Left - figureLeft, figureRight - (Left + Width));
         Prepare(
-            bottom,
-            bottomScale,
-            bottomTransform,
-            bottomDomain,
+            horizontal,
+            bottomScale0,
+            horizontalTransform,
+            horizontalDomain,
             Width,
             theme.TickSpacingX,
             tickStyle,
             lineHeight,
             theme,
-            room: bottomScale.Reverse ? (after, before) : (before, after)
+            room: bottomScale0.Reverse ? (after, before) : (before, after)
         );
+        PrepareSecond(spec, horizontal: true, Width, theme, tickStyle, lineHeight, (before, after), secondary);
+    }
+
+    /// <summary>
+    /// Puts each axis on its side (design §4.1, row G6a): a primary scale on its <c>Side</c> (the bottom and the left by
+    /// default; flipped, x's bottom is the left and its top the right, y's left the bottom and its right the top), and its
+    /// second axis, a secondary scale or a transform's, on the opposite side.
+    /// </summary>
+    private void AssignSides(PlotSpec spec)
+    {
+        Array.Clear(_sides);
+        Family(spec.ScaleX, X, spec.ScaleX2, X2, horizontal: !Flipped);
+        Family(spec.ScaleY, Y, spec.ScaleY2, Y2, horizontal: Flipped);
+
+        void Family(ScaleSpec primary, TickAxis axis, ContinuousScaleSpec? secondScale, TickAxis second, bool horizontal)
+        {
+            var far = primary switch
+            {
+                ContinuousScaleSpec c => c.Side is AxisSide.Top or AxisSide.Right,
+                BandScaleSpec b => b.Side is AxisSide.Top,
+                _ => false,
+            };
+            var (near, farSide) = horizontal ? (SideBottom, SideTop) : (SideLeft, SideRight);
+            _sides[far ? farSide : near] = new SideAxis(axis, new AxisScale(primary), Primary: true);
+            if (secondScale is not null)
+            {
+                _sides[far ? near : farSide] = new SideAxis(second, new AxisScale(secondScale), Primary: false);
+            }
+            else if (primary is ContinuousScaleSpec { SecondaryAxis: { } derived })
+            {
+                _sides[far ? near : farSide] = new SideAxis(second, new AxisScale(primary, derived), Primary: false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Chooses the ticks of a direction's second axis, if it has one (row G6a): a secondary scale's over its own domain, as a
+    /// primary's; or a transform's over the primary's final domain, through the transform, without nice.
+    /// </summary>
+    private void PrepareSecond(
+        PlotSpec spec,
+        bool horizontal,
+        int length,
+        Theme theme,
+        in TextStyle style,
+        float lineHeight,
+        (double Before, double After) room,
+        SecondaryDomains secondary
+    )
+    {
+        var (near, far) = horizontal ? (SideBottom, SideTop) : (SideLeft, SideRight);
+        var at =
+            _sides[near] is { Primary: false, Axis: not null } ? near
+            : _sides[far] is { Primary: false, Axis: not null } ? far
+            : -1;
+        if (at < 0)
+        {
+            return;
+        }
+
+        var side = _sides[at];
+        var ofX = side.Axis == X2;
+        var spacing = horizontal ? theme.TickSpacingX : theme.TickSpacingY;
+        if (side.Scale.Derived is not { } derived)
+        {
+            var (transform, domain) = ofX ? (secondary.XTransform, secondary.X) : (secondary.YTransform, secondary.Y);
+            Prepare(
+                side.Axis!,
+                side.Scale,
+                transform,
+                domain,
+                length,
+                spacing,
+                style,
+                lineHeight,
+                theme,
+                room: side.Scale.Reverse ? (room.After, room.Before) : room
+            );
+            return;
+        }
+
+        // The axis of a transform of the primary: its ticks over the transformed ends, placed where they map back.
+        var primary = ofX ? X : Y;
+        var primaryScale = (ContinuousScaleSpec)side.Scale.Spec;
+        var final = primary.FinalDomain;
+        var (low, high) = (final.Origin + final.Lower, final.Origin + final.Upper);
+        var (a, b) = (primary.Inverse(low), primary.Inverse(high));
+        var (ta, tb) = (Apply(derived.Transform, a, forward: true), Apply(derived.Transform, b, forward: true));
+        CheckRoundTrip(derived.Transform, a, ta, ofX);
+        CheckRoundTrip(derived.Transform, b, tb, ofX);
+        var decreasing = tb < ta;
+        var composed = ofX ? _secondaryX : _secondaryY;
+        composed.Set(primary.Transform, derived.Transform, decreasing);
+        var reverse = primaryScale.Reverse != decreasing;
+        _sides[at] = side with { Scale = side.Scale with { Flip = decreasing } };
+        var axis = side.Axis!;
+        (axis.Before, axis.After) = reverse ? (room.After, room.Before) : room;
+        axis.Scale = FormatScale(derived.TickFormat, ofX);
+        axis.SetBand(null, null);
+        axis.Transform = composed;
+        axis.Domain = decreasing ? ScaleRange.FromDouble(-high, -low) : final;
+        axis.Length = length;
+        axis.Spacing = spacing * _scale;
+        axis.Style = style;
+        axis.LineHeight = lineHeight;
+        axis.Em = style.Size;
+        if (length < 1 || !theme.ShowAxes)
+        {
+            axis.ClearCandidate();
+            axis.SetFinalDomain(axis.Domain);
+            return;
+        }
+
+        axis.Choose(nice: false);
+
+        static double Apply(IScale? transform, double value, bool forward)
+        {
+            if (transform is null)
+            {
+                return value;
+            }
+
+            Span<double> one = [value];
+            if (forward)
+            {
+                transform.Forward(one, one);
+            }
+            else
+            {
+                transform.Inverse(one, one);
+            }
+
+            return one[0];
+        }
+
+        static void CheckRoundTrip(IScale? transform, double value, double mapped, bool ofX)
+        {
+            var back = Apply(transform, mapped, forward: false);
+            if (!double.IsFinite(mapped) || !(Math.Abs(back - value) <= 1e-9 * Math.Max(Math.Abs(value), double.Epsilon)))
+            {
+                throw new ArgumentException(
+                    $"The {(ofX ? "ScaleX" : "ScaleY")}'s secondary axis maps the domain's end {value} to {mapped} and back to {back}; its transform is strictly monotonic over the domain (design §4.1)."
+                );
+            }
+        }
+    }
+
+    /// <summary>Returns the scale a transform's axis formats its labels with: kept while the format is the same, so that a layout allocates nothing.</summary>
+    private LinearScaleSpec FormatScale(TickFormatter? format, bool ofX)
+    {
+        ref var kept = ref ofX ? ref _formatX : ref _formatY;
+        if (kept is null || !Equals(kept.TickFormat, format))
+        {
+            kept = Scale.Linear() with { TickFormat = format };
+        }
+
+        return kept;
+    }
+
+    /// <summary>Returns the height of a horizontal side's band: the ticks, the labels' line, and the title's (design §4.6).</summary>
+    private static int HorizontalBand(in SideAxis side, int tick, int gap, float lineHeight, float titleHeight) =>
+        side.Axis is null ? 0 : tick + gap + Ceiling(lineHeight) + (HasText(side.Scale.Title) ? gap + Ceiling(titleHeight) : 0);
+
+    /// <summary>Returns the width of a vertical side's band: the ticks, the widest label, and the title's height (design §4.6).</summary>
+    private int VerticalBand(in SideAxis side, int tick, int gap, in TextStyle style, float titleHeight)
+    {
+        if (side.Axis is null)
+        {
+            return 0;
+        }
+
+        var widest = 0f;
+        foreach (var label in side.Axis.TickLabels)
+        {
+            widest = label.Length == 0 ? widest : MathF.Max(widest, _text.Measure(label, style).Width);
+        }
+
+        return tick + gap + Ceiling(widest) + (HasText(side.Scale.Title) ? gap + Ceiling(titleHeight) : 0);
     }
 
     /// <summary>Records what goes behind the data (design §4.6): the panel and the grid.</summary>
@@ -647,6 +883,11 @@ internal sealed class PlotGuides
     /// <summary>The target's y pixel of a pixel along the left axis: bottom to top, or top to bottom when reversed.</summary>
     private double VerticalOf(AxisScale scale, double pixel) => Top + (scale.Reverse ? pixel : Height - pixel);
 
+    /// <summary>
+    /// Records the cartesian axes on their sides (design §4.6, row G6a): a line along each side with an axis, half its width
+    /// outside the panel and meeting the lines beside it; the ticks out from it; the labels beyond them; and the titles.
+    /// The bottom and the left are row G3's; the top is the bottom's mirror and the right the left's.
+    /// </summary>
     private void RecordAxes(RenderList list, PlotSpec spec, Theme theme, int gap, int tick, int padding)
     {
         var axisPixels = Round(theme.AxisWidth);
@@ -656,55 +897,196 @@ internal sealed class PlotGuides
         var halfTick = theme.TickWidth * _scale / 2;
 
         // The axis lines' centers half their width outside the panel's edges, so that they do not cover the data (design §4.6).
-        var xLine = Snap(Top + Height + (axisPixels / 2.0), axisPixels);
-        var yLine = Snap(Left - (axisPixels / 2.0), axisPixels);
-        Line(list, new Vector2(yLine, xLine), new Vector2(Left + Width, xLine), axis);
-        Line(list, new Vector2(yLine, Top), new Vector2(yLine, xLine), axis);
+        var bottomLine = Snap(Top + Height + (axisPixels / 2.0), axisPixels);
+        var topLine = Snap(Top - (axisPixels / 2.0), axisPixels);
+        var leftLine = Snap(Left - (axisPixels / 2.0), axisPixels);
+        var rightLine = Snap(Left + Width + (axisPixels / 2.0), axisPixels);
+        var (bottom, top, left, right) = (_sides[SideBottom], _sides[SideTop], _sides[SideLeft], _sides[SideRight]);
+        var (from, to) = (left.Axis is null ? Left : leftLine, right.Axis is null ? Left + Width : rightLine);
+        var (high, low) = (top.Axis is null ? Top : topLine, bottom.Axis is null ? Top + Height : bottomLine);
+        if (bottom.Axis is not null)
+        {
+            Line(list, new Vector2(from, bottomLine), new Vector2(to, bottomLine), axis);
+        }
+
+        if (top.Axis is not null)
+        {
+            Line(list, new Vector2(from, topLine), new Vector2(to, topLine), axis);
+        }
+
+        if (left.Axis is not null)
+        {
+            Line(list, new Vector2(leftLine, high), new Vector2(leftLine, low), axis);
+        }
+
+        if (right.Axis is not null)
+        {
+            Line(list, new Vector2(rightLine, high), new Vector2(rightLine, low), axis);
+        }
 
         var labelStyle = Style(theme, theme.TickLabelSize);
-        var (bottom, bottomScale) = Bottom(spec);
-        var (side, sideScale) = Side(spec);
-        var bottomLabels = bottom.TickLabels;
-        var bottomPixels = bottom.Pixels;
-        for (var i = 0; i < bottomPixels.Length; i++)
+        if (bottom.Axis is { } bottomAxis)
         {
-            var at = Snap(HorizontalOf(bottomScale, bottomPixels[i]), tickPixels);
-            Line(list, new Vector2(at, xLine), new Vector2(at, MathF.Max(xLine, Top + Height + tick - halfTick)), ticks);
-            if (bottomLabels[i].Length > 0)
+            var labels = bottomAxis.TickLabels;
+            var pixels = bottomAxis.Pixels;
+            for (var i = 0; i < pixels.Length; i++)
             {
-                list.DrawText(
-                    bottomLabels[i],
-                    new Vector2(Place(horizontal: true, bottomScale, bottom, i, at) - (bottom.Extents[i] / 2), Top + Height + tick + gap),
-                    labelStyle with
-                    {
-                        Horizontal = TextAlign.Left,
-                        Vertical = TextBaseline.Top,
-                    }
-                );
+                var at = Snap(HorizontalOf(bottom.Scale, pixels[i]), tickPixels);
+                Line(list, new Vector2(at, bottomLine), new Vector2(at, MathF.Max(bottomLine, Top + Height + tick - halfTick)), ticks);
+                if (labels[i].Length > 0)
+                {
+                    list.DrawText(
+                        labels[i],
+                        new Vector2(
+                            Place(horizontal: true, bottom.Scale, bottomAxis, i, at) - (bottomAxis.Extents[i] / 2),
+                            Top + Height + tick + gap
+                        ),
+                        labelStyle with
+                        {
+                            Horizontal = TextAlign.Left,
+                            Vertical = TextBaseline.Top,
+                        }
+                    );
+                }
             }
         }
 
-        var sideLabels = side.TickLabels;
-        var sidePixels = side.Pixels;
-        for (var i = 0; i < sidePixels.Length; i++)
+        if (top.Axis is { } topAxis)
         {
-            var at = Snap(VerticalOf(sideScale, sidePixels[i]), tickPixels);
-            Line(list, new Vector2(yLine, at), new Vector2(MathF.Min(yLine, Left - tick + halfTick), at), ticks);
-            if (sideLabels[i].Length > 0)
+            var labels = topAxis.TickLabels;
+            var pixels = topAxis.Pixels;
+            for (var i = 0; i < pixels.Length; i++)
             {
-                list.DrawText(
-                    sideLabels[i],
-                    new Vector2(Left - tick - gap - _text.Measure(sideLabels[i], labelStyle).Width, Place(horizontal: false, sideScale, side, i, at)),
-                    labelStyle with
-                    {
-                        Horizontal = TextAlign.Left,
-                        Vertical = TextBaseline.Middle,
-                    }
-                );
+                var at = Snap(HorizontalOf(top.Scale, pixels[i]), tickPixels);
+                Line(list, new Vector2(at, topLine), new Vector2(at, MathF.Min(topLine, Top - tick + halfTick)), ticks);
+                if (labels[i].Length > 0)
+                {
+                    list.DrawText(
+                        labels[i],
+                        new Vector2(Place(horizontal: true, top.Scale, topAxis, i, at) - (topAxis.Extents[i] / 2), Top - tick - gap),
+                        labelStyle with
+                        {
+                            Horizontal = TextAlign.Left,
+                            Vertical = TextBaseline.Bottom,
+                        }
+                    );
+                }
             }
         }
 
-        RecordTitles(list, spec, theme, padding);
+        if (left.Axis is { } leftAxis)
+        {
+            var labels = leftAxis.TickLabels;
+            var pixels = leftAxis.Pixels;
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                var at = Snap(VerticalOf(left.Scale, pixels[i]), tickPixels);
+                Line(list, new Vector2(leftLine, at), new Vector2(MathF.Min(leftLine, Left - tick + halfTick), at), ticks);
+                if (labels[i].Length > 0)
+                {
+                    list.DrawText(
+                        labels[i],
+                        new Vector2(
+                            Left - tick - gap - _text.Measure(labels[i], labelStyle).Width,
+                            Place(horizontal: false, left.Scale, leftAxis, i, at)
+                        ),
+                        labelStyle with
+                        {
+                            Horizontal = TextAlign.Left,
+                            Vertical = TextBaseline.Middle,
+                        }
+                    );
+                }
+            }
+        }
+
+        if (right.Axis is { } rightAxis)
+        {
+            var labels = rightAxis.TickLabels;
+            var pixels = rightAxis.Pixels;
+            for (var i = 0; i < pixels.Length; i++)
+            {
+                var at = Snap(VerticalOf(right.Scale, pixels[i]), tickPixels);
+                Line(list, new Vector2(rightLine, at), new Vector2(MathF.Max(rightLine, Left + Width + tick - halfTick), at), ticks);
+                if (labels[i].Length > 0)
+                {
+                    list.DrawText(
+                        labels[i],
+                        new Vector2(Left + Width + tick + gap, Place(horizontal: false, right.Scale, rightAxis, i, at)),
+                        labelStyle with
+                        {
+                            Horizontal = TextAlign.Left,
+                            Vertical = TextBaseline.Middle,
+                        }
+                    );
+                }
+            }
+        }
+
+        RecordSideTitles(list, theme, padding);
+    }
+
+    /// <summary>
+    /// Records the cartesian axes' titles (design §4.6, row G6a): the bottom one at the figure's bottom, the top one under the
+    /// plot's title, both centered on the panel; the left one turned counterclockwise at the figure's left, the right one
+    /// turned clockwise against the legend's band, so that it reads top to bottom, both centered beside the panel.
+    /// </summary>
+    private void RecordSideTitles(RenderList list, Theme theme, int padding)
+    {
+        var titleStyle = Style(theme, theme.AxisTitleSize);
+        if (_sides[SideBottom].Scale.Title is { Length: > 0 } bottomTitle && _sides[SideBottom].Axis is not null)
+        {
+            list.DrawText(
+                bottomTitle,
+                new Vector2(Left + (Width / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
+                titleStyle with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Bottom,
+                }
+            );
+        }
+
+        if (_sides[SideTop].Scale.Title is { Length: > 0 } topTitle && _sides[SideTop].Axis is not null)
+        {
+            list.DrawText(
+                topTitle,
+                new Vector2(Left + (Width / 2f) - (_text.Measure(topTitle, titleStyle).Width / 2), padding + _titleBand),
+                titleStyle with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Top,
+                }
+            );
+        }
+
+        if (_sides[SideLeft].Scale.Title is { Length: > 0 } leftTitle && _sides[SideLeft].Axis is not null)
+        {
+            list.DrawText(
+                leftTitle,
+                new Vector2(padding, Top + (Height / 2f) + (_text.Measure(leftTitle, titleStyle).Width / 2)),
+                titleStyle with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Top,
+                    Rotation = TextRotation.CounterClockwise90,
+                }
+            );
+        }
+
+        if (_sides[SideRight].Scale.Title is { Length: > 0 } rightTitle && _sides[SideRight].Axis is not null)
+        {
+            list.DrawText(
+                rightTitle,
+                new Vector2(_width - padding - _legendBand, Top + (Height / 2f) - (_text.Measure(rightTitle, titleStyle).Width / 2)),
+                titleStyle with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Top,
+                    Rotation = TextRotation.Clockwise90,
+                }
+            );
+        }
     }
 
     /// <summary>
@@ -749,7 +1131,7 @@ internal sealed class PlotGuides
         var style = Style(theme, theme.LegendSize);
         var lineHeight = _text.Measure("0", style).Height;
         var swatch = Round(theme.LegendSwatch);
-        var x = Left + Width + gap;
+        var x = Left + Width + _rightBand + gap;
         var y = (float)Top;
         for (var i = 0; i < spec.Layers.Count; i++)
         {
@@ -948,16 +1330,25 @@ internal sealed class PlotGuides
     /// An axis's scale as the guides read it (row G7b): its title, and whether its ticks run from the far end. A band scale
     /// reverses its categories' positions itself (design §4.2), so its ticks come already in place.
     /// </summary>
-    private readonly record struct AxisScale(ScaleSpec Spec)
+    /// <remarks>
+    /// The axis of a transform of a primary scale (row G6a) reads its title from <see cref="Derived"/>, and its ticks run the
+    /// other way when the transform decreases (<see cref="Flip"/>).
+    /// </remarks>
+    private readonly record struct AxisScale(ScaleSpec Spec, SecondaryAxisSpec? Derived = null, bool Flip = false)
     {
         public string? Title =>
-            Spec switch
-            {
-                ContinuousScaleSpec continuous => continuous.Title,
-                BandScaleSpec band => band.Title,
-                _ => null,
-            };
+            Derived is { } derived
+                ? derived.Title
+                : Spec switch
+                {
+                    ContinuousScaleSpec continuous => continuous.Title,
+                    BandScaleSpec band => band.Title,
+                    _ => null,
+                };
 
-        public bool Reverse => Spec is ContinuousScaleSpec { Reverse: true };
+        public bool Reverse => (Spec is ContinuousScaleSpec { Reverse: true }) != Flip;
     }
+
+    /// <summary>An axis on a side of the panel (row G6a): its ticks, its scale, and whether it is its direction's primary, which draws the grid.</summary>
+    private readonly record struct SideAxis(TickAxis? Axis, AxisScale Scale, bool Primary);
 }
