@@ -19,6 +19,7 @@ public sealed class PlotBuilder
     private ColorScaleSpec? _scaleColor;
     private ContinuousScaleSpec? _scaleX2;
     private ContinuousScaleSpec? _scaleY2;
+    private FacetSpec? _facet;
     private bool _built;
 
     internal PlotBuilder(DataTable data) => _data = data;
@@ -958,6 +959,7 @@ public sealed class PlotBuilder
             ScaleColor = _scaleColor,
             ScaleX2 = _scaleX2,
             ScaleY2 = _scaleY2,
+            Facet = _facet,
         };
     }
 
@@ -1119,6 +1121,60 @@ public sealed class PlotBuilder
         ThrowIfBuilt();
         ArgumentNullException.ThrowIfNull(scale);
         _scaleY2 = scale;
+        return this;
+    }
+
+    /// <summary>
+    /// Splits the plot into a panel for each category of a column, wrapped into rows (design §4.5, row G6b), as
+    /// <see cref="Facet.Wrap"/> does.
+    /// </summary>
+    /// <param name="by">The categorical column of the plot's table.</param>
+    /// <param name="columns">The number of columns of panels: at least 1, or null to take R's <c>n2mfrow</c>.</param>
+    /// <param name="scales">Which position scales the panels share.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException"><paramref name="by"/> is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="columns"/> is below 1, or <paramref name="scales"/> is not a named value.
+    /// </exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder FacetWrap(CategoryRef by, int? columns = null, FacetScales scales = FacetScales.Fixed)
+    {
+        ThrowIfBuilt();
+        var facet = Facet.Wrap(by, columns, scales);
+        CheckReference(facet.By, nameof(by));
+        _facet = facet;
+        return this;
+    }
+
+    /// <summary>
+    /// Splits the plot into a panel for each pair of a row category and a column category, laid out on a grid (design §4.5,
+    /// row G6b), as <see cref="Facet.Grid"/> does.
+    /// </summary>
+    /// <param name="rows">The categorical column whose categories make the rows, or null for one row.</param>
+    /// <param name="columns">The categorical column whose categories make the columns, or null for one column.</param>
+    /// <param name="scales">Which position scales the panels share.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">
+    /// Both <paramref name="rows"/> and <paramref name="columns"/> are null, or one is <see langword="default"/> or names
+    /// another table.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="scales"/> is not a named value.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder FacetGrid(CategoryRef? rows = null, CategoryRef? columns = null, FacetScales scales = FacetScales.Fixed)
+    {
+        ThrowIfBuilt();
+        var facet = Facet.Grid(rows, columns, scales);
+        if (facet.Rows is { } r)
+        {
+            CheckReference(r, nameof(rows));
+        }
+
+        if (facet.Columns is { } c)
+        {
+            CheckReference(c, nameof(columns));
+        }
+
+        _facet = facet;
         return this;
     }
 

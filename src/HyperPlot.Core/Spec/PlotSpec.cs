@@ -41,4 +41,10 @@ public sealed record PlotSpec : SpecNode
 
     /// <summary>Gets a secondary y scale, independent of <see cref="ScaleY"/> (row G6a): the layers with <see cref="LayerSpec.SecondaryY"/> are mapped by it.</summary>
     public ContinuousScaleSpec? ScaleY2 { get; init; }
+
+    /// <summary>
+    /// Gets the facet that splits the plot into panels by categories (design §4.5, row G6b): <see cref="FacetWrapSpec"/> or
+    /// <see cref="FacetGridSpec"/>. Null for one panel.
+    /// </summary>
+    public FacetSpec? Facet { get; init; }
 }
