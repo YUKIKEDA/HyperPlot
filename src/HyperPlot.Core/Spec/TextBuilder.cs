@@ -165,4 +165,26 @@ public sealed class TextBuilder
             throw new ArgumentOutOfRangeException(name, rotation, "The rotation is not a named value.");
         }
     }
+
+    /// <summary>Gets a value indicating whether the layer's x goes on the secondary x scale (row G6a).</summary>
+    internal bool SecondaryXValue { get; private set; }
+
+    /// <summary>Gets a value indicating whether the layer's y goes on the secondary y scale (row G6a).</summary>
+    internal bool SecondaryYValue { get; private set; }
+
+    /// <summary>Puts the layer's x on <see cref="PlotSpec.ScaleX2"/> (design §4.1, row G6a).</summary>
+    /// <returns>This builder.</returns>
+    public TextBuilder SecondaryX()
+    {
+        SecondaryXValue = true;
+        return this;
+    }
+
+    /// <summary>Puts the layer's y on <see cref="PlotSpec.ScaleY2"/> (design §4.1, row G6a).</summary>
+    /// <returns>This builder.</returns>
+    public TextBuilder SecondaryY()
+    {
+        SecondaryYValue = true;
+        return this;
+    }
 }

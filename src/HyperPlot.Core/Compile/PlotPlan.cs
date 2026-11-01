@@ -25,6 +25,12 @@ internal sealed class PlotPlan : IDisposable
     private readonly PlotGuides _guides;
     private readonly Dictionary<Column, PlotPyramid> _pyramids = [];
     private readonly M4Batch _batch = new();
+
+    // The M4 batches of the pairs of scales a layer may lie on (row G6a): at (secondary x ? 1 : 0) + (secondary y ? 2 : 0).
+    // The first is _batch, of the primary pair; the others hold series only when a layer lies on a secondary scale.
+    private readonly M4Batch[] _batches;
+    private readonly ScaleOrigin[] _origins = new ScaleOrigin[4];
+    private readonly double[][] _pairBoundaries = new double[4][];
     private readonly RenderList _list = new();
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
@@ -41,6 +47,8 @@ internal sealed class PlotPlan : IDisposable
     private readonly (double[] Data, double[] Scale)[] _widths = new (double[], double[])[4];
     private IScale? _xTransform;
     private IScale? _yTransform;
+    private IScale? _xTransform2;
+    private IScale? _yTransform2;
     private LayerPlan[] _layers = [];
     private PlotSpec? _spec;
 
@@ -50,13 +58,27 @@ internal sealed class PlotPlan : IDisposable
     private double[] _boundaries = [];
     private double[] _scaleBoundaries = [];
 
+    // The boundaries of the pixel columns over the secondary x domain (row G6a): M4 runs a layer on ScaleX2 over them.
+    private double[] _boundaries2 = [];
+    private double[] _scaleBoundaries2 = [];
+
     // The domains learned (design §4.2), before nice widens them in the layout (§4.6).
     private ScaleRange _learnedX;
     private ScaleRange _learnedY;
+    private ScaleRange _learnedX2;
+    private ScaleRange _learnedY2;
 
     // ScaleRange.None until boundaries are made for a domain: no domain equals it.
     private ScaleRange _x = ScaleRange.None;
     private ScaleRange _y;
+    private ScaleRange _x2 = ScaleRange.None;
+    private ScaleRange _y2;
+
+    // The axes of the last recording (row G6a): a layer on a secondary scale is mapped by its pair's.
+    private GeomFrame.Axis _frameX;
+    private GeomFrame.Axis _frameY;
+    private GeomFrame.Axis _frameX2;
+    private GeomFrame.Axis _frameY2;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlotPlan"/> class for a target of a size in physical pixels, measuring
@@ -72,6 +94,7 @@ internal sealed class PlotPlan : IDisposable
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
         _context = new RecordContext(_guides, _batch, _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
+        _batches = [_batch, new M4Batch(), new M4Batch(), new M4Batch()];
         _ownImages = images is null;
 
         // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10), and polar over the
@@ -165,6 +188,8 @@ internal sealed class PlotPlan : IDisposable
             previous is null
             || !SameMapping(previous.ScaleX, spec.ScaleX)
             || !SameMapping(previous.ScaleY, spec.ScaleY)
+            || !SameMapping(previous.ScaleX2, spec.ScaleX2)
+            || !SameMapping(previous.ScaleY2, spec.ScaleY2)
             || CoordMappingChanged(previous.Coord, spec.Coord);
         var ranges = data || RangesChanged(previous!, spec);
         var looks =
@@ -175,7 +200,13 @@ internal sealed class PlotPlan : IDisposable
             || !string.Equals(previous.Title, spec.Title, StringComparison.Ordinal)
             || !previous.Theme.Equals(spec.Theme)
             || CoordLooksChanged(previous.Coord, spec.Coord)
-            || previous.ScaleColor?.Id != spec.ScaleColor?.Id;
+            || previous.ScaleColor?.Id != spec.ScaleColor?.Id
+            || OptionsChanged(previous.ScaleX2, spec.ScaleX2)
+            || OptionsChanged(previous.ScaleY2, spec.ScaleY2)
+            || AxesChanged(previous.ScaleX, spec.ScaleX)
+            || AxesChanged(previous.ScaleY, spec.ScaleY)
+            || AxesChanged(previous.ScaleX2, spec.ScaleX2)
+            || AxesChanged(previous.ScaleY2, spec.ScaleY2);
         if (scales)
         {
             // A new transform makes new boundaries even over the same range of the scale space.
@@ -185,6 +216,7 @@ internal sealed class PlotPlan : IDisposable
                 ((ContinuousScaleSpec)spec.ScaleY).CreateTransform(),
                 ScaleRange.None
             );
+            (_xTransform2, _yTransform2, _x2) = (spec.ScaleX2?.CreateTransform(), spec.ScaleY2?.CreateTransform(), ScaleRange.None);
         }
 
         // A stack over a numeric x whose columns changed is made again (row G5a): its union of x values may change length.
@@ -193,8 +225,10 @@ internal sealed class PlotPlan : IDisposable
         if (
             data
             || StaleLayers()
-            || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true))
-            || (previous is not null && !SameSpace(previous.ScaleY, spec.ScaleY) && SpaceLayers(spec, ofX: false))
+            || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true, secondary: false))
+            || (previous is not null && !SameSpace(previous.ScaleY, spec.ScaleY) && SpaceLayers(spec, ofX: false, secondary: false))
+            || (previous is not null && !SameSpace(previous.ScaleX2, spec.ScaleX2) && SpaceLayers(spec, ofX: true, secondary: true))
+            || (previous is not null && !SameSpace(previous.ScaleY2, spec.ScaleY2) && SpaceLayers(spec, ofX: false, secondary: true))
         )
         {
             BuildLayers(spec);
@@ -220,7 +254,12 @@ internal sealed class PlotPlan : IDisposable
         if (extract)
         {
             // A user's geom learns only when an axis learns: with both domains given, nothing would read its ranges.
-            if ((spec.ScaleX is ContinuousScaleSpec x && Learns(x)) || Learns((ContinuousScaleSpec)spec.ScaleY))
+            if (
+                (spec.ScaleX is ContinuousScaleSpec x && Learns(x))
+                || Learns((ContinuousScaleSpec)spec.ScaleY)
+                || (spec.ScaleX2 is { } x2 && Learns(x2))
+                || (spec.ScaleY2 is { } y2 && Learns(y2))
+            )
             {
                 foreach (var layer in _layers)
                 {
@@ -230,8 +269,19 @@ internal sealed class PlotPlan : IDisposable
 
             _learnedX = spec.ScaleX is BandScaleSpec band
                 ? BandAxis.Domain(band, BandColumn(spec)?.CategoryCount ?? 0)
-                : Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true);
-            _learnedY = Learn(spec, (ContinuousScaleSpec)spec.ScaleY, _yTransform, ofX: false);
+                : Learn(spec, (ContinuousScaleSpec)spec.ScaleX, _xTransform, ofX: true, secondary: false);
+            _learnedY = Learn(spec, (ContinuousScaleSpec)spec.ScaleY, _yTransform, ofX: false, secondary: false);
+
+            // A secondary scale learns from the layers on it only, by the same rules (design §4.2, row G6a).
+            if (spec.ScaleX2 is { } secondaryX)
+            {
+                _learnedX2 = Learn(spec, secondaryX, _xTransform2, ofX: true, secondary: true);
+            }
+
+            if (spec.ScaleY2 is { } secondaryY)
+            {
+                _learnedY2 = Learn(spec, secondaryY, _yTransform2, ofX: false, secondary: true);
+            }
         }
 
         if (extract || looks)
@@ -244,7 +294,16 @@ internal sealed class PlotPlan : IDisposable
             }
 
             // The layout chooses the ticks, which nice may widen the domains to (design §4.6, §4.8).
-            _guides.Layout(spec, _xTransform, _learnedX, _yTransform, _learnedY, BandColumn(spec), Color);
+            _guides.Layout(
+                spec,
+                _xTransform,
+                _learnedX,
+                _yTransform,
+                _learnedY,
+                BandColumn(spec),
+                Color,
+                new(_xTransform2, _learnedX2, _yTransform2, _learnedY2)
+            );
             Color?.CheckMiddle();
             Layouts++;
             if (_guides.Empty)
@@ -268,10 +327,25 @@ internal sealed class PlotPlan : IDisposable
                 MakeBoundaries(x, along);
             }
 
+            // The secondary scales (row G6a): their own boundaries, made the same way over the secondary x domain.
+            _y2 = spec.ScaleY2 is null ? default : _guides.Y2.FinalDomain;
+            if (spec.ScaleX2 is not null && (_guides.X2.FinalDomain != _x2 || _boundaries2.Length != along + 1))
+            {
+                MakeSecondaryBoundaries(_guides.X2.FinalDomain, along);
+                boundaries = true;
+            }
+
             if (extract || boundaries)
             {
-                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2).
-                _pool.Extract(_batch, new ScaleOrigin(_xTransform is null ? _x.Origin : 0, _yTransform is null ? _y.Origin : 0), _boundaries);
+                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A pair
+                // with a secondary scale runs over its own x boundaries and origins, beside the primary pair (row G6a).
+                for (var pair = 0; pair < _batches.Length; pair++)
+                {
+                    (_origins[pair], _pairBoundaries[pair]) = (OriginOf(pair), (pair & 1) != 0 ? _boundaries2 : _boundaries);
+                }
+
+                _pool.ExtractTogether(_batches, _origins, _pairBoundaries, _batches.Length);
+
                 Extractions++;
                 foreach (var layer in _layers)
                 {
@@ -363,9 +437,15 @@ internal sealed class PlotPlan : IDisposable
                 );
             }
 
-            foreach (var (scale, name) in (ReadOnlySpan<(ScaleSpec, string)>)[(plot.ScaleX, "ScaleX"), (plot.ScaleY, "ScaleY")])
+            var image = plot.Layers[i];
+            ReadOnlySpan<(ScaleSpec?, string)> scales =
+            [
+                image.SecondaryX ? (plot.ScaleX2, "ScaleX2") : (plot.ScaleX, "ScaleX"),
+                image.SecondaryY ? (plot.ScaleY2, "ScaleY2") : (plot.ScaleY, "ScaleY"),
+            ];
+            foreach (var (scale, name) in scales)
             {
-                if (scale is not (LinearScaleSpec or TimeScaleSpec))
+                if (scale is not (null or LinearScaleSpec or TimeScaleSpec))
                 {
                     throw new ArgumentException(
                         $"Layer {i} is an image, and the {name} is a {scale.GetType().Name}; an image is drawn on linear and time scales only, where its rectangle stays a parallelogram (design §5.5.3)."
@@ -376,6 +456,120 @@ internal sealed class PlotPlan : IDisposable
             return;
         }
     }
+
+    /// <summary>
+    /// Throws unless the axes' sides and the secondary scales and axes go together (design §4.1, §4.8, row G6a): a layer on a
+    /// secondary scale has one, a secondary scale has a layer on it, a direction has one second axis, a side fits its
+    /// direction and a secondary scale lies opposite its primary, a transform's axis belongs to a primary, a color scale's
+    /// inner scale has no axis, a polar plot has none of these, and a primary that no layer lies on has a domain given.
+    /// </summary>
+    private static void CheckAxes(PlotSpec plot)
+    {
+        foreach (var ofX in (ReadOnlySpan<bool>)[true, false])
+        {
+            var (primary, secondary, name, secondName) = ofX
+                ? (plot.ScaleX, plot.ScaleX2, "ScaleX", "ScaleX2")
+                : (plot.ScaleY, plot.ScaleY2, "ScaleY", "ScaleY2");
+            var (on, off) = (-1, -1);
+            for (var i = 0; i < plot.Layers.Count; i++)
+            {
+                (on, off) = On(plot.Layers[i], ofX) ? (on < 0 ? i : on, off) : (on, off < 0 ? i : off);
+            }
+
+            if (on >= 0 && secondary is null)
+            {
+                throw new ArgumentException(
+                    $"Layer {on} lies on the secondary {(ofX ? "x" : "y")} scale, and the {secondName} is null (design §4.1)."
+                );
+            }
+
+            if (secondary is not null && on < 0)
+            {
+                throw new ArgumentException(
+                    $"The {secondName} has no layer on it to learn from; put one there with Secondary{(ofX ? "X" : "Y")} (design §4.1)."
+                );
+            }
+
+            if (secondary is not null && primary is ContinuousScaleSpec { SecondaryAxis: not null })
+            {
+                throw new ArgumentException(
+                    $"The {name} has a secondary axis, and the {secondName} is given too; the side opposite the primary holds one axis (design §4.1)."
+                );
+            }
+
+            if (primary is TimeScaleSpec { SecondaryAxis: not null })
+            {
+                throw new ArgumentException(
+                    $"The {name} is a time scale with a secondary axis; a time scale takes none, its values are dates, not doubles (design §4.1)."
+                );
+            }
+
+            if (secondary is { SecondaryAxis: not null })
+            {
+                throw new ArgumentException($"The {secondName} has a secondary axis; a transform's axis belongs to a primary scale (design §4.1).");
+            }
+
+            if (on >= 0 && off < 0 && !Given(primary))
+            {
+                throw new ArgumentException(
+                    primary is BandScaleSpec
+                        ? $"Every layer lies on the {secondName}, and the {name} is a band scale with no layer; put a layer on it (design §4.1)."
+                        : $"Every layer lies on the {secondName}, and the {name} has no domain given; give it one with WithDomain, or put a layer on it (design §4.1)."
+                );
+            }
+
+            var side = SideOf(primary);
+            CheckSide(side, ofX, name);
+            CheckSide(secondary?.Side, ofX, secondName);
+            var primaryFar = side is { } given && Far(given);
+            if (secondary?.Side is { } secondSide && Far(secondSide) == primaryFar)
+            {
+                throw new ArgumentException(
+                    $"The {secondName}'s axis is on the {secondary!.Side}, the side of the {name}'s; a secondary scale lies opposite its primary (design §4.1)."
+                );
+            }
+
+            if (
+                plot.Coord is PolarCoordSpec
+                && (side is not null || secondary is not null || primary is ContinuousScaleSpec { SecondaryAxis: not null })
+            )
+            {
+                throw new ArgumentException(
+                    $"The coordinate system is polar, and the {name} has a side or a secondary axis, or the {secondName} is given; the angle's and the radius's axes have no sides (design §4.1)."
+                );
+            }
+        }
+
+        var inner = plot.ScaleColor switch
+        {
+            SequentialScaleSpec sequential => sequential.Scale,
+            DivergingScaleSpec diverging => diverging.Scale,
+            _ => null,
+        };
+        if (inner is not null && (inner.Side is not null || inner.SecondaryAxis is not null))
+        {
+            throw new ArgumentException(
+                "The color scale's inner scale has a side or a secondary axis; the color bar is a legend, not an axis (design §4.1)."
+            );
+        }
+
+        static bool Far(AxisSide side) => side is AxisSide.Top or AxisSide.Right;
+
+        static bool Given(ScaleSpec scale) => scale is TimeScaleSpec { Domain: not null } || scale is ContinuousScaleSpec { GivenDomain: not null };
+
+        static void CheckSide(AxisSide? side, bool ofX, string name)
+        {
+            if (side is { } value && (ofX ? value is not (AxisSide.Bottom or AxisSide.Top) : value is not (AxisSide.Left or AxisSide.Right)))
+            {
+                throw new ArgumentException(
+                    $"The {name}'s axis is on the {value}; {(ofX ? "x goes on the Bottom or the Top" : "y goes on the Left or the Right")} (design §4.1)."
+                );
+            }
+        }
+    }
+
+    /// <summary>Returns whether a layer lies on an axis's secondary scale (row G6a).</summary>
+    private static bool On(LayerSpec layer, bool ofX) => ofX ? layer.SecondaryX : layer.SecondaryY;
 
     /// <summary>
     /// Throws when a text layer's size at the target's scale passes 512 pixels (design §4.1, row G8), as the theme's text
@@ -410,8 +604,19 @@ internal sealed class PlotPlan : IDisposable
 
         CheckTextRows(plot);
         CheckImages(plot);
-        CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true);
-        CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false);
+        CheckAxes(plot);
+        CheckScale(plot, plot.ScaleX, _spec?.ScaleX, "ScaleX", ofX: true, secondary: false);
+        CheckScale(plot, plot.ScaleY, _spec?.ScaleY, "ScaleY", ofX: false, secondary: false);
+        if (plot.ScaleX2 is { } x2)
+        {
+            CheckScale(plot, x2, _spec?.ScaleX2, "ScaleX2", ofX: true, secondary: true);
+        }
+
+        if (plot.ScaleY2 is { } y2)
+        {
+            CheckScale(plot, y2, _spec?.ScaleY2, "ScaleY2", ofX: false, secondary: true);
+        }
+
         CheckColor(plot);
     }
 
@@ -600,7 +805,7 @@ internal sealed class PlotPlan : IDisposable
     /// and a time scale reads long date-time columns. A user cannot derive a new continuous kind: its base has internal
     /// abstract members.
     /// </summary>
-    private void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX)
+    private void CheckScale(PlotSpec plot, ScaleSpec scale, ScaleSpec? previous, string name, bool ofX, bool secondary)
     {
         if (ofX && scale is BandScaleSpec band)
         {
@@ -615,9 +820,15 @@ internal sealed class PlotPlan : IDisposable
             );
         }
 
-        // A continuous scale reads numbers: a categorical column needs a band scale (design §4.2, row G7b).
+        // A continuous scale reads numbers: a categorical column needs a band scale (design §4.2, row G7b). A scale reads the
+        // layers it maps (row G6a).
         for (var i = 0; i < plot.Layers.Count; i++)
         {
+            if (On(plot.Layers[i], ofX) != secondary)
+            {
+                continue;
+            }
+
             var count = LayerPlan.AxisChannels(plot.Layers[i], ofX, _channels);
             for (var c = 0; c < count; c++)
             {
@@ -644,6 +855,11 @@ internal sealed class PlotPlan : IDisposable
         // An index, not foreach: the interface's enumerator would be boxed on every Render.
         for (var i = 0; i < plot.Layers.Count; i++)
         {
+            if (On(plot.Layers[i], ofX) != secondary)
+            {
+                continue;
+            }
+
             var count = LayerPlan.AxisChannels(plot.Layers[i], ofX, _channels);
             for (var c = 0; c < count; c++)
             {
@@ -718,11 +934,13 @@ internal sealed class PlotPlan : IDisposable
     /// Returns whether a layer's stat is made in an axis's scale space (rows G5b and G5c): bins, densities, moving averages,
     /// and 2D bins on x; 2D bins on y.
     /// </summary>
-    private static bool SpaceLayers(PlotSpec spec, bool ofX)
+    private static bool SpaceLayers(PlotSpec spec, bool ofX, bool secondary)
     {
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            if (spec.Layers[i].Stat is Bin2DStatSpec || (ofX && spec.Layers[i].Stat is BinStatSpec or DensityStatSpec or SmoothStatSpec))
+            var layer = spec.Layers[i];
+            var on = (ofX ? layer.SecondaryX : layer.SecondaryY) == secondary;
+            if (on && (layer.Stat is Bin2DStatSpec || (ofX && layer.Stat is BinStatSpec or DensityStatSpec or SmoothStatSpec)))
             {
                 return true;
             }
@@ -821,33 +1039,37 @@ internal sealed class PlotPlan : IDisposable
     /// zero, nice, and constants. Reverse, clamp, the title, and the format are left out: they change the layout and the
     /// recording only (design §4.8). Allocates nothing.
     /// </summary>
-    private static bool SameMapping(ScaleSpec before, ScaleSpec after) =>
-        before.Id == after.Id
-        || (before, after) switch
-        {
-            // A band's paddings and alignment move its bands: the "scale" stage (design §4.8, row G7b).
-            (BandScaleSpec b, BandScaleSpec a) => b.PaddingInner.Equals(a.PaddingInner)
-                && b.PaddingOuter.Equals(a.PaddingOuter)
-                && b.Align.Equals(a.Align),
-            (ContinuousScaleSpec b, ContinuousScaleSpec a) => b.Nice == a.Nice && SameKind(before, after),
-            _ => false,
-        };
+    private static bool SameMapping(ScaleSpec? before, ScaleSpec? after) =>
+        before is null || after is null
+            ? before is null && after is null
+            : before.Id == after.Id
+                || (before, after) switch
+                {
+                    // A band's paddings and alignment move its bands: the "scale" stage (design §4.8, row G7b).
+                    (BandScaleSpec b, BandScaleSpec a) => b.PaddingInner.Equals(a.PaddingInner)
+                        && b.PaddingOuter.Equals(a.PaddingOuter)
+                        && b.Align.Equals(a.Align),
+                    (ContinuousScaleSpec b, ContinuousScaleSpec a) => b.Nice == a.Nice && SameKind(before, after),
+                    _ => false,
+                };
 
     /// <summary>
     /// Returns whether two scales map to the same space, whatever their domains (row G5b): the same kind and transform. Bins
     /// are chosen in that space, so a zoom or a domain given anew keeps them.
     /// </summary>
-    private static bool SameSpace(ScaleSpec before, ScaleSpec after) =>
-        before.Id == after.Id
-        || (before, after) switch
-        {
-            (LinearScaleSpec, LinearScaleSpec) or (LogScaleSpec, LogScaleSpec) or (BandScaleSpec, BandScaleSpec) => true,
-            (SymlogScaleSpec b, SymlogScaleSpec a) => b.Constant.Equals(a.Constant),
-            (PowScaleSpec b, PowScaleSpec a) => b.Exponent.Equals(a.Exponent),
-            (TimeScaleSpec b, TimeScaleSpec a) => b.Unit == a.Unit && b.Epoch == a.Epoch,
-            (TransformScaleSpec b, TransformScaleSpec a) => ReferenceEquals(b.Transform, a.Transform),
-            _ => false,
-        };
+    private static bool SameSpace(ScaleSpec? before, ScaleSpec? after) =>
+        before is null || after is null
+            ? before is null && after is null
+            : before.Id == after.Id
+                || (before, after) switch
+                {
+                    (LinearScaleSpec, LinearScaleSpec) or (LogScaleSpec, LogScaleSpec) or (BandScaleSpec, BandScaleSpec) => true,
+                    (SymlogScaleSpec b, SymlogScaleSpec a) => b.Constant.Equals(a.Constant),
+                    (PowScaleSpec b, PowScaleSpec a) => b.Exponent.Equals(a.Exponent),
+                    (TimeScaleSpec b, TimeScaleSpec a) => b.Unit == a.Unit && b.Epoch == a.Epoch,
+                    (TransformScaleSpec b, TransformScaleSpec a) => ReferenceEquals(b.Transform, a.Transform),
+                    _ => false,
+                };
 
     private static bool SameKind(ScaleSpec before, ScaleSpec after) =>
         (before, after) switch
@@ -865,8 +1087,13 @@ internal sealed class PlotPlan : IDisposable
     /// Returns whether a scale's reverse, clamp, title, or tick format changed, which only lays out and records again (design
     /// §4.8). Formats are compared as delegates: the same method and target are equal.
     /// </summary>
-    private static bool OptionsChanged(ScaleSpec before, ScaleSpec after)
+    private static bool OptionsChanged(ScaleSpec? before, ScaleSpec? after)
     {
+        if (before is null || after is null)
+        {
+            return before is not null || after is not null;
+        }
+
         if (before is BandScaleSpec band)
         {
             return after is not BandScaleSpec other
@@ -887,13 +1114,49 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
+    /// Returns whether a scale's axis moved or its secondary axis changed (design §4.8, row G6a): the "looks" stage. A secondary
+    /// axis compares its transform by reference and its title and format by value, so that a new node of the same values does
+    /// nothing.
+    /// </summary>
+    private static bool AxesChanged(ScaleSpec? before, ScaleSpec? after)
+    {
+        var (side, nextSide) = (SideOf(before), SideOf(after));
+        if (side != nextSide)
+        {
+            return true;
+        }
+
+        var (axis, next) = ((before as ContinuousScaleSpec)?.SecondaryAxis, (after as ContinuousScaleSpec)?.SecondaryAxis);
+        if (axis is null || next is null)
+        {
+            return axis is not null || next is not null;
+        }
+
+        return axis.Id != next.Id
+            && (
+                !ReferenceEquals(axis.Transform, next.Transform)
+                || !string.Equals(axis.Title, next.Title, StringComparison.Ordinal)
+                || !Equals(axis.TickFormat, next.TickFormat)
+            );
+    }
+
+    /// <summary>Returns the side a scale's axis is given (row G6a), or null for the default and a scale without one.</summary>
+    private static AxisSide? SideOf(ScaleSpec? scale) =>
+        scale switch
+        {
+            ContinuousScaleSpec c => c.Side,
+            BandScaleSpec b => b.Side,
+            _ => null,
+        };
+
+    /// <summary>
     /// Learns a domain (design §4.2) as an origin and differences (§3.6): the one given, or the union of the ranges of every
     /// layer's column, from statistics that the wait for the indexes had the workers compute. Without a transform (linear,
     /// time) the domain is in data units; integer ends are compared as <see cref="long"/> while every column is an integer
     /// column, and as <see cref="double"/> once a floating-point one comes in. With a transform it is in the scale space: the
     /// ends are mapped, and the cases of no value and one value are taken there.
     /// </summary>
-    private ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX)
+    private ScaleRange Learn(PlotSpec spec, ContinuousScaleSpec scale, IScale? transform, bool ofX, bool secondary)
     {
         if (scale is TimeScaleSpec { Domain: { } time })
         {
@@ -910,7 +1173,11 @@ internal sealed class PlotPlan : IDisposable
         _sink.Reset();
         foreach (var layer in _layers)
         {
-            layer.AddRanges(_sink, ofX, spec.Data);
+            // A scale learns from the layers it maps (row G6a): the primary from those not on the secondary.
+            if ((ofX ? layer.Spec.SecondaryX : layer.Spec.SecondaryY) == secondary)
+            {
+                layer.AddRanges(_sink, ofX, spec.Data);
+            }
         }
 
         if (_sink.BaselineMin <= _sink.BaselineMax)
@@ -1006,10 +1273,8 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over an x domain into the plan's buffer, or throws when they do not
-    /// increase in double (design §4.8). Without a transform they are differences from the domain's origin; with one they are
-    /// made in the scale space and mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase
-    /// (design §4.2). Allocates nothing, so that a new x domain costs no garbage.
+    /// Writes the W + 1 boundaries of the pixel columns over the primary x domain into the plan's buffers (design §4.8): a
+    /// new width takes kept buffers or new ones in the place of the least recent.
     /// </summary>
     private void MakeBoundaries(ScaleRange domain, int width)
     {
@@ -1021,7 +1286,35 @@ internal sealed class PlotPlan : IDisposable
             (_boundaries, _scaleBoundaries) = Buffers(width + 1);
         }
 
-        var target = _xTransform is null ? _boundaries : _scaleBoundaries;
+        WriteBoundaries(domain, width, _boundaries, _scaleBoundaries, _xTransform);
+        _x = domain;
+    }
+
+    /// <summary>
+    /// Writes the boundaries of the pixel columns over the secondary x domain (row G6a), as <see cref="MakeBoundaries"/> does
+    /// over the primary: a new width makes new buffers, which is not the steady state.
+    /// </summary>
+    private void MakeSecondaryBoundaries(ScaleRange domain, int width)
+    {
+        _x2 = ScaleRange.None;
+        if (_boundaries2.Length != width + 1)
+        {
+            (_boundaries2, _scaleBoundaries2) = (new double[width + 1], new double[width + 1]);
+        }
+
+        WriteBoundaries(domain, width, _boundaries2, _scaleBoundaries2, _xTransform2);
+        _x2 = domain;
+    }
+
+    /// <summary>
+    /// Writes the W + 1 boundaries of the pixel columns over an x domain, or throws when they do not increase in double (design
+    /// §4.8). Without a transform they are differences from the domain's origin; with one they are made in the scale space and
+    /// mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase (design §4.2). Allocates nothing,
+    /// so that a new x domain costs no garbage.
+    /// </summary>
+    private static void WriteBoundaries(ScaleRange domain, int width, double[] boundaries, double[] scaleBoundaries, IScale? transform)
+    {
+        var target = transform is null ? boundaries : scaleBoundaries;
         for (var k = 0; k <= width; k++)
         {
             target[k] = domain.Lower + ((domain.Upper - domain.Lower) * k / width);
@@ -1033,26 +1326,38 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
-        if (_xTransform is not null)
+        if (transform is null)
         {
-            for (var k = 0; k <= width; k++)
-            {
-                _scaleBoundaries[k] += domain.Origin;
-            }
-
-            _xTransform.Inverse(_scaleBoundaries, _boundaries);
-            for (var k = 0; k <= width; k++)
-            {
-                if (!double.IsFinite(_boundaries[k]) || (k > 0 && !(_boundaries[k - 1] < _boundaries[k])))
-                {
-                    throw new ArgumentException(
-                        $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] of the scale space is too narrow for {width} pixel columns: its boundaries, mapped back to data units, do not increase in double."
-                    );
-                }
-            }
+            return;
         }
 
-        _x = domain;
+        for (var k = 0; k <= width; k++)
+        {
+            scaleBoundaries[k] += domain.Origin;
+        }
+
+        transform.Inverse(scaleBoundaries, boundaries);
+        for (var k = 0; k <= width; k++)
+        {
+            if (!double.IsFinite(boundaries[k]) || (k > 0 && !(boundaries[k - 1] < boundaries[k])))
+            {
+                throw new ArgumentException(
+                    $"The x domain [{domain.Origin} + {domain.Lower}, {domain.Origin} + {domain.Upper}] of the scale space is too narrow for {width} pixel columns: its boundaries, mapped back to data units, do not increase in double."
+                );
+            }
+        }
+    }
+
+    /// <summary>Returns the number of a layer's pair of scales (row G6a): (secondary x ? 1 : 0) + (secondary y ? 2 : 0).</summary>
+    private static int Pair(LayerSpec layer) => (layer.SecondaryX ? 1 : 0) + (layer.SecondaryY ? 2 : 0);
+
+    /// <summary>Returns the origins a pair of scales reads its columns in (row G6a): of its x domain and its y domain, 0 with a transform.</summary>
+    private ScaleOrigin OriginOf(int pair)
+    {
+        var (secondaryX, secondaryY) = ((pair & 1) != 0, (pair & 2) != 0);
+        var x = secondaryX ? (_xTransform2 is null ? _x2.Origin : 0) : (_xTransform is null ? _x.Origin : 0);
+        var y = secondaryY ? (_yTransform2 is null ? _y2.Origin : 0) : (_yTransform is null ? _y.Origin : 0);
+        return new ScaleOrigin(x, y);
     }
 
     /// <summary>Returns the buffers of a length: kept ones, or new ones in the place of the least recent.</summary>
@@ -1080,7 +1385,11 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private void BuildLayers(PlotSpec spec)
     {
-        _batch.Clear();
+        foreach (var batch in _batches)
+        {
+            batch.Clear();
+        }
+
         var used = new HashSet<Column>();
         var rasters = new HashSet<Raster>();
         var build = new PlanBuild(
@@ -1098,8 +1407,17 @@ internal sealed class PlotPlan : IDisposable
         var layers = new LayerPlan[spec.Layers.Count];
         for (var i = 0; i < layers.Length; i++)
         {
+            // A layer's series go into the batch of its pair of scales, and its stat reads those scales (row G6a).
+            var layer = spec.Layers[i];
             build.Layer = i;
-            layers[i] = LayerPlan.Create(spec.Layers[i], build);
+            build.Use(
+                _batches[Pair(layer)],
+                layer.SecondaryX ? spec.ScaleX2 : spec.ScaleX,
+                layer.SecondaryX ? _xTransform2 : _xTransform,
+                layer.SecondaryY ? spec.ScaleY2 : spec.ScaleY,
+                layer.SecondaryY ? _yTransform2 : _yTransform
+            );
+            layers[i] = LayerPlan.Create(layer, build);
         }
 
         foreach (var column in _pyramids.Keys.ToArray())
@@ -1208,6 +1526,7 @@ internal sealed class PlotPlan : IDisposable
         };
         _list.Clear();
         _context.Theme = spec.Theme;
+        _context.Use(_batch);
         if (_ownImages)
         {
             // No backend sends the plan's own cache: what the last frame staged counts as sent.
@@ -1223,7 +1542,7 @@ internal sealed class PlotPlan : IDisposable
             var polarX = new GeomFrame.Axis(_xTransform, _x, xReverse, xClamp, 0, polar.AlongSize, band);
             var polarY = new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
             _context.Begin(polarX, polarY, _boundaries, _scale, flipped: false, (left, top, width, height), polar);
-            RecordLayers(spec.Theme.Palette);
+            RecordLayers(spec.Theme.Palette, flipped: false);
             _guides.RecordOver(_list, spec);
             return;
         }
@@ -1234,8 +1553,25 @@ internal sealed class PlotPlan : IDisposable
         var y = flipped
             ? new GeomFrame.Axis(_yTransform, _y, yScale.Reverse, yScale.Clamp, left, width)
             : new GeomFrame.Axis(_yTransform, _y, !yScale.Reverse, yScale.Clamp, top, height);
+
+        // The secondary scales' axes over the same panel (row G6a), each with its own domain, transform, reverse, and clamp.
+        (_frameX, _frameY, _frameX2, _frameY2) = (x, y, x, y);
+        if (spec.ScaleX2 is { } x2)
+        {
+            _frameX2 = flipped
+                ? new GeomFrame.Axis(_xTransform2, _x2, !x2.Reverse, x2.Clamp, top, height)
+                : new GeomFrame.Axis(_xTransform2, _x2, x2.Reverse, x2.Clamp, left, width);
+        }
+
+        if (spec.ScaleY2 is { } y2)
+        {
+            _frameY2 = flipped
+                ? new GeomFrame.Axis(_yTransform2, _y2, y2.Reverse, y2.Clamp, left, width)
+                : new GeomFrame.Axis(_yTransform2, _y2, !y2.Reverse, y2.Clamp, top, height);
+        }
+
         _context.Begin(x, y, _boundaries, _scale, flipped, (left, top, width, height), null);
-        RecordLayers(spec.Theme.Palette);
+        RecordLayers(spec.Theme.Palette, flipped);
         _guides.RecordOver(_list, spec);
     }
 
@@ -1243,13 +1579,32 @@ internal sealed class PlotPlan : IDisposable
     /// Records each layer in order inside the panel's clip, in its series color where its spec gives none; a polar layer's fills
     /// go out as one shape after it.
     /// </summary>
-    private void RecordLayers(Palette palette)
+    private void RecordLayers(Palette palette, bool flipped)
     {
         _context.ClipToPanel();
+        var current = 0;
         for (var i = 0; i < _layers.Length; i++)
         {
             // The series color of the layer's position (design §4.1, row G7a).
             var layer = _layers[i];
+
+            // A layer on a secondary scale is mapped by its pair's axes and reads its pair's batch (row G6a). Polar has none.
+            var pair = Pair(layer.Spec);
+            if (pair != current)
+            {
+                _context.Begin(
+                    (pair & 1) != 0 ? _frameX2 : _frameX,
+                    (pair & 2) != 0 ? _frameY2 : _frameY,
+                    (pair & 1) != 0 ? _boundaries2 : _boundaries,
+                    _scale,
+                    flipped,
+                    _context.Panel,
+                    null
+                );
+                _context.Use(_batches[pair]);
+                current = pair;
+            }
+
             layer.SeriesColor = palette.Series(i);
             layer.Index = i;
             layer.Colors = Color;

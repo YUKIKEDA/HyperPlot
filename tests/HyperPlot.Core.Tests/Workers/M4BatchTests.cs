@@ -234,6 +234,58 @@ public sealed class M4BatchTests
     }
 
     /// <summary>
+    /// Batches extracted together each run over their own boundaries (row G6a): a plot's pairs of scales, side by side, give
+    /// each series the points it gets alone; an empty batch is skipped; the first failing batch's error is thrown, after all
+    /// have ended.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's 4 series; three batches: two series over the whole column, none, and two over its first half; then a
+    ///   batch with a disposed pyramid before a good one.
+    ///
+    /// Steps:
+    /// - Extract the three together on a pool of 3 threads; each series alone over its batch's boundaries. Then the failing
+    ///   pair together.
+    ///
+    /// Expected:
+    /// - Equal points series by series; then ObjectDisposedException, with the good batch's series extracted.
+    /// </remarks>
+    [Fact]
+    public void ExtractTogether_EachBatchOverItsOwnBoundaries()
+    {
+        using var pool = new PlotWorkerPool(3);
+        using var fixture = new Fixture(pool, 4);
+        var half = fixture.Boundaries.Select(b => b / 2).ToArray();
+        var outputs = new M4Point[4][];
+        M4Batch[] batches = [new(), new(), new()];
+        for (var s = 0; s < 4; s++)
+        {
+            outputs[s] = new M4Point[M4.MaxPointCount(Columns)];
+            _ = batches[s < 2 ? 0 : 2].Add(fixture.UniformX, fixture.Pyramids[s], outputs[s]);
+        }
+
+        pool.ExtractTogether(batches, [default, default, default], [fixture.Boundaries, [], half], 3);
+        for (var s = 0; s < 4; s++)
+        {
+            var alone = new M4Point[M4.MaxPointCount(Columns)];
+            var expected = M4.Extract(fixture.UniformX, fixture.Pyramids[s], default, s < 2 ? fixture.Boundaries : half, alone);
+            var actual = batches[s < 2 ? 0 : 2].GetResult(s % 2);
+            Assert.Equal(expected.Count, actual.Count);
+            Assert.Equal(alone.AsSpan(0, expected.Count).ToArray(), outputs[s].AsSpan(0, actual.Count).ToArray());
+        }
+
+        using var lost = Column.Wrap(new float[1000]);
+        var disposed = MinMaxPyramidTests.Build(pool, lost);
+        disposed.Dispose();
+        M4Batch[] failing = [new(), new()];
+        _ = failing[0].Add(Column.Uniform(0, 1, 1000), disposed, new M4Point[M4.MaxPointCount(Columns)]);
+        _ = failing[1].Add(fixture.UniformX, fixture.Pyramids[0], new M4Point[M4.MaxPointCount(Columns)]);
+        var boundaries = Enumerable.Range(0, Columns + 1).Select(k => k * (999.0 / Columns)).ToArray();
+        _ = Assert.Throws<ObjectDisposedException>(() => pool.ExtractTogether(failing, [default, default], [boundaries, boundaries], 2));
+        Assert.True(failing[1].GetResult(0).Count > 0);
+    }
+
+    /// <summary>
     /// Each extraction starts each series afresh: a series that failed and then succeeds has no error and its new result
     /// (design §5.5.1).
     /// </summary>

@@ -53,4 +53,16 @@ public abstract record LayerSpec : SpecNode
     /// once a version of the columns; null draws the columns as they are.
     /// </summary>
     public StatSpec? Stat { get; init; }
+
+    /// <summary>
+    /// Gets or initializes a value indicating whether the layer's x is mapped by <see cref="PlotSpec.ScaleX2"/> (row G6a) instead
+    /// of <see cref="PlotSpec.ScaleX"/>. False by default.
+    /// </summary>
+    public bool SecondaryX { get; init; }
+
+    /// <summary>
+    /// Gets or initializes a value indicating whether the layer's y is mapped by <see cref="PlotSpec.ScaleY2"/> (row G6a) instead
+    /// of <see cref="PlotSpec.ScaleY"/>. False by default.
+    /// </summary>
+    public bool SecondaryY { get; init; }
 }

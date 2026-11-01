@@ -25,6 +25,9 @@ public sealed record BandScaleSpec : ScaleSpec
     /// <summary>Gets the axis title; null or empty draws none.</summary>
     public string? Title { get; init; }
 
+    /// <summary>Gets the side of the panel the axis lies on (row G6a): the bottom or the top; null for the bottom.</summary>
+    public AxisSide? Side { get; init; }
+
     /// <summary>Throws unless the paddings and the alignment are in range (design §4.8): a spec made with <c>with</c> is checked when drawn.</summary>
     /// <exception cref="ArgumentException">A value is NaN or outside [0, 1].</exception>
     internal void Validate()
