@@ -15,6 +15,9 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>The name a raster's range goes by in messages: it has no name in the table.</summary>
     private const string RasterName = "an image's raster";
 
+    /// <summary>The name of the color column of 2D bins in messages and learning (row G5c): the cells' values.</summary>
+    private const string CellsName = "the cells of 2D bins";
+
     private readonly Dictionary<Raster, RasterPyramid> _rasters = [];
     private readonly bool _ownImages;
     private readonly PlotWorkerPool _pool;
@@ -185,8 +188,14 @@ internal sealed class PlotPlan : IDisposable
         }
 
         // A stack over a numeric x whose columns changed is made again (row G5a): its union of x values may change length.
-        // Bins are chosen in the x scale's space (row G5b): another space (not another domain) makes the layers again.
-        if (data || StaleLayers() || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && BinsLayers(spec)))
+        // Bins, densities, and moving averages are made in the x scale's space, 2D bins in the y scale's too (rows G5b and
+        // G5c): another space (not another domain) makes the layers again.
+        if (
+            data
+            || StaleLayers()
+            || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true))
+            || (previous is not null && !SameSpace(previous.ScaleY, spec.ScaleY) && SpaceLayers(spec, ofX: false))
+        )
         {
             BuildLayers(spec);
         }
@@ -441,6 +450,12 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
+        // 2D bins fill their cells by their values (row G5c): numbers.
+        for (var i = 0; i < plot.Layers.Count && number is null; i++)
+        {
+            number = plot.Layers[i].Stat is Bin2DStatSpec ? CellsName : null;
+        }
+
         var raster = -1;
         for (var i = 0; i < plot.Layers.Count && raster < 0; i++)
         {
@@ -569,6 +584,12 @@ internal sealed class PlotPlan : IDisposable
             {
                 _sink.AddColumn(raster.Values, RasterName);
             }
+
+            // 2D bins add their cells' values (row G5c).
+            if (_layers[i] is StatPlan { CellValues: { } cells })
+            {
+                _sink.AddColumn(cells, CellsName);
+            }
         }
 
         _color.Domain = FromSink(inner, _color.Transform);
@@ -693,12 +714,15 @@ internal sealed class PlotPlan : IDisposable
         return false;
     }
 
-    /// <summary>Returns whether a layer bins its x (row G5b): its bins depend on the x scale.</summary>
-    private static bool BinsLayers(PlotSpec spec)
+    /// <summary>
+    /// Returns whether a layer's stat is made in an axis's scale space (rows G5b and G5c): bins, densities, moving averages,
+    /// and 2D bins on x; 2D bins on y.
+    /// </summary>
+    private static bool SpaceLayers(PlotSpec spec, bool ofX)
     {
         for (var i = 0; i < spec.Layers.Count; i++)
         {
-            if (spec.Layers[i].Stat is BinStatSpec)
+            if (spec.Layers[i].Stat is Bin2DStatSpec || (ofX && spec.Layers[i].Stat is BinStatSpec or DensityStatSpec or SmoothStatSpec))
             {
                 return true;
             }
@@ -1059,7 +1083,18 @@ internal sealed class PlotPlan : IDisposable
         _batch.Clear();
         var used = new HashSet<Column>();
         var rasters = new HashSet<Raster>();
-        var build = new PlanBuild(Pyramid, column => _pyramids.GetValueOrDefault(column), _batch, _capacity, _pool, Mipmap, spec.ScaleX, _xTransform);
+        var build = new PlanBuild(
+            Pyramid,
+            column => _pyramids.GetValueOrDefault(column),
+            _batch,
+            _capacity,
+            _pool,
+            Mipmap,
+            spec.ScaleX,
+            _xTransform,
+            spec.ScaleY,
+            _yTransform
+        );
         var layers = new LayerPlan[spec.Layers.Count];
         for (var i = 0; i < layers.Length; i++)
         {

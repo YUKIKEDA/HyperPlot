@@ -273,6 +273,27 @@ public abstract class Column
     /// <summary>Returns the value of a key <see cref="ReadKeys"/> wrote (row G5b).</summary>
     internal virtual double ValueOfKey(ulong key) => throw new InvalidOperationException($"A {KindName} has no values to summarize.");
 
+    /// <summary>
+    /// Returns the key <see cref="ReadKeys"/> writes for a value of the column read as a double (row G5c): the bounds of the
+    /// values a select keeps.
+    /// </summary>
+    internal virtual ulong KeyOfValue(double value) => throw new InvalidOperationException($"A {KindName} has no values to summarize.");
+
+    /// <summary>Returns the key of a double: its bits in the values' order, NaN the greatest (row G5b).</summary>
+    internal static ulong DoubleKey(double value)
+    {
+        if (double.IsNaN(value))
+        {
+            return ulong.MaxValue;
+        }
+
+        var bits = BitConverter.DoubleToUInt64Bits(value);
+        return (bits & (1UL << 63)) != 0 ? ~bits : bits | (1UL << 63);
+    }
+
+    /// <summary>Returns the double of a key <see cref="DoubleKey"/> wrote.</summary>
+    internal static double KeyDouble(ulong key) => BitConverter.UInt64BitsToDouble((key & (1UL << 63)) != 0 ? key & ~(1UL << 63) : ~key);
+
     /// <summary>Returns the gather of the rows of a split layer's categories that do not lie in one run (design §5.5.3, row G7c).</summary>
     internal abstract GatherChannel MakeGather(ReadOnlySpan<long> counts);
 

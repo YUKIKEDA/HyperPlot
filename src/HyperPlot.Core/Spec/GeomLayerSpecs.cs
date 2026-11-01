@@ -97,17 +97,20 @@ public sealed record BarLayerSpec : LayerSpec
 /// <summary>Rectangles whose corners are the values of four columns (design §4.1, §5.5.3).</summary>
 public sealed record RectLayerSpec : LayerSpec
 {
-    /// <summary>Gets the column of the left edges.</summary>
-    public required ColumnRef XMin { get; init; }
+    /// <summary>
+    /// Gets the column of the left edges. Not required since row G5c: a layer with 2D bins holds its x here; a layer without
+    /// a stat has all four, or the compile throws.
+    /// </summary>
+    public ColumnRef XMin { get; init; }
 
-    /// <summary>Gets the column of the right edges.</summary>
-    public required ColumnRef XMax { get; init; }
+    /// <summary>Gets the column of the right edges: the default or <see cref="XMin"/> with 2D bins.</summary>
+    public ColumnRef XMax { get; init; }
 
-    /// <summary>Gets the column of the lower edges.</summary>
-    public required ColumnRef YMin { get; init; }
+    /// <summary>Gets the column of the lower edges. A layer with 2D bins holds its y here.</summary>
+    public ColumnRef YMin { get; init; }
 
-    /// <summary>Gets the column of the upper edges.</summary>
-    public required ColumnRef YMax { get; init; }
+    /// <summary>Gets the column of the upper edges: the default or <see cref="YMin"/> with 2D bins.</summary>
+    public ColumnRef YMax { get; init; }
 
     /// <summary>Gets the fill, or null for the layer's series color, opaque (design §4.1).</summary>
     public Color? Fill { get; init; }

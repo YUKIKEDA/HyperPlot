@@ -670,6 +670,101 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Adds a line of a kernel density estimate of a numeric x (design §4.1, row G5c), a line a group of its color column.</summary>
+    /// <typeparam name="TX">The element type of the column.</typeparam>
+    /// <param name="x">The values: a numeric column of the plot's table.</param>
+    /// <param name="density">The stat, or null for <see cref="Stat.Density"/>'s default.</param>
+    /// <param name="configure">Sets the stroke, the label, and the color channel; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">The reference is <see langword="default"/> or names another table, or the stroke is out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Density<TX>(ColumnRef<TX> x, DensityStatSpec? density = null, Action<LineBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+    {
+        ThrowIfBuilt();
+        CheckReference(x, nameof(x));
+        var style = Stroke(configure);
+        _layers.Add(
+            new LineLayerSpec
+            {
+                X = x,
+                Style = style.Style,
+                Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
+                Stat = density ?? HyperPlot.Stat.Density(),
+            }
+        );
+        return this;
+    }
+
+    /// <summary>Adds a line of a moving average of a numeric y over a numeric x (design §4.1, row G5c), a line a group of its color column.</summary>
+    /// <typeparam name="TX">The element type of the x column.</typeparam>
+    /// <typeparam name="TY">The element type of the y column.</typeparam>
+    /// <param name="x">The x: a numeric column of the plot's table, in any order.</param>
+    /// <param name="y">The values averaged: a stored <see cref="Column{T}"/>.</param>
+    /// <param name="window">The window's width in the x scale's space: finite and above 0.</param>
+    /// <param name="points">The number of points: from 2 to 131,072.</param>
+    /// <param name="configure">Sets the stroke, the label, and the color channel; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table, the Y column is not a <see cref="Column{T}"/>, or the stroke is out of range.</exception>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="window"/> or <paramref name="points"/> is out of range.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Smooth<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, double window, int points = 512, Action<LineBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x, nameof(x));
+        CheckStored(y, nameof(y), "a moving average's Y");
+        var stat = HyperPlot.Stat.Smooth(window, points);
+        var style = Stroke(configure);
+        _layers.Add(
+            new LineLayerSpec
+            {
+                X = x,
+                Y = y,
+                Style = style.Style,
+                Label = style.LabelText,
+                ColorBy = Channel(style.ColorByRef),
+                Position = style.PositionValue,
+                Stat = stat,
+            }
+        );
+        return this;
+    }
+
+    /// <summary>
+    /// Adds rects of the cells of 2D bins of a numeric x and a numeric y (design §4.1, row G5c), filled by their counts or
+    /// densities through the color scale. It takes no configure: the cells' values color them, and the layer has no row in
+    /// the legend.
+    /// </summary>
+    /// <typeparam name="TX">The element type of the x column.</typeparam>
+    /// <typeparam name="TY">The element type of the y column.</typeparam>
+    /// <param name="x">The x: a numeric column of the plot's table.</param>
+    /// <param name="y">The y: a numeric column of the plot's table.</param>
+    /// <param name="bin">The stat, or null for <see cref="Stat.Bin2D"/>'s default.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Bin2D<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, Bin2DStatSpec? bin = null)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x, nameof(x));
+        CheckReference(y, nameof(y));
+        _layers.Add(
+            new RectLayerSpec
+            {
+                XMin = x,
+                YMin = y,
+                Stat = bin ?? HyperPlot.Stat.Bin2D(),
+            }
+        );
+        return this;
+    }
+
     /// <summary>Adds a user's geom (design §5.5.3).</summary>
     /// <param name="geom">The geom.</param>
     /// <param name="label">The legend's label; null or empty leaves the layer out of the legend.</param>

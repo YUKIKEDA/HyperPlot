@@ -31,6 +31,9 @@ internal abstract class LayerPlan
     /// <summary>The most bins a stat makes (design §4.1, row G5b).</summary>
     public const int MaxBins = 10_000;
 
+    /// <summary>The most points a density is drawn at (design §4.1, row G5c): a grid of 4,096 is about 1.7e7 products a group.</summary>
+    public const int MaxDensityPoints = 4_096;
+
     private Column[] _columns = [];
     private LayerSpec _spec;
 
@@ -128,11 +131,10 @@ internal abstract class LayerPlan
     {
         switch (layer)
         {
+            // A layer binned, counted, or estimated by its stat has no Y (rows G5b and G5c).
             case LineLayerSpec l:
                 into[0] = ofX ? l.X : l.Y;
-                return 1;
-
-            // A layer binned or counted by its stat has no Y (row G5b).
+                return ofX || !NoY(l) ? 1 : 0;
             case StepLayerSpec s:
                 into[0] = ofX ? s.X : s.Y;
                 return ofX || !NoY(s) ? 1 : 0;
@@ -154,6 +156,13 @@ internal abstract class LayerPlan
 
                 return Two(ofX, e.X, e.YMin, e.YMax, into);
             case RectLayerSpec r:
+                // 2D bins hold their x in XMin and their y in YMin (row G5c).
+                if (r.Stat is Bin2DStatSpec)
+                {
+                    into[0] = ofX ? r.XMin : r.YMin;
+                    return 1;
+                }
+
                 (into[0], into[1]) = ofX ? (r.XMin, r.XMax) : (r.YMin, r.YMax);
                 return 2;
             case SegmentLayerSpec s:
@@ -183,11 +192,12 @@ internal abstract class LayerPlan
         }
     }
 
-    /// <summary>Returns whether a layer takes no Y: binned or counted by its stat, with no Y given (row G5b).</summary>
+    /// <summary>Returns whether a layer takes no Y: binned, counted, or estimated by its stat, with no Y given (rows G5b and G5c).</summary>
     public static bool NoY(LayerSpec layer) =>
-        layer.Stat is BinStatSpec or CountStatSpec
+        layer.Stat is BinStatSpec or CountStatSpec or DensityStatSpec
         && layer switch
         {
+            LineLayerSpec l => l.Y.IsDefault,
             StepLayerSpec s => s.Y.IsDefault,
             AreaLayerSpec a => a.Y.IsDefault,
             BarLayerSpec b => b.Y.IsDefault,
@@ -250,7 +260,11 @@ internal abstract class LayerPlan
         switch (layer)
         {
             case LineLayerSpec l:
-                CheckStored(data, l.Y, index, "a line's Y");
+                if (!NoY(l))
+                {
+                    CheckStored(data, l.Y, index, "a line's Y");
+                }
+
                 break;
             case StepLayerSpec s:
                 if (!NoY(s))
@@ -310,7 +324,12 @@ internal abstract class LayerPlan
 
                 break;
             case RectLayerSpec r:
-                CheckCount(r.XMin.Column.Length, index);
+                // 2D bins draw a rect a cell with values, bounded when the bins are chosen (row G5c).
+                if (r.Stat is not Bin2DStatSpec)
+                {
+                    CheckCount(r.XMin.Column.Length, index);
+                }
+
                 break;
             case SegmentLayerSpec s:
                 CheckCount(s.X.Column.Length, index);
@@ -367,6 +386,12 @@ internal abstract class LayerPlan
             (BinStatSpec b, BinStatSpec a) => b.MaxBins != a.MaxBins || b.Step != a.Step || b.Anchor != a.Anchor || b.Output != a.Output,
             (CountStatSpec, CountStatSpec) => false,
             (SummaryStatSpec b, SummaryStatSpec a) => b.Value != a.Value || b.Low != a.Low || b.High != a.High,
+            (DensityStatSpec b, DensityStatSpec a) => b.Bandwidth != a.Bandwidth
+                || !b.Adjust.Equals(a.Adjust)
+                || b.Points != a.Points
+                || b.Output != a.Output,
+            (SmoothStatSpec b, SmoothStatSpec a) => !b.Window.Equals(a.Window) || b.Points != a.Points,
+            (Bin2DStatSpec b, Bin2DStatSpec a) => StatsDiffer(b.X, a.X) || StatsDiffer(b.Y, a.Y) || b.Output != a.Output,
             _ => true,
         };
 
@@ -389,10 +414,10 @@ internal abstract class LayerPlan
             return;
         }
 
-        if (layer.Stat is not (BinStatSpec or CountStatSpec or SummaryStatSpec))
+        if (layer.Stat is not (BinStatSpec or CountStatSpec or SummaryStatSpec or DensityStatSpec or SmoothStatSpec or Bin2DStatSpec))
         {
             throw new ArgumentException(
-                $"The Stat of layer {index} is a {layer.Stat.GetType().Name}; the plot compiles the stats of row G5b (Bin, Count, Summary)."
+                $"The Stat of layer {index} is a {layer.Stat.GetType().Name}; the plot compiles the stats of rows G5b and G5c (Bin, Count, Summary, Density, Smooth, Bin2D)."
             );
         }
 
@@ -406,16 +431,19 @@ internal abstract class LayerPlan
         {
             BinStatSpec => layer is StepLayerSpec or AreaLayerSpec or (BarLayerSpec and not { X.Column: CategoricalColumn }),
             CountStatSpec => layer is BarLayerSpec && categories,
+            DensityStatSpec => layer is LineLayerSpec or AreaLayerSpec,
+            SmoothStatSpec => layer is LineLayerSpec,
+            Bin2DStatSpec => layer is RectLayerSpec,
             _ => layer is BarLayerSpec or ErrorBarLayerSpec && categories,
         };
         if (!takes)
         {
             throw new ArgumentException(
-                $"Layer {index} is a {layer.GetType().Name} with a {layer.Stat.GetType().Name}; bins go on bars, areas, and steps over a numeric x, counts and summaries on bars over categories, summaries on error bars over categories too (design §4.1)."
+                $"Layer {index} is a {layer.GetType().Name} with a {layer.Stat.GetType().Name}; bins go on bars, areas, and steps over a numeric x, counts and summaries on bars over categories, summaries on error bars over categories too, densities on lines and areas, moving averages on lines, and 2D bins on rects (design §4.1)."
             );
         }
 
-        if (layer.Stat is BinStatSpec or CountStatSpec && !NoY(layer))
+        if (layer.Stat is BinStatSpec or CountStatSpec or DensityStatSpec && !NoY(layer))
         {
             throw new ArgumentException(
                 $"Layer {index} has a Y with a {layer.Stat.GetType().Name}; its y is the stat's output, so its Y is the default (design §4.1)."
@@ -427,6 +455,11 @@ internal abstract class LayerPlan
             throw new ArgumentException(
                 $"Layer {index} is an error bar with a summary and a YMax other than its YMin; a summary's values are its YMin (design §4.1)."
             );
+        }
+
+        if (layer.Stat is Bin2DStatSpec)
+        {
+            ValidateBin2D((RectLayerSpec)layer, index);
         }
 
         if ((layer.FillBy ?? layer.ColorBy) is { Column: not CategoricalColumn })
@@ -443,7 +476,7 @@ internal abstract class LayerPlan
                     bin.MaxBins is < 1 or > MaxBins
                     || (bin.Step is { } step && (!double.IsFinite(step) || step <= 0))
                     || (bin.Anchor is { } anchor && !double.IsFinite(anchor))
-                    || (uint)bin.Output > (uint)BinOutput.Density
+                    || (uint)bin.Output > (uint)StatOutput.Density
                 )
                 {
                     throw new ArgumentException(
@@ -455,6 +488,37 @@ internal abstract class LayerPlan
                 {
                     throw new ArgumentException(
                         $"Layer {index} is a binned bar with a Width, or a binned bar or area with a Baseline other than 0; its counts start at 0 (design §5.5.3)."
+                    );
+                }
+
+                break;
+            case DensityStatSpec density:
+                if (
+                    (density.Bandwidth is { } bandwidth && (!double.IsFinite(bandwidth) || bandwidth <= 0))
+                    || !double.IsFinite(density.Adjust)
+                    || density.Adjust <= 0
+                    || density.Points is < 2 or > MaxDensityPoints
+                    || (uint)density.Output > (uint)StatOutput.Density
+                )
+                {
+                    throw new ArgumentException(
+                        $"The density of layer {index} is out of range (Bandwidth {density.Bandwidth}, Adjust {density.Adjust}, Points {density.Points}, Output {density.Output}): a finite Bandwidth and Adjust above 0, Points from 2 to {MaxDensityPoints}, a named Output."
+                    );
+                }
+
+                if (layer is AreaLayerSpec { Baseline: not 0 })
+                {
+                    throw new ArgumentException(
+                        $"Layer {index} is a density's area with a Baseline other than 0; a density starts at 0 (design §5.5.3)."
+                    );
+                }
+
+                break;
+            case SmoothStatSpec smooth:
+                if (!double.IsFinite(smooth.Window) || smooth.Window <= 0 || smooth.Points is < 2 or > MaxElements)
+                {
+                    throw new ArgumentException(
+                        $"The moving average of layer {index} is out of range (Window {smooth.Window}, Points {smooth.Points}): a finite Window above 0, Points from 2 to {MaxElements}."
                     );
                 }
 
@@ -471,6 +535,53 @@ internal abstract class LayerPlan
                 }
 
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Throws unless a rect's 2D bins are ones row G5c draws (design §4.1): x in XMin and y in YMin, XMax and YMax the
+    /// default or the same columns, no fill or color channel of its own, no position but the identity, and each axis's bins
+    /// in range and counting.
+    /// </summary>
+    private static void ValidateBin2D(RectLayerSpec rect, int index)
+    {
+        if ((!rect.XMax.IsDefault && rect.XMax != rect.XMin) || (!rect.YMax.IsDefault && rect.YMax != rect.YMin))
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a rect with 2D bins and an XMax or a YMax other than its XMin or YMin; 2D bins hold x in XMin and y in YMin (design §4.1)."
+            );
+        }
+
+        if (rect.Fill is not null || rect.ColorBy is not null || rect.FillBy is not null)
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a rect with 2D bins and a Fill, a ColorBy, or a FillBy; its cells are filled by their values through the color scale (design §4.1)."
+            );
+        }
+
+        if (rect.Position is not (null or IdentityPositionSpec))
+        {
+            throw new ArgumentException(
+                $"Layer {index} is a rect with 2D bins and a {rect.Position.GetType().Name}; its cells are not placed again (design §4.1)."
+            );
+        }
+
+        var bins = (Bin2DStatSpec)rect.Stat!;
+        foreach (var bin in (ReadOnlySpan<BinStatSpec?>)[bins.X, bins.Y])
+        {
+            if (
+                bin is null
+                || bin.MaxBins is < 1 or > MaxBins
+                || (bin.Step is { } step && (!double.IsFinite(step) || step <= 0))
+                || (bin.Anchor is { } anchor && !double.IsFinite(anchor))
+                || bin.Output != StatOutput.Count
+                || (uint)bins.Output > (uint)StatOutput.Density
+            )
+            {
+                throw new ArgumentException(
+                    $"The 2D bins of layer {index} are out of range: each axis's bins are given, with MaxBins from 1 to {MaxBins}, a finite Step above 0, a finite Anchor, and the output Count; the cells' Output is a named value (design §4.1)."
+                );
+            }
         }
     }
 
@@ -973,7 +1084,9 @@ internal sealed class PlanBuild(
     PlotWorkerPool pool,
     Func<Raster, RasterPyramid>? mipmap = null,
     ScaleSpec? xScale = null,
-    IScale? xTransform = null
+    IScale? xTransform = null,
+    ScaleSpec? yScale = null,
+    IScale? yTransform = null
 )
 {
     /// <summary>Gets or sets the position in the spec of the layer being made: messages name it (row G5b).</summary>
@@ -984,6 +1097,12 @@ internal sealed class PlanBuild(
 
     /// <summary>Gets the x scale's transform to its space, or null for linear and time (row G5b).</summary>
     public IScale? XTransform => xTransform;
+
+    /// <summary>Gets the plot's y scale, which 2D bins choose their y bins in (row G5c).</summary>
+    public ScaleSpec? YScale => yScale;
+
+    /// <summary>Gets the y scale's transform to its space, or null for linear and time (row G5c).</summary>
+    public IScale? YTransform => yTransform;
 
     /// <summary>Returns the mipmap the plan holds over a raster, made the first time (row G9).</summary>
     public RasterPyramid Mipmap(Raster raster) => mipmap is null ? raster.MakePyramid() : mipmap(raster);

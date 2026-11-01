@@ -271,6 +271,9 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
         return (byte)(key >> 56);
     }
 
+    /// <inheritdoc />
+    internal override ulong KeyOfValue(double value) => KeyOf(T.CreateTruncating(value));
+
     /// <summary>
     /// Returns a value's key: an unsigned integer in the values' order, left-aligned to 64 bits. A float's sign bit is set for
     /// a positive value and all bits are flipped for a negative one; an integer's sign bit is flipped. NaN is the greatest key.
