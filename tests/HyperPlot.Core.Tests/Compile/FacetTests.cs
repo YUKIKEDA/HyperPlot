@@ -274,7 +274,7 @@ public sealed class FacetTests : IDisposable
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The run table; a line of y over t, whose regions lie at different heights; a wrap by region.
+    /// - The run table; a line of y over u, whose regions lie at different heights and places; a wrap by region.
     ///
     /// Steps:
     /// - Render with each of the four scales, with a y domain given under Free, and a count over a band x under FreeX.
@@ -290,16 +290,16 @@ public sealed class FacetTests : IDisposable
         foreach (var scales in (ReadOnlySpan<FacetScales>)[FacetScales.Fixed, FacetScales.FreeX, FacetScales.FreeY, FacetScales.Free])
         {
             using var plan = Plan();
-            _ = plan.Render(Line(_runs) with { Facet = Facet.Wrap(_runs.Cat("region"), scales: scales) });
+            var spec = Plot.Create(_runs).Line(_runs.Col<double>("u"), _runs.Col<float>("y")).Build();
+            _ = plan.Render(spec with { Facet = Facet.Wrap(_runs.Cat("region"), scales: scales) });
+            var (freeX, freeY) = (scales is FacetScales.FreeX or FacetScales.Free, scales is FacetScales.FreeY or FacetScales.Free);
             for (var p = 0; p < Regions; p++)
             {
                 var own = Region(p).Y;
-                var freeY = scales is FacetScales.FreeY or FacetScales.Free;
                 Assert.Equal(freeY ? (own.Min(), own.Max()) : (all.Min(), all.Max()), Ends(plan.Panels[p].LearnedY));
-                var t = Region(p).T;
                 Assert.Equal(
-                    scales is FacetScales.FreeX or FacetScales.Free ? (t[0], t[^1]) : (0, Times - 1 + 0.5),
-                    XEnds(plan.Panels[p].LearnedX, scales)
+                    freeX ? (p * 100.0, (p * 100.0) + Times - 1) : (0.0, ((Regions - 1) * 100.0) + Times - 1),
+                    Ends(plan.Panels[p].LearnedX)
                 );
             }
         }
@@ -319,14 +319,6 @@ public sealed class FacetTests : IDisposable
             Plot.Create(_runs).Count(_runs.Cat("channel")).ScaleX(Scale.Band()).FacetWrap(_runs.Cat("region"), scales: FacetScales.FreeX).Build()
         );
         Assert.All(band.Panels, p => Assert.Equal(band.Panels[0].LearnedX, p.LearnedX));
-
-        static (double Low, double High) XEnds(ScaleRange domain, FacetScales scales) =>
-            // A line's x is its column's range; a shared x holds the union, the same t in every region.
-            (domain.Origin + domain.Lower, domain.Origin + domain.Upper)
-                is var (low, high)
-            && scales is FacetScales.Fixed or FacetScales.FreeY
-                ? (low, high + 0.5)
-                : (low, high);
     }
 
     /// <summary>
@@ -373,6 +365,113 @@ public sealed class FacetTests : IDisposable
             yield return t => Plot.Create(t).Density(t.Col<float>("y"), configure: d => d.ColorBy(t.Cat("channel"))).Build();
             yield return t => Plot.Create(t).Smooth(t.Col<double>("t"), t.Col<float>("y"), 8).Build();
             yield return t => Plot.Create(t).Bin2D(t.Col<double>("t"), t.Col<float>("y")).Build();
+        }
+    }
+
+    /// <summary>
+    /// A stat's edges are the same in every panel along a shared direction, and a panel's own along a free one (design §4.5):
+    /// the bins over the union of the panels' rows, or over each panel's run; the groups are the pairs of a panel and a color.
+    /// A bar's x over a run reaches half a bar past the run's ends, its width from the run's spacing (Issue #243).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The run table; a histogram of y split by channel; then bars of y over t; a wrap by region.
+    ///
+    /// Steps:
+    /// - Render the histogram under Fixed and FreeX, and the bars under FreeX; read each panel's derived table and domain.
+    ///
+    /// Expected:
+    /// - Fixed: every panel's edges among Vega's edges of all the regions' y; FreeX: among those of the panel's own y; two
+    ///   groups in a panel; the bars' x from the run's first t less half a bar to its last plus half, a bar 0.9 times the
+    ///   run's mean spacing.
+    /// </remarks>
+    [Fact]
+    public void Stats_ShareTheirEdgesAlongASharedDirection()
+    {
+        var all = Enumerable.Range(0, Regions).SelectMany(r => Region(r).Y).ToArray();
+        var bin = Stat.Bin();
+        foreach (var free in (ReadOnlySpan<bool>)[false, true])
+        {
+            using var plan = Plan();
+            _ = plan.Render(
+                Plot.Create(_runs)
+                    .Histogram(_runs.Col<float>("y"), configure: h => h.ColorBy(_runs.Cat("channel")))
+                    .FacetWrap(_runs.Cat("region"), scales: free ? FacetScales.FreeX : FacetScales.Fixed)
+                    .Build()
+            );
+            for (var p = 0; p < Regions; p++)
+            {
+                var own = Region(p).Y;
+                var edges = free ? StatWork.Edges(own.Min(), own.Max(), bin, 0) : StatWork.Edges(all.Min(), all.Max(), bin, 0);
+                var derived = ((StatPlan)plan.Panels[p].Layers[0]).Derived;
+                var lefts = ((Column<double>)derived.GetColumn(0)).GetChunk(0).ToArray();
+                Assert.All(lefts, left => Assert.Contains(left, edges));
+                Assert.Equal([0, 1], ((CategoricalColumn)derived.GetColumn(derived.ColumnCount - 1)).GetCodes(0).ToArray().Distinct().Order());
+            }
+        }
+
+        using var bars = Plan();
+        _ = bars.Render(
+            Plot.Create(_runs).Bar(_runs.Col<double>("t"), _runs.Col<float>("y")).FacetWrap(_runs.Cat("region"), scales: FacetScales.FreeX).Build()
+        );
+        var half = (Times - 1.0) / ((Times * 2) - 1) * 0.9 / 2;
+        foreach (var panel in bars.Panels)
+        {
+            GeomTesting.Close(-half, Ends(panel.LearnedX).Low);
+            GeomTesting.Close(Times - 1 + half, Ends(panel.LearnedX).High);
+        }
+    }
+
+    /// <summary>
+    /// Runs that cross chunks read their own rows only (design §5.5.3): the statistics of the chunks a run covers and its rows
+    /// in the chunks at its ends, for its range, its X's check and search, and a stat's passes.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 3 runs of 1,200,000 rows (chunks of 1,048,576), x restarting at 0 in each run, y a run's own wave at its own height.
+    ///
+    /// Steps:
+    /// - Render a line under a wrap, Free; and a histogram under the wrap, FreeX.
+    ///
+    /// Expected:
+    /// - Each panel's learned x and y its run's own; each panel's bins count its run's rows.
+    /// </remarks>
+    [Fact]
+    public void Runs_AcrossChunks_ReadTheirOwnRows()
+    {
+        const int Run = 1_200_000;
+        string[] names = ["a", "b", "c"];
+        var (t, y) = (new double[3 * Run], new float[3 * Run]);
+        for (var i = 0; i < t.Length; i++)
+        {
+            var (run, at) = (i / Run, i % Run);
+            (t[i], y[i]) = (at, (float)((run * 10) + Math.Sin(at / 1000.0)));
+        }
+
+        using var tColumn = Column.Wrap(t);
+        using var yColumn = Column.Wrap(y);
+        var table = DataTable
+            .Create()
+            .Add("t", tColumn)
+            .Add("y", yColumn)
+            .Add("k", Column.Categorical([.. Enumerable.Range(0, 3 * Run).Select(i => (string?)names[i / Run])], names))
+            .Build();
+        using var plan = Plan();
+        _ = plan.Render(Line(table) with { Facet = Facet.Wrap(table.Cat("k"), scales: FacetScales.Free) });
+        for (var p = 0; p < 3; p++)
+        {
+            var own = y.AsSpan(p * Run, Run).ToArray();
+            Assert.Equal((0.0, Run - 1.0), Ends(plan.Panels[p].LearnedX));
+            Assert.Equal((own.Min(), own.Max()), Ends(plan.Panels[p].LearnedY));
+        }
+
+        using var bins = Plan();
+        _ = bins.Render(Plot.Create(table).Histogram(table.Col<float>("y")).FacetWrap(table.Cat("k"), scales: FacetScales.FreeX).Build());
+        foreach (var panel in bins.Panels)
+        {
+            var derived = ((StatPlan)panel.Layers[0]).Derived;
+            var highs = ((Column<double>)derived.GetColumn(3)).GetChunk(0).ToArray();
+            Assert.Equal(Run, highs.Sum());
         }
     }
 
@@ -452,13 +551,17 @@ public sealed class FacetTests : IDisposable
         Assert.Equal((Regions, 1), (plan.Facet!.Arrangement.Rows, plan.Facet.Arrangement.Columns));
     }
 
-    /// <summary>Once warm, a wrap and a grid drawn again over two y domains in turn allocate nothing (design §4.8).</summary>
+    /// <summary>
+    /// Once warm, a wrap and a grid drawn again over two y domains in turn allocate nothing (design §4.8), their specs made
+    /// anew each frame as a host makes them: a new facet node of the same values does nothing.
+    /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The mixed table (gathered panels); a split line under a wrap, and a histogram under a grid of free y.
+    /// - The mixed table (gathered panels); a split line under a wrap of 3 columns, and a histogram under a grid of free y;
+    ///   four specs each, every node new.
     ///
     /// Steps:
-    /// - Render each at two y domains a few times, then five times more in turn.
+    /// - Render the first two a few times, then the four ten times in turn.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -466,37 +569,38 @@ public sealed class FacetTests : IDisposable
     [Fact]
     public void Warm_AllocatesNothing()
     {
-        var wrap = Plot.Create(_mixed)
-            .Line(_mixed.Col<double>("t"), _mixed.Col<float>("y"), l => l.ColorBy(_mixed.Cat("channel")))
-            .FacetWrap(_mixed.Cat("region"))
-            .Build();
-        var grid = Plot.Create(_mixed)
-            .Histogram(_mixed.Col<float>("y"))
-            .FacetGrid(rows: _mixed.Cat("channel"), columns: _mixed.Cat("region"), scales: FacetScales.FreeY)
-            .Build();
-        foreach (var spec in (ReadOnlySpan<PlotSpec>)[wrap, grid])
+        // A host that makes its spec each frame: every node new, of the same values but the y domain.
+        PlotSpec Wrap(double high) =>
+            Plot.Create(_mixed)
+                .Line(_mixed.Col<double>("t"), _mixed.Col<float>("y"), l => l.ColorBy(_mixed.Cat("channel")))
+                .ScaleY(Scale.Linear().WithDomain(0, high))
+                .FacetWrap(_mixed.Cat("region"), columns: 3)
+                .Build();
+        PlotSpec Grid(double high) =>
+            Plot.Create(_mixed)
+                .Histogram(_mixed.Col<float>("y"))
+                .ScaleY(Scale.Linear().WithDomain(-5, high))
+                .FacetGrid(rows: _mixed.Cat("channel"), columns: _mixed.Cat("region"), scales: FacetScales.FreeY)
+                .Build();
+        foreach (var make in new Func<double, PlotSpec>[] { Wrap, Grid })
         {
+            var specs = new[] { make(40), make(60), make(40), make(60) };
             using var plan = Plan();
-            var one = spec with { ScaleY = Scale.Linear().WithDomain(0, 40) };
-            var two = spec with { ScaleY = Scale.Linear().WithDomain(-5, 60) };
-            for (var i = 0; i < 3; i++)
+            for (var i = 0; i < 6; i++)
             {
-                _ = plan.Render(one);
-                _ = plan.Render(two);
+                _ = plan.Render(specs[i % 2]);
             }
 
             var before = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 5; i++)
+            for (var i = 0; i < 10; i++)
             {
-                _ = plan.Render(one);
-                _ = plan.Render(two);
+                _ = plan.Render(specs[i % 4]);
             }
 
             Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
         }
     }
 
-    /// <summary>Returns the points' places and roles: a run's rows count from the column's first, a column of its own from 0.</summary>
     private static (double X, double Y, M4Roles Roles)[] Values(ReadOnlySpan<M4Point> points) =>
         [.. points.ToArray().Select(p => (p.X, p.Y, p.Roles))];
 
@@ -539,7 +643,10 @@ public sealed class FacetTests : IDisposable
 
     private static Column<double> RunTimes() => Column.Wrap(RunOrder().Select(r => (double)r.Time).ToArray());
 
-    /// <summary>Makes a table of the rows in an order: t, y, the region, and the channel; with rows of no region between the runs.</summary>
+    /// <summary>
+    /// Makes a table of the rows in an order: t, u (t past 100 times the region, so that the regions' x differ), y, the region,
+    /// and the channel; with rows of no region between the runs.
+    /// </summary>
     private DataTable Table((int Region, int Time, int Channel)[] rows, bool missing)
     {
         var list = new List<(int Region, int Time, int Channel)>();
@@ -555,10 +662,12 @@ public sealed class FacetTests : IDisposable
         }
 
         var t = Own(Column.Wrap(list.Select(r => r.Region < 0 ? 1e6 : r.Time).ToArray()));
+        var u = Own(Column.Wrap(list.Select(r => r.Region < 0 ? 1e6 : (r.Region * 100.0) + r.Time).ToArray()));
         var y = Own(Column.Wrap(list.Select(r => r.Region < 0 ? 1e6f : Value(r.Region, r.Time, r.Channel)).ToArray()));
         return DataTable
             .Create()
             .Add("t", t)
+            .Add("u", u)
             .Add("y", y)
             .Add("region", Column.Categorical([.. list.Select(r => r.Region < 0 ? null : RegionNames[r.Region])], RegionNames))
             .Add("channel", Column.Categorical([.. list.Select(r => (string?)ChannelNames[r.Channel])], ChannelNames))

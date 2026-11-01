@@ -26,7 +26,8 @@ public sealed class FacetLayoutTests : IDisposable
 
     public FacetLayoutTests()
     {
-        // Each region's run of 40 moments, the two channels in turn; the last region's values a thousand times the others'.
+        // Each region's run of 40 moments, the two channels in turn; the second region's values a thousand times the others',
+        // so that the second column's widest labels lie in its first row.
         var count = Regions * Moments * 2;
         var (t, y) = (new double[count], new float[count]);
         var (region, channel) = (new string?[count], new string?[count]);
@@ -35,7 +36,7 @@ public sealed class FacetLayoutTests : IDisposable
             var (r, k) = (i / (Moments * 2), i % 2);
             var time = (i % (Moments * 2)) / 2;
             (t[i], region[i], channel[i]) = (time, RegionNames[r], ChannelNames[k]);
-            y[i] = (float)(((r * 6) + (k * 2) + (3 * Math.Sin(time / 5.0))) * (r == Regions - 1 ? 1000 : 1));
+            y[i] = (float)(((r * 6) + (k * 2) + (3 * Math.Sin(time / 5.0))) * (r == 1 ? 1000 : 1));
         }
 
         _table = DataTable
@@ -114,8 +115,8 @@ public sealed class FacetLayoutTests : IDisposable
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The table, whose last region's values are a thousand times the others'; the split line under a wrap, FreeX, then
-    ///   under a grid of the regions as columns, FreeY.
+    /// - The table, whose second region's values are a thousand times the others'; the split line under a wrap, FreeX, then
+    ///   under a grid of the regions as columns, FreeY, then under the wrap, FreeY.
     ///
     /// Steps:
     /// - Render each.
@@ -123,7 +124,7 @@ public sealed class FacetLayoutTests : IDisposable
     /// Expected:
     /// - FreeX: the second row's top past the first's bottom by a tick band, a gap, and a strip, and each panel's x room G / 2
     ///   beside another panel; FreeY: each column's left past the one before by that column's band of its widest labels, the
-    ///   last region's the widest.
+    ///   second region's the widest; under the wrap, the second column's band its first row's, wider than its second row's.
     /// </remarks>
     [Fact]
     public void Layout_FreeBandsFollowRowsAndColumns()
@@ -158,8 +159,16 @@ public sealed class FacetLayoutTests : IDisposable
             Assert.Equal(columns.PanelAt(c - 1).Left + columns.PanelAt(c - 1).Width + g + bands[c], columns.PanelAt(c).Left);
         }
 
-        Assert.Equal(bands.Max(), bands[^1]);
-        Assert.True(bands[^1] > bands[0]);
+        Assert.Equal(bands.Max(), bands[1]);
+        Assert.True(bands[1] > bands[0]);
+
+        using var wrap = Plan(1);
+        _ = wrap.Render(Wrap(FacetScales.FreeY));
+        var panels = wrap.Guides;
+        int Band(int p) =>
+            t + g + (int)Math.Ceiling(panels.PanelAt(p).Y.TickLabels.ToArray().Max(l => l.Length * FakeTextBackend.Advance(theme.TickLabelSize)));
+        Assert.True(Band(1) > Band(4));
+        Assert.Equal(panels.PanelAt(0).Left + panels.PanelAt(0).Width + g + Band(1), panels.PanelAt(1).Left);
     }
 
     /// <summary>

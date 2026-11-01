@@ -217,7 +217,12 @@ internal sealed class PlotPlan : IDisposable
 
         // A facet's new arrangement (its columns' count or its scales) keeps its panels' rows; new scales change where a stat's
         // edges come from, a shared or a free direction (design §4.5).
-        if (!data && previous!.Facet is { } before && spec.Facet is { } after && before.Id != after.Id)
+        if (
+            !data
+            && previous!.Facet is { } before
+            && spec.Facet is { } after
+            && (before.Scales != after.Scales || (before as FacetWrapSpec)?.ColumnCount != (after as FacetWrapSpec)?.ColumnCount)
+        )
         {
             _facet!.Rearrange(after);
         }
