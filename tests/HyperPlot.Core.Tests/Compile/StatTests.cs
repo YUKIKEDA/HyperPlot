@@ -73,7 +73,8 @@ public sealed class StatTests
     /// The compile refuses each stat a geom does not take, and the channels and values a stat does not take (design §4.1,
     /// §4.8): bins off bars, areas, and steps over a numeric x; counts and summaries off bars (and error bars) over categories;
     /// a Y with bins and counts; a summary's YMax other than its YMin; a layer with no stat and no Y; a numeric color column;
-    /// bins out of range; a custom state out of range; an unknown stat; too many bins, cells, or rects.
+    /// bins out of range; a binned bar's Width, and a binned bar's or area's Baseline other than 0; a custom state out of
+    /// range; an unknown stat; too many bins, cells, or rects.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -204,6 +205,12 @@ public sealed class StatTests
                 Width = 1,
             },
             new BarLayerSpec
+            {
+                X = n,
+                Stat = Stat.Bin(),
+                Baseline = 1,
+            },
+            new AreaLayerSpec
             {
                 X = n,
                 Stat = Stat.Bin(),
