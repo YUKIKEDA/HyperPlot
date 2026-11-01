@@ -24,7 +24,7 @@ A statement about how another library behaves is checked in its source or its of
 
 When the owner corrects a criterion, go back over the decisions made before the correction and judge them by the new criterion: the design, the decision records, and the conversation logs, where reasons given only in passing are kept ("leave it for now" in a review, a public API added only for a sample's check). Each one that fails gets a roadmap row or a Grill before the row that depends on it.
 
-A consequence written in a report is not a decision either. A report that says failures "will be run again" is not the owner's decision to run them again, and does not go into a rule as one.
+A consequence written in a report is not a decision either. A report that says failures "will be run again" is not the owner's decision to run them again, and does not go into a rule as one. Nor does a comment that answers a review state the owner's answer to a question still open: PR #211's summary of its review fixes said the three points to confirm were "accepted as the review recommends" before the owner was asked.
 
 "Go ahead" and "next" mean the current roadmap row only. They are not consent to add rows, file extra Issues, or widen an open design.
 
