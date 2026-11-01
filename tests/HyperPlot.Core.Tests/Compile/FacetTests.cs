@@ -182,7 +182,8 @@ public sealed class FacetTests : IDisposable
     ///
     /// Expected:
     /// - The wrap's panels a and c; the grid's 2 × 2 cells of a and c by x and z, (c, z) empty; the rows each holds; the
-    ///   pair (a, x) a run; the same facet data after the new node.
+    ///   pair (a, x) a run; the same facet data after the new node; a row category whose rows all miss the column category
+    ///   left out of the grid.
     /// </remarks>
     [Fact]
     public void Panels_FollowTheCategoriesAndLeaveOutTheUnused()
@@ -226,6 +227,19 @@ public sealed class FacetTests : IDisposable
         var kept = grid.Facet;
         _ = grid.Render(gridSpec with { Facet = Facet.Grid(rows: table.Cat("f"), columns: table.Cat("g")) });
         Assert.Same(kept, grid.Facet);
+
+        // "d" has rows only where g is missing: no pair, so no row of panels.
+        using var three = Column.Wrap(new float[] { 1, 2, 3 });
+        var lonely = DataTable
+            .Create()
+            .Add("t", Column.Uniform(0, 1, 3))
+            .Add("y", three)
+            .Add("f", Column.Categorical(["a", "d", "a"], ["a", "d"]))
+            .Add("g", Column.Categorical(["x", null, "x"], ["x"]))
+            .Build();
+        using var dropped = Plan();
+        _ = dropped.Render(Line(lonely) with { Facet = Facet.Grid(rows: lonely.Cat("f"), columns: lonely.Cat("g")) });
+        Assert.Equal(["a"], dropped.Facet!.Arrangement.RowLabels);
 
         static float[] RowsOf(DataTable data, string name) => [.. ((Column<float>)data.Col<float>(name).Column).GetChunk(0).ToArray()];
     }
@@ -281,7 +295,8 @@ public sealed class FacetTests : IDisposable
     ///
     /// Expected:
     /// - The learned y of every panel is the union under Fixed and FreeX, and each region's own range under FreeY and Free;
-    ///   x likewise; the given domain in every panel; the band's five categories in every panel.
+    ///   x likewise; with nice, one rounded y in every panel under Fixed and each panel's own under FreeY; the given domain in
+    ///   every panel; the band's five categories in every panel, and with a band x, a secondary x shared under FreeX.
     /// </remarks>
     [Fact]
     public void SharedAndFree_LearnTheirDomains()
@@ -303,6 +318,39 @@ public sealed class FacetTests : IDisposable
                 );
             }
         }
+
+        foreach (var free in (ReadOnlySpan<bool>)[false, true])
+        {
+            using var nice = Plan();
+            _ = nice.Render(
+                Plot.Create(_runs)
+                    .Line(_runs.Col<double>("u"), _runs.Col<float>("y"))
+                    .ScaleY(Scale.Linear() with { Nice = true })
+                    .FacetWrap(_runs.Cat("region"), scales: free ? FacetScales.FreeY : FacetScales.Fixed)
+                    .Build()
+            );
+            for (var p = 0; p < Regions; p++)
+            {
+                var own = Region(p).Y;
+                var (low, high) = Ends(nice.Panels[p].Y);
+                Assert.True(low <= (free ? own.Min() : all.Min()) && high >= (free ? own.Max() : all.Max()));
+                Assert.True(p == 0 || free == (nice.Panels[p].Y != nice.Panels[0].Y));
+                Assert.Equal(Math.Round(low), low);
+            }
+        }
+
+        using var second = Plan();
+        _ = second.Render(
+            Plot.Create(_runs)
+                .Count(_runs.Cat("channel"))
+                .HRule(_runs.Col<double>("t"), l => l.SecondaryX())
+                .ScaleX(Scale.Band())
+                .ScaleX2(Scale.Linear().WithDomain(0, 10))
+                .FacetWrap(_runs.Cat("region"), scales: FacetScales.FreeX)
+                .Build()
+        );
+        Assert.False(second.Facet!.Arrangement.FreeXOf(Scale.Band()));
+        Assert.All(Enumerable.Range(0, Regions), p => Assert.Same(second.Guides.PanelAt(0).X2, second.Guides.PanelAt(p).X2));
 
         using var given = Plan();
         _ = given.Render(

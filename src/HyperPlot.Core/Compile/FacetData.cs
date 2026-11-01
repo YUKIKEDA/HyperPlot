@@ -41,6 +41,12 @@ internal sealed class FacetArrangement(
     /// <summary>Gets a value indicating whether each panel learns its own x (design §4.5).</summary>
     public bool FreeX => scales is FacetScales.FreeX or FacetScales.Free;
 
+    /// <summary>
+    /// Returns whether each panel learns its own x along a plot's primary x (design §4.5): never over a band scale, which keeps
+    /// all its categories, and then the direction's secondary scale is shared too. The plan and the guides read this one rule.
+    /// </summary>
+    public bool FreeXOf(ScaleSpec x) => FreeX && x is not BandScaleSpec;
+
     /// <summary>Gets a value indicating whether each panel learns its own y.</summary>
     public bool FreeY => scales is FacetScales.FreeY or FacetScales.Free;
 
@@ -224,13 +230,19 @@ internal sealed class FacetData : IDisposable
             return Make(plot, arrangement, new ColumnKeys(rowsColumn!), runs, pool);
         }
 
-        // A grid of two columns: the used rows and columns, and a key a pair of them, whose runs one pass finds.
+        // A grid of two columns: the used rows and columns, and a key a pair of them, whose runs one pass finds. A row whose
+        // rows all miss the column's category has no pair with rows: it is left out, and the pairs are found again.
         var usedRows = Used(CategoryRuns.Of(rowsColumn!, pool));
         var usedColumns = Used(CategoryRuns.Of(columnsColumn!, pool));
         CheckCount((long)usedRows.Length * usedColumns.Length);
-        var (rowPlaces, columnPlaces) = (Places(rowsColumn!, usedRows), Places(columnsColumn!, usedColumns));
-        var keys = new PairKeys(rowsColumn!, rowPlaces, usedRows.Length, columnsColumn!, columnPlaces, usedColumns.Length);
-        var pairs = CategoryRuns.Find(keys, pool, RowRange.All);
+        var (keys, pairs) = Pairs(rowsColumn!, usedRows, columnsColumn!, usedColumns, pool);
+        var (pairedRows, pairedColumns) = Paired(pairs, usedRows, usedColumns);
+        if (pairedRows.Length < usedRows.Length || pairedColumns.Length < usedColumns.Length)
+        {
+            (usedRows, usedColumns) = (pairedRows, pairedColumns);
+            (keys, pairs) = Pairs(rowsColumn!, usedRows, columnsColumn!, usedColumns, pool);
+        }
+
         var pairCells = new FacetCell[usedRows.Length * usedColumns.Length];
         for (var r = 0; r < usedRows.Length; r++)
         {
@@ -444,6 +456,28 @@ internal sealed class FacetData : IDisposable
                 return r;
             }
         );
+    }
+
+    /// <summary>Returns the keys of the pairs of used rows and columns, and their runs.</summary>
+    private static (PairKeys Keys, CategoryRuns Runs) Pairs(
+        CategoricalColumn rows,
+        int[] usedRows,
+        CategoricalColumn columns,
+        int[] usedColumns,
+        PlotWorkerPool pool
+    )
+    {
+        var keys = new PairKeys(rows, Places(rows, usedRows), usedRows.Length, columns, Places(columns, usedColumns), usedColumns.Length);
+        return (keys, CategoryRuns.Find(keys, pool, RowRange.All));
+    }
+
+    /// <summary>Returns the used rows and columns that have a pair with rows.</summary>
+    private static (int[] Rows, int[] Columns) Paired(CategoryRuns pairs, int[] usedRows, int[] usedColumns)
+    {
+        var n = usedColumns.Length;
+        var rows = usedRows.Where((_, r) => Enumerable.Range(0, n).Any(c => pairs.Count[(r * n) + c] > 0)).ToArray();
+        var columns = usedColumns.Where((_, c) => Enumerable.Range(0, usedRows.Length).Any(r => pairs.Count[(r * n) + c] > 0)).ToArray();
+        return (rows, columns);
     }
 
     /// <summary>Returns the categories of a column with rows, in their numbers' order.</summary>

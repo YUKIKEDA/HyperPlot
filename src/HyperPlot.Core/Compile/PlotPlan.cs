@@ -293,7 +293,7 @@ internal sealed class PlotPlan : IDisposable
 
             // A shared direction learns once from every panel; a free one a panel each (design §4.5, row G6b). A band scale
             // keeps all its categories.
-            var (freeX, freeY) = (_facet?.Arrangement is { FreeX: true }, _facet?.Arrangement is { FreeY: true });
+            var (freeX, freeY) = (_facet?.Arrangement.FreeXOf(spec.ScaleX) == true, _facet?.Arrangement is { FreeY: true });
             for (var p = 0; p < _panels.Length; p++)
             {
                 var panel = _panels[p];
@@ -1442,7 +1442,10 @@ internal sealed class PlotPlan : IDisposable
                 }
             }
 
-            shared[i] = (facet.Arrangement.FreeX ? null : new StatRange(xs), facet.Arrangement.FreeY || ys.Count == 0 ? null : new StatRange(ys));
+            shared[i] = (
+                facet.Arrangement.FreeXOf(spec.ScaleX) ? null : new StatRange(xs),
+                facet.Arrangement.FreeY || ys.Count == 0 ? null : new StatRange(ys)
+            );
         }
 
         return shared;

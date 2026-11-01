@@ -297,7 +297,7 @@ public sealed class FacetLayoutTests : IDisposable
     ///
     /// Expected:
     /// - The strips at their places and rotations; one "Online" (the legend's) and one "Week"; a panel background at each
-    ///   panel's rectangle.
+    ///   panel's rectangle; under FreeY, each panel's horizontal grid lines at its own ticks, which differ from the next one's.
     /// </remarks>
     [Fact]
     public void Record_StripsAndTheFiguresGuides()
@@ -323,6 +323,13 @@ public sealed class FacetLayoutTests : IDisposable
         var week = texts.Single(x => x.Text == "Week");
         var (left, right) = (wrap.Guides.PanelAt(0).Left, wrap.Guides.PanelAt(2).Left + wrap.Guides.PanelAt(2).Width);
         Assert.Equal(left + ((right - left) / 2f) - (4 * advance / 2), week.Position.X, 1e-3);
+
+        using var free = Plan(1);
+        var freeList = free.Render(Wrap(FacetScales.FreeY));
+        var (first, next) = (free.Guides.PanelAt(0), free.Guides.PanelAt(1));
+        var ownLines = HorizontalLines(freeList, first);
+        Assert.Equal(first.Y.Pixels.ToArray().Select(p => (float)Math.Floor(first.Top + first.Height - p) + 0.5f), ownLines);
+        Assert.NotEqual(next.Y.Pixels.ToArray(), first.Y.Pixels.ToArray());
 
         using var grid = Plan(1);
         var gridTexts = grid.Render(Line() with { Facet = Facet.Grid(rows: _table.Cat("channel"), columns: _table.Cat("region")) }).Texts.ToArray();
@@ -429,6 +436,30 @@ public sealed class FacetLayoutTests : IDisposable
         Assert.All(plan.Panels, p => Assert.IsType<ImagePlan>(p.Layers[0]));
         Assert.All(plan.Panels, p => Assert.Equal(1, Assert.IsType<CustomPlan>(p.Layers[1]).Learned));
         Assert.All(plan.Panels, p => Assert.Equal((-50.0, 50.0), (p.LearnedX.Origin + p.LearnedX.Lower, p.LearnedX.Origin + p.LearnedX.Upper)));
+    }
+
+    /// <summary>Returns the y of the horizontal lines across a panel from its left to its right: its grid's lines.</summary>
+    private static float[] HorizontalLines(RenderList list, PanelGuide panel)
+    {
+        var lines = new List<float>();
+        foreach (var record in list.Polylines.ToArray())
+        {
+            var segments = list.Segments.Slice(record.SegmentStart, record.SegmentCount).ToArray();
+            var (start, end) = (segments.Length == 1 ? segments[0].Start : default, segments.Length == 1 ? segments[0].End : default);
+            if (
+                segments.Length == 1
+                && start.Y == end.Y
+                && start.X == panel.Left
+                && end.X == panel.Left + panel.Width
+                && start.Y >= panel.Top
+                && start.Y <= panel.Top + panel.Height
+            )
+            {
+                lines.Add(segments[0].Start.Y);
+            }
+        }
+
+        return [.. lines];
     }
 
     private PlotSpec Line() =>

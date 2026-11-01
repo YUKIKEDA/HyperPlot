@@ -41,9 +41,8 @@ internal sealed class PlotGuides
     private LinearScaleSpec? _formatX;
     private LinearScaleSpec? _formatY;
 
-    // The bands of the last layout that the recording reads (row G6a): the title's, the right axis's, and the legend's.
+    // The bands of the last layout that the recording reads (row G6a): the title's and the legend's.
     private int _titleBand;
-    private int _rightBand;
     private int _legendBand;
 
     // The rectangle the panels take together (row G6b), the panel's own without a facet: the axes' titles center on it, and
@@ -177,7 +176,7 @@ internal sealed class PlotGuides
         _facet = facet;
         var theme = spec.Theme;
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
-        (_titleBand, _rightBand, _legendBand) = (0, 0, 0);
+        (_titleBand, _legendBand) = (0, 0);
         UsePanels(facet?.Cells.Length ?? 1);
         if (facet is not null)
         {
@@ -302,7 +301,6 @@ internal sealed class PlotGuides
             rightBand = VerticalBand(Sides[SideRight], tick, gap, tickStyle, titleHeight);
         }
 
-        _rightBand = rightBand;
         Left = figureLeft + leftBand;
         Width = figureRight - _legendBand - rightBand - Left;
         if (Empty)
@@ -923,7 +921,7 @@ internal sealed class PlotGuides
         var (rows, columns, count) = (facet.Rows, facet.Columns, facet.Cells.Length);
 
         // A band scale keeps all its categories in every panel (design §4.5): its direction is shared.
-        var freeX = facet.FreeX && spec.ScaleX is not BandScaleSpec;
+        var freeX = facet.FreeXOf(spec.ScaleX);
         var freeY = facet.FreeY;
         var (freeHorizontal, freeVertical) = Flipped ? (freeY, freeX) : (freeX, freeY);
         var first = _panels[0];
@@ -1021,6 +1019,8 @@ internal sealed class PlotGuides
                 continue;
             }
 
+            // A shared axis's one set of ticks is drawn on every row: with more rows than one, both its ends keep G / 2, the
+            // inner rows' room, so that no row's labels meet the next panel's.
             var panel = _current = _panels[p];
             var row = freeVertical ? panel.Row : -1;
             var below = row == rows - 1 || (row < 0 && rows == 1) ? figureBottom - (tops[rows - 1] + height) : gap / 2.0;
@@ -1094,7 +1094,6 @@ internal sealed class PlotGuides
         }
 
         (_gridLeft, _gridWidth) = (lefts[0], lefts[columns - 1] + width - lefts[0]);
-        _rightBand = rowStrip + rightBands[columns - 1];
         if (width < 1)
         {
             return;
@@ -1108,6 +1107,8 @@ internal sealed class PlotGuides
                 continue;
             }
 
+            // A shared axis's one set of ticks is drawn under every column: with more columns than one, both its ends keep
+            // G / 2, the inner columns' room.
             var panel = _current = _panels[p];
             var column = freeHorizontal ? panel.Column : -1;
             var before = column == 0 || (column < 0 && columns == 1) ? lefts[0] - figureLeft : gap / 2.0;
@@ -1176,7 +1177,7 @@ internal sealed class PlotGuides
     )
     {
         var (rows, columns, count) = (facet.Rows, facet.Columns, facet.Cells.Length);
-        var (freeX, freeY) = (facet.FreeX && spec.ScaleX is not BandScaleSpec, facet.FreeY);
+        var (freeX, freeY) = (facet.FreeXOf(spec.ScaleX), facet.FreeY);
         var (freeTheta, freeRadius) = polar.Theta == PolarTheta.X ? (freeX, freeY) : (freeY, freeX);
         var first = _panels[0];
         for (var p = 0; p < count; p++)
@@ -1302,7 +1303,6 @@ internal sealed class PlotGuides
         }
 
         (_gridLeft, _gridWidth) = (lefts[0], lefts[columns - 1] + width - lefts[0]);
-        _rightBand = rowStrip;
         if (width < 1)
         {
             return;
