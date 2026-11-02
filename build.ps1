@@ -35,7 +35,9 @@ foreach ($configuration in "Release", "Debug") {
             continue
         }
 
-        Invoke-Step "Test $($project.BaseName) ($configuration)" { dotnet test --project $project.FullName --no-build -c $configuration }
+        # Each finished test is named in the log, so that a run that never ends shows by the names missing which tests wait
+        # (Issue #260).
+        Invoke-Step "Test $($project.BaseName) ($configuration)" { dotnet test --project $project.FullName --no-build -c $configuration --output detailed }
     }
 }
 
