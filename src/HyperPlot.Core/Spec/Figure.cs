@@ -169,7 +169,8 @@ public static class Figure
 
     /// <summary>
     /// Throws unless a grid's cells lie inside it and apart (design §4.5): the factory's check, and the compile's for cells set
-    /// with <c>with</c>.
+    /// with <c>with</c>. The cells are compared two by two, at most 256, so that a check allocates nothing whatever the grid's
+    /// size.
     /// </summary>
     internal static void CheckCells(GridFigureSpec grid)
     {
@@ -179,7 +180,6 @@ public static class Figure
         }
 
         CheckCount(grid.Cells.Count, "cell");
-        var taken = new bool[(long)grid.Rows * grid.Columns];
         for (var i = 0; i < grid.Cells.Count; i++)
         {
             var cell = grid.Cells[i] ?? throw new ArgumentNullException(nameof(grid), $"Cell {i} of the figure is null.");
@@ -198,21 +198,21 @@ public static class Figure
             if ((long)cell.Row + cell.RowSpan > grid.Rows || (long)cell.Column + cell.ColumnSpan > grid.Columns)
             {
                 throw new ArgumentException(
-                    $"Cell {i} spans rows {cell.Row} to {cell.Row + cell.RowSpan - 1} and columns {cell.Column} to {cell.Column + cell.ColumnSpan - 1}, outside the grid of {grid.Rows} × {grid.Columns} (design §4.5)."
+                    $"Cell {i} spans rows {cell.Row} to {(long)cell.Row + cell.RowSpan - 1} and columns {cell.Column} to {(long)cell.Column + cell.ColumnSpan - 1}, outside the grid of {grid.Rows} × {grid.Columns} (design §4.5)."
                 );
             }
 
-            for (var r = cell.Row; r < cell.Row + cell.RowSpan; r++)
+            for (var j = 0; j < i; j++)
             {
-                for (var c = cell.Column; c < cell.Column + cell.ColumnSpan; c++)
+                var other = grid.Cells[j];
+                if (
+                    cell.Row < other.Row + other.RowSpan
+                    && other.Row < cell.Row + cell.RowSpan
+                    && cell.Column < other.Column + other.ColumnSpan
+                    && other.Column < cell.Column + cell.ColumnSpan
+                )
                 {
-                    ref var at = ref taken[((long)r * grid.Columns) + c];
-                    if (at)
-                    {
-                        throw new ArgumentException($"Cell {i} lies over another cell at row {r} and column {c} (design §4.5).");
-                    }
-
-                    at = true;
+                    throw new ArgumentException($"Cell {i} lies over cell {j} (design §4.5).");
                 }
             }
         }

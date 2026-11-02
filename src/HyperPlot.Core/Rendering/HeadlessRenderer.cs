@@ -202,6 +202,9 @@ public sealed class HeadlessRenderer : IDisposable
     /// <summary>Gets the compiled plot, or null before the first <see cref="Render(PlotSpec)"/>. Tests only.</summary>
     internal PlotPlan? Plan => _plan;
 
+    /// <summary>Gets the compiled figure, or null while the renderer draws a plot alone (row G6c). Tests only.</summary>
+    internal FigurePlan? Figure => _figure;
+
     /// <summary>Reads the image as RGBA, top row first, alpha not premultiplied. Allocates nothing after the first call.</summary>
     /// <param name="destination">At least Width · Height · 4 bytes.</param>
     /// <exception cref="ArgumentException"><paramref name="destination"/> is too short.</exception>
