@@ -11,6 +11,7 @@ public sealed class HeadlessRenderer : IDisposable
     private readonly IRenderTarget _target;
     private readonly PlotWorkerPool? _pool;
     private PlotPlan? _plan;
+    private FigurePlan? _figure;
     private bool _disposed;
 
     /// <summary>Initializes a new instance of the <see cref="HeadlessRenderer"/> class with a render target of its own.</summary>
@@ -116,6 +117,10 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // A plot alone and a figure have plans of their own: the one not drawn any more is released (design §7.5, row G6c).
+        _figure?.Dispose();
+        _figure = null;
         _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
 
         // A headless image is the same whenever it is drawn: every visible tile of an image is sent, past a frame's budget
@@ -154,8 +159,51 @@ public sealed class HeadlessRenderer : IDisposable
         return _backend.Text.Measure(text, style);
     }
 
+    /// <summary>
+    /// Compiles a figure of several plots (design §4.5, §4.8, row G6c), waits until its plots' indexes are built, and draws it
+    /// over the whole image: the figure's background, each cell in its plot's background, each plot laid out in its cell as a
+    /// plot alone, and the figure's title. Nothing is drawn when a plot throws.
+    /// </summary>
+    /// <param name="figure">The figure.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="figure"/> or a member, a plot, or a cell is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// The figure does not check (design §4.5): no plot or more than 256, more than 256 panels together, a number of columns,
+    /// rows, or a span below 1, a cell outside the grid or over another, a spacing not finite or below 0; or a plot does not
+    /// check, as <see cref="Render(PlotSpec)"/> says.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A plot fails as <see cref="Render(PlotSpec)"/> says.</exception>
+    /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
+    /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
+    public void Render(FigureSpec figure)
+    {
+        ArgumentNullException.ThrowIfNull(figure);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _plan?.Dispose();
+        _plan = null;
+        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        _backend.Images.Unbounded = true;
+        try
+        {
+            _figure.Render(figure);
+            using var frame = _backend.BeginFrame();
+            _target.Clear(figure.Theme.Background);
+            _backend.Draw(_target, _figure.List);
+            for (var i = 0; i < _figure.Drawn; i++)
+            {
+                _backend.Draw(_target, _figure.Plans[i].List);
+            }
+        }
+        finally
+        {
+            _backend.Images.Unbounded = false;
+        }
+    }
+
     /// <summary>Gets the compiled plot, or null before the first <see cref="Render(PlotSpec)"/>. Tests only.</summary>
     internal PlotPlan? Plan => _plan;
+
+    /// <summary>Gets the compiled figure, or null while the renderer draws a plot alone (row G6c). Tests only.</summary>
+    internal FigurePlan? Figure => _figure;
 
     /// <summary>Reads the image as RGBA, top row first, alpha not premultiplied. Allocates nothing after the first call.</summary>
     /// <param name="destination">At least Width · Height · 4 bytes.</param>
@@ -197,6 +245,7 @@ public sealed class HeadlessRenderer : IDisposable
         {
             _disposed = true;
             _plan?.Dispose();
+            _figure?.Dispose();
             _target.Dispose();
         }
     }

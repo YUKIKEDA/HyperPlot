@@ -25,13 +25,17 @@ internal sealed class PlotGuides
 
     private readonly TextEngine _text;
     private readonly float _scale;
-    private readonly int _width;
-    private readonly int _height;
     private readonly LabelTable _labels = new();
     private readonly Vector2[] _segment = new Vector2[2];
 
     // The panels' guides (row G6b): one without a facet. The layout and the recording work on the current one.
     private readonly List<PanelGuide> _panels = [];
+
+    // The rectangle the plot is laid out in (row G6c): the target's whole, or a figure's cell.
+    private int _left;
+    private int _top;
+    private int _width;
+    private int _height;
     private PanelGuide _current;
     private Vector2[] _curve = new Vector2[256];
     private CategoricalColumn? _categories;
@@ -147,6 +151,12 @@ internal sealed class PlotGuides
     /// <summary>Gets the table of the labels' strings, for the tests of its size.</summary>
     internal LabelTable LabelTable => _labels;
 
+    /// <summary>
+    /// Places the plot in a rectangle of the target (design §4.6, row G6c): a figure's cell, which stands for the whole target;
+    /// the next layout lays the guides out in it.
+    /// </summary>
+    internal void Place(int left, int top, int width, int height) => (_left, _top, _width, _height) = (left, top, width, height);
+
     /// <summary>Returns a panel's guides (row G6b): its rectangle, its ticks, and its polar transform.</summary>
     internal PanelGuide PanelAt(int index) => _panels[index];
 
@@ -256,8 +266,8 @@ internal sealed class PlotGuides
         var padding = Round(theme.Padding);
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
-        var (figureLeft, figureTop) = (padding, padding);
-        var (figureRight, figureBottom) = (_width - padding, _height - padding);
+        var (figureLeft, figureTop) = (_left + padding, _top + padding);
+        var (figureRight, figureBottom) = (_left + _width - padding, _top + _height - padding);
 
         var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
         var tickStyle = Style(theme, theme.TickLabelSize);
@@ -605,7 +615,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 spec.Title!,
-                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Width / 2), padding),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Width / 2), _top + padding),
                 Style(theme, theme.TitleSize) with
                 {
                     Horizontal = TextAlign.Left,
@@ -810,8 +820,8 @@ internal sealed class PlotGuides
         var padding = Round(theme.Padding);
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
-        var (figureLeft, figureTop) = (padding, padding);
-        var (figureRight, figureBottom) = (_width - padding, _height - padding);
+        var (figureLeft, figureTop) = (_left + padding, _top + padding);
+        var (figureRight, figureBottom) = (_left + _width - padding, _top + _height - padding);
         var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
         var legendBand = LegendBand(
             spec,
@@ -945,7 +955,12 @@ internal sealed class PlotGuides
         var padding = Round(theme.Padding);
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
-        var (figureLeft, figureTop, figureRight, figureBottom) = (padding, padding, _width - padding, _height - padding);
+        var (figureLeft, figureTop, figureRight, figureBottom) = (
+            _left + padding,
+            _top + padding,
+            _left + _width - padding,
+            _top + _height - padding
+        );
         var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
         _titleBand = titleBand;
         var tickStyle = Style(theme, theme.TickLabelSize);
@@ -1198,7 +1213,12 @@ internal sealed class PlotGuides
         var padding = Round(theme.Padding);
         var gap = Round(theme.Spacing);
         var tick = Round(theme.TickLength);
-        var (figureLeft, figureTop, figureRight, figureBottom) = (padding, padding, _width - padding, _height - padding);
+        var (figureLeft, figureTop, figureRight, figureBottom) = (
+            _left + padding,
+            _top + padding,
+            _left + _width - padding,
+            _top + _height - padding
+        );
         var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
         _titleBand = titleBand;
         var tickStyle = Style(theme, theme.TickLabelSize);
@@ -1670,7 +1690,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 bottomTitle,
-                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _top + _height - padding),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1683,7 +1703,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 topTitle,
-                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(topTitle, titleStyle).Width / 2), padding + _titleBand),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(topTitle, titleStyle).Width / 2), _top + padding + _titleBand),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1696,7 +1716,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 leftTitle,
-                new Vector2(padding, _gridTop + (_gridHeight / 2f) + (_text.Measure(leftTitle, titleStyle).Width / 2)),
+                new Vector2(_left + padding, _gridTop + (_gridHeight / 2f) + (_text.Measure(leftTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1710,7 +1730,10 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 rightTitle,
-                new Vector2(_width - padding - _legendBand, _gridTop + (_gridHeight / 2f) - (_text.Measure(rightTitle, titleStyle).Width / 2)),
+                new Vector2(
+                    _left + _width - padding - _legendBand,
+                    _gridTop + (_gridHeight / 2f) - (_text.Measure(rightTitle, titleStyle).Width / 2)
+                ),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1734,7 +1757,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 bottomTitle,
-                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _height - padding),
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(bottomTitle, titleStyle).Width / 2), _top + _height - padding),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1747,7 +1770,7 @@ internal sealed class PlotGuides
         {
             list.DrawText(
                 sideTitle,
-                new Vector2(padding, _gridTop + (_gridHeight / 2f) + (_text.Measure(sideTitle, titleStyle).Width / 2)),
+                new Vector2(_left + padding, _gridTop + (_gridHeight / 2f) + (_text.Measure(sideTitle, titleStyle).Width / 2)),
                 titleStyle with
                 {
                     Horizontal = TextAlign.Left,
@@ -1765,7 +1788,7 @@ internal sealed class PlotGuides
         var swatch = Round(theme.LegendSwatch);
 
         // Past the panels' right bands, at the top of the first row: the figure's right minus the legend's band (row G6b).
-        var x = _width - Round(theme.Padding) - _legendBand + gap;
+        var x = _left + _width - Round(theme.Padding) - _legendBand + gap;
         var y = (float)_gridTop;
         for (var i = 0; i < spec.Layers.Count; i++)
         {
