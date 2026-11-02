@@ -66,12 +66,9 @@ internal sealed class FigurePlan : IDisposable
     {
         var count = Check(figure);
         Layout(figure, count);
-        if (Drawn == 0)
-        {
-            return;
-        }
 
-        // Every plot is compiled before any waits, so that the figure's checks and each plot's come before the workers' passes.
+        // Every plot is compiled before any waits, so that the figure's checks and each plot's come before the workers' passes,
+        // a figure too small for its cells included.
         var panels = 0;
         for (var i = 0; i < count; i++)
         {
@@ -82,6 +79,13 @@ internal sealed class FigurePlan : IDisposable
         if (panels > Figure.MaxPlots)
         {
             throw new ArgumentException($"The figure's plots have {panels} panels together; a figure has at most {Figure.MaxPlots} (design §4.5).");
+        }
+
+        // A cell under a pixel leaves the figure's background alone (design §4.6): no plot, no title.
+        if (Drawn == 0)
+        {
+            _list.Clear();
+            return;
         }
 
         // The residency cache's frame is the figure's: its budget holds for all the plots (design §4.5).
@@ -151,7 +155,7 @@ internal sealed class FigurePlan : IDisposable
         switch (figure)
         {
             case ConcatFigureSpec concat:
-                Figure.CheckPlots(concat.Plots);
+                Figure.CheckPlots(concat.Plots, nameof(figure));
                 if (concat.Columns is < 1)
                 {
                     throw new ArgumentException($"The figure's Columns is {concat.Columns}; it is at least 1 (design §4.5).");
@@ -164,7 +168,7 @@ internal sealed class FigurePlan : IDisposable
                     throw new ArgumentException($"The figure's grid is {grid.Rows} × {grid.Columns}; each is at least 1 (design §4.5).");
                 }
 
-                Figure.CheckCells(grid);
+                Figure.CheckCells(grid, nameof(figure));
                 return grid.Cells.Count;
             default:
                 throw new ArgumentException($"A {figure.GetType().Name} is not a figure the renderer lays out (design §4.5).", nameof(figure));

@@ -100,7 +100,7 @@ public static class Figure
             ArgumentOutOfRangeException.ThrowIfLessThan(count, 1, nameof(columns));
         }
 
-        CheckPlots(plots);
+        CheckPlots(plots, nameof(plots));
         return new ConcatFigureSpec { Plots = [.. plots], Columns = columns };
     }
 
@@ -137,7 +137,7 @@ public static class Figure
             Columns = columns,
             Cells = [.. cells],
         };
-        CheckCells(figure);
+        CheckCells(figure, nameof(cells));
         return figure;
     }
 
@@ -172,33 +172,35 @@ public static class Figure
     /// with <c>with</c>. The cells are compared two by two, at most 256, so that a check allocates nothing whatever the grid's
     /// size.
     /// </summary>
-    internal static void CheckCells(GridFigureSpec grid)
+    internal static void CheckCells(GridFigureSpec grid, string paramName)
     {
         if (grid.Cells is null)
         {
-            throw new ArgumentNullException(nameof(grid), "The figure's Cells must not be null.");
+            throw new ArgumentNullException(paramName, "The figure's Cells must not be null.");
         }
 
-        CheckCount(grid.Cells.Count, "cell");
+        CheckCount(grid.Cells.Count, "cell", paramName);
         for (var i = 0; i < grid.Cells.Count; i++)
         {
-            var cell = grid.Cells[i] ?? throw new ArgumentNullException(nameof(grid), $"Cell {i} of the figure is null.");
+            var cell = grid.Cells[i] ?? throw new ArgumentNullException(paramName, $"Cell {i} of the figure is null.");
             if (cell.Plot is null)
             {
-                throw new ArgumentNullException(nameof(grid), $"The Plot of cell {i} is null.");
+                throw new ArgumentNullException(paramName, $"The Plot of cell {i} is null.");
             }
 
             if (cell.Row < 0 || cell.Column < 0 || cell.RowSpan < 1 || cell.ColumnSpan < 1)
             {
                 throw new ArgumentException(
-                    $"Cell {i} lies at row {cell.Row} and column {cell.Column} over {cell.RowSpan} × {cell.ColumnSpan}; a place is at least 0 and a span at least 1 (design §4.5)."
+                    $"Cell {i} lies at row {cell.Row} and column {cell.Column} over {cell.RowSpan} × {cell.ColumnSpan}; a place is at least 0 and a span at least 1 (design §4.5).",
+                    paramName
                 );
             }
 
             if ((long)cell.Row + cell.RowSpan > grid.Rows || (long)cell.Column + cell.ColumnSpan > grid.Columns)
             {
                 throw new ArgumentException(
-                    $"Cell {i} spans rows {cell.Row} to {(long)cell.Row + cell.RowSpan - 1} and columns {cell.Column} to {(long)cell.Column + cell.ColumnSpan - 1}, outside the grid of {grid.Rows} × {grid.Columns} (design §4.5)."
+                    $"Cell {i} spans rows {cell.Row} to {(long)cell.Row + cell.RowSpan - 1} and columns {cell.Column} to {(long)cell.Column + cell.ColumnSpan - 1}, outside the grid of {grid.Rows} × {grid.Columns} (design §4.5).",
+                    paramName
                 );
             }
 
@@ -212,31 +214,31 @@ public static class Figure
                     && other.Column < cell.Column + cell.ColumnSpan
                 )
                 {
-                    throw new ArgumentException($"Cell {i} lies over cell {j} (design §4.5).");
+                    throw new ArgumentException($"Cell {i} lies over cell {j} (design §4.5).", paramName);
                 }
             }
         }
     }
 
     /// <summary>Throws unless a concatenation holds 1 to 256 plots, none null.</summary>
-    internal static void CheckPlots(IReadOnlyList<PlotSpec>? plots)
+    internal static void CheckPlots(IReadOnlyList<PlotSpec>? plots, string paramName)
     {
-        ArgumentNullException.ThrowIfNull(plots);
-        CheckCount(plots.Count, "plot");
+        ArgumentNullException.ThrowIfNull(plots, paramName);
+        CheckCount(plots.Count, "plot", paramName);
         for (var i = 0; i < plots.Count; i++)
         {
             if (plots[i] is null)
             {
-                throw new ArgumentNullException(nameof(plots), $"Plot {i} of the figure is null.");
+                throw new ArgumentNullException(paramName, $"Plot {i} of the figure is null.");
             }
         }
     }
 
-    private static void CheckCount(int count, string what)
+    private static void CheckCount(int count, string what, string paramName)
     {
         if (count is < 1 or > MaxPlots)
         {
-            throw new ArgumentException($"The figure has {count} {what}s; a figure has 1 to {MaxPlots} (design §4.5).");
+            throw new ArgumentException($"The figure has {count} {what}s; a figure has 1 to {MaxPlots} (design §4.5).", paramName);
         }
     }
 }

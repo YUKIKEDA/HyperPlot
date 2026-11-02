@@ -50,8 +50,8 @@ public sealed class FigureTests : IDisposable
     /// - Call the factories with each wrong argument, then with right ones.
     ///
     /// Expected:
-    /// - ArgumentOutOfRangeException, ArgumentNullException, ArgumentException; 256 plots pass; HConcat has no number of
-    ///   columns and VConcat one; a cell's spans default to 1.
+    /// - ArgumentOutOfRangeException, ArgumentNullException, ArgumentException, a check of the plots or the cells naming plots
+    ///   or cells; 256 plots pass; HConcat has no number of columns and VConcat one; a cell's spans default to 1.
     /// </remarks>
     [Fact]
     public void Factories_CheckTheirArguments()
@@ -59,15 +59,16 @@ public sealed class FigureTests : IDisposable
         var plot = Line("wave");
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Figure.Concat(0, plot));
         _ = Assert.Throws<ArgumentNullException>(() => Figure.Concat(1, null!));
-        _ = Assert.Throws<ArgumentNullException>(() => Figure.Concat(1, plot, null!));
+        Assert.Equal("plots", Assert.Throws<ArgumentNullException>(() => Figure.Concat(1, plot, null!)).ParamName);
         _ = Assert.Throws<ArgumentException>(() => Figure.Concat(1));
-        _ = Assert.Throws<ArgumentException>(() => Figure.HConcat([.. Enumerable.Repeat(plot, 257)]));
+        Assert.Equal("plots", Assert.Throws<ArgumentException>(() => Figure.HConcat([.. Enumerable.Repeat(plot, 257)])).ParamName);
         Assert.Equal(256, Figure.HConcat([.. Enumerable.Repeat(plot, 256)]).Plots.Count);
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Figure.Grid(0, 1, Figure.Cell(plot, 0, 0)));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Figure.Grid(1, 0, Figure.Cell(plot, 0, 0)));
         _ = Assert.Throws<ArgumentException>(() => Figure.Grid(1, 1, Figure.Cell(plot, 0, 1)));
         _ = Assert.Throws<ArgumentException>(() => Figure.Grid(1, 2, Figure.Cell(plot, 0, 0, columnSpan: 3)));
-        _ = Assert.Throws<ArgumentException>(() => Figure.Grid(1, 2, Figure.Cell(plot, 0, 0, columnSpan: 2), Figure.Cell(plot, 0, 1)));
+        var over = Assert.Throws<ArgumentException>(() => Figure.Grid(1, 2, Figure.Cell(plot, 0, 0, columnSpan: 2), Figure.Cell(plot, 0, 1)));
+        Assert.Equal("cells", over.ParamName);
         _ = Assert.Throws<ArgumentException>(() => Figure.Grid(1, 1));
         _ = Assert.Throws<ArgumentNullException>(() => Figure.Grid(1, 1, null!));
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => Figure.Cell(plot, -1, 0));
@@ -93,7 +94,8 @@ public sealed class FigureTests : IDisposable
     /// - Render each figure.
     ///
     /// Expected:
-    /// - ArgumentException each (ArgumentNullException for a null plot); the figure of two plots of 128 panels each draws.
+    /// - ArgumentException each (ArgumentNullException for a null plot), a check of the plots or the cells naming the figure;
+    ///   the figure of two plots of 128 panels each draws.
     /// </remarks>
     [Fact]
     public void Compile_RefusesFiguresThatDoNotCheck()
@@ -163,7 +165,8 @@ public sealed class FigureTests : IDisposable
         }
 
         using var nullPlot = Plan();
-        _ = Assert.Throws<ArgumentNullException>(() => nullPlot.Render(concat with { Plots = [plot, null!] }));
+        Assert.Equal("figure", Assert.Throws<ArgumentNullException>(() => nullPlot.Render(concat with { Plots = [plot, null!] })).ParamName);
+        Assert.Equal("figure", Assert.Throws<ArgumentException>(() => nullPlot.Render(wrong[^1])).ParamName);
 
         foreach (var (count, refused) in new[] { (129, true), (128, false) })
         {
@@ -285,11 +288,13 @@ public sealed class FigureTests : IDisposable
     ///   too small.
     ///
     /// Steps:
-    /// - Render each.
+    /// - Render each; on the first plan, render a grid of 400 rows with a title, the same with a plot of no theme, and a plot
+    ///   alone.
     ///
     /// Expected:
     /// - Two rectangles in the plots' backgrounds at the cells and the title centered at the padding; at 30 × 30 no plot drawn;
-    ///   the narrow cell's rectangle with its plot's list empty.
+    ///   the 400 rows draw no plot and an empty figure list, the plot of no theme throws ArgumentNullException, the plot alone
+    ///   draws; the narrow cell's rectangle with its plot's list empty.
     /// </remarks>
     [Fact]
     public void Backgrounds_AndTooSmall()
@@ -307,6 +312,19 @@ public sealed class FigureTests : IDisposable
         using var tiny = new FigurePlan(_pool, 30, 30, new TextEngine(new FakeTextBackend()), 1);
         tiny.Render(Figure.HConcat(Line("wave"), dark));
         Assert.Equal(0, tiny.Drawn);
+
+        // A figure too small after one drawn leaves no cell nor title of the first, and still checks its plots.
+        var rows = Figure.Grid(400, 1, Figure.Cell(Line("wave"), 0, 0)) with
+        {
+            Title = "Rows",
+        };
+        plan.Render(rows);
+        Assert.Equal(0, plan.Drawn);
+        Assert.Equal(0, plan.List.Commands.Length);
+        _ = Assert.Throws<ArgumentNullException>(() => plan.Render(rows with { Cells = [Figure.Cell(dark with { Theme = null! }, 0, 0)] }));
+        plan.Render(Figure.HConcat(Line("wave")));
+        Assert.Equal(1, plan.Drawn);
+        Assert.NotEqual(0, plan.Plans[0].List.Commands.Length);
 
         using var narrow = new FigurePlan(_pool, 80, 300, new TextEngine(new FakeTextBackend()), 1);
         narrow.Render(Figure.HConcat(Line("wave"), dark) with { Spacing = 0 });
@@ -348,7 +366,7 @@ public sealed class FigureTests : IDisposable
     /// <summary>
     /// The diff of a figure (design §4.8): a plot's change takes its plan's stages alone; a new plot gets a new plan and the
     /// cells are placed again; a new spacing places every plot again; a new figure of the same plots and cells does nothing;
-    /// one plot in two cells draws in both.
+    /// the figure's theme of other colors records the figure's list alone; one plot in two cells draws in both.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -356,11 +374,12 @@ public sealed class FigureTests : IDisposable
     ///
     /// Steps:
     /// - Render; render with the first plot's y domain given; with a third plot; with a new spacing; a new figure of the same
-    ///   plots; a grid of one plot in two cells.
+    ///   plots; the figure with a title, then with Theme.Dark; a grid of one plot in two cells.
     ///
     /// Expected:
     /// - The second plan's layouts and recordings stay while the first's grow; the old plans kept and a third made, all laid
-    ///   out again; all laid out again; nothing; both cells drawn.
+    ///   out again; all laid out again; nothing; the plans' layouts and recordings kept, the same rectangles, and the title in
+    ///   the dark foreground; both cells drawn.
     /// </remarks>
     [Fact]
     public void Diff_TakesItsStages()
@@ -386,6 +405,20 @@ public sealed class FigureTests : IDisposable
         (layouts, recordings) = (second.Layouts, second.Recordings);
         plan.Render(Figure.HConcat(a, b, a) with { Spacing = 5 });
         Assert.Equal((layouts, recordings), (second.Layouts, second.Recordings));
+
+        // The figure's colors alone record the figure's list again: the cells keep their plots' backgrounds.
+        var titled = Figure.HConcat(a, b, a) with
+        {
+            Spacing = 5,
+            Title = "T",
+        };
+        plan.Render(titled);
+        (layouts, recordings) = (second.Layouts, second.Recordings);
+        var rects = plan.List.Rects.ToArray();
+        plan.Render(titled with { Theme = Theme.Dark });
+        Assert.Equal((layouts, recordings), (second.Layouts, second.Recordings));
+        Assert.Equal(rects, plan.List.Rects.ToArray());
+        Assert.Equal(Theme.Dark.Foreground, Assert.Single(plan.List.Texts.ToArray()).Style.Color);
 
         using var twice = Plan();
         twice.Render(Figure.Grid(1, 2, Figure.Cell(a, 0, 0), Figure.Cell(a, 0, 1)));
