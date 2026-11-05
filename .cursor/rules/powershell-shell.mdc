@@ -45,6 +45,7 @@ body
 - Run `./build.ps1` in PowerShell 7 (`pwsh`, the agent's PowerShell tool), not Windows PowerShell 5.1 (`powershell.exe`): 5.1 has no `$IsWindows`, which the gate reads.
 - A scratch build that reads an environment variable is run from Bash, with `VAR=value cmd` and `env -u VAR cmd`. After `[Environment]::SetEnvironmentVariable(name, $null)` in PowerShell, child processes were seen to still get the variable (cause not traced), and runs meant to differ came out the same.
 - Quote paths with spaces. Prefer repository-relative paths, except for .NET methods: `[IO.File]::ReadAllText` and the like read a relative path from the process's working directory, not from `Set-Location`. Pass them an absolute path; otherwise a replacement in a worktree reads the main checkout's file and reports its text missing.
+- In Bash, Git Bash rewrites an argument that looks like a POSIX path: `git show <ref>:.github/workflows/ci.yml` gets a Windows path, fails, and `> .github/workflows/ci.yml` leaves the file empty. Prefix such a command with `MSYS_NO_PATHCONV=1`, or run it from PowerShell. In PR #261, the workflow file was emptied this way and written again before the commit.
 - In Bash, `rm -rf "$DIR"/*` is refused by the agent's safety check, because an empty `$DIR` would make it `/*`. Write `"${DIR:?}"/*` or a literal path.
 
 ## Writing files
