@@ -23,7 +23,16 @@ internal sealed class PlotPlan : IDisposable
     private readonly PlotWorkerPool _pool;
     private readonly float _scale;
     private readonly PlotGuides _guides;
-    private readonly Dictionary<Column, PlotPyramid> _pyramids = [];
+
+    // The pyramids the plan reads (design §5.5.3): its own store, or its figure's, which the plots share (row G6c); and
+    // the columns whose pyramid this plan holds in the store.
+    private readonly PyramidStore _store;
+    private readonly bool _ownStore;
+    private readonly HashSet<Column> _held = [];
+
+    // In a figure, the figure starts and sends the residency cache's frame once for all its plots (row G6c).
+    private readonly bool _inFigure;
+
     private readonly RenderList _list = new();
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
@@ -38,6 +47,16 @@ internal sealed class PlotPlan : IDisposable
     private readonly ColumnRef[] _channels = new ColumnRef[4];
     private readonly ColumnRef[] _previousChannels = new ColumnRef[4];
     private IScale? _xTransform;
+
+    // A Render's stages (row G6c): what Compile found, for Prepare and Finish, so that a figure extracts all its plots at once.
+    private PlotSpec? _pendingSpec;
+    private bool _pendingScales;
+    private bool _pendingRanges;
+    private bool _pendingLooks;
+    private bool _pendingFlipped;
+    private bool _pendingExtract;
+    private bool _pendingRecord;
+    private bool _placed;
     private IScale? _yTransform;
     private IScale? _xTransform2;
     private IScale? _yTransform2;
@@ -62,7 +81,16 @@ internal sealed class PlotPlan : IDisposable
     /// frame's tiles as if they were sent (the tests of Core).
     /// </remarks>
     internal PlotPlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale, ResidencyCache? images = null)
+        : this(pool, width, height, text, scale, images, null) { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PlotPlan"/> class for a plot of a figure (row G6c): the target's size, a
+    /// store of pyramids the figure's plots share, and the figure's residency cache, whose frame the figure starts. The plot
+    /// is laid out in the rectangle <see cref="Place"/> gives.
+    /// </summary>
+    internal PlotPlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale, ResidencyCache? images, PyramidStore? store)
     {
+        (_store, _ownStore, _inFigure) = (store ?? new PyramidStore(), store is null, store is not null);
         _pool = pool;
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
@@ -109,7 +137,7 @@ internal sealed class PlotPlan : IDisposable
     internal PlotGuides Guides => _guides;
 
     /// <summary>Gets the pyramids the plan holds, one a Y column. Tests only.</summary>
-    internal IReadOnlyCollection<PlotPyramid> Pyramids => _pyramids.Values;
+    internal IReadOnlyCollection<PlotPyramid> Pyramids => [.. _held.Select(c => _store.Find(c)!)];
 
     /// <summary>Gets the number of pixel columns (rows when flipped) M4 last ran over: W, or H when flipped. Tests only.</summary>
     internal int PixelColumns => _panels[0].Boundaries.Length - 1;
@@ -138,6 +166,44 @@ internal sealed class PlotPlan : IDisposable
     /// </exception>
     internal RenderList Render(PlotSpec spec)
     {
+        Compile(spec);
+        if (Prepare())
+        {
+            _pool.ExtractTogether(_allBatches, _allOrigins, _allBoundaries, _allBatches.Length);
+        }
+
+        Finish();
+        return _list;
+    }
+
+    /// <summary>
+    /// Places the plot in a rectangle of the target (design §4.6, row G6c): a figure's cell. A new rectangle lays the plot out
+    /// again at the next Render.
+    /// </summary>
+    internal void Place(int left, int top, int width, int height)
+    {
+        _guides.Place(left, top, width, height);
+        _placed = true;
+    }
+
+    /// <summary>
+    /// Gets the M4 batches, origins, and boundaries that <see cref="Prepare"/> set for the extraction (row G6c): a figure
+    /// extracts its plots' together.
+    /// </summary>
+    internal (M4Batch[] Batches, ScaleOrigin[] Origins, double[][] Boundaries) Extraction => (_allBatches, _allOrigins, _allBoundaries);
+
+    /// <summary>Gets the list the plan records into: the one <see cref="Render(PlotSpec)"/> returns, or a figure's plot's (row G6c).</summary>
+    internal RenderList List => _list;
+
+    /// <summary>Gets the number of panels the last compile made (row G6c): a figure's plots have at most 256 together.</summary>
+    internal int PanelCount => _panels.Length;
+
+    /// <summary>
+    /// The first stage of <see cref="Render(PlotSpec)"/> (row G6c): checks the spec, and makes the layers and the panels again
+    /// when the data stage asks. A figure compiles all its plots before any waits, so that its checks come first.
+    /// </summary>
+    internal void Compile(PlotSpec spec)
+    {
         Validate(spec);
         if (spec.Theme is null)
         {
@@ -162,6 +228,8 @@ internal sealed class PlotPlan : IDisposable
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
         _spec = null;
         var data = previous is null || DataChanged(previous, spec) || FacetDataChanged(previous.Facet, spec.Facet);
+        var placed = _placed;
+        _placed = false;
         var flipped = Flipped(spec);
 
         // A flip, a polar system, its theta, and its hole change the axes' lengths, which nice and the boundaries depend on:
@@ -190,7 +258,8 @@ internal sealed class PlotPlan : IDisposable
             || AxesChanged(previous.ScaleY, spec.ScaleY)
             || AxesChanged(previous.ScaleX2, spec.ScaleX2)
             || AxesChanged(previous.ScaleY2, spec.ScaleY2)
-            || (previous.Facet as FacetWrapSpec)?.ColumnCount != (spec.Facet as FacetWrapSpec)?.ColumnCount;
+            || (previous.Facet as FacetWrapSpec)?.ColumnCount != (spec.Facet as FacetWrapSpec)?.ColumnCount
+            || placed;
         if (scales)
         {
             // A new transform makes new boundaries even over the same range of the scale space.
@@ -270,6 +339,17 @@ internal sealed class PlotPlan : IDisposable
             }
         }
 
+        (_pendingSpec, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped) = (spec, scales, ranges, looks, flipped);
+        (_pendingExtract, _pendingRecord) = (false, false);
+    }
+
+    /// <summary>
+    /// The second stage (row G6c): waits for the indexes, learns, lays the guides out, and makes the boundaries. Returns
+    /// whether the batches of <see cref="Extraction"/> are to be extracted before <see cref="Finish"/>.
+    /// </summary>
+    internal bool Prepare()
+    {
+        var (spec, scales, ranges, looks, flipped) = (_pendingSpec!, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped);
         WaitForIndexes();
         var extract = ranges || scales || ValuesChanged();
         if (extract)
@@ -376,8 +456,7 @@ internal sealed class PlotPlan : IDisposable
                     panel.X = ScaleRange.None;
                 }
 
-                _spec = spec;
-                return _list;
+                return false;
             }
 
             var boundaries = false;
@@ -422,35 +501,57 @@ internal sealed class PlotPlan : IDisposable
                     }
                 }
 
-                _pool.ExtractTogether(_allBatches, _allOrigins, _allBoundaries, _allBatches.Length);
-
-                Extractions++;
-                foreach (var panel in _panels)
-                {
-                    foreach (var layer in panel.Layers)
-                    {
-                        layer.MarkExtracted();
-                    }
-                }
+                _pendingExtract = true;
             }
 
-            Record(spec, flipped);
+            _pendingRecord = true;
+        }
+
+        return _pendingExtract;
+    }
+
+    /// <summary>
+    /// The last stage (row G6c): after the extraction <see cref="Prepare"/> asked for, marks the layers extracted and records
+    /// the list; the spec is then the one drawn.
+    /// </summary>
+    internal void Finish()
+    {
+        if (_pendingExtract)
+        {
+            Extractions++;
+            foreach (var panel in _panels)
+            {
+                foreach (var layer in panel.Layers)
+                {
+                    layer.MarkExtracted();
+                }
+            }
+        }
+
+        if (_pendingRecord)
+        {
+            Record(_pendingSpec!, _pendingFlipped);
             Recordings++;
         }
 
-        _spec = spec;
-        return _list;
+        _spec = _pendingSpec;
+        (_pendingSpec, _pendingExtract, _pendingRecord) = (null, false, false);
     }
 
     /// <summary>Releases the pyramids.</summary>
     public void Dispose()
     {
-        foreach (var pyramid in _pyramids.Values)
+        foreach (var column in _held)
         {
-            pyramid.Dispose();
+            _store.Release(column);
         }
 
-        _pyramids.Clear();
+        _held.Clear();
+        if (_ownStore)
+        {
+            _store.Dispose();
+        }
+
         foreach (var mipmap in _rasters.Values)
         {
             mipmap.Dispose();
@@ -1553,7 +1654,7 @@ internal sealed class PlotPlan : IDisposable
 
             var build = new PlanBuild(
                 Pyramid,
-                column => _pyramids.GetValueOrDefault(column),
+                _store.Find,
                 panel.Batches[0],
                 _capacity,
                 _pool,
@@ -1583,12 +1684,12 @@ internal sealed class PlotPlan : IDisposable
             panel.Layers = layers;
         }
 
-        foreach (var column in _pyramids.Keys.ToArray())
+        foreach (var column in _held.ToArray())
         {
             if (!used.Contains(column))
             {
-                _pyramids[column].Dispose();
-                _ = _pyramids.Remove(column);
+                _store.Release(column);
+                _ = _held.Remove(column);
             }
         }
 
@@ -1628,14 +1729,13 @@ internal sealed class PlotPlan : IDisposable
         PlotPyramid Pyramid(Column y)
         {
             _ = used.Add(y);
-            if (!_pyramids.TryGetValue(y, out var pyramid))
+            if (_held.Add(y))
             {
-                pyramid = ((IPyramidColumn)y).BuildPlotPyramid(_pool);
-                _pyramids.Add(y, pyramid);
-                PyramidsBuilt++;
+                _ = _store.Acquire(y, _pool, out var built);
+                PyramidsBuilt += built ? 1 : 0;
             }
 
-            return pyramid;
+            return _store.Find(y)!;
         }
     }
 
@@ -1645,9 +1745,9 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private void WaitForIndexes()
     {
-        foreach (var pyramid in _pyramids.Values)
+        foreach (var column in _held)
         {
-            pyramid.WhenComplete().GetAwaiter().GetResult();
+            _store.Find(column)!.WhenComplete().GetAwaiter().GetResult();
         }
 
         // The rasters' mipmaps: the rows of the chunks that changed, on the workers (design §3.7, row G9).
@@ -1691,13 +1791,17 @@ internal sealed class PlotPlan : IDisposable
     {
         _list.Clear();
         _context.Theme = spec.Theme;
-        if (_ownImages)
+        if (_ownImages && !_inFigure)
         {
             // No backend sends the plan's own cache: what the last frame staged counts as sent.
             _context.Images.Sent();
         }
 
-        _context.Images.BeginFrame();
+        if (!_inFigure)
+        {
+            _context.Images.BeginFrame();
+        }
+
         _guides.RecordBehind(_list, spec);
         for (var p = 0; p < _panels.Length; p++)
         {

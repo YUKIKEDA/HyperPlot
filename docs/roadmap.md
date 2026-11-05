@@ -17,10 +17,10 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 
 ## 今
 
-- **フェーズ:** B（GoG）
-- **作業中:** G6c
-- **ブランチ:** `docs/254-g6c-figures`（設計）
-- **Issue:** [#254](https://github.com/YUKIKEDA/HyperPlot/issues/254)（設計）
+- **フェーズ:** C（インタラクションと WPF）
+- **作業中:** I1（G6c は #258 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -66,7 +66,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G5c | 残りの Stat: density（KDE、1D）・smooth（移動平均）・bin（2D）（要件 G-4）。density は R の `density()` の手順（格子への線形の配りとガウスの核、既定の帯域幅は厳密な `bw.nrd0`）、smooth は x の単位の窓の中の y の平均、bin 2D は軸ごとの `BinStatSpec` のセルを rect で数で塗る（§4.1・§5.5.3）。計測: NativeAOT の Release、1,920 × 1,080、3 回。1e9 点の `float`（メモリマップ）の density（1 群と 8 群、帯域幅の自動と数）、smooth（x は `UniformColumn`）、bin 2D（x と y の `float`、既定の区切りと 300 × 300）を作る時間と 1 フレームの時間（要件 P-2・P-1） | done | [#222](https://github.com/YUKIKEDA/HyperPlot/issues/222)（設計）、[#226](https://github.com/YUKIKEDA/HyperPlot/issues/226) |
 | G6a | 軸の置き場所と二次軸（要件 G-9、§4.6）: スケールの `Side`（上と右の軸）、独立した二次のスケール（`PlotSpec.ScaleX2`・`ScaleY2` と層の `SecondaryX`・`SecondaryY`）と主の軸の変換の軸（`WithSecondaryAxis`）、グリッドは主だけ（§4.1・§4.6）。計測: NativeAOT の Release、1,920 × 1,080、3 回。1e9 点の系列 2 本を左右の y に載せ、x の上に変換の軸を付けた場面の 1 フレームの CPU と GPU の時間と確保を、軸が 1 本の場面と比べる（要件 P-1） | done | [#230](https://github.com/YUKIKEDA/HyperPlot/issues/230)（設計）、[#234](https://github.com/YUKIKEDA/HyperPlot/issues/234) |
 | G6b | ファセット（要件 G-8、§4.5）: wrap と grid（R の `n2mfrow` の並べ方、行のないカテゴリを落とす）、軸の `Fixed`・`FreeX`・`FreeY`・`Free`（共有の軸は外側のパネルだけ）、文字だけの見出し、データは行 G7c の分けた層の道（§4.5・§4.6）。計測: NativeAOT の Release、1,920 × 1,080、3 回。1e9 点の系列を 8 カテゴリ（区間に並ぶ）の wrap と 1 パネルで、混ざる場合は 1e8 点で、作る時間と 1 フレームの CPU と GPU の時間と確保（要件 P-1） | done | [#238](https://github.com/YUKIKEDA/HyperPlot/issues/238)（設計）、[#243](https://github.com/YUKIKEDA/HyperPlot/issues/243)（設計の修正）、[#242](https://github.com/YUKIKEDA/HyperPlot/issues/242) |
-| G6c | 複数のプロット（要件 G-9、§4.5）: `FigureSpec` の concat と grid（セルのまたぎ、同じ大きさのセル、セルごとに 1 枚の図と同じ配置、スケールと凡例はプロットごと、入れ子なし、図の中でピラミッドを共有）と `HeadlessRenderer.Render(FigureSpec)`（§4.5・§4.6）。計測: NativeAOT の Release、1,920 × 1,080、3 回。2 × 2 の図に同じ 1e9 点の系列を 4 つと 1 枚の図で、作る時間と 1 フレームの CPU と GPU の時間と確保（要件 P-1） | in-progress | [#254](https://github.com/YUKIKEDA/HyperPlot/issues/254)（設計） |
+| G6c | 複数のプロット（要件 G-9、§4.5）: `FigureSpec` の concat と grid（セルのまたぎ、同じ大きさのセル、セルごとに 1 枚の図と同じ配置、スケールと凡例はプロットごと、入れ子なし、図の中でピラミッドを共有）と `HeadlessRenderer.Render(FigureSpec)`（§4.5・§4.6）。計測: NativeAOT の Release、1,920 × 1,080、3 回。2 × 2 の図に同じ 1e9 点の系列を 4 つと 1 枚の図で、作る時間と 1 フレームの CPU と GPU の時間と確保（要件 P-1） | done | [#254](https://github.com/YUKIKEDA/HyperPlot/issues/254)（設計）、[#258](https://github.com/YUKIKEDA/HyperPlot/issues/258) |
 | **C: インタラクションと WPF** | | | |
 | I1 | 入力のモデル、ツールの状態機械、ビューの操作（原点の付け直し、§6.2）、ズームの履歴、二次のスケール（行 G6a の `ScaleX2`・`ScaleY2`）へのズームとパン、ファセットのパネルの間のズームとパン（共有する domain を一緒に動かすか、行 G6b）、図のどのプロットを操作しているかの当たり判定とそのプロットの操作（行 G6c）、ズーム中に新しい目盛りのラベルで確保しないこと（span を受ける `DrawText` と確保しない整形、§4.6・不変条件 3） | not-started | |
 | W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI とその変化での描き直し、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2）、プロットの要約をアクセシビリティの API に渡すこと（要件 N-10、§4.6）、図（`FigureSpec`）の表示（行 G6c） | not-started | |
