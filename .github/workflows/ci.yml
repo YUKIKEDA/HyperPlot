@@ -61,3 +61,12 @@ jobs:
           name: golden-output
           path: tests/HyperPlot.Rendering.D3D11.Tests/bin/*/*/golden-output/
           if-no-files-found: ignore
+
+      # A test process that stopped leaves its dump and the tests that were running (Issue #260).
+      - name: Upload hang dumps
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: hang-dump-${{ runner.os }}
+          path: TestResults/
+          if-no-files-found: ignore

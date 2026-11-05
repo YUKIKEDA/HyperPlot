@@ -35,9 +35,12 @@ foreach ($configuration in "Release", "Debug") {
             continue
         }
 
-        # Each finished test is named in the log, so that a run that never ends shows by the names missing which tests wait
-        # (Issue #260).
-        Invoke-Step "Test $($project.BaseName) ($configuration)" { dotnet test --project $project.FullName --no-build -c $configuration --output detailed }
+        # A test process with no test ending for 8 minutes is dumped and stopped, before the CI job's 30 minutes: the dump and
+        # the tests that were running are in TestResults (Issue #260). The longest test takes under 5 minutes in Debug.
+        $results = Join-Path $PSScriptRoot "TestResults/$($project.BaseName)-$configuration"
+        Invoke-Step "Test $($project.BaseName) ($configuration)" {
+            dotnet test --project $project.FullName --no-build -c $configuration --results-directory $results --hangdump --hangdump-timeout 8m --hangdump-type Heap
+        }
     }
 }
 

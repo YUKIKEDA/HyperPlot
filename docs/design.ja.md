@@ -32,7 +32,7 @@ C# / .NET 10 のプロットライブラリで、NativeAOT・10 億点の対話�
 | SIMD・数値 | | BCL（`System.Runtime.Intrinsics`、`System.Numerics`） | |
 | メモリマップ | | BCL（`MemoryMappedFile`） | |
 | WPF のホスト | | WPF（.NET の一部） | `HyperPlot.Wpf` だけが参照する |
-| テスト・計測 | | xUnit v3、BenchmarkDotNet、`Microsoft.Extensions.TimeProvider.Testing` | テストとベンチマークのプロジェクトだけが参照する |
+| テスト・計測 | | xUnit v3、BenchmarkDotNet、`Microsoft.Extensions.TimeProvider.Testing`、`Microsoft.Testing.Extensions.HangDump`（止まったテストのダンプ、Issue #260） | テストとベンチマークのプロジェクトだけが参照する |
 | Linux の GPU | | 後の行: wgpu-native | ドライバの組み合わせへの対応を小さなチームで続けられないため（XylemUI と同じ判断） |
 | macOS の GPU | ○（後の行） | | Metal を Obj-C ランタイム経由で直接呼ぶ |
 
