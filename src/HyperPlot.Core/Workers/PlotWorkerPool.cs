@@ -456,6 +456,10 @@ public sealed class PlotWorkerPool : IDisposable
 
             _wake.Wait();
         }
+
+        // Another worker may clear the wake just after Dispose set it, while this one is past its check and about to wait:
+        // each worker that leaves sets it again, and the last to clear it leaves too, so none sleeps through the dispose.
+        _wake.Set();
     }
 
     private bool RunOne()

@@ -317,6 +317,47 @@ public sealed class PlotWorkerPoolTests
     }
 
     /// <summary>
+    /// Disposing a pool whose workers are woken again and again ends every worker (design §8.1): a worker that clears the wake
+    /// just after the dispose set it does not leave another asleep (Issue #260).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Pools of 4 threads, one at a time, each woken in a loop by a thread of the test.
+    ///
+    /// Steps:
+    /// - 2,000 times: make a pool, start the waking loop, dispose the pool on a thread of the test, stop the loop.
+    ///
+    /// Expected:
+    /// - Each dispose returns within the watchdog.
+    /// </remarks>
+    [Fact]
+    public void Dispose_WhileWorkersWake_EndsEveryWorker()
+    {
+        for (var round = 0; round < 2_000; round++)
+        {
+            var pool = new PlotWorkerPool(4);
+            var waking = true;
+            var waker = new Thread(() =>
+            {
+                while (Volatile.Read(ref waking))
+                {
+                    pool.Wake();
+                }
+            })
+            {
+                IsBackground = true,
+            };
+            waker.Start();
+            var disposer = new Thread(pool.Dispose) { IsBackground = true };
+            disposer.Start();
+            var ended = disposer.Join(30_000);
+            Volatile.Write(ref waking, false);
+            waker.Join();
+            Assert.True(ended, $"The dispose of round {round} did not return: a worker slept through it.");
+        }
+    }
+
+    /// <summary>
     /// Disposing the pool lets the worker finish its chunk, joins it, and gives every pyramid of the pool ObjectDisposedException
     /// as its fault, since nothing is built again after it.
     /// </summary>
