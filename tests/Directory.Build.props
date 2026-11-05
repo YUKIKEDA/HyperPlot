@@ -10,4 +10,8 @@
     -->
     <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- Dumps a test process that stops: build.ps1 turns it on (Issue #260). -->
+    <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
+  </ItemGroup>
 </Project>
