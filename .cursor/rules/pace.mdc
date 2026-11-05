@@ -28,6 +28,10 @@ After two attempts that change nothing, stop and decide before a third:
 
 Report to the owner at that point, in a line: what stands, what was tried, what happens next. Do not go on silently.
 
+A test run that stops on CI and not on this machine counts its local reruns as the attempts. After two, the other tool is the dump of the stopped process on CI: the gate runs every test with a hang dump, and CI uploads `TestResults` when the gate fails or is cancelled. In Issue #260, 18 local runs (fewer cores, runs side by side) never stopped, and the first CI run with the dump showed the join that never ended.
+
+A run that passes after a diagnostic was added is not evidence of the cause. A race comes and goes with timing, and printing each test changes the timing: in Issue #260, the CI passed six times in a row once each test was printed, and the output of the test platform looked like the cause. The stack of the dump showed a race in the worker pool.
+
 ## What comes next is decided, not read off a list
 
 Before starting a piece of work, write one line for it: what a user of the library has after it that they do not have now. Write the same line for everything else that is open. Start the one with the strongest line. The classes, strongest first:
