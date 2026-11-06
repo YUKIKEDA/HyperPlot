@@ -18,10 +18,10 @@ internal sealed class PlotGuides
     private const string SampleText = "a";
 
     // The panel's sides, the places of the axes (row G6a).
-    private const int SideBottom = 0;
-    private const int SideTop = 1;
-    private const int SideLeft = 2;
-    private const int SideRight = 3;
+    internal const int SideBottom = 0;
+    internal const int SideTop = 1;
+    internal const int SideLeft = 2;
+    internal const int SideRight = 3;
 
     private readonly TextEngine _text;
     private readonly float _scale;
@@ -79,6 +79,12 @@ internal sealed class PlotGuides
 
     /// <summary>Gets the ticks of x: the current panel's (row G6b), the first after a layout.</summary>
     internal TickAxis X => _current.X;
+
+    /// <summary>
+    /// Gets or sets which of the x and y scales the next layout draws over a view (row I1a): their learned domain is the
+    /// view's range, which the ticks take as it is, with no nice (design §6.2).
+    /// </summary>
+    internal (bool X, bool Y) Viewed { get; set; }
 
     /// <summary>Gets the ticks of y.</summary>
     internal TickAxis Y => _current.Y;
@@ -145,6 +151,15 @@ internal sealed class PlotGuides
 
     /// <summary>Gets the axes on the current panel's four sides (row G6a): a side with no axis holds a null axis.</summary>
     private SideAxis[] Sides => _current.Sides;
+
+    /// <summary>Gets the band of the title above the panels, in pixels below the padding (row I1a: the place of the title).</summary>
+    internal int TitleBand => _titleBand;
+
+    /// <summary>Gets the band of the legend, in pixels left of the right padding (row I1a: the place of the legend).</summary>
+    internal int LegendWidth => _legendBand;
+
+    /// <summary>Returns the axis on a side of the current panel (row I1a: the places of the axes), its axis null when none.</summary>
+    internal SideAxis SideAt(int side) => Sides[side];
 
     /// <summary>
     /// Places the plot in a rectangle of the target (design §4.6, row G6c): a figure's cell, which stands for the whole target;
@@ -784,8 +799,10 @@ internal sealed class PlotGuides
             return;
         }
 
+        // An axis drawn over a view takes the view's range as it is (row I1a, design §6.2).
+        var viewed = (Viewed.X && axis == X) || (Viewed.Y && axis == Y);
         var learned = continuous is TimeScaleSpec time ? time.Domain is null : continuous?.GivenDomain is null;
-        axis.Choose(continuous is { Nice: true } && learned);
+        axis.Choose(!viewed && continuous is { Nice: true } && learned);
     }
 
     /// <summary>Returns the axis and the scale on the bottom: x, or y when flipped. Polar, the angle's.</summary>

@@ -56,6 +56,9 @@ internal sealed class PlotPlan : IDisposable
     private bool _pendingFlipped;
     private bool _pendingExtract;
     private bool _pendingRecord;
+    private ScaleRange _viewX = ScaleRange.None;
+    private ScaleRange _viewY = ScaleRange.None;
+    private bool _viewChanged;
     private bool _placed;
     private IScale? _yTransform;
     private IScale? _xTransform2;
@@ -198,11 +201,123 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Gets the number of panels the last compile made (row G6c): a figure's plots have at most 256 together.</summary>
     internal int PanelCount => _panels.Length;
 
+    /// <summary>Gets a value indicating whether the last <see cref="Prepare"/> dropped the views, the mapping having changed (row I1a).</summary>
+    internal bool ViewsDropped { get; private set; }
+
+    /// <summary>
+    /// Gets the x domain the plot draws with no view, after nice (row I1a): the full view of design §6.2. Updated by each
+    /// <see cref="Prepare"/> that draws x with no view; <see cref="FullStale"/> tells when the learned domain moved since.
+    /// </summary>
+    internal ScaleRange FullX { get; private set; } = ScaleRange.None;
+
+    /// <summary>Gets the y domain the plot draws with no view, after nice (row I1a).</summary>
+    internal ScaleRange FullY { get; private set; } = ScaleRange.None;
+
+    /// <summary>Gets a value indicating whether the plot learned again while an axis had a view, so that <see cref="FullX"/> or <see cref="FullY"/> may be out of date.</summary>
+    internal bool FullStale { get; private set; }
+
+    /// <summary>Gets the number of times the plot learned its domains, for the tests of the view stage (row I1a).</summary>
+    internal int Learnings { get; private set; }
+
+    /// <summary>
+    /// Sets the views the next <see cref="Prepare"/> draws (row I1a, design §6.2, §4.8): a range for the x scale and one for
+    /// the y scale, or <see cref="ScaleRange.None"/> for an axis with no view. A view that changes only lays out, extracts,
+    /// and records again: the plot does not learn.
+    /// </summary>
+    internal void SetView(in ScaleRange x, in ScaleRange y)
+    {
+        if (!Same(x, _viewX) || !Same(y, _viewY))
+        {
+            (_viewX, _viewY, _viewChanged) = (x, y, true);
+        }
+
+        static bool Same(in ScaleRange a, in ScaleRange b) => (IsNone(a) && IsNone(b)) || a == b;
+    }
+
+    /// <summary>
+    /// Returns the y range of the rows a view of x shows (row I1a, design §6.2: the y of the visible x): the union, over the
+    /// lines, steps, and areas of the first panel with an x of no transform, of each layer's least and greatest y between the
+    /// view's ends, read from the layer's pyramid in O(log n), an area's baseline included, mapped into the y scale's space.
+    /// False when no such layer has a row there.
+    /// </summary>
+    internal bool TryVisibleY(in ScaleRange x, out ScaleRange y)
+    {
+        y = ScaleRange.None;
+        if (_spec is null || _xTransform is not null || IsNone(x))
+        {
+            return false;
+        }
+
+        var (min, max, found) = (double.PositiveInfinity, double.NegativeInfinity, false);
+        foreach (var layer in _panels[0].Layers)
+        {
+            // By the plan, not the spec: a split layer and a stat layer have the same specs, and keep the y (design §6.2).
+            var (columnX, columnY, baseline) = (layer, layer.Spec) switch
+            {
+                (LinePlan, LineLayerSpec line) => (line.X.Column, line.Y.Column, double.NaN),
+                (StepPlan, StepLayerSpec step) => (step.X.Column, step.Y.Column, double.NaN),
+                (AreaPlan, AreaLayerSpec area) => (area.X.Column, area.Y.Column, area.Baseline),
+                _ => (null, null, double.NaN),
+            };
+            if (columnX is null || columnY is null || _store.Find(columnY) is not { } pyramid)
+            {
+                continue;
+            }
+
+            var first = columnX.LowerBound(x.Lower, x.Origin, layer.Rows);
+            var end = columnX.LowerBound(Math.BitIncrement(x.Upper), x.Origin, layer.Rows);
+            if (end > first && pyramid.TryRange(first, end - first, out var low, out var high))
+            {
+                (min, max, found) = (Math.Min(min, low), Math.Max(max, high), true);
+                if (double.IsFinite(baseline))
+                {
+                    (min, max) = (Math.Min(min, baseline), Math.Max(max, baseline));
+                }
+            }
+        }
+
+        if (!found || !(min < max))
+        {
+            return false;
+        }
+
+        if (_yTransform is { } transform)
+        {
+            Span<double> values = [min, max];
+            transform.Forward(values, values);
+            (min, max) = (Math.Min(values[0], values[1]), Math.Max(values[0], values[1]));
+            if (!double.IsFinite(min) || !double.IsFinite(max) || !(min < max))
+            {
+                return false;
+            }
+        }
+
+        y = ScaleRange.FromDouble(min, max);
+        return true;
+    }
+
+    /// <summary>Returns whether a range is <see cref="ScaleRange.None"/>.</summary>
+    internal static bool IsNone(in ScaleRange range) => double.IsNaN(range.Lower);
+
     /// <summary>
     /// The first stage of <see cref="Render(PlotSpec)"/> (row G6c): checks the spec, and makes the layers and the panels again
     /// when the data stage asks. A figure compiles all its plots before any waits, so that its checks come first.
     /// </summary>
     internal void Compile(PlotSpec spec)
+    {
+        Check(spec);
+        var previous = _spec;
+
+        // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
+        _spec = null;
+        CompileChecked(spec, previous);
+    }
+
+    /// <summary>
+    /// Throws unless a spec checks (design §4.7, §4.8): what <see cref="Compile"/> checks before it compiles. An engine checks a
+    /// spec when it is set, before its frame (row I1a, design §7.1).
+    /// </summary>
+    internal void Check(PlotSpec spec)
     {
         Validate(spec);
         if (spec.Theme is null)
@@ -223,10 +338,10 @@ internal sealed class PlotPlan : IDisposable
         spec.Theme.Validate(_scale);
         CheckTextSizes(spec);
         (spec.Coord as PolarCoordSpec)?.Validate();
-        var previous = _spec;
+    }
 
-        // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
-        _spec = null;
+    private void CompileChecked(PlotSpec spec, PlotSpec? previous)
+    {
         var data = previous is null || DataChanged(previous, spec) || FacetDataChanged(previous.Facet, spec.Facet);
         var placed = _placed;
         _placed = false;
@@ -351,9 +466,20 @@ internal sealed class PlotPlan : IDisposable
     {
         var (spec, scales, ranges, looks, flipped) = (_pendingSpec!, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped);
         WaitForIndexes();
-        var extract = ranges || scales || ValuesChanged();
-        if (extract)
+        ViewsDropped = false;
+        if (scales && (!IsNone(_viewX) || !IsNone(_viewY)))
         {
+            // A view over the old mapping no longer means the same values: the full view (design §6.2).
+            (_viewX, _viewY, ViewsDropped) = (ScaleRange.None, ScaleRange.None, true);
+        }
+
+        var learn = ranges || scales || ValuesChanged();
+        var extract = learn || _viewChanged;
+        _viewChanged = false;
+        if (learn)
+        {
+            Learnings++;
+
             // A user's geom learns only when an axis learns: with both domains given, nothing would read its ranges.
             if (
                 (spec.ScaleX is ContinuousScaleSpec x && Learns(x))
@@ -441,10 +567,26 @@ internal sealed class PlotPlan : IDisposable
             for (var p = 0; p < _panels.Length; p++)
             {
                 var panel = _panels[p];
-                _learned[p] = new PanelDomains(panel.LearnedX, panel.LearnedY, panel.LearnedX2, panel.LearnedY2);
+                _learned[p] = new PanelDomains(
+                    IsNone(_viewX) ? panel.LearnedX : _viewX,
+                    IsNone(_viewY) ? panel.LearnedY : _viewY,
+                    panel.LearnedX2,
+                    panel.LearnedY2
+                );
             }
 
+            _guides.Viewed = (!IsNone(_viewX), !IsNone(_viewY));
             _guides.Layout(spec, _xTransform, _yTransform, BandColumn(spec), Color, _xTransform2, _yTransform2, _facet?.Arrangement, _learned);
+
+            // The full view: what the plot draws with no view (row I1a). An axis with a view keeps the last one it drew, which
+            // a learning since may have moved.
+            if (!_guides.Empty)
+            {
+                FullX = IsNone(_viewX) ? _guides.PanelAt(0).X.FinalDomain : FullX;
+                FullY = IsNone(_viewY) ? _guides.PanelAt(0).Y.FinalDomain : FullY;
+                FullStale = !(IsNone(_viewX) && IsNone(_viewY)) && (FullStale || learn);
+            }
+
             Color?.CheckMiddle();
             Layouts++;
             if (_guides.Empty)

@@ -113,15 +113,18 @@ public sealed class HeadlessRenderer : IDisposable
     /// </exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
-    public void Render(PlotSpec plot)
+    public void Render(PlotSpec plot) => Render(plot, ScaleRange.None, ScaleRange.None, null);
+
+    /// <summary>
+    /// Draws a plot over views and an overlay (row I1a, design §7.1): the engine's frame. Each axis with a view draws its range
+    /// (§6.2), and the overlay goes over the plot in the same frame.
+    /// </summary>
+    internal void Render(PlotSpec plot, in ScaleRange viewX, in ScaleRange viewY, RenderList? overlay)
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
-
-        // A plot alone and a figure have plans of their own: the one not drawn any more is released (design §7.5, row G6c).
-        _figure?.Dispose();
-        _figure = null;
-        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        UsePlan();
+        _plan!.SetView(viewX, viewY);
 
         // A headless image is the same whenever it is drawn: every visible tile of an image is sent, past a frame's budget
         // (design §4.8, row G9).
@@ -132,11 +135,77 @@ public sealed class HeadlessRenderer : IDisposable
             using var frame = _backend.BeginFrame();
             _target.Clear(plot.Theme.Background);
             _backend.Draw(_target, list);
+            if (overlay is { Commands.Length: > 0 })
+            {
+                _backend.Draw(_target, overlay);
+            }
         }
         finally
         {
             _backend.Images.Unbounded = false;
         }
+    }
+
+    /// <summary>Throws unless a plot checks, as <see cref="Render(PlotSpec)"/> would before it draws (row I1a).</summary>
+    internal void Check(PlotSpec plot)
+    {
+        ArgumentNullException.ThrowIfNull(plot);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // The figure's plan goes only once the plot checks, as for a figure.
+        var plan = _plan ?? new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        try
+        {
+            plan.Check(plot);
+        }
+        catch
+        {
+            if (plan != _plan)
+            {
+                plan.Dispose();
+            }
+
+            throw;
+        }
+
+        _plan = plan;
+        UsePlan();
+    }
+
+    /// <summary>Throws unless a figure checks, as <see cref="Render(FigureSpec)"/> would before its plots compile (row I1a).</summary>
+    internal void Check(FigureSpec figure)
+    {
+        ArgumentNullException.ThrowIfNull(figure);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // The plot's plan goes only once the figure checks: a figure that throws leaves what is drawn as it is.
+        var plan = _figure ?? new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        try
+        {
+            _ = plan.Check(figure);
+        }
+        catch
+        {
+            if (plan != _figure)
+            {
+                plan.Dispose();
+            }
+
+            throw;
+        }
+
+        _plan?.Dispose();
+        _plan = null;
+        _figure = plan;
+    }
+
+    /// <summary>Takes the plan of a plot alone, releasing the figure's (design §7.5, row G6c).</summary>
+    private void UsePlan()
+    {
+        // A plot alone and a figure have plans of their own: the one not drawn any more is released.
+        _figure?.Dispose();
+        _figure = null;
+        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
     }
 
     /// <summary>

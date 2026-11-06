@@ -138,7 +138,7 @@ internal sealed class FigurePlan : IDisposable
     /// Throws unless the figure checks (design §4.5): its kind, its members, its plots or cells, and its theme; and returns its
     /// number of plots. A value set with <c>with</c> is checked here as the factories check theirs.
     /// </summary>
-    private int Check(FigureSpec figure)
+    internal int Check(FigureSpec figure)
     {
         ArgumentNullException.ThrowIfNull(figure);
         if (figure.Theme is null)
