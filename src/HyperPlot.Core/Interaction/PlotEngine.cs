@@ -909,6 +909,10 @@ public sealed class PlotEngine : IDisposable
             return;
         }
 
+        // The view drawn now, the animation moved to this time: a change that comes while one runs starts from where the
+        // view is now, not where the last frame drew it. Otherwise a wheel turned at each frame would restart the animation at
+        // its start each time, and the view would not move until the turns stop.
+        Animate();
         var (shownX, shownY) = Shown();
         if (animate && Options.ZoomAnimation > TimeSpan.Zero)
         {

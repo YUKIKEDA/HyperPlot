@@ -182,6 +182,40 @@ public sealed class HistoryAnimationTests
         Assert.Equal(before + 2, f.Requests);
     }
 
+    /// <summary>
+    /// A wheel turned at each frame zooms at each frame (design §6.2): a turn that comes while the animation runs starts from
+    /// the view the animation has reached at its time, so the view moves toward each new target and does not wait for the
+    /// turns to stop.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine over a line; the animation of 150 ms.
+    ///
+    /// Steps:
+    /// - Twenty times: move the time 16 ms, turn the wheel a notch at the middle, draw; read the x width after each frame.
+    ///
+    /// Expected:
+    /// - From the second frame on, each width is below the one before.
+    /// </remarks>
+    [Fact]
+    public void Animation_WheelAtEachFrame_MovesEachFrame()
+    {
+        using var f = new EngineFixture();
+        var widths = new List<double>();
+        for (var i = 0; i < 20; i++)
+        {
+            f.Time.Advance(TimeSpan.FromMilliseconds(16));
+            f.Wheel(f.Middle, 1);
+            f.Engine.RenderFrame();
+            widths.Add(f.View().X.Upper - f.View().X.Lower);
+        }
+
+        for (var i = 2; i < widths.Count; i++)
+        {
+            Assert.True(widths[i] < widths[i - 1], $"Frame {i}: {widths[i]} after {widths[i - 1]}.");
+        }
+    }
+
     private static ViewRange Changed(EngineFixture f)
     {
         _ = f.Changes[^1].TryGet2D(out var x, out _);
