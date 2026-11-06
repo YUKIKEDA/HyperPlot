@@ -1523,12 +1523,12 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **数**（linear・pow・sqrt・transform・log・symlog）: 目盛りの値 M · 10^e から書く。拡張アルゴリズムの目盛りは、軸のすべての目盛りで小数の桁をそろえる（末尾の 0 を除いて要る桁の最大。論文の「0-extended」、§4.4.1）。log と symlog は目盛りごとに要る桁で書く（0.001・0.01・0.1・1）。固定の形が 12 文字を超える目盛りがあれば、その軸のすべてを指数の形（`2.5e-7`、`1e15`、仮数の桁は要る分だけ）で書く。指数は、拡張アルゴリズムの軸では目盛りの絶対値の最大の桁にそろえ、log と symlog の軸では目盛りごとの桁にする（`1e-30`、`1e30`）。負の符号は U+002D、0 は `0`（負の 0 を書かない）
   - **time**: 目盛りごとに、その目盛りが乗る最も粗い暦の境（`boundary`）で書く。年は `yyyy`（`2026`）、月は `yyyy-MM`（`2026-03`）、日は `MM-dd`（`03-15`）、時と分は `HH:mm`（`12:30`）、秒は `HH:mm:ss`（`12:30:15`）、ms は `ss.fff`（`15.250`）、µs は `ss.ffffff`、ns は `ss.fffffffff`。d3-scale v4.0.2 の時間の既定の書式も、目盛りごとに、乗る最も粗い境の書式を選ぶ（`src/time.js` 29〜37 行目）。書式の文字列は HyperPlot のものである。軸の端に日付の別の行は出さない（matplotlib v3.9.2 の `ConciseDateFormatter` は軸の端に日付の「offset」を出す、`lib/matplotlib/dates.py` 626〜635 行目。却下は `design-decisions.md`）
 - **利用者の書式**（`TickFormat`）: 64 文字の作業領域に書かせる。偽を返すか、`charsWritten` が 0 から 64 の外なら、スケールの種類と値を書いた `InvalidOperationException`。デリゲートが投げた例外は `Render` からそのまま出る（`IScale` と同じ、§4.2）。呼ぶのは `Render` のスレッドだけで、目盛りを選ぶ間に候補のラベルの数だけ呼ぶ。0 文字は空のラベルで、描かず、重なりでは幅 0 とする。`Func<double, string>` の形は持たない（`design-decisions.md`）
-- **ラベルの文字列**: 書いた文字は、計画が持つ文字列の表（4,096 項目の LRU。行 G3 では整形のキャッシュ（§5.6）と同じ大きさで、行 G8 で整形のキャッシュだけを 8,192 に上げた）で引く。`Dictionary` を span で引く口（`GetAlternateLookup<ReadOnlySpan<char>>`、.NET 9 から）を使い、当たれば `string` を作らない。外れたときだけ作る。`DrawText` は文字列の参照を記録する（§5.1）ので、表から捨てた文字列も、記録が持つ間は生きる
+- **ラベルの文字（行 I1c、Issue #266）**: ラベルの文字は、計画が持つ文字の置き場（軸ごとの `char` の配列。足りなければ 2 倍にして、縮めない）に書き、ラベルは置き場の中の始まりと長さで持つ。文字列（`string`）は作らない。記録は span を受ける `DrawText`（§5.1）で、測るのは文字で引く整形のキャッシュ（§5.6）である。既定の書式（数と日時、上の「書式」）も利用者の書式（行 G3 の `TickFormatter`・`TimeTickFormatter`。もとから span に書くデリゲート）も、今は span に書いた文字を表で文字列にしている。行 I1c からは、今と同じ 64 文字の作業領域（`TickFormat.BufferLength`）に書かせ、書けた文字を置き場へ写す。偽を返すか `charsWritten` が範囲の外なら、今までどおり `InvalidOperationException` である（上の「利用者の書式」の契約は変えない。PR #267 のレビュー）。行 G3 からの文字列の表（`LabelTable`、4,096 項目の LRU）は要らなくなるので消す（`.cursor/rules/no-dead-code.mdc`）
 
 #### 確保
 
 - 同じ仕様の描き直しは、配置も記録もやり直さず、確保しない（§4.8 の差分）。domain が変わった描き直しも、目盛りの値がすでに表と整形のキャッシュにあれば（前に描いた domain に戻るときなど）確保しない。y のラベルの幅がパネルの幅 W を決めるので、y の domain が変わると W が変わりうる。W + 1 個の境界の配列は、最近の 4 つの幅の分を持ち回り、前に描いた幅に戻るときは作り直さない
-- 新しい目盛りの値が出るとき、行 G3 は、ラベルの `string` と整形の結果（`ShapedText`、§5.6）を確保する。ズーム中にも確保しないこと（span を受ける `DrawText` と、確保しない整形）は、ズームを作る行 I1 で、そこで計測しながら作る（Issue #111）。不変条件 3 に、この例外を書く
+- 新しい目盛りの値が出るとき、行 G3 から行 I1c の前までは、ラベルの `string` と整形の結果（`ShapedText`、§5.6）を確保した。測った値（Issue #266、Windows の WARP、1,280 × 720、x の domain を毎フレーム 1,370 ずらして x のラベルがすべて新しくなる場面、500 フレームの平均）: 1 フレーム 8.0 KB（DirectWrite）、11.2 KB（偽の文字のバックエンド）。目盛りの候補の組をいくつも測る（上の手順）ので、1 フレームに整形するラベルは見えている数より多い。DirectWrite の `Shape` だけで、7 文字の新しいラベル 1 つに 480 B（`ShapedText` の配列を含む）。行 I1c からは、既定の書式なら、ズームやパンで新しいラベルが出続けても確保しない（上の「ラベルの文字」と §5.1・§5.6）。行 I1c の実装は、最初に DirectWrite の整形の残りの確保（`ShapedText` を除いた分）を測り、あれば同じ行で使い回しの置き場にする
 
 #### 計測
 
@@ -1651,6 +1651,7 @@ public sealed record Theme                    // コンストラクタは privat
 - **差分（行 G6a）**: 層の `SecondaryX`・`SecondaryY` の変化は「データ」の段（層が写すスケールが変わり、M4 の画素列も変わる）。`ScaleX2`・`ScaleY2` の変化は、主のスケールの変化と同じ段（domain だけなら「スケール」、種類と変換なら「データ」。Stat を持つ層は、載るスケールの空間で作り直しを決める）。`Side` と `SecondaryAxis` の変化は「配置」の段（帯と目盛りが変わり、データの写しは変わらない。M4 は帯がパネルの幅を変えたときだけ）。`SecondaryAxis` は、行 G2 の `TransformScaleSpec` と同じく `Transform` を参照で、`Title` と `TickFormat` を値で比べ、同じ値の新しいノードは何もしない。毎フレーム仕様を作り直すホストは、`IScale` を 1 つ作って使い回す（XML に書く。新しい `IScale` を毎回作ると、毎フレーム配置の段になる）
 - **検査（行 G6b）**: §4.5 の「行 G6b のファセット」の例外を、学習の前にコンパイルが確かめる。パネルの数の上限は、パネルの鍵の区間の表（wrap は行 G7c の列の表、grid の組は計画の表、§4.5。待ちの段の前に作る）から行のある鍵を数えて確かめる
 - **差分（行 G6b）**: `Facet` の種類か分ける列の変化は「データ」の段（パネルと分けた層を作り直す）。`Scales` の変化は「スケール」の段（学びと目盛りと M4）で、Stat の層があれば区切りの元が変わるので層を作り直す。`ColumnCount` の変化は「配置」の段（パネルの大きさが変わるので M4 も）。同じ値の新しいノードは何もしない
+- **ビュー（行 I1a、Issue #266）**: `PlotEngine` は、パネルごとの軸のビュー範囲（§6.2）を計画に渡す。ビューのある軸は、学んで nice を当てた domain の代わりにビューの範囲で描く。ビューだけが変わったら「ビュー」の段で、目盛りを選び直し（配置。y のラベルの幅が変わればパネルの幅も）、M4 を引き直し、記録し直す。学習・データ・Stat の作り直しはしない（行 G5b の「domain だけの変化（ズーム）は作り直さない」と同じ）。ビューを持たない計画（`HeadlessRenderer`）は今と同じ
 - **図の計画（行 G6c）**: `Render(FigureSpec)` は、プロットごとの計画（上の段のとおり）を持つ図の計画で描く。図の検査（§4.5 の「行 G6c の図」）は、プロットの計画の前に確かめる。ただしパネルの数の和は、各プロットのパネルの表（行 G6b）を作った後に数えるので、全プロットのコンパイル（検査とデータの段）の後、待ちの段の前に確かめる（PR #255 のレビュー）。セルが 1 画素未満の図（§4.6 の配置の 5）も全プロットをコンパイルして検査し、図のリストを空にして、待ち・取り出し・記録をしない。前のフレームの図のリストを残さず、小さすぎる図に置いた壊れた仕様も例外になる（PR #259 のレビュー）。図の計画は、セルの矩形を求め、各プロットの計画にその矩形で描かせ、全プロットの M4 の組を 1 回で取り出し、各プロットの計画は自分の描画のリストに、セルの左上のずれで直接記録し、変わっていないプロットは記録し直さない。図の計画は自分のリスト（セルの背景と図のタイトル）を持ち、描画先は図のリストとプロットのリストをセルの順（concat は並びの順、grid は `Cells` の順）に、1 つのフレームの中で続けて描く（`IGpuBackend.Draw` は開いたフレームの中で何度でも呼べる、§5.2）。どのリストも写さず、フレームの経路で写しも確保も増えない（実装で直した。1 つのリストにつなぐと、変わっていないプロットも毎フレーム記録し直すことになり、§10 の「ほかのプロットの記録の回数が変わらない」と両立しない。Issue #258）
 - **差分（行 G6c）**: プロットは位置（concat は `Plots` の何番目か、grid は `Cells` の何番目か）で前の図と対応させる。対応するプロットの仕様の変化は、そのプロットの計画の中の差分（上の段）だけで、ほかのプロットは何もしない。プロットの数、並べ方（`Columns`・`Rows`・セルの位置とまたぎ）、`Spacing`、図の `Title` と `Theme` の余白とタイトルの大きさの変化は、セルの矩形を作り直し、矩形の変わったプロットを配置し直す（矩形の大きさが変われば M4 も）。増えたプロットは新しい計画で作り、減ったプロットの計画は捨てる。図の `Theme` の色だけの変化は記録し直すだけ。同じ値の新しいノード（図、セル、プロット）は何もしない
 - **描く**: §5.5.3 の道で、レイヤーの順に、パネルで切り抜いて記録する。ピラミッドは、Y・YMin・YMax の列ごとに 1 つで、同じ列を指すチャネルは共有する（線と同じ）
@@ -1862,6 +1863,8 @@ var shops = Plot.Create(data)
 ```
 
 - 行 G6c は、`FigureSpec`・`ConcatFigureSpec`・`GridFigureSpec`・`FigureCell`・`Figure` と、`HeadlessRenderer.Render(FigureSpec)` を公開する（Issue #254）。行 G6c で書ける形は次のとおり（スクラッチでコンパイルした、§4.1）
+- 行 I1c は、`RenderList.DrawText(ReadOnlySpan<char>, …)`・`TextEngine.Measure(ReadOnlySpan<char>, …)`・`ShapedText` の使い回しの口（引数のないコンストラクタと `Set`）を公開し、`ITextBackend.Shape` を span を受けて `ShapedText` に書く形に変える（§5.1・§5.6、Issue #266）
+- 行 I1a は、`HyperPlot.Interaction` の `PlotEngine`（§7.1）、入力（`PointerEvent`・`WheelEvent`・`KeyEvent`・`GestureEvent` とその列挙 `PointerEventKind`・`PointerButtons`・`PointerKind`・`KeyEventKind`・`PlotKey`・`ModifierKeys`・`GestureKind`、§6.1）、ビュー（`PanelView`・`PanelView2D`・`ViewRange`・`PanelId`・`ViewAxes`・`ViewOperations`・`IViewConstraint`・`ZoomLimits`・`AutoRangeY`・`ViewChange`・`ViewChangeReason`・`ViewChangedHandler`、§6.2）、場所（`HitArea`・`HitAreaKind`、§6.3）、ツールと割り当て（`IPlotTool`・`ToolContext`・`ToolResult`・`InputBindings`・`InputBinding`・`InputGesture`・`ViewCommand`・`PanTool`・`RectangleZoomTool`・`WheelZoomTool`・`InteractionOptions`、§6.5）を公開する。`HyperPlot.Testing` は `InputScript`・`ScriptPoint`・`InputReplay`（§6.6）を足す。行 I1b は型を足さない（Issue #266）
 
 ```csharp
 // 行 G6c: 3 つのプロットを 2 列に並べた図と、上の段を 2 列にまたがせた格子の図
@@ -2008,6 +2011,7 @@ public sealed class RenderList
     public void ResetClip();                               // 描画先の全体
     public void DrawPolyline(ReadOnlySpan<Vector2> points, in LineStyle style);   // 物理画素
     public void DrawText(string text, Vector2 position, in TextStyle style);      // 行 T1、§5.6。物理画素
+    public void DrawText(ReadOnlySpan<char> text, Vector2 position, in TextStyle style);   // 行 I1c。文字をリストの置き場に写す
     public void DrawRect(float x, float y, float width, float height, Color color);   // 行 G3。物理画素、塗りつぶし
     public void DrawColumns(ReadOnlySpan<ColumnTrapezoid> columns, Color color, ColumnAxis axis = ColumnAxis.Vertical);
                                                             // 行 G4。物理画素、塗りつぶし。axis は行 G10
@@ -2037,6 +2041,7 @@ public enum ColumnAxis { Vertical, Horizontal }    // 行 G10。Horizontal: Left
   - NaN の切れ目では結合を作らず、切れ目の両側の run の端に `Cap` を付ける
   - 部品の和集合は、画素の中の 32 点の覆いで作る（§5.3）。部品どうしが辺で接するだけでも、和集合に切れ目の筋が出ない
 - **文字列（行 T1）**: `DrawText` は、文字列の参照・位置・スタイルを記録するだけで、整形しない（整形はバックエンドが描くとき、§5.6）。記録は使い回すバッファに書き、温まった後は確保しない。命令は記録の順に描き、折れ線と文字列が混ざっても後の命令が上に乗る。`text` が null なら `ArgumentNullException`、空なら何も描かない。`position` が有限でなければ `ArgumentOutOfRangeException`。`Size` が有限で 0 より大きく 512 以下でなければ、または太さ・揃え・回転が名前のある値でなければ `ArgumentOutOfRangeException`。`FontFamily` か `Locale` が null なら `ArgumentNullException`、空なら `ArgumentException`。切り抜きは折れ線と同じく、記録したときの `SetClip` が文字列にも当たる
+- **span の文字列（行 I1c、Issue #266）**: `DrawText(ReadOnlySpan<char>, …)` は、文字をリストが持つ文字の置き場（`char` の配列。足りなければ 2 倍にして、縮めない。`Clear` で空に戻す）に写し、記録は置き場の中の始まりと長さを持つ。文字列の `DrawText` も同じ置き場に写す（記録の形を 1 つにする）。温まった後は、どちらも確保しない。引数の検査は文字列の `DrawText` と同じ（null の代わりに空の span は何も描かない）
 - **矩形（行 G3、Issue #111）**: `DrawRect` は、左上 (x, y)、幅と高さの軸に沿った矩形を `color` で塗る。各画素に、矩形と画素の正方形が重なる面積をカバレッジとして与える。画素 (i, j) のカバレッジは ox · oy で、ox = clamp(min(i + 1, x + width) − max(i, x), 0, 1)、oy も同じ（軸に沿った矩形の重なりは、x と y の重なりの長さの積で正確に決まる）。整数の端の矩形はカバレッジがちょうど 1 か 0 で、端数の端は面積の分だけ薄くなる（G4 の棒もこの命令で描ける）。前乗算した色にカバレッジを掛けて、`ONE`・`INV_SRC_ALPHA` で合成する。重なる矩形はそれぞれが合成される（折れ線の MAX のように 1 つの形にはしない。棒もパネルも重ならない）。`x`・`y` が有限でない、`width`・`height` が有限で 0 以上でなければ `ArgumentOutOfRangeException`。幅か高さが 0 なら何も描かない。切り抜きは折れ線と同じく記録したときの `SetClip`。記録は 2 成分で、深度のモードは「なし」（§13.1）。バッファは使い回し、温まった後は確保しない。枠線は行 G4 の rect の Geom で描く
 - **列の台形（行 G4、Issue #120）**: `DrawColumns` は、台形ごとに、x が [Left, Right]、y が上の縁と下の縁の間（それぞれ左右の辺の値を結ぶ直線）の領域を `color` で塗る。カバレッジは、画素の正方形と領域が重なる面積で、矩形（上）と同じく正確に求める。画素 (i, j) では、x ∈ [max(i, Left), min(i + 1, Right)] で、|clamp(下の縁(x), j, j + 1) − clamp(上の縁(x), j, j + 1)| を積分した値である。2 つの縁の間の面積で、上と下の順によらない（縁が交わる列は蝶ネクタイの形に塗る）。縁が直線なので、clamp の折れ目と縁の交点で区切れば閉じた式になる（PR #121 のレビュー）。台形どうしは重ならない前提で（area と band は画素列ごとに 1 つ）、それぞれが合成される。座標が有限でない台形、または Left ≥ Right の台形は描かない（例外にしない。写した値が有限でない所は §4.2 のとおり落とすため）。切り抜き・記録・確保は `DrawRect` と同じ。1 回の呼び出しの台形は 1 つの命令で、同じ切り抜きの続く命令はまとめて描く
 - **台形の向き（行 G10、Issue #136）**: `ColumnAxis.Horizontal` の台形は、`Left`・`Right` を縦の範囲（上から下）、`TopLeft`・`BottomLeft` を `Left` の行での横の両端、`TopRight`・`BottomRight` を `Right` の行での横の両端として読む。被覆は `Vertical` の定義の x と y を入れ替えたもの（画素の正方形と領域が重なる面積）で、シェーダは同じ式に入れ替えた座標を渡す。flip した area と band が使う（§4.4）。`axis` は名前のある値で、外れれば `ArgumentOutOfRangeException`（PR #142 のレビュー）
@@ -2449,9 +2454,11 @@ public readonly record struct PlacedGlyph(int Face, ushort Glyph, Vector2 Positi
 public readonly record struct TextLine(int FirstGlyph, int GlyphCount, float Width, float Baseline);
 public readonly record struct GlyphBox(int Left, int Top, int Width, int Height);   // グリフの原点からの整数の画素
 
-public sealed class ShapedText                // 不変。Core が整形のキャッシュに持つ。コンストラクタは配列を写す
+public sealed class ShapedText                // Core が整形のキャッシュに持つ。行 I1c から使い回す
 {
     public ShapedText(TextMetrics metrics, PlacedGlyph[] glyphs, TextLine[] lines);
+    public ShapedText();                                          // 行 I1c。空の置き場
+    public void Set(TextMetrics metrics, ReadOnlySpan<PlacedGlyph> glyphs, ReadOnlySpan<TextLine> lines);   // 行 I1c。写す。足りなければ伸ばす
     public TextMetrics Metrics { get; }
     public ReadOnlySpan<PlacedGlyph> Glyphs { get; }
     public ReadOnlySpan<TextLine> Lines { get; }
@@ -2462,12 +2469,13 @@ public sealed class TextEngine               // 整形のキャッシュとア�
     public TextEngine(ITextBackend backend);
     public ITextBackend Backend { get; }
     public TextMetrics Measure(string text, in TextStyle style);   // 整形のキャッシュを使う。引数の検査は DrawText と同じ
+    public TextMetrics Measure(ReadOnlySpan<char> text, in TextStyle style);   // 行 I1c
     // internal: 整形を引く、グリフをアトラスに引き当てる、書き換えた矩形を読む（バックエンドの Draw が使う）
 }
 
 public interface ITextBackend                 // バックエンドが実装する（D3D11 は DirectWrite）
 {
-    ShapedText Shape(string text, string fontFamily, float size, FontWeight weight, string locale);
+    void Shape(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale, ShapedText destination);   // 行 I1c から
     GlyphBox MeasureGlyph(int face, ushort glyph, float size, float phase);            // phase は 0・0.25・0.5・0.75
     void RasterizeGlyph(int face, ushort glyph, float size, float phase, Span<byte> coverage);   // Width · Height バイト
 }
@@ -2476,6 +2484,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 - **契約**: `Shape` は、文字列をフォント名・大きさ・太さ・ロケールで整形する。ロケールは、DirectWrite のシステムのフォールバックが漢字（Han の統合の範囲）に当てるフォントを選ぶのに使う（"ja-jp" なら日本語のフォント）。OS のカルチャは `InvariantGlobalization` で読めないので、利用者が `TextStyle.Locale` で渡す。結果はグリフの並び（フェイスの番号、グリフの番号、最初の行の基準線の始まりからの位置）と、行ごとの最初のグリフ・数・幅・基準線の位置（最初の行の基準線から下へ測る。最初の行は 0）と、全体の寸法である。行は `\n` で分け、自動の折り返しはしない。見つからないフォント名と、そのフォントにない文字（日本語など）は、バックエンドのシステムのフォールバックに任せる。フェイスの番号はバックエンドが振り、バックエンドの寿命の間は同じフェイスに同じ番号を返す。`MeasureGlyph` と `RasterizeGlyph` は、1 つのグリフを、横の小数の位置 `phase` に置いたときのカバレッジ（1 画素 1 バイト、0〜255）の矩形と中身を返す。揃え・回転・色は整形に入らず、描くときに Core が当てる
 - **寸法**: `Width` は行の幅の最大、`Height` は行の高さの和、`Ascent` は最初の行の上から基準線まで、`Descent` は最後の行の基準線から下まで。空の文字列は幅 0 で、高さはフォントの 1 行分
 - **整形のキャッシュ**: `TextEngine` は `Shape` の結果を、文字列・フォント名・大きさ・太さ・ロケールで引く表に持つ。2 回目からは整形しない。項目の数の上限は 8,192 で、超えたら最も古く使った項目を捨てる（行 T1 では 4,096。行 G8 で、4,096 のデータのラベルと、軸・凡例・タイトルの文字列が 1 フレームに収まるよう上げた、Issue #184）。1 項目の大きさは、グリフの数 × 16 バイト（`PlacedGlyph`）と行の数 × 16 バイト（`TextLine`）に、配列と表の頭である。目盛りのラベルはズーム中に変わるが、同じ文字列が繰り返し現れる（§4.6）
+- **文字で引くキャッシュ（行 I1c、Issue #266）**: 整形のキャッシュの鍵は、文字列の参照でなく文字の並び（とフォント名・大きさ・太さ・ロケール）にする。表は `Dictionary` の span で引く口（`GetAlternateLookup`、鍵の比べ方に span の鍵を足した比較子）で引き、当たれば何も作らない。項目は 8,192 個までの置き場の輪で、各項目は自分の文字の写し（`char` の配列）と `ShapedText` を持つ。外れたら、最も古く使った項目を取り、文字を写し、`ITextBackend.Shape` にその `ShapedText` を渡して書かせる。項目の配列は伸ばすだけで縮めないので、温まった後は、新しい文字列の整形でも Core は確保しない。`ITextBackend.Shape` は span を受け、渡された `ShapedText` に `Set` で書く形に変える（行 T1 の文字列を受けて `ShapedText` を返す形は、利用者の実装を含めて使えなくなる。v1 の前の破る変更で、XML ドキュメントと PR に書く）。DirectWrite のバックエンドは、受けた span を固定して `CreateTextLayout` に渡し、グリフを集める配列を使い回す
 - **アトラス**: 2,048 × 2,048 の 8 ビット（4 MB）の頁を、Core が CPU に持ち、バックエンドが同じ大きさのテクスチャに写す。グリフの鍵はフェイス・グリフ・大きさ・横の段（0〜3）で、頁の中に棚詰め（高さの近いグリフを横に並べる）で置く。グリフの間に 1 画素の空きを置き、隣のグリフを拾わない。数える単位は `Draw` の 1 回で、各グリフは最後に使われた `Draw` の番号を持つ（`Draw` はフレームの外でも、1 フレームに何度でも呼べるので、`BeginFrame` に結ばない。§5.2）。頁が満ちたら棚を空けるが、今の `Draw` で使ったグリフは動かさない。棚は、その棚のグリフがすべて今の `Draw` で使われていないときだけ空け、空ける棚は、棚のグリフの最後に使われた番号の最大が小さい順に選ぶ。空けた棚のグリフは、次に使うときラスタライズし直す。グリフの記録（アトラスの座標）は置きながら書くので、今の `Draw` のグリフを動かすと、先に書いた命令の座標が古くなるからである。前の `Draw` の描画は発行済みなので、その後に頁を書き換えても、前の描画は前の中身で描かれる（D3D11 の即時コンテキストは命令を順に実行する）。空けられる棚で足りなければ（今の `Draw` のグリフだけで満ちるなら）頁を足し、上限は 8 頁（CPU と GPU にそれぞれ 32 MB）。それも超えたら、何頁要るかを書いた `InvalidOperationException` にする。頁の数は、今の `Draw` のグリフ（置いたものと、まだ置いていないもの）のセルを空の頁に高い順に棚詰めして数え、9 未満なら 9 とする。置き場所は、使っている棚のうち高さがセルの高さ以上で差が max(2, セルの高さ / 4) 以下の最も低い棚、なければ空いた棚のうちセルが入る最も低い棚（セルの高さに切り、残りは空いた棚として下に残す）、なければ頁の最後の棚の下である。空けた棚は隣の空いた棚とつなぎ、頁の最後の棚なら頁の下の空きに戻す。今の `Draw` のグリフが前の `Draw` のグリフの棚に並ぶと、その棚は空けられないので、前の `Draw` のグリフもその棚に残る。インクのないグリフ（空白）は頁に置かず、ないことを覚えて `MeasureGlyph` を 2 度呼ばない。グリフの矩形が頁の一辺以上なら `InvalidOperationException`。大きさの上限 512 画素は、グリフの矩形（em の 2 倍ほど）が 1 頁に収まるためである。書き換えた矩形を頁ごとに覚え（同じ棚に続けて置いたセルは 1 つの矩形にまとめる）、バックエンドは描く前にその矩形だけをテクスチャに送る。テクスチャのない頁（新しい頁と、喪失の後のすべての頁）は、CPU の頁を初めの中身にしてテクスチャを作る。デバイスの喪失の後は、CPU の頁からテクスチャを作り直す（不変条件 10）
 - **画素への合わせ方**: 行の始まり（揃えを当てた後の位置）と基準線は、整数の画素に丸める（⌊x + 0.5⌋）。グリフの横の位置は 1/4 画素に丸め（⌊4x + 0.5⌋ / 4）、整数の部分で置き、小数の部分（0・0.25・0.5・0.75）をアトラスの鍵の段にする。縦は整数の画素。回転したテキストでは、文字の進む向き（画面の縦）に段を当てる。切り抜きと描画先の重なりの外にあるグリフは描かない。原点が重なりから 1 頁の一辺より遠いグリフはアトラスにも置かない（グリフの矩形は原点から 1 頁より遠くに届かない）
 - **揃えと回転**: 横の揃えは、行の束の幅の中で行ごとに当てる（Left は 0、Center は (束の幅 − 行の幅) / 2、Right は束の幅 − 行の幅）。縦の揃えは束に当て、`Position` の y が、Top は最初の行の上、Middle は束の高さの真ん中、Baseline は最初の行の基準線、Bottom は最後の行の下になる。回転は揃えを当てた後の束を `Position` の周りに回す。Clockwise90 は文字が上から下へ進み、CounterClockwise90 は下から上へ進む（ふつうの y 軸のタイトル）。グリフは回さずにラスタライズし、置く四角を 90° 回す。90° の倍数なので、画素の格子に乗ったまま描ける
@@ -2499,28 +2508,66 @@ public interface ITextBackend                 // バックエンドが実装す�
 
 ## 6. インタラクション
 
+対話は、行 I1c（ズーム中のラベルで確保しない、§4.6・§5.6）、I1a（対話の土台、この節の 6.1・6.2・6.3 の場所・6.5 の枠・6.6）、I1b（二次のスケール・ファセット・図、§6.2 の「I1b」）の順に作る。ヒットテストの最近傍とホバーは行 I2、選択とリンクは行 I3、注釈と計測は行 I4 である（Issue #266）。
+
+**層と拡張点**（Issue #266、オーナーの指摘: 対話の見た目と操作はアプリの UI/UX で決まるので、拡張点を先に設計する）: 対話は 4 つの層に分け、どの層も公開して差し替えられる。
+
+| 層 | 型 | 役目 | アプリが変えられること |
+| --- | --- | --- | --- |
+| 1. 入力 | `PointerEvent`・`WheelEvent`・`KeyEvent`・`GestureEvent`（§6.1） | ホストが OS の入力を変えて渡す | 渡す入力を選ぶ。`PlotEngine` が処理しなかった入力は、ホストへ返る |
+| 2. 割り当て | `InputBindings`（§6.5） | 入力の形（ボタン・修飾キー・場所）から、ツールかコマンドを選ぶ | 項目を消す・足す・差し替える。空にすれば対話を止められる |
+| 3. ツール | `IPlotTool`（§6.5） | ドラッグの間などの状態を持ち、操作の API を呼ぶ。重ねて描ける | 自前のツールを足す。組み込みのツールを外す |
+| 4. ビューの操作の API | `PlotEngine.Views`（§6.2） | ズーム・パン・矩形へ・全体表示・戻る・進む。制約と通知を通す | ボタンやメニューから呼ぶ。制約（`IViewConstraint`）を足す。`ViewChanged` を受ける |
+
+組み込みのツールも 4 の API だけを使い、層を飛ばさない。アプリが UI を自前で作っても（ツールバーのボタン、右クリックのメニュー）、組み込みと同じ規則（原点の付け直し、制約、履歴、通知）で動く。ポインタの下の場所（`HitArea`、§6.3）も公開し、アプリが自分のメニューや表示に使える。
+
+**テストのしやすさ**（Issue #266、オーナーの指摘: 対話はテストしにくいので先に設計で考える）は §6.6 にまとめる。
+
 ### 6.1 入力のモデル
 
-ホストは OS・UI フレームワークの入力を、デバイスの画素の座標と `TimeProvider` の時刻を持つイベントに変えて渡す。
+ホストは OS・UI フレームワークの入力を、デバイスの画素の座標と `TimeProvider` の時刻を持つイベントに変えて渡す。どれも確保しない `readonly struct` で、`PlotEngine` の `OnPointer(in PointerEvent)`・`OnWheel(in WheelEvent)`・`OnKey(in KeyEvent)`・`OnGesture(in GestureEvent)` に渡す（行 I1a）。戻り値は、`PlotEngine` がその入力を使ったかで、使わなかった入力（割り当てのないキー、対話を止めたプロットのホイール）はホストが親の要素へ回せる。
 
-- `PointerEvent`（移動・押下・解放・取り消し、ボタン、修飾キー、ポインタの種類）
-- `WheelEvent`（縦横、行単位か画素単位か）
-- `KeyEvent`
-- `GestureEvent`（ピンチ・2 本指スクロール。ホストが渡せる場合だけ）
+| 型 | 中身 |
+| --- | --- |
+| `PointerEvent` | 種類（`Move`・`Down`・`Up`・`Cancel`）、位置（デバイスの画素、描画先の左上が原点の `Vector2`）、変わったボタン（`Left`・`Right`・`Middle`・`X1`・`X2`）、押されているボタンの組、修飾キー（`Shift`・`Control`・`Alt`・`Meta` の組）、ポインタの種類（`Mouse`・`Pen`・`Touch`）、時刻 |
+| `WheelEvent` | 位置、縦と横の量（目盛りの数、`double`。1 が 1 目盛りで、WPF の `Delta` / 120。高分解能のホイールは端数）、修飾キー、時刻 |
+| `KeyEvent` | 種類（`Down`・`Up`）、キー（自前の列挙 `PlotKey`。矢印、`Plus`・`Minus`、`Home`、`Escape`、`BrowserBack`・`BrowserForward`、英字と数字）、修飾キー、繰り返しか、時刻 |
+| `GestureEvent` | 種類（`Pinch`・`Scroll`）、位置、ピンチの倍率（前のイベントからの比）、スクロールの量（画素）、時刻。ホストが渡せるときだけ（要件 I-8） |
 
-入力は UI のスレッドで受け取り、ツールの状態機械を進め、ビューの状態を変えて、要るフレームを要求する。入力の列はそのまま記録・再生できる（要件 I-9、§10）。
+- 時刻は `TimeProvider.GetTimestamp()` の値で、ホストがイベントを受けたときに付ける。ダブルクリックとホイールのまとまり（§6.2 の履歴）は、イベントの時刻で決める。ホストの OS のダブルクリックの判定（WPF の `ClickCount`）は使わず、`PlotEngine` が時刻と距離で決める（`DoubleClickTime` 既定 500 ms、`DoubleClickDistance` 既定 2 DIP。どちらも Windows の既定の `GetDoubleClickTime` 500 ms と `SM_CXDOUBLECLK` の 4 画素の矩形（最初のクリックから左右に 2 画素）に合わせた。この機械で読んだ値も同じ）。どのホストでも、記録した入力の再生（§6.6）でも同じに判定するためである
+- 慣性スクロールは自前で作らない。ホストが慣性を付けた `GestureEvent` の `Scroll` を続けて渡せば、そのまま受ける（要件 I-8）
+- 入力は、呼んだスレッド（ホストの UI のスレッド）でその場で処理する（ツールを進め、ビューを変え、要るフレームを要求する）。`PlotEngine` は作ったスレッドだけから呼び、ほかのスレッドからの呼び出しは `InvalidOperationException` にする（WPF の `Dispatcher` の検査と同じ形、Issue #266）。入力やコードの呼び出しが別のスレッドから来る不具合は、アプリの側で見つけにくいので、その場で分かるようにする
+- 入力の列はそのまま記録・再生できる（要件 I-9、§6.6）
 
 ### 6.2 ビューの操作
 
 - 各パネルはビューを持つ。2D は x と y のビュー範囲（スケールの空間の原点と差の組、§3.6。軸ごとに `long` の原点と、下端と上端の `double` の差）、3D（v1.x、§13.8）はカメラ（注視点・距離・方位角・仰角・視野角または正射影の幅）と x・y・z の軸の範囲である。公開の型はビューの種類を 1 つの抽象（`PanelView`）で表し、2D の範囲だけを前提にしない（不変条件 12）
-- **ツール**の状態機械: 待機 → パン / 矩形ズーム / 投げ縄 / 軸のドラッグ / 注釈のドラッグ / 計測。どの入力でどのツールに入るかは割り当ての表（`InputBindings`）で決め、利用者が変えられる（要件 I-7）
-- ホイールのズームはカーソルの位置を中心にする。ズームのアニメーションは `TimeProvider` の時刻で補間する
-- **Y の自動範囲**: X のビュー範囲が変わったら、見えている X の区間の Y の min / max をピラミッドの問い合わせ（§3.3）で求めて Y の範囲にする（オプション）。O(log N) で済む
-- ズームの履歴（戻る・進む）はビュー範囲のスタックで持つ（要件 I-1）
-- **二次のスケール**（行 G6a の `ScaleX2`・`ScaleY2`）へのズームとパン（主だけに効かせるか、同じ割合で動かすか、カーソルの下の軸だけか）は、行 I1 で決める（PR #231 のレビューでオーナーが決定）。主の軸の変換の軸は主に従うので、決めることはない
+- **ビューの型（行 I1a）**: 抽象の `PanelView` と、2D の `PanelView2D`（x と y の `ViewRange`）。`ViewRange` は公開の値の型で、`long` の原点と、下端と上端の `double` の差を持つ（internal の `ScaleRange` と同じ値で、原点の選び方と付け直しは同じ 1 つの関数、§4.8）。口は 4 つ: 原点と差を直に受けるコンストラクタ `ViewRange(long origin, double lower, double upper)`、原点と差を読む `Origin`・`Lower`・`Upper`、値から作る `FromValues(double low, double high)` と `FromValues(long low, long high)`（原点を low、差を 0 と high − low にする。time の軸の ns や整数の軸の値は `double` の 2^53 を超えるので、`long` の口がないとコードから正確に置けない）、値に戻す `LowValue`・`HighValue`（`double` に丸める）。原点と差を読んで渡し直せば、往復で値が落ちない（PR #267 のレビュー）。パネルは `PanelId`（プロットの番号とパネルの番号。1 枚の図はプロット 0、ファセットのないプロットはパネル 0）で指す
+- **ビューと domain**（行 I1a）: ビュー範囲は `PlotEngine` が持ち、スケールの domain より優先する。ビューのある軸は、ビューの範囲をそのまま描く（nice も `Zero` も当てない。目盛りはビューの範囲から選ぶ、§4.6）。最初のビューと全体表示は、仕様が今描く domain（与えた値か、学んで nice を当てた値）である。新しい仕様を渡したとき、位置のスケールの写像が同じなら（§4.8 の「スケール」の段が起きなければ）ビューと履歴を残す。写像が変われば（domain を与え直した、log に変えた、flip した）、ビューも履歴も捨てて全体表示に戻し、理由 `Spec` の `ViewChanged` を出す。データの追加（列の版の変化）ではビューを動かさない。全体表示のまま追い続ける表示は、ストリーミングの行 C4 で決める
+- **ビューの操作の API（行 I1a）**: `PlotEngine.Views`（`ViewOperations`）が持つ。入力のツールも、アプリのコードも、これだけを呼ぶ
+  - `ZoomAt(panel, pixel, factor, axes)`: 画素の位置を中心に、`factor` 倍に拡大する（1 より大きいと拡大）。`axes` は `X`・`Y`・`Both`（`ViewAxes`）
+  - `Pan(panel, pixels, axes)`: 画素の量だけ動かす（ポインタの向きにデータが付いて動く向き）
+  - `ZoomToRect(panel, rect)`: 画素の矩形をビューにする
+  - `SetView(panel, view)`: ビューを直に置く（要件 I-9）
+  - `Reset(panel)`・`ResetAll()`: 全体表示
+  - `Back()`・`Forward()` と `CanGoBack`・`CanGoForward`: 履歴
+  - `BeginGesture()`・`EndGesture()`: 間の変化を履歴の 1 つにまとめる（ドラッグのツールが使う）
+  - 各操作は、アニメーションの有無を引数で選べる（既定は下の「アニメーション」の項のとおり）
+- **制約（行 I1a）**: ビューが変わる前に、提案されたビューを `PlotEngine.Constraints` の `IViewConstraint` に順に通す。各制約は提案を直すか（`ref` で受けた提案を書き換える）、変化を止める（偽を返す）。止めたらビューは変わらず、通知もしない。アプリの制約の例: ズームの上限と下限、動かせる範囲、片方の軸の固定。組み込みは 2 つで、`ZoomLimits`（範囲の幅の下限: 境界が狭義に増加する幅、§4.8 の狭い domain。上限: なし）は常に入り、外せない（M4 の境界が壊れないため）。`AutoRangeY`（Y の自動範囲）は既定で入らず、アプリが足す
+- **Y の自動範囲**: X のビュー範囲が変わったら、見えている X の区間の Y の min / max をピラミッドの問い合わせ（§3.3）で求めて Y の範囲にする（オプション。行 I1a の `AutoRangeY` 制約）。O(log N) で済む。範囲は層の Y のピラミッドの和で、Stat の層や行のない区間は前の Y を残す
+- **通知（行 I1a）**: ビューが変わったら、`ViewChanged`（パネル、新しいビュー、理由: `Input`・`Code`・`History`・`Link`・`Spec`）を 1 回出す。引数は構造体で、入力の経路で確保しない（`in` で受けるデリゲートの型 `ViewChangedHandler`）。アニメーションするときは、補間の途中の値ではなく、行き先のビューで 1 回出す。今描いている途中の値は `PlotEngine.CurrentView(panel)` で読める
+- **履歴（行 I1a）**: ズームの履歴（戻る・進む）はビュー範囲のスタックで持つ（要件 I-1）。積む単位は操作のひとまとまり: ドラッグは 1 回（`BeginGesture` から `EndGesture` まで）、矩形ズームは 1 回、全体表示は 1 回、ホイールは続けて回した間（前の目盛りから `WheelGroupGap` 既定 300 ms 空くまで）を 1 回、コードの `SetView` は 1 回。深さは `HistoryDepth`（既定 100）で、超えたら古いものから捨てる。戻った後に新しい操作をすると、進む側を捨てる。履歴はパネルごとでなくプロットごとに 1 本で、1 つの項目はそのプロットの全パネルのビューを持つ（ファセットで共有する軸を一緒に戻すため、I1b）
+- **アニメーション（行 I1a）**: ホイールのズーム、矩形ズーム、全体表示、戻る・進む、キーボードのズームは、`ZoomAnimation`（既定 150 ms、0 でなし）で補間する。補間は軸ごとに下端と上端を、`TimeProvider` の時刻で 3 次の減速（1 − (1 − t)³）で動かす。パンと軸のドラッグはポインタにそのまま付ける。補間の途中に次の操作が来たら、行き先から続ける（ホイールを続けて回すと、倍率が積み重なる）。慣性は自前で作らない（§6.1）
+- **フレームの要求（行 I1a）**: ビューが変わるか、ツールが重ねて描くものを変えたら、`FrameRequested` を 1 回出す。ホストが `RenderFrame()` を呼ぶまでに何度変わっても 1 回である。アニメーションの間は、`RenderFrame` の終わりに次のフレームを要求する（§7.1）
+- **二次のスケール**（行 G6a の `ScaleX2`・`ScaleY2`）へのズームとパン（行 I1b、Issue #266）: パネルの中の操作は、主と二次の両方を同じ割合で動かす。中心は、それぞれの範囲の中で同じ割合の位置（画素の位置から決まる）で、倍率も同じである。こうすると、2 本の線の重なり方が変わらない。軸の上のドラッグとホイールは、その軸（主か二次）だけを動かす。主の軸の変換の軸（`WithSecondaryAxis`）は主に従うので、自分のビューを持たない
+- **ファセット**（行 I1b）: 共有している軸（`Fixed` の x と y、`FreeX` の y、`FreeY` の x、§4.5）は、あるパネルで動かすと、その軸を共有するパネルもすべて一緒に動く（1 つのビュー範囲を共有する）。自由な軸は、そのパネルだけが動く。行 G6b の「共有の軸は外側のパネルだけに描く」と合う
+- **図**（行 I1b）: ポインタを押したとき、その下のプロットをドラッグの間の相手にし、離すまで変えない。ホイールはカーソルの下のプロット、キーボードは最後に操作したプロットに送る。各プロットのビューと履歴は独立で、プロットの間のリンクは行 I3 である
 - **原点の付け直し**（行 D2 の規則、使うのは行 I1）: パン・ズーム・履歴の移動・リンクの共有でビュー範囲が変わるたびに、§3.6 のとおり 原点 += ⌊下端の差⌋、差 −= ⌊下端の差⌋ と付け直す。ズームの中心（カーソルの位置）も同じ原点の差で計算する。リンクしたパネルは、原点と差の組をそのまま渡す。カーソルの位置をスケールの空間へ戻す（§6.3）ときも、原点と差の組で返す
+- **band の軸と polar**（行 I1b）: band の軸（行 G7b）のビューは、カテゴリの番号の空間（0 から n）の範囲で、ズームとパンはこの範囲を動かす。範囲の外のカテゴリは描かず、ラベルの間引き（§4.6 のカテゴリの軸）は見える範囲に当てる。polar（行 G11）は、半径の軸だけをズームとパンで動かし、θ は全周のまま（Plotly の polar の半径の軸と同じ）。行 I1a では、band の軸と polar の θ は全体表示から動かない（組み込みのツールはその軸を動かさず、`SetView` は全体と違う範囲を `ArgumentException` にする）
 
 ### 6.3 ヒットテスト
+
+- **場所の当たり判定（行 I1a）**: `PlotEngine.HitArea(Vector2 pixel)` は、画素の位置にあるものを `HitArea`（構造体）で返す。種類（`None`・`Panel`・`AxisX`・`AxisY`・`AxisX2`・`AxisY2`・`Legend`・`Title`・`Figure`。`Figure` は図の余白とセルの間）と、`PanelId`。軸の場所は、軸の帯（目盛り・ラベル・軸のタイトルの矩形、§4.6 の配置の結果）である。配置の結果だけを読むので、データの量によらず、パネルの数に比例する。割り当ての表（§6.5）はこの種類で入力を分け、アプリは右クリックのメニューなどに使う。点や系列の最近傍（下の表）は行 I2 である
 
 | 対象 | 方法 | 計算量 |
 | --- | --- | --- |
@@ -2543,9 +2590,60 @@ public interface ITextBackend                 // バックエンドが実装す�
 
 ### 6.5 ツール
 
+**ツールの枠と割り当て（行 I1a）**
+
+- **`IPlotTool`**: ツールはこの公開のインターフェースを実装する。`OnPointer`・`OnWheel`・`OnKey`・`OnGesture` はイベントと `ToolContext` を受け、`ToolResult`（`Ignored`・`Handled`・`Capture`・`Release`）を返す。`Capture` を返したツールは、`Release` を返すか取り消されるまで、ポインタのイベントをすべて受ける（ドラッグがパネルや描画先の外へ出ても）。`Cancel(context)` は、`Escape`、ポインタの `Cancel`、仕様の写像の変化（§6.2）、ツールを外したときに呼ばれ、ツールは自分の状態を捨てる。`Overlay(RenderList list, ToolContext context)` は、ツールが重ねて描くもの（矩形ズームの枠）を、毎フレームのデータと軸の後に記録する。重ねて描くものを変えたら `context.RequestFrame()` を呼ぶ
+- **`ToolContext`**: `PlotEngine` が 1 つ持って使い回す（入力ごとに確保しない）。ポインタの下の場所（`HitArea`、§6.3）、パネルの矩形、画素とスケールの空間の変換（`PixelToView`・`ViewToPixel`。原点と差の組で返す、§6.2）、今のビュー、ビューの操作の API（`Views`、§6.2）、`TimeProvider`、テーマ（重ねて描く色）を持つ
+- **送り方**: ポインタを掴んでいるツールがあれば、そのツールに送る。なければ割り当ての表を上から見て、入力の形と場所の種類が合う項目のツールかコマンドを順に呼び、最初に `Ignored` 以外を返したもので止める。どれも使わなければ、`OnPointer` などは偽を返す（§6.1）。押してから `DragThreshold`（既定 4 DIP）動くまではクリックで、それを超えたらドラッグとして送る
+- **`InputBindings`**: `PlotEngine.Bindings` は `InputBinding` の並びで、各項目は入力の形（`Drag(button)`・`Click(button, count)`・`Wheel`・`Key(key)`・`Pinch`・`Scroll`）、修飾キー、場所の種類の組（`HitArea` の種類のフラグ）と、ツールかコマンド（`ViewCommand`: `Reset`・`Back`・`Forward`・`ZoomIn`・`ZoomOut`・`PanLeft`・`PanRight`・`PanUp`・`PanDown`・`CancelTool`）を持つ。アプリは `Clear`・`Add`・`Insert`・`Remove` で変え、空にすれば対話をすべて止められる。`InputBindings.CreateDefault()` は下の既定の表を返す
+- **既定の表**（行 I1a。Plotly と matplotlib の既定の操作に合わせた）:
+
+| 入力 | 修飾キー | 場所 | 動き |
+| --- | --- | --- | --- |
+| 左ドラッグ | なし | パネル | パン（両軸） |
+| 左ドラッグ | なし | 軸 | その軸だけのパン |
+| 右ドラッグ、左ドラッグ | なし、`Control` | パネル | 矩形ズーム（離したときに枠をビューにする。縦か横の幅が 4 DIP 未満なら、その軸は変えない） |
+| ホイール | なし | パネル | カーソルを中心に両軸のズーム（1 目盛りで `WheelZoomFactor` 既定 1.2 倍） |
+| ホイール | なし | 軸 | その軸だけのズーム |
+| ピンチ | なし | パネル | ピンチの中心で両軸のズーム（倍率はピンチの比） |
+| 2 本指スクロール | なし | パネル | パン |
+| 左ダブルクリック | なし | パネル・軸 | 全体表示（`Reset`） |
+| 矢印 | なし | どこでも | ビューの幅の `KeyPanFraction`（既定 0.1）だけパン |
+| `Plus`・`Minus` | なし | どこでも | ビューの中心で `KeyZoomFactor`（既定 1.25）倍の拡大・縮小 |
+| `Home` | なし | どこでも | 全体表示 |
+| `BrowserBack`・`BrowserForward`、`Alt` と左右の矢印、ボタン `X1`・`X2` | | どこでも | 戻る・進む |
+| `Escape` | なし | どこでも | 進行中のツールを取り消す（選択の解除は行 I3） |
+
+- **組み込みのツール**（公開の型）: `PanTool`（パネルで両軸、軸で 1 軸）、`RectangleZoomTool`（枠を重ねて描く。枠の色はテーマの `Foreground` の 15 % の塗りと 1 DIP の線）、`WheelZoomTool`（ホイールとピンチ）。キーボードとダブルクリックはコマンドで、ツールの状態を持たない。組み込みのツールも、自前のツールと同じく `IPlotTool` で、ビューの操作の API だけを呼ぶ
+- **設定**: `PlotEngine.Options`（`InteractionOptions`）が、次の値を持つ。範囲の外の値は `ArgumentOutOfRangeException`。既定の値の出どころは次のとおり（PR #267 のレビュー）
+  - `DoubleClickTime` 500 ms・`DoubleClickDistance` 2 DIP: Windows の既定（§6.1）
+  - `DragThreshold` 4 DIP: Windows の既定の `SM_CXDRAG`・`SM_CYDRAG`（押した点から左右と上下に 4 画素。この機械で読んだ値も同じ）
+  - `WheelZoomFactor` 1.2: 決めた値。5 目盛り（Windows の既定の 1 回の回し方で出やすい量）で約 2.5 倍、13 目盛りで約 10 倍になり、1 目盛りの変化が目で追える。ほかのライブラリの値は確かめていない
+  - `KeyPanFraction` 0.1・`KeyZoomFactor` 1.25: 決めた値。矢印 10 回でビューの幅 1 つ分動き、`Plus` 3 回で約 2 倍になる
+  - `ZoomAnimation` 150 ms: 決めた値。60 Hz で 9 フレームで、動きが見えて、続けて回すホイールを待たせない長さ
+  - `WheelGroupGap` 300 ms: 決めた値。続けて回すホイールの目盛りの間（数十 ms）より十分長く、回し直し（数百 ms 以上空く）と分けられる
+  - `HistoryDepth` 100: 決めた値。1 項目はプロットの全パネルのビュー（パネル × 2 軸 × 24 バイト）で、256 パネルでも 100 項目で約 1.2 MB
+- 投げ縄・注釈・計測は、同じ枠の上に、それぞれの行（I3・I4）でツールとして足す
+
+**注釈と計測のツール（行 I4）**
+
 - 注釈: 線・矩形・テキスト・マーカー。データの座標か画面の座標に固定する。ドラッグで動かし、変更をイベントで通知する（要件 I-5）
 - 計測: 2 点の差（Δx・Δy・傾き）、範囲の統計（件数・平均・最小・最大）。範囲の min / max はピラミッドで求め、平均はチャンクの和（チャンクの統計に和を足す）とバケットで求める
 - ツールチップの中身は利用者のデリゲートで変えられる。既定は系列名・x・y
+
+### 6.6 テストのしやすさ（行 I1a）
+
+対話の不具合は、入力の順と時刻に依り、手で再現しにくい（Issue #266、オーナーの指摘）。設計で次の 3 つを約束する。
+
+1. **GPU に依らない**: 入力・割り当て・ツール・ビューの操作の API・場所の当たり判定は、配置の結果（パネルと軸の矩形、§4.6）とスケールの写像だけを読む。`PlotEngine` はどの `IGpuBackend` でも動き、Core のテストは描かない偽のバックエンド（Core のテストの `CountingBackend`）と偽の文字のバックエンドで、Linux でも動く
+2. **決まった結果**: 入力は呼んだスレッドでその場で処理し（§6.1）、時刻は `TimeProvider` とイベントの時刻だけから取る（不変条件 8）。同じ入力の列と同じ時刻の進め方なら、いつも同じビュー・同じイベントの順・同じフレームの要求になる
+3. **状態で確かめる**: テストは画素ではなく、状態（ビュー、ツールの状態、出たイベントとその順、要求したフレームの数、履歴）で確かめる。画素は、重ねて描くもの（矩形ズームの枠）の WARP のゴールデン画像を少しだけ持つ
+
+道具（`HyperPlot.Testing`、公開。アプリのテストも使う）:
+
+- **入力の台本**（`InputScript`）: 操作を順に書き、`PlotEngine` に流す。位置は画素（`ScriptPoint.Pixel(x, y)`）か、データの座標（`ScriptPoint.Data(panel, x, y)`。流すときに今のビューで画素に直す）で書く。操作は `Move`・`Press`・`Release`・`Drag(from, to, button, steps)`・`Click`・`DoubleClick`・`Wheel(at, notches)`・`Key`・`Pinch`・`Scroll`・`Wait(TimeSpan)`。`Run(engine, advance)` は、各イベントの時刻を `advance`（時刻を進めるデリゲート。テストの偽の `TimeProvider` の `Advance` を渡す）で進めた時刻にして流し、フレームの要求があれば `RenderFrame` を呼ぶ（呼ばない設定も持つ）。`HyperPlot.Testing` は Core だけを参照するので、偽の `TimeProvider` の型には依らない
+- **入力の記録と再生**（要件 I-9）: `PlotEngine.StartRecording(TextWriter)`・`StopRecording()`（Core）は、受けた入力を 1 行に 1 つ、決まった形のテキストに書く。先頭の行は描画先の大きさと倍率で、続く行は `t=<前の行からの時間 µs> pointer down x=<画素> y=<画素> button=left buttons=left mods=control kind=mouse` の形（キーと値の組、値は不変カルチャ）。記録は入力の経路で文字列を書くので確保する（フレームの経路ではない）。`InputReplay.Run(engine, TextReader, advance)`（`HyperPlot.Testing`）は、読み戻して同じ間隔で流す。大きさか倍率が記録と違えば `InvalidOperationException`。アプリの利用者の操作で起きた不具合を、ファイル 1 つで再現できる
+- 行の形は §10 の I1a の行のテストが、書いて読み戻して同じ入力になることで確かめる
 
 ## 7. ホスト統合
 
@@ -2559,6 +2657,16 @@ public interface ITextBackend                 // バックエンドが実装す�
 | 大きさと DPI | デバイスの画素の大きさ、DPI の倍率。変わったら通知する |
 | 入力 | §6.1 のイベント |
 | フレームの時機 | `PlotEngine.FrameRequested` を受けたら、ホストの描画の時機（WPF なら `CompositionTarget.Rendering`）に `RenderFrame` を呼ぶ |
+
+**`PlotEngine`（行 I1a、Issue #266）**: 対話する描画の入口で、Core の `HyperPlot.Interaction` に置く。`HeadlessRenderer`（§7.5）は 1 回描いて読み出す道具として変えずに残し、`PlotEngine` は状態（仕様、ビュー、ツール）を持って、入力を受け、要るときだけ描く。中では同じ計画（`PlotPlan`・`FigurePlan`、§4.8）を使う。
+
+- コンストラクタ: `IGpuBackend backend`、描画先の幅と高さ（物理画素）、`scale`（DIP から物理画素への倍率）、`PlotWorkerPool? pool`（null なら `Shared`）、`TimeProvider? time`（null なら `TimeProvider.System`）。描画先は `PlotEngine` がバックエンドで作って持つ（ホストへの渡し方と、大きさと DPI の変化は行 W1）
+- 仕様: `SetPlot(PlotSpec)`・`SetFigure(FigureSpec)`。検査は `HeadlessRenderer` の `Render` と同じで、コンパイルは次の `RenderFrame` で行う（検査は呼んだときに行い、例外はそこで投げる）。ビューの扱いは §6.2 の「ビューと domain」
+- フレーム: `event Action? FrameRequested` と `RenderFrame()`。`RenderFrame` は、アニメーションを今の時刻へ進め（§6.2）、ビューを計画に渡して、変わった段だけをやり直し（§4.8 の「ビュー」）、描画先に描く。ツールの重ねて描くもの（§6.5）は、データと軸の後に描く。描いた後に読み出す口（`ReadPixels`）はテストと画像の出力のためで、`HeadlessRenderer` と同じ形
+- 入力: `OnPointer`・`OnWheel`・`OnKey`・`OnGesture`（§6.1）。構成: `Views`（§6.2）、`Bindings`（§6.5）、`Constraints`（§6.2）、`Options`（§6.5）、`HitArea`（§6.3）、`CurrentView`、`ViewChanged`、`StartRecording`・`StopRecording`（§6.6）
+- スレッド: 作ったスレッドだけから呼ぶ。ほかのスレッドからは `InvalidOperationException`（§6.1）
+- 待ち方: 行 I1a の `RenderFrame` は、ヘッドレスと同じく、使う索引とワーカーの仕事が列の今の世代でそろうのを待ってから描く（§4.8 の「ヘッドレスの待ち方」）。待たずに暫定の表示を描いてホストへ知らせる道は、行 W1 で `PlotEngine` に入れる（ロードマップの W1 の文のとおり）。それまでは、不変条件 7 の例外として不変条件の文に書く
+- `Dispose`: 描画先と計画（ピラミッド）を解放する。`backend`・`pool`・表の列は持ち主が解放する（`HeadlessRenderer` と同じ）
 
 ### 7.2 WPF
 
@@ -2642,6 +2750,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 - **End-to-end**（`benchmarks/HyperPlot.E2E`、NativeAOT、行 S2）: ヘッドレス描画で、表示の範囲の列を台本どおりに流し、フレームの CPU 時間（段ごと）・GPU 時間（`LastFrameTime`）・アロケーション・メモリを測る。入力のモデル（行 I1）とホバー（行 I2）はまだないので、ズームとパンは表示の範囲の列で表す: 全体からの拡大（各段で 2 倍、全体の 100 万分の 1 まで）、拡大の各段でのパン、全体へ戻る、で約 600 フレーム。P-1 の p95 は、台本を 2 回以上続けて流した 1,200 フレーム以上（最初の 30 フレームは捨てる）から取る。GPU 時間はクロックの段で動くので、少ないフレームの p95 は段の一時の値になりうる（`.cursor/rules/bench.mdc`、R2 の記録）。1 フレームは `samples/BillionSeries` と同じ手順（`PlotWorkerPool.Extract` → 画素へ写す → `RenderList` → `IGpuBackend.Draw`）で、描画先は 1,920 × 1,080。ホバーの場面（要件 P-5・P-6）は、ヒットテストを作る行 I2 で足す
   - **P-1 の判定**: 1 系列（1e9 点の `float` のメモリマップ、X は `UniformColumn`、ピラミッドは構築済み、ファイルはページキャッシュに載った状態）で、フレームの CPU 時間と GPU 時間のそれぞれの p95 を 8 ms と比べる。4 系列と 16 系列は、目標なしの参考として記録する
   - **満たさないとき**: CPU のプロファイル（`.agents/skills/cpu-profile`）で段と関数の内訳を測る。p95 が 8 ms を超えたら、PR の前に、直し方の選択肢と推奨をオーナーに出す（`.cursor/rules/consent.mdc`）。設計に関わる直しは S2 の中で黙って入れない。「1 系列を画素列の範囲で分けるか」（§5.5.1）の判断の材料も、この内訳から出す
+  - **対話（行 I1a、Issue #266）**: 1 系列（P-1 の判定と同じ 1e9 点、ピラミッドは構築済み）を `PlotEngine` に置き、入力の台本（§6.6。全体表示からホイールで 1 目盛りずつ 60 回の拡大を 16.7 ms おきに、続けて左ドラッグで 300 フレームのパン）を偽の時刻で流し、1 フレームごとに `RenderFrame` を呼ぶ。NativeAOT の Release、1,920 × 1,080、3 回。1 フレームの CPU 時間と GPU 時間の p95（P-1 の 8 ms と比べる）、1 フレームの確保（0 B、行 I1c の後）、入力 1 つの処理の時間（`OnWheel`・`OnPointer` の中、フレームとは別）を記録する。アニメーション（150 ms）の間のフレームも数える
 
 計測のデータは、`HyperPlot.DataPath` の生成器がシードから作り、ファイルに置く（リポジトリの外、`.cursor/rules/bench.mdc`）。生成器はファイルをバッファなし（`FILE_FLAG_NO_BUFFERING`）で書き、ページキャッシュに載る前の状態を、管理者権限も再起動もなしに作る。行 B1 の試作（Issue #26）では、2 GiB のファイルをメモリマップで 4 KiB ごとに読んだ速さは、バッファなしで書いた直後の 1 回目で 1.9〜2.1 GB/s、2 回目で 4.4 GB/s だった。通常の書き込みの直後は 1 回目から 4.1〜4.6 GB/s で、キャッシュに載っていたファイルもバッファなしで書き直すと 1 回目は 1.9〜2.1 GB/s に戻った。バッファなしの書き込みは冷やす手段で、冷えたことを確かめる手段ではない。計測の前にファイルを読んで確かめると、その読みがページをキャッシュに載せる。そこで、冷えた場面は同じ場面を続けて 2 回測り、1 回目（冷）と 2 回目（温）の比で確かめる。比が場面ごとに決めた下限に届かない 1 回目は、冷えていなかったとして数えず、数えなかった回数も記録する。試作の値は、4 KiB ごとに順に読む、OS の先読みが効く読み方のもので、冷と温を見分けられることの根拠である。2 MB おきに読む「冷えた 1 フレーム」の時間の予想には使えない。結果は `docs/benchmarks/` に行ごとに記録する。
 
@@ -2679,6 +2788,9 @@ public interface ITextBackend                 // バックエンドが実装す�
 | 軸の置き場所と二次軸（G6a） | 仕様（Core）: `WithAxisSide` の定義にない値で `ArgumentOutOfRangeException`、`WithSecondaryAxis` の time のスケールで `ArgumentException`、null の scale で `ArgumentNullException`、`PlotBuilder.ScaleX2`・`ScaleY2` の null で `ArgumentNullException`、層のビルダの `SecondaryX`・`SecondaryY` が仕様に入る。コンパイル（`ArgumentException`）: `SecondaryY` の層と null の `ScaleY2`、層のない `ScaleY2`（x も同じ）、`ScaleY2` と主の `SecondaryAxis` の両方、主と同じ側の二次のスケール、x の `Left`・`Right` と y の `Top`・`Bottom`（`with` で入れたもの）、二次のスケールの `SecondaryAxis`、`with` で入れた time の主の `SecondaryAxis`、色のスケールの中のスケールの `Side` と `SecondaryAxis`、polar の `Side`・二次のスケール・変換の軸、カテゴリの x の層の `SecondaryX`、単調でない変換の軸（両端が戻らない）。端が 0 の domain の単調な変換（(v + 0.1) · 3）は通る。写す: `SecondaryY` の層の y の画素が `ScaleY2` の domain と変換（log の二次のスケールを含む）で写され、同じ列を主と二次に載せると domain の違いで画素が違う。`SecondaryX` の層の x の画素と M4 の画素列の境界が `ScaleX2` のもの（主と二次の x が同じ列で domain が違う場面で、境界の組が 2 つ）。すべての層が二次に載り、主に与えた domain がないとき `ArgumentException`、与えた domain があれば描く。学習: 二次の y の domain がそこに載る層だけから、主の y が載らない層だけから学ぶ（nice・zero・bar の基準線・Stat の派生の表・x を主から学ぶ `SecondaryY` だけの層を含む）。変換の軸: 目盛りの値が、主の domain の両端を写した範囲で拡張アルゴリズムが選ぶ値で、画素が逆の変換で戻して主で写した位置（増加と減少の変換、log の主、`Transform` が null の写しの軸で目盛りが主と同じ）、nice で広げない、グリッドが主の目盛りだけ。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: 上の x の帯、右の y の帯と凡例の帯の順、上と右の両方、`ShowAxes` が偽、倍率 1.5。記録: 上の軸の線の中心・目盛りの向き・ラベルの揃え、右の軸の同じもの、右の軸のタイトルが `Clockwise90` で凡例の帯の左、上の軸のタイトルがタイトルの帯の下、端のラベルの寄せ（上は左右、右は上下）。flip: x の `Top` が右、y の `Right` が上に描かれる。差分: `SecondaryY` の変化でデータの段、`ScaleY2` の domain で「スケール」の段、`Side` と `SecondaryAxis` で「配置」の段（M4 は帯がパネルの幅を変えたときだけ）。確保: 温まった後、二次のスケールと変換の軸と上と右の軸の描き直しが確保しない（domain を交互に 2 つ）。差分の `SecondaryAxis`: 同じ `IScale` と同じ値の新しいノードで配置 0。プール（Core）: 組を並べて取り出す口（`ExtractTogether`）が、各組を自分の境界で取り出し（系列ごとに単独の M4 と同じ点）、系列のない組を飛ばし、すべてが終わった後に最初に失敗した組の例外を投げる。ミュータント: 二次の domain の学ぶ層の選び方、二次の層を写すスケール、M4 の境界の組の選び方、変換の軸の逆の変換、右の軸のラベルの揃え、上の帯の高さで、それぞれ 1 つ以上のテストが落ちる。描く（WARP）: 場面 (34)・(35)。band の主 x と `ScaleX2` の数の x の line が描け、band のカテゴリが主の層だけから（Issue #248） |
 | ファセット（G6b） | 仕様（Core）: `Facet.Wrap` の `columns` の 0 と定義にない `scales`、`Facet.Grid` の両方 null、`default` の `by`、別の表の列（ビルダ）で例外。コンパイル（`ArgumentException`）: 数の列・別の表の列で分ける、`with` で入れた 0 の `ColumnCount`、257 枚のパネル（256 枚は描く）。並び: `n2mfrow` の列と行の数（n = 1〜13 と 30）、`ColumnCount` を与えた行の数、カテゴリの番号の順、行のないカテゴリを落とす（wrap と grid の行と列）、grid の行のないセルが空のパネル、grid の鍵の区間の表（組ごとの最初と最後の行と数、欠けの行がどのパネルにも入らない）と、同じ 2 つの列の差分での使い回し。区間のパネル（Issue #243）: bin・count・summary・density・smooth・bin 2D、stack と fill、色の分割（区間と混ざる色のカテゴリ）の層の記録が、そのパネルの行だけを持つ表の同じ層の記録と同じで、区間の外の行の値を変えても、区間の外に欠け（−1）の行を置いても結果が変わらない。区間の学習: 区間の系列の範囲がその区間の範囲（ピラミッドの Y、非減少の X と `UniformColumn` の両端、なめる rect の列と bar の x、Stat の x の区切りがパネルの区間の範囲）、欠けの行の値が domain に入らない、なめた範囲が同じ版で読み直されない（数えるテスト）。行を持たない層: image と custom の層がどのパネルにも描かれ、free のパネルの範囲に入る、mipmap が 1 つ。データ: 区間に並ぶカテゴリと混ざるカテゴリのパネルの M4 の点が、そのカテゴリの行だけの系列の M4 と同じ（区間の X はパネルごとに始まり直す）。軸の共有: `Fixed` で全パネルの domain が範囲の和、`FreeX`・`FreeY`・`Free` でその向きがパネルの範囲、与えた domain がどのパネルにも当たる、nice が共有で 1 回・free でパネルごと、band の x が `FreeX` でも列のカテゴリの全部。Stat: 共有の bin の区切りが全パネルで同じ、free の x でパネルごと、群が（パネル、色）。配置（偽の `ITextBackend` で §4.6 の式の値）: Wp と Hp、見出しの帯、共有の帯が格子に 1 つ、free の帯が行と列ごと（列の帯の幅がその列の最大）、⌊⌋ の余りが右と下、カラーバーの長さが格子の全体の高さ、上と右の軸で格子の両側に帯、隣にパネルのある軸の端のラベルがパネルの端 + G / 2 に収まる、小さすぎる描画先で背景だけ。記録: 共有の軸が外側のパネルだけ（wrap の欠けた行の上のパネルの x を含む）、free の軸がどのパネルにも、グリッドがパネルごと、見出しの文字と回転と位置、凡例が 1 つ、上の軸と見出しの順。flip と polar と行 G6a の二次の y（共有で右の列だけ、free でパネルごと）。差分: `Facet` の列でデータの段、`Scales` でスケールの段、`ColumnCount` で配置の段、同じ値の新しいノードで何もしない。確保: 温まった後、wrap と grid の描き直しが確保しない（y の domain を交互に 2 つ、仕様はフレームごとに新しいノードで作る）。ミュータント: `n2mfrow` の境（3・6・12）、区間の端の切り方（チャンクの中の最初と最後の行）、行のないカテゴリの落とし方、共有と free の学ぶパネル、外側のパネルの選び方、列の帯の最大で、それぞれ 1 つ以上のテストが落ちる。描く（WARP）: 場面 (36)・(37) |
 | 複数のプロット（G6c） | 仕様（Core）: `Figure.Concat` の `columns` の 0、null の配列と要素、0 個と 257 個（256 個は通る）、`Figure.Grid` の `rows`・`columns` の 0、格子の外と重なるセル、`Figure.Cell` の負の位置と 0 のまたぎ、null の plot で例外。`HConcat` と `VConcat` が `Columns` の null と 1。コンパイル（`ArgumentException`）: `with` で入れた 0 の `Columns`（concat と grid）・0 の `Rows`・0 の `RowSpan` と `ColumnSpan`・負のセルの位置・空の `Plots` と `Cells`・格子の外のセル・重なるセル・負の `Spacing` と NaN・257 個のプロット・パネルの数の和が 257 枚（ファセットのプロットを並べて）。`Render(PlotSpec)` と `Render(FigureSpec)` を切り替えると相手の計画を捨てる。並び（偽の `ITextBackend` で §4.6 の「図の配置」の式の値）: concat の行と列（3 個を 2 列で 2 行、`Columns` がプロットの数より多い、null で 1 行）、Wc と Hc と S と余りが右と下、またぎの幅と高さ、図のタイトルの帯と位置。セルの中: 各プロットの記録が、同じ大きさの描画先に 1 枚で描いた記録をセルの左上にずらしたものと同じ（直交座標、ファセット、polar、凡例とカラーバーつき）。背景: 描画先が図の背景、セルがプロットの背景、空のセルと S が図の背景。小さすぎる図で背景だけ、小さすぎるセルでそのセルの背景だけ。データ: 同じ列を読む 2 つのプロットでピラミッドが 1 つ、どのプロットも使わなくなった列のピラミッドを捨てる、全プロットの取り出しが 1 回。差分: プロット 1 つの domain の変化でほかのプロットの配置と記録の回数が変わらない、プロットを足すと新しい計画で、`Spacing` で全部を配置し直す、同じ値の新しいノードで何もしない、同じ `PlotSpec` を 2 か所に置いた図。確保: 温まった後、concat と grid の描き直しが確保しない（プロットの y の domain を交互に 2 つ、仕様はフレームごとに新しいノード）。ミュータント: セルの式（⌊⌋ と S）、またぎ、concat の欠けた行、重なりの検査、ピラミッドの共有で、それぞれ 1 つ以上のテストが落ちる。描く（WARP）: 場面 (38)・(39) |
+| ラベルの確保（I1c） | span の `DrawText`（Core）: 文字列の `DrawText` と同じ記録・検査（空の span は何も描かない）、置き場が伸びる境（文字の和が初めの大きさを超える）、`Clear` の後に同じ記録。文字で引く整形のキャッシュ: 同じ文字の span と文字列が同じ項目に当たる（`Shape` の呼ばれた数で見る）、8,192 を超えて最も古いものが追い出され、その置き場が次の項目に使われる。`ITextBackend.Shape` の新しい形を偽のバックエンドと DirectWrite で（グリフと行が前の形と同じ）。ラベルの置き場: 既定の数と日時の書式と利用者の書式が前の文字列と同じ文字を書く（行 G3 のテストの文字列と比べる）、置き場が伸びる境（軸のラベルの文字の和が初めの大きさを超える）、利用者の書式の契約（偽と範囲の外の `InvalidOperationException`）が前と同じ。確保: 温まった後、x の domain を毎フレームずらして新しいラベルが出続ける 300 フレーム（数の軸と日時の軸、偽の文字のバックエンド）で 0 B。Windows では DirectWrite でも 0 B。利用者の書式の場面でも 0 B |
+| 対話の土台（I1a） | 入力（Core、偽のバックエンドと偽の文字のバックエンド、偽の `TimeProvider`。§6.6 の約束のとおり Linux でも動く）: 4 つのイベントの値、ほかのスレッドからの呼び出しの `InvalidOperationException`、使わなかった入力で偽。場所（`HitArea`）: パネル・4 本の軸の帯・凡例・タイトル・外の各々の 1 点と境（端の画素）、flip。ビューの操作の API: `ZoomAt` の中心の値がズームの前後で同じ画素にある（原点と差の組、1e12 を超える原点で）、`Pan` の量、`ZoomToRect`、`SetView`、`Reset`、軸の指定、`ViewRange` の 4 つの口（time の軸で 2026 年の ns の `long` の範囲を `FromValues(long, long)` で置き、`Origin`・`Lower`・`Upper` で読んで渡し直すと同じ値、`double` の口では 1 ns が落ちること）、原点の付け直しの後の下端の差が [0, 1)。制約: 直す・止める（止めたら通知もフレームもない）、`ZoomLimits` の下限で境界が狭義に増加する、`AutoRangeY` が見える区間のピラミッドの min / max（総当たりと比べる）。通知: 理由ごとの `ViewChanged` が 1 回、アニメーションでは行き先で 1 回、仕様の写像が変わると `Spec` で全体表示。履歴: ドラッグ 1 回・矩形ズーム・全体表示・300 ms のホイールのまとまり（299 ms と 300 ms の境）が各 1 項目、深さ 100 の境、戻った後の操作で進む側が消える。アニメーション: 150 ms の補間の途中の `CurrentView`（3 次の減速の式と比べる）、終わりで行き先と同じ、途中の次の操作が行き先から続く、0 でなし、続く間フレームを要求する。フレームの要求: 何度変わっても `RenderFrame` までに 1 回。ツールの枠: 割り当ての表の順、`Capture` の間は外へ出ても同じツール、`Release`、`Escape` とポインタの `Cancel` で `Cancel`、`DragThreshold` の境（クリックとドラッグ）、ダブルクリックの時間と距離の境、表を空にするとどの入力も偽。既定の表の各行を、入力の台本で 1 つずつ（ビューと履歴で確かめる）。自前のツールを足して、組み込みの前に呼ばれる・`Overlay` が記録の最後に乗る。入力の台本: データの座標の位置が今のビューで画素に直る、`Wait` が時刻を進める。記録と再生: 4 種類のイベントを書いて読み戻すと同じ列、記録した操作の再生で同じビューと同じイベントの順、大きさの違う描画先で `InvalidOperationException`。ビューの段（§4.8）: ビューだけの変化で学習とデータの段が走らない（数で見る）、ビューの軸は nice を当てない。確保: 温まった後、ホイールのズームとパンの台本の各フレームで 0 B（行 I1c の後、偽の文字のバックエンド）。描く（WARP）: 矩形ズームの枠の場面のゴールデン画像 1 つ（§10.1） |
+| 図・ファセット・二次（I1b） | 二次のスケール: パネルの中のホイールとパンで主と二次が同じ割合で動く（それぞれの範囲の中の割合が前後で同じ）、二次の軸の上の操作が二次だけ、変換の軸が主に従う。ファセット: `Fixed`・`FreeX`・`FreeY`・`Free` の各々で、あるパネルの操作で共有の軸を持つパネルがすべて同じビューになり、自由な軸はそのパネルだけ。履歴の 1 項目が全パネルを戻す。図: 押したときのプロットがドラッグの間の相手（ほかのセルへ出ても）、ホイールがカーソルの下、キーボードが最後に操作したプロット、各プロットのビューと履歴が独立、`PanelId` のプロットの番号。band の軸: 番号の空間のビュー、範囲の外のカテゴリを描かない、ラベルの間引きが見える範囲に当たる。polar: 半径だけが動き、θ は全周 |
 | ガイドと配置（G3） | 目盛り（Core、偽の `ITextBackend` で測る）: 拡張アルゴリズムの探し方が、枝刈りなしの総当たり（j ≤ 8、k ≤ 30、z は §5 の最初から 6 つ上まで、start は §5 の範囲）と同じ候補を選ぶ（乱数の範囲・軸の長さ・目標の間隔で 100 通り）。点数の 4 項が §4.6 の式の値で、重みが 0.25・0.2・0.5・0.05（疑似コードの入れ替えた重みと違う候補になる範囲を 1 つ含める）、v が 0 を含む目盛りで 1。`Nice` が偽で目盛りがすべて domain の中にあり「埋める」条件を満たし、真で domain を覆い、domain が [lmin, lmax] になる。軸が短くてすべて重なるとき目盛りを描かない。重なりの値の 3 つの場合（1.5 em ちょうど、その間、重なり）。値が M · 10^e で正確（0.1 刻みの 0.3 が "0.3"）。負の範囲・0 をまたぐ範囲・1e300 と 1e-300 の大きさ。pow と sqrt と利用者の `IScale` の目盛りの画素が `Forward` の位置。log: 1 桁に満たない範囲で linear の選び方、3 桁に満たない範囲で {1, 2, 5} · 10^k、多い桁で j 個おき、重ならない、目盛りが 2 つを下回る j で止まる、nice が 10 の冪に広げる、nice の候補の当たる条件を広げた domain の画素で測る（広げる前の画素では当たり、広げた後は重なる候補を選ばない。symlog と time も）、広げた domain で当たる候補がなければ nice なしの選び方になり domain は学習したまま（log の 0.3〜3,000 を 250 画素、間隔 90）。symlog: 0 を含み両側、10 · C に届かない domain で linear。time: 各段（ns から年まで）が選ばれる範囲、置き方（7 日が月曜、月の 3 と 6 が 1 月から、年が倍数、日の 2 が 0001 年からの日数）、ns の単位で 2262 年の近くまで正確、`Ticks` の単位で 100 ns の倍数でない刻みを使わず、ms の単位で ms より細かい刻みを使わない、起点より前（1969 年）が ⌊⌋ で分かれる、`boundary` が目盛りごとに最も粗い境、`DateTime` の範囲の外の domain が `InvalidOperationException`（`ShowAxes` と `ShowGrid` が偽なら投げない）、nice が刻みの目盛りに広げる。書式: 拡張アルゴリズムの軸で小数の桁がそろう、log で目盛りごと、12 文字を超えると軸のすべてが指数の形、負の 0 を書かない、time の 9 つの境の形。利用者の書式: 偽・64 を超える `charsWritten`・負の `charsWritten` が `InvalidOperationException`、投げた例外がそのまま出る、0 文字のラベル（`DrawText` を記録せず、重なりでは幅 0 として隣のラベルとの間を測る）。文字列の表: 当たれば `string` を作らない、4,097 個目で最も古いものを捨てる。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: タイトルあり・なし、凡例あり・なし、軸のタイトルあり・なし、倍率 1 と 1.5（丸め）、`ShowAxes` が偽、y を x より先に選ぶ（y のラベルの幅が W を決める）、小さい描画先で背景だけを描き例外を投げない。記録（`RenderList` の命令の列を見る）: §4.6 の描く順、パネルの切り抜き、太さ 1 と 2 の線の位置（奇数は ⌊p⌋ + 0.5、偶数は ⌊p + 0.5⌋）、太さ 1 と 2 の軸の線がパネルの画素に重ならない（WARP で、パネルの最後の行と最初の列が軸の色を持たず、そのすぐ外が持つ）、目盛りが軸の線の中心から始まり、丸い端を含めた外の端がパネルの辺から T、凡例の見本が `Style` の s 倍、文字のスタイルが `Foreground`・大きさ · s・`FontFamily`・`Locale`。テーマの検査（メンバーごとの範囲の外、s を掛けて 512 を超える大きさ、null のテーマ）。`HeadlessRenderer` の `scale` の 0・負・NaN・∞。倍率: 1.5 でデータの線の太さと破線の長さ（`On`・`Off`・`Offset`）が 1.5 倍で記録され、1 で行 G1 と同じ値で記録される。倍率 1.5 の `HeadlessRenderer` の `Render(RenderList)` の画素と `MeasureText` の値が、倍率 1 のものと同じ。`WithTitle` の null の scale と `PlotBuilder.Theme(null)` が `ArgumentNullException`。`PlotSpec.Title`・`Label`・スケールの `Title` が null のときと空のときのどちらも「なし」で、タイトルの帯・凡例の行・軸のタイトルの帯を取らない。差分（数え口）: 同じ仕様の描き直しは配置 0・M4 0・記録 0、タイトル・テーマ・ラベル・書式・軸のタイトルだけは配置 1・M4 0・記録 1、W を変えるテーマ（`Padding`）は M4 1、`Nice` は M4 1。矩形（WARP）: CPU の基準（§5.1 の ox · oy を背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（整数の端、端数の端、1 画素より小さい矩形、半透明の 2 つの重なり）。幅か高さ 0 は何も描かない、切り抜き、§5.1 の引数の例外、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、同じ仕様の描き直しが確保しない。2 つの domain を交互に描くと、両方を一度描いた後は確保しない。ゴールデン画像: §10.1 の場面 (6) と (7)。サンプル（`SpecPlot`）は NativeAOT で発行して警告 0、実行して 2 枚の PNG を書く。行 G1 と G2 の行の「手で組んだ記録との比較」と確保のテストは、§4.8 のガイドのないテーマで描く |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
@@ -2745,11 +2857,11 @@ public sealed class ImageMismatchException : Exception
 
 1. `HyperPlot.Core` は描画のバックエンドもホストも参照しない
 2. フレームの経路は、データの点数に比例する走査をしない。1 フレームに GPU へ送る量は画素数と系列数で抑えられる。行 G4 の segment と rect は、要素の総数が 131,072 以下のときだけ毎フレームすべてを走査する（走査は定数で抑えられる。超えれば例外で、大きなデータの道は行 R3、§5.5.3）
-3. 定常状態のフレームの経路は、マネージドのアロケーションをしない。ランタイムがプロセスで 1 回だけ行う初期化の確保（NativeAOT で `Lock` を初めて待つときの 56 バイト）は除き、その出どころを記録に書く（要件 P-9、`.cursor/rules/bench.mdc`、オーナーの判断 PR #63）。行 G3 から行 I1 までの例外: 新しい目盛りの値が出るとき、そのラベルの `string` と整形の結果を確保する（§4.6 の「確保」。同じ仕様の描き直しと、すでに描いた domain に戻る描き直しは確保しない）
+3. 定常状態のフレームの経路は、マネージドのアロケーションをしない。ランタイムがプロセスで 1 回だけ行う初期化の確保（NativeAOT で `Lock` を初めて待つときの 56 バイト）は除き、その出どころを記録に書く（要件 P-9、`.cursor/rules/bench.mdc`、オーナーの判断 PR #63）。行 G3 から行 I1c の前までの例外: 新しい目盛りの値が出るとき、そのラベルの `string` と整形の結果を確保する（§4.6 の「確保」。同じ仕様の描き直しと、すでに描いた domain に戻る描き直しは確保しない）。行 I1c からは、新しいラベルでも確保しない（目盛りの書式は既定も利用者のものも span に書く、§4.6）
 4. 派生のデータ（統計・LOD・タイル・Stat の結果）は元の列の版を持つ。古い版の結果を描くときは、それを「暫定」として扱い、ホストへ通知する
 5. M4 の間引きは、各画素列の first・min・max・last を誤差なしで保つ。点の位置と値は元の要素のものである
 6. スケールの空間の値は CPU では `long` の原点と `double` の差の組で扱う（§3.6、行 D2）。GPU には原点からの差の float32 だけを送る
-7. UI のスレッドは、ワーカーと GPU の完了を待たない。例外は 3 つで、ヘッドレス描画の readback を明示的に求めた場合、ピラミッドとワーカーのプールの `Dispose` が処理中のチャンク 1 つ分の構築を待つ場合（§8.1）、フレームの中で画素数で抑えた仕事（系列ごとの M4）の fork-join を待つ場合（§8.1）
+7. UI のスレッドは、ワーカーと GPU の完了を待たない。例外は 3 つで、ヘッドレス描画の readback を明示的に求めた場合、ピラミッドとワーカーのプールの `Dispose` が処理中のチャンク 1 つ分の構築を待つ場合（§8.1）、フレームの中で画素数で抑えた仕事（系列ごとの M4）の fork-join を待つ場合（§8.1） 行 I1a から行 W1 の前までは、`PlotEngine.RenderFrame` も索引とワーカーの仕事を待つ（§7.1。暫定の表示とホストへの通知は行 W1）
 8. 時刻は `TimeProvider` からだけ取る
 9. `src/` のコードはリフレクションと実行時のコード生成を使わない
 10. GPU の資源は、Core の状態（常駐キャッシュの記述子）から作り直せる
