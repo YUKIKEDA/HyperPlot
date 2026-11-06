@@ -144,6 +144,13 @@ public sealed class ToolContext
     /// <returns>The x and y values as ranges of one point: origin and difference.</returns>
     public (ViewRange X, ViewRange Y) PixelToView(PanelId panel, Vector2 pixel) => _engine.PixelToView(panel, pixel);
 
+    /// <summary>Returns the pixel of a point of the scale space in a panel's current view.</summary>
+    /// <param name="panel">The panel.</param>
+    /// <param name="x">The x value, a range of one point.</param>
+    /// <param name="y">The y value, a range of one point.</param>
+    /// <returns>The pixel, in device pixels.</returns>
+    public Vector2 ViewToPixel(PanelId panel, ViewRange x, ViewRange y) => _engine.ViewToPixel(panel, x, y);
+
     /// <summary>Asks for a frame: a tool that changes what it draws over the plot calls it.</summary>
     public void RequestFrame() => _engine.RequestFrame();
 }

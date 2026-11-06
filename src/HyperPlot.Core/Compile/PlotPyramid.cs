@@ -26,6 +26,9 @@ internal abstract class PlotPyramid : IDisposable
     /// <summary>Adds a series over this pyramid, with <paramref name="x"/> as its X, to a batch.</summary>
     public abstract int AddTo(M4Batch batch, Column x, M4Point[] destination, RowRange rows);
 
+    /// <summary>Gets the least and the greatest value of a range of rows (design §3.3, row I1a: the y of the visible x).</summary>
+    public abstract bool TryRange(long start, long length, out double min, out double max);
+
     /// <inheritdoc />
     public abstract void Dispose();
 }
@@ -49,6 +52,14 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
 
     /// <inheritdoc />
     public override int AddTo(M4Batch batch, Column x, M4Point[] destination, RowRange rows) => x.AddSeries(batch, pyramid, destination, rows);
+
+    /// <inheritdoc />
+    public override bool TryRange(long start, long length, out double min, out double max)
+    {
+        var range = pyramid.GetMinMax(start, length);
+        (min, max) = (double.CreateTruncating(range.Min), double.CreateTruncating(range.Max));
+        return range.Count > 0;
+    }
 
     /// <inheritdoc />
     public override void Dispose() => pyramid.Dispose();

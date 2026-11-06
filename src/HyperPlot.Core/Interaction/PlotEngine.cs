@@ -269,6 +269,27 @@ public sealed class PlotEngine : IDisposable
         return side < 0 ? new HitArea(HitAreaKind.Figure, First) : new HitArea(AxisKind(g, g.SideAt(side).Axis), First);
     }
 
+    /// <summary>
+    /// Returns the pixel of a point of the scale space in a panel's current view (design §6.5): the inverse of the tools'
+    /// <see cref="ToolContext.PixelToView"/>. A point outside the view gives a pixel outside the panel.
+    /// </summary>
+    /// <param name="panel">The panel.</param>
+    /// <param name="x">The x value, a range of one point (its low end is read).</param>
+    /// <param name="y">The y value, a range of one point.</param>
+    /// <returns>The pixel, in device pixels.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">The panel is not drawn.</exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or the call comes from another thread.</exception>
+    public Vector2 ViewToPixel(PanelId panel, ViewRange x, ViewRange y)
+    {
+        CheckPanel(panel);
+        var (vx, vy) = Shown();
+        var g = _renderer.Plan!.Guides;
+        var fx = ((double)(x.Origin - vx.Origin) + x.Lower - vx.Lower) / (vx.Upper - vx.Lower);
+        var fy = ((double)(y.Origin - vy.Origin) + y.Lower - vy.Lower) / (vy.Upper - vy.Lower);
+        var (across, up) = g.Flipped ? (fy, fx) : (fx, fy);
+        return new Vector2((float)(g.Left + (across * g.Width)), (float)(g.Top + g.Height - (up * g.Height)));
+    }
+
     /// <summary>Takes a pointer's event (design §6.1).</summary>
     /// <param name="e">The event.</param>
     /// <returns>Whether the engine used it; one it did not use the host may pass on.</returns>
@@ -445,6 +466,19 @@ public sealed class PlotEngine : IDisposable
 
         _frameRequested = true;
         FrameRequested?.Invoke();
+    }
+
+    /// <summary>Returns the y range the rows of a view of x show (row I1a): the work of <see cref="AutoRangeY"/>.</summary>
+    internal bool TryVisibleY(PanelId panel, in ViewRange x, out ViewRange y)
+    {
+        y = default;
+        if (_plot is null || !_drawn || _renderer.Plan is not { } plan || panel.Plot != 0 || !plan.TryVisibleY(x.ToScale(), out var range))
+        {
+            return false;
+        }
+
+        y = ViewRange.FromScale(range);
+        return true;
     }
 
     internal (int Left, int Top, int Width, int Height) PanelRectangle(PanelId panel)
@@ -834,17 +868,18 @@ public sealed class PlotEngine : IDisposable
                 (x, y) = (PlotPlan.IsNone(x) ? fullX : x, PlotPlan.IsNone(y) ? fullY : y);
                 var g = _renderer.Plan!.Guides;
                 _proposal.Start(panel, _reason, (g.Left, g.Top, g.Width, g.Height), x, y);
-                if (!ZoomLimits.Constrain(_proposal, g, _plot!))
-                {
-                    return;
-                }
-
                 foreach (var constraint in Constraints)
                 {
                     if (!constraint.Constrain(_proposal))
                     {
                         return;
                     }
+                }
+
+                // The limits come last, so that no constraint takes a view past them.
+                if (!ZoomLimits.Constrain(_proposal, g))
+                {
+                    return;
                 }
 
                 (x, y) = (_proposal.X, _proposal.Y);
@@ -1051,9 +1086,8 @@ public sealed class PlotEngine : IDisposable
         // 2^-48 of the panel's pixels: past the boundaries' rounding, which differences in [0, 1) bound by about 2^-52 each.
         private const double Least = 1.0 / (1L << 48);
 
-        public static bool Constrain(ViewProposal proposal, PlotGuides guides, PlotSpec plot)
+        public static bool Constrain(ViewProposal proposal, PlotGuides guides)
         {
-            _ = plot;
             var (x, y) = (proposal.X, proposal.Y);
             var (alongX, alongY) = guides.Flipped ? (guides.Height, guides.Width) : (guides.Width, guides.Height);
             return Wide(x, alongX) && Wide(y, alongY);

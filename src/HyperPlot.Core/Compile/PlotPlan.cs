@@ -240,6 +240,67 @@ internal sealed class PlotPlan : IDisposable
         static bool Same(in ScaleRange a, in ScaleRange b) => (IsNone(a) && IsNone(b)) || a == b;
     }
 
+    /// <summary>
+    /// Returns the y range of the rows a view of x shows (row I1a, design §6.2: the y of the visible x): the union, over the
+    /// lines, steps, and areas of the first panel with an x of no transform, of each layer's least and greatest y between the
+    /// view's ends, read from the layer's pyramid in O(log n), an area's baseline included, mapped into the y scale's space.
+    /// False when no such layer has a row there.
+    /// </summary>
+    internal bool TryVisibleY(in ScaleRange x, out ScaleRange y)
+    {
+        y = ScaleRange.None;
+        if (_spec is null || _xTransform is not null || IsNone(x))
+        {
+            return false;
+        }
+
+        var (min, max, found) = (double.PositiveInfinity, double.NegativeInfinity, false);
+        foreach (var layer in _panels[0].Layers)
+        {
+            var (columnX, columnY, baseline) = layer.Spec switch
+            {
+                LineLayerSpec line => (line.X.Column, line.Y.Column, double.NaN),
+                StepLayerSpec step => (step.X.Column, step.Y.Column, double.NaN),
+                AreaLayerSpec area => (area.X.Column, area.Y.Column, area.Baseline),
+                _ => (null, null, double.NaN),
+            };
+            if (columnX is null || columnY is null || _store.Find(columnY) is not { } pyramid)
+            {
+                continue;
+            }
+
+            var first = columnX.LowerBound(x.Lower, x.Origin, layer.Rows);
+            var end = columnX.LowerBound(Math.BitIncrement(x.Upper), x.Origin, layer.Rows);
+            if (end > first && pyramid.TryRange(first, end - first, out var low, out var high))
+            {
+                (min, max, found) = (Math.Min(min, low), Math.Max(max, high), true);
+                if (double.IsFinite(baseline))
+                {
+                    (min, max) = (Math.Min(min, baseline), Math.Max(max, baseline));
+                }
+            }
+        }
+
+        if (!found || !(min < max))
+        {
+            return false;
+        }
+
+        if (_yTransform is { } transform)
+        {
+            Span<double> values = [min, max];
+            transform.Forward(values, values);
+            (min, max) = (Math.Min(values[0], values[1]), Math.Max(values[0], values[1]));
+            if (!double.IsFinite(min) || !double.IsFinite(max) || !(min < max))
+            {
+                return false;
+            }
+        }
+
+        y = ScaleRange.FromDouble(min, max);
+        return true;
+    }
+
     /// <summary>Returns whether a range is <see cref="ScaleRange.None"/>.</summary>
     internal static bool IsNone(in ScaleRange range) => double.IsNaN(range.Lower);
 
