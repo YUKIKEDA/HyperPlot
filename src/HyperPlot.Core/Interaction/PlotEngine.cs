@@ -568,7 +568,7 @@ public sealed class PlotEngine : IDisposable
         var (fullX, fullY) = Full();
         if ((!MovesX() && !SameRange(x, fullX)) || (!MovesY() && !SameRange(y, fullY)))
         {
-            throw new ArgumentException("The plot's band axis or polar coordinates keep the full view in row I1a (design §6.2).", nameof(x));
+            throw new ArgumentException("The plot's band axis, polar coordinates, or facet keep the full view in row I1a (design §6.2).", nameof(x));
         }
 
         Commit(panel, x, y, animate, HistoryMode.Push);
@@ -704,6 +704,8 @@ public sealed class PlotEngine : IDisposable
 
                 _dragging = true;
                 StartDrag(e);
+                return true;
+            case PointerEventKind.Move when _pressed:
                 return true;
             case PointerEventKind.Up when _pressed:
                 _pressed = false;
@@ -1053,9 +1055,11 @@ public sealed class PlotEngine : IDisposable
 
     private bool Moves(ViewAxes axes, ViewAxes axis, bool x) => (axes & axis) != 0 && (x ? MovesX() : MovesY());
 
-    private bool MovesX() => _plot is { Coord: CartesianCoordSpec } && _plot.ScaleX is not BandScaleSpec;
+    // Row I1a moves a plot of one panel with a continuous x and cartesian coordinates: a band axis, polar coordinates, and
+    // a facet keep the full view until row I1b (design §6.2).
+    private bool MovesX() => MovesY() && _plot!.ScaleX is not BandScaleSpec;
 
-    private bool MovesY() => _plot is { Coord: CartesianCoordSpec };
+    private bool MovesY() => _plot is { Coord: CartesianCoordSpec, Facet: null };
 
     private void CheckPanel(PanelId panel)
     {

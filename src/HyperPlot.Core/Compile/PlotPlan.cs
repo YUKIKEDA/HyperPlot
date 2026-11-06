@@ -201,12 +201,6 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Gets the number of panels the last compile made (row G6c): a figure's plots have at most 256 together.</summary>
     internal int PanelCount => _panels.Length;
 
-    /// <summary>
-    /// Gets a value indicating whether the last <see cref="Compile"/> changed a position scale's mapping (the "scale" stage of design §4.8): a
-    /// view over the old mapping no longer means the same values (row I1a, design §6.2).
-    /// </summary>
-    internal bool MappingChanged => _pendingScales;
-
     /// <summary>Gets a value indicating whether the last <see cref="Prepare"/> dropped the views, the mapping having changed (row I1a).</summary>
     internal bool ViewsDropped { get; private set; }
 
@@ -257,11 +251,12 @@ internal sealed class PlotPlan : IDisposable
         var (min, max, found) = (double.PositiveInfinity, double.NegativeInfinity, false);
         foreach (var layer in _panels[0].Layers)
         {
-            var (columnX, columnY, baseline) = layer.Spec switch
+            // By the plan, not the spec: a split layer and a stat layer have the same specs, and keep the y (design §6.2).
+            var (columnX, columnY, baseline) = (layer, layer.Spec) switch
             {
-                LineLayerSpec line => (line.X.Column, line.Y.Column, double.NaN),
-                StepLayerSpec step => (step.X.Column, step.Y.Column, double.NaN),
-                AreaLayerSpec area => (area.X.Column, area.Y.Column, area.Baseline),
+                (LinePlan, LineLayerSpec line) => (line.X.Column, line.Y.Column, double.NaN),
+                (StepPlan, StepLayerSpec step) => (step.X.Column, step.Y.Column, double.NaN),
+                (AreaPlan, AreaLayerSpec area) => (area.X.Column, area.Y.Column, area.Baseline),
                 _ => (null, null, double.NaN),
             };
             if (columnX is null || columnY is null || _store.Find(columnY) is not { } pyramid)

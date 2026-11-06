@@ -192,6 +192,92 @@ public sealed class ViewOperationTests
     }
 
     /// <summary>
+    /// The y fitted to the visible x keeps the y where the design says so (design §6.2, PR #275's review): an x of a log
+    /// scale, a stat's line alone, and a line split by categories that lie in runs, whose x starts again in each run.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - <see cref="AutoRangeY"/> added; animations off. Three plots: a line over x from 1 to 1,000 on a log x; a smooth of
+    ///   the sine alone; a line colored by 2 categories of 500 rows each, x from 0 to 499 in each.
+    ///
+    /// Steps:
+    /// - For each, set a view of a narrower x with the y as it is.
+    ///
+    /// Expected:
+    /// - The y unchanged each time.
+    /// </remarks>
+    [Fact]
+    public void AutoRangeY_KeepsTheYWhereItReadsNoPyramid()
+    {
+        var values = Enumerable.Range(0, 1000).Select(i => MathF.Sin(i * 0.02f) * 10).ToArray();
+        using var y = Column.Wrap(values);
+        using var positive = Column.Wrap(Enumerable.Range(1, 1000).Select(i => (double)i).ToArray());
+        using var restarting = Column.Wrap(Enumerable.Range(0, 1000).Select(i => (double)(i % 500)).ToArray());
+        var names = Enumerable.Range(0, 1000).Select(i => i < 500 ? "a" : "b").ToArray();
+        var table = DataTable
+            .Create()
+            .Add("x", Column.Uniform(0, 1, 1000))
+            .Add("p", positive)
+            .Add("r", restarting)
+            .Add("y", y)
+            .Add("k", Column.Categorical(names, ["a", "b"]))
+            .Build();
+        var plots = new (PlotSpec Spec, double Low, double High)[]
+        {
+            (Plot.Create(table).Line(table.Col<double>("p"), table.Col<float>("y")).ScaleX(Scale.Log()).Build(), 1, 2),
+            (Plot.Create(table).Smooth(table.Col<double>("x"), table.Col<float>("y"), 8).Build(), 100, 140),
+            (Plot.Create(table).Line(table.Col<double>("r"), table.Col<float>("y"), l => l.ColorBy(table.Cat("k"))).Build(), 100, 140),
+        };
+        using var f = new EngineFixture();
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        f.Engine.Constraints.Add(new AutoRangeY(f.Engine));
+        foreach (var (spec, low, high) in plots)
+        {
+            f.Engine.SetPlot(spec);
+            f.Engine.RenderFrame();
+            var before = f.View().Y;
+            f.Engine.Views.SetView(EngineFixture.Panel, new PanelView2D(ViewRange.FromValues(low, high), before));
+            f.Engine.RenderFrame();
+            Assert.Equal(before, f.View().Y);
+        }
+    }
+
+    /// <summary>
+    /// A plot of a facet keeps the full view in row I1a (design §6.2, PR #275's review): the wheel and a drag move no view,
+    /// and a view other than the full one is refused.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine over a line wrapped by 2 categories.
+    ///
+    /// Steps:
+    /// - Turn the wheel and drag on the first panel; set a narrower view.
+    ///
+    /// Expected:
+    /// - The view is the full one; ArgumentException.
+    /// </remarks>
+    [Fact]
+    public void Facet_KeepsTheFullView()
+    {
+        var names = Enumerable.Range(0, 1000).Select(i => i < 500 ? "a" : "b").ToArray();
+        using var y = Column.Wrap(new float[1000]);
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 1000)).Add("y", y).Add("k", Column.Categorical(names, ["a", "b"])).Build();
+        using var f = new EngineFixture();
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        f.Engine.SetPlot(Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).FacetWrap(table.Cat("k")).Build());
+        f.Engine.RenderFrame();
+        var full = f.View();
+        f.Wheel(f.Middle, 2);
+        f.Drag(f.Middle, f.Middle + new System.Numerics.Vector2(30, 10));
+        f.Engine.RenderFrame();
+
+        Assert.Equal(full, f.View());
+        _ = Assert.Throws<ArgumentException>(() =>
+            f.Engine.Views.SetView(EngineFixture.Panel, new PanelView2D(ViewRange.FromValues(10.0, 20.0), full.Y))
+        );
+    }
+
+    /// <summary>
     /// The view stage of the plan (design §4.8): a view that changes lays out, extracts, and records again, but does not
     /// learn; an axis over a view takes its range with no nice.
     /// </summary>

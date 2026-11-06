@@ -101,7 +101,7 @@ public sealed class InputScript
             {
                 // Both ends are placed when the drag starts, through the view as it is then.
                 var (a, b) = (from.Resolve(engine), to.Resolve(engine));
-                Send(engine, advance, frame, e => engine.OnPointer(Make(engine, PointerEventKind.Down, a, button, button, modifiers)));
+                Send(engine, advance, frame, () => engine.OnPointer(Make(engine, PointerEventKind.Down, a, button, button, modifiers)));
                 for (var i = 1; i <= steps; i++)
                 {
                     var at = Vector2.Lerp(a, b, i / (float)steps);
@@ -109,11 +109,11 @@ public sealed class InputScript
                         engine,
                         advance,
                         frame,
-                        e => engine.OnPointer(Make(engine, PointerEventKind.Move, at, PointerButtons.None, button, modifiers))
+                        () => engine.OnPointer(Make(engine, PointerEventKind.Move, at, PointerButtons.None, button, modifiers))
                     );
                 }
 
-                Send(engine, advance, frame, e => engine.OnPointer(Make(engine, PointerEventKind.Up, b, button, PointerButtons.None, modifiers)));
+                Send(engine, advance, frame, () => engine.OnPointer(Make(engine, PointerEventKind.Up, b, button, PointerButtons.None, modifiers)));
             }
         );
         return this;
@@ -144,7 +144,7 @@ public sealed class InputScript
                     engine,
                     advance,
                     frame,
-                    e => engine.OnWheel(new WheelEvent(at.Resolve(engine), 0, notches, modifiers, engine.Time.GetTimestamp()))
+                    () => engine.OnWheel(new WheelEvent(at.Resolve(engine), 0, notches, modifiers, engine.Time.GetTimestamp()))
                 )
         );
         return this;
@@ -159,8 +159,8 @@ public sealed class InputScript
         _steps.Add(
             (engine, advance, frame) =>
             {
-                Send(engine, advance, frame, e => engine.OnKey(new KeyEvent(KeyEventKind.Down, key, modifiers, false, engine.Time.GetTimestamp())));
-                Send(engine, advance, frame, e => engine.OnKey(new KeyEvent(KeyEventKind.Up, key, modifiers, false, engine.Time.GetTimestamp())));
+                Send(engine, advance, frame, () => engine.OnKey(new KeyEvent(KeyEventKind.Down, key, modifiers, false, engine.Time.GetTimestamp())));
+                Send(engine, advance, frame, () => engine.OnKey(new KeyEvent(KeyEventKind.Up, key, modifiers, false, engine.Time.GetTimestamp())));
             }
         );
         return this;
@@ -178,7 +178,7 @@ public sealed class InputScript
                     engine,
                     advance,
                     frame,
-                    e => engine.OnGesture(new GestureEvent(GestureKind.Pinch, at.Resolve(engine), scale, Vector2.Zero, engine.Time.GetTimestamp()))
+                    () => engine.OnGesture(new GestureEvent(GestureKind.Pinch, at.Resolve(engine), scale, Vector2.Zero, engine.Time.GetTimestamp()))
                 )
         );
         return this;
@@ -196,7 +196,7 @@ public sealed class InputScript
                     engine,
                     advance,
                     frame,
-                    e => engine.OnGesture(new GestureEvent(GestureKind.Scroll, at.Resolve(engine), 1, delta, engine.Time.GetTimestamp()))
+                    () => engine.OnGesture(new GestureEvent(GestureKind.Scroll, at.Resolve(engine), 1, delta, engine.Time.GetTimestamp()))
                 )
         );
         return this;
@@ -280,11 +280,10 @@ public sealed class InputScript
             engine.Time.GetTimestamp()
         );
 
-    private void Send(PlotEngine engine, Action<TimeSpan> advance, Func<bool> frame, Func<object?, bool> send)
+    private void Send(PlotEngine engine, Action<TimeSpan> advance, Func<bool> frame, Func<bool> send)
     {
-        _ = engine;
         advance(Step);
-        _ = send(null);
+        _ = send();
         _ = frame();
     }
 
@@ -292,7 +291,7 @@ public sealed class InputScript
     {
         _steps.Add(
             (engine, advance, frame) =>
-                Send(engine, advance, frame, e => engine.OnPointer(Make(engine, kind, at.Resolve(engine), button, buttons, modifiers)))
+                Send(engine, advance, frame, () => engine.OnPointer(Make(engine, kind, at.Resolve(engine), button, buttons, modifiers)))
         );
         return this;
     }
@@ -318,11 +317,12 @@ public static class InputReplay
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(advance);
         var header = reader.ReadLine() ?? throw new InvalidOperationException("The recording is empty.");
-        var fields = Fields(header);
         if (!header.StartsWith("hyperplot-input 1 ", StringComparison.Ordinal))
         {
             throw new InvalidOperationException($"The recording starts with \"{header}\", not a recording of HyperPlot's input.");
         }
+
+        var fields = Fields(header);
 
         var (width, height, scale) = (
             int.Parse(fields["width"], CultureInfo.InvariantCulture),

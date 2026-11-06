@@ -78,7 +78,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | **D: 散布の大規模化とストリーミング** | | | |
 | C3 | 空間タイル索引（Morton 順の並べ直し、四分木の表） | not-started | |
 | R3 | 密度タイルと生の点の切り替え、生の点のチャンクと密度タイルを行 G9 の常駐キャッシュ（`ResidencyCache`）に置くこと、point の Geom（`DrawMarkers`、polar では頂点シェーダで写す、§4.4）、point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、GPU で写す `RenderList.SetTransform`（§5.1）と座標系の 4×4 の変換の公開の契約（不変条件 12、Issue #136）、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1） | not-started | |
-| C4 | ストリーミングとリングバッファ | not-started | |
+| C4 | ストリーミングとリングバッファ（全体表示を追い続ける表示と、ビューの間に学び直した後の全体表示の値と通知、行 I1a の `FullStale`） | not-started | |
 | **E: XylemUI と公開** | | | |
 | X1 | XylemUI のホスト | not-started | |
 | Q1 | 性能の受け入れの計測（要件 §5） | not-started | |

@@ -151,8 +151,25 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // The figure's plan goes only once the plot checks, as for a figure.
+        var plan = _plan ?? new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        try
+        {
+            plan.Check(plot);
+        }
+        catch
+        {
+            if (plan != _plan)
+            {
+                plan.Dispose();
+            }
+
+            throw;
+        }
+
+        _plan = plan;
         UsePlan();
-        _plan!.Check(plot);
     }
 
     /// <summary>Throws unless a figure checks, as <see cref="Render(FigureSpec)"/> would before its plots compile (row I1a).</summary>
@@ -160,10 +177,26 @@ public sealed class HeadlessRenderer : IDisposable
     {
         ArgumentNullException.ThrowIfNull(figure);
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // The plot's plan goes only once the figure checks: a figure that throws leaves what is drawn as it is.
+        var plan = _figure ?? new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        try
+        {
+            _ = plan.Check(figure);
+        }
+        catch
+        {
+            if (plan != _figure)
+            {
+                plan.Dispose();
+            }
+
+            throw;
+        }
+
         _plan?.Dispose();
         _plan = null;
-        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
-        _ = _figure.Check(figure);
+        _figure = plan;
     }
 
     /// <summary>Takes the plan of a plot alone, releasing the figure's (design §7.5, row G6c).</summary>
