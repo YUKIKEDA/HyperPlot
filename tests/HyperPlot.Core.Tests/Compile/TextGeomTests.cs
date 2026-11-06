@@ -344,7 +344,8 @@ public sealed class TextGeomTests : IDisposable
     /// - Render; render with the band reversed.
     ///
     /// Expected:
-    /// - Each label's x is the middle of its bar; each label's string is the column's category name, the same reference.
+    /// - Each label's x is the middle of its bar; each label's characters are the column's category name (the list copies
+    ///   them, row I1c).
     /// </remarks>
     [Fact]
     public void Record_BandMiddleAndTheColumnsNames()
@@ -372,7 +373,7 @@ public sealed class TextGeomTests : IDisposable
             for (var c = 0; c < 3; c++)
             {
                 GeomTesting.Close(bars[c].X + (bars[c].Width / 2), texts[c].Position.X);
-                Assert.Same(names.Categories[c], texts[c].Text);
+                Assert.Equal(names.Categories[c], texts[c].Text);
             }
         }
     }

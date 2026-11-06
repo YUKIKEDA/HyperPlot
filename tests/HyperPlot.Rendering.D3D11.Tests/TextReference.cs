@@ -22,7 +22,7 @@ internal static class TextReference
         (int X, int Y, int W, int H)? clip = null
     )
     {
-        var shaped = fake.Shape(text, style.FontFamily, style.Size, style.Weight, style.Locale);
+        var shaped = fake.ShapeNew(text, style.FontFamily, style.Size, style.Weight, style.Locale);
         fake.Shaped.RemoveAt(fake.Shaped.Count - 1);
         var m = shaped.Metrics;
         var firstBaseline = style.Vertical switch

@@ -461,7 +461,7 @@ public sealed class AxisSideTests : IDisposable
             Assert.Equal(x.Length, x2.Length);
             for (var i = 0; i < x2.Count; i++)
             {
-                var value = double.Parse(x2.TickLabels[i].Replace('−', '-'), System.Globalization.CultureInfo.InvariantCulture);
+                var value = double.Parse(x2.TickLabels[i].ToString().Replace('−', '-'), System.Globalization.CultureInfo.InvariantCulture);
                 var pixel = value * factor / 600 * x2.Length;
                 Assert.Equal(pixel, factor > 0 ? x2.Pixels[i] : x2.Length - x2.Pixels[i], 1e-6);
             }
@@ -570,7 +570,7 @@ public sealed class AxisSideTests : IDisposable
         var list = plan.Render(Both());
         var guides = plan.Guides;
         var texts = list.Texts.ToArray();
-        foreach (var label in guides.Y2.TickLabels)
+        foreach (var label in guides.Y2.TickLabels.ToArray())
         {
             var text = texts.First(x => x.Text == label && x.Position.X > guides.Left + guides.Width);
             Assert.Equal(guides.Left + guides.Width + t + g, text.Position.X);
@@ -578,7 +578,7 @@ public sealed class AxisSideTests : IDisposable
             Assert.InRange(text.Position.Y, p, Height - p);
         }
 
-        foreach (var label in guides.X2.TickLabels)
+        foreach (var label in guides.X2.TickLabels.ToArray())
         {
             var text = texts.First(x => x.Text == label && x.Position.Y < guides.Top);
             Assert.Equal(guides.Top - t - g, text.Position.Y);

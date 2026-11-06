@@ -208,7 +208,6 @@ public sealed class SectorListTests
         {
             Scale = Scale.Linear(),
             Text = new TextEngine(new FakeTextBackend()),
-            Labels = new LabelTable(),
             Style = new TextStyle(
                 new Color(0, 0, 0, 255),
                 12,

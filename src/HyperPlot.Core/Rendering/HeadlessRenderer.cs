@@ -140,7 +140,7 @@ public sealed class HeadlessRenderer : IDisposable
     }
 
     /// <summary>
-    /// Measures a text as <see cref="RenderList.DrawText"/> draws it with the renderer's backend (design §5.6, §7.5),
+    /// Measures a text as <see cref="RenderList.DrawText(string, System.Numerics.Vector2, in TextStyle)"/> draws it with the renderer's backend (design §5.6, §7.5),
     /// through the backend's <see cref="TextEngine"/>, whose cache the next draw of the same text uses. Opens no frame.
     /// </summary>
     /// <param name="text">The text; a line feed starts a new line.</param>

@@ -14,6 +14,8 @@ public sealed class RenderList
     private SegmentRecord[] _segments = new SegmentRecord[256];
     private PieceRecord[] _pieces = new PieceRecord[16];
     private TextRecord[] _texts = new TextRecord[4];
+    private char[] _chars = new char[256];
+    private int _charCount;
     private RenderCommand[] _commands = new RenderCommand[8];
     private RectInstance[] _rects = new RectInstance[4];
     private ClipRect[] _rectClips = new ClipRect[4];
@@ -81,6 +83,7 @@ public sealed class RenderList
         _segmentCount = 0;
         _pieceCount = 0;
         _textCount = 0;
+        _charCount = 0;
         _rectCount = 0;
         _columnCount = 0;
         _sectorCount = 0;
@@ -268,9 +271,9 @@ public sealed class RenderList
     }
 
     /// <summary>
-    /// Records a text at <paramref name="position"/>, in physical pixels (design §5.1, §5.6). The list keeps the reference
-    /// and shapes nothing: the backend shapes when it draws, through its <see cref="TextEngine"/>. An empty text draws
-    /// nothing.
+    /// Records a text at <paramref name="position"/>, in physical pixels (design §5.1, §5.6). The list copies the characters
+    /// into a buffer of its own (row I1c) and shapes nothing: the backend shapes when it draws, through its
+    /// <see cref="TextEngine"/>. An empty text draws nothing.
     /// </summary>
     /// <param name="text">The text; a line feed starts a new line.</param>
     /// <param name="position">The point that the style's alignment and rotation place the text's block at.</param>
@@ -283,13 +286,33 @@ public sealed class RenderList
     /// </exception>
     public void DrawText(string text, Vector2 position, in TextStyle style)
     {
-        ValidateText(text, style);
+        ArgumentNullException.ThrowIfNull(text);
+        DrawText(text.AsSpan(), position, style);
+    }
+
+    /// <summary>
+    /// Records the characters of a text at <paramref name="position"/>, in physical pixels (design §5.1, row I1c): as
+    /// <see cref="DrawText(string, Vector2, in TextStyle)"/>, with no string. The list copies the characters, so the caller
+    /// may reuse its buffer at once. Once the list's buffer holds a frame's characters, recording allocates nothing.
+    /// </summary>
+    /// <param name="text">The characters; a line feed starts a new line. Empty draws nothing.</param>
+    /// <param name="position">The point that the style's alignment and rotation place the text's block at.</param>
+    /// <param name="style">The color, font, alignment, and rotation.</param>
+    /// <exception cref="ArgumentNullException">The font family or the locale is null.</exception>
+    /// <exception cref="ArgumentException">The font family or the locale is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The position is not finite, the size is not finite or outside (0, 512], or the weight, an alignment, or the rotation
+    /// is not a named value.
+    /// </exception>
+    public void DrawText(ReadOnlySpan<char> text, Vector2 position, in TextStyle style)
+    {
+        ValidateStyle(style);
         if (!float.IsFinite(position.X) || !float.IsFinite(position.Y))
         {
             throw new ArgumentOutOfRangeException(nameof(position), position, "The position is finite.");
         }
 
-        if (text.Length == 0)
+        if (text.IsEmpty)
         {
             return;
         }
@@ -299,8 +322,19 @@ public sealed class RenderList
             Array.Resize(ref _texts, _texts.Length * 2);
         }
 
+        if (_chars.Length - _charCount < text.Length)
+        {
+            // A new buffer: the records made so far keep the old one, whose characters stay as they are.
+            var chars = new char[Math.Max(_charCount + text.Length, _chars.Length * 2)];
+            _chars.AsSpan(0, _charCount).CopyTo(chars);
+            _chars = chars;
+        }
+
+        text.CopyTo(_chars.AsSpan(_charCount));
+        var copy = new ReadOnlyMemory<char>(_chars, _charCount, text.Length);
+        _charCount += text.Length;
         AddCommand(new RenderCommand(RenderCommandKind.Text, _textCount));
-        _texts[_textCount++] = new TextRecord(text, position, style, _clip);
+        _texts[_textCount++] = new TextRecord(copy, position, style, _clip);
     }
 
     /// <summary>
@@ -566,10 +600,9 @@ public sealed class RenderList
         }
     }
 
-    /// <summary>Throws unless a text and its style are in range (design §5.1): what <see cref="DrawText"/> and <see cref="TextEngine.Measure"/> check.</summary>
-    internal static void ValidateText(string text, in TextStyle style)
+    /// <summary>Checks a text's style as <see cref="DrawText(string, Vector2, in TextStyle)"/> does.</summary>
+    internal static void ValidateStyle(in TextStyle style)
     {
-        ArgumentNullException.ThrowIfNull(text);
         if (!float.IsFinite(style.Size) || style.Size <= 0 || style.Size > TextEngine.MaxSize)
         {
             throw new ArgumentOutOfRangeException(nameof(style), style.Size, "The size is finite, above 0, and at most 512.");
@@ -964,8 +997,22 @@ internal struct ImageInstance
 /// <summary>One recorded command: its kind and the index of its record.</summary>
 internal readonly record struct RenderCommand(RenderCommandKind Kind, int Index);
 
-/// <summary>One recorded text: the reference, the position, the style, and the clip when it was recorded.</summary>
-internal readonly record struct TextRecord(string Text, Vector2 Position, TextStyle Style, ClipRect Clip);
+/// <summary>
+/// One recorded text: its characters in the list's buffer (row I1c), the position, the style, and the clip when it was
+/// recorded. Two records are equal when their characters are, wherever they lie.
+/// </summary>
+internal readonly record struct TextRecord(ReadOnlyMemory<char> Chars, Vector2 Position, TextStyle Style, ClipRect Clip)
+{
+    /// <summary>Gets the characters as a string. Allocates; tests only.</summary>
+    public string Text => Chars.ToString();
+
+    /// <inheritdoc />
+    public bool Equals(TextRecord other) =>
+        Chars.Span.SequenceEqual(other.Chars.Span) && Position == other.Position && Style == other.Style && Clip == other.Clip;
+
+    /// <inheritdoc />
+    public override int GetHashCode() => HashCode.Combine(string.GetHashCode(Chars.Span), Position, Style, Clip);
+}
 
 /// <summary>
 /// One filled rectangle as the GPU reads it (design §5.1, §5.3): its top left, width, and height in physical pixels, and its

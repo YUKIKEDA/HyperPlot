@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using HyperPlot.Rendering;
 
 namespace HyperPlot.Tests;
@@ -11,8 +12,19 @@ namespace HyperPlot.Tests;
 internal sealed class FakeTextBackend : ITextBackend
 {
     private readonly Dictionary<(string Family, FontWeight Weight, string Locale), int> _faces = [];
+    private readonly List<PlacedGlyph> _glyphs = [];
+    private readonly List<TextLine> _lines = [];
 
-    /// <summary>Gets the calls of <see cref="Shape"/>, in order.</summary>
+    /// <summary>
+    /// Gets or sets a value indicating whether <see cref="Shaped"/> records the calls, true by default. A test of
+    /// allocations turns it off: a record makes a string of the text.
+    /// </summary>
+    public bool RecordShapes { get; set; } = true;
+
+    /// <summary>Gets the number of calls of <see cref="Shape"/>, recorded or not.</summary>
+    public int ShapeCount { get; private set; }
+
+    /// <summary>Gets the calls of <see cref="Shape"/>, in order, while <see cref="RecordShapes"/> is on.</summary>
     public List<(string Text, string Family, float Size, FontWeight Weight, string Locale)> Shaped { get; } = [];
 
     /// <summary>Gets the glyphs rasterized, in order.</summary>
@@ -51,35 +63,49 @@ internal sealed class FakeTextBackend : ITextBackend
         (byte)(((x * 37) + (y * 59) + (glyph * 13) + ((int)(phase * 4) * 71) + 40) % 256);
 
     /// <inheritdoc />
-    public ShapedText Shape(string text, string fontFamily, float size, FontWeight weight, string locale)
+    public void Shape(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale, ShapedText destination)
     {
-        Shaped.Add((text, fontFamily, size, weight, locale));
+        ShapeCount++;
+        if (RecordShapes)
+        {
+            Shaped.Add((text.ToString(), fontFamily, size, weight, locale));
+        }
+
         if (!_faces.TryGetValue((fontFamily, weight, locale), out var face))
         {
             face = _faces.Count;
             _faces.Add((fontFamily, weight, locale), face);
         }
 
-        var lines = text.Split('\n');
-        var glyphs = new List<PlacedGlyph>();
-        var placed = new TextLine[lines.Length];
+        // The buffers are reused, so that a shaping allocates nothing once they hold the longest text (row I1c).
+        _glyphs.Clear();
+        _lines.Clear();
         var widest = 0f;
-        for (var l = 0; l < lines.Length; l++)
+        var rest = text;
+        while (true)
         {
-            var baseline = l * LineHeight(size);
-            var first = glyphs.Count;
-            for (var c = 0; c < lines[l].Length; c++)
+            var end = rest.IndexOf('\n');
+            var line = end < 0 ? rest : rest[..end];
+            var baseline = _lines.Count * LineHeight(size);
+            var first = _glyphs.Count;
+            for (var c = 0; c < line.Length; c++)
             {
-                glyphs.Add(new PlacedGlyph(face, lines[l][c], new Vector2(c * Advance(size), baseline + Raise(lines[l][c], size))));
+                _glyphs.Add(new PlacedGlyph(face, line[c], new Vector2(c * Advance(size), baseline + Raise(line[c], size))));
             }
 
-            var width = lines[l].Length * Advance(size);
-            placed[l] = new TextLine(first, lines[l].Length, width, baseline);
+            var width = line.Length * Advance(size);
+            _lines.Add(new TextLine(first, line.Length, width, baseline));
             widest = MathF.Max(widest, width);
+            if (end < 0)
+            {
+                break;
+            }
+
+            rest = rest[(end + 1)..];
         }
 
-        var metrics = new TextMetrics(widest, lines.Length * LineHeight(size), Ascent(size), LineHeight(size) - Ascent(size));
-        return new ShapedText(metrics, [.. glyphs], placed);
+        var metrics = new TextMetrics(widest, _lines.Count * LineHeight(size), Ascent(size), LineHeight(size) - Ascent(size));
+        destination.Set(metrics, CollectionsMarshal.AsSpan(_glyphs), CollectionsMarshal.AsSpan(_lines));
     }
 
     /// <inheritdoc />
@@ -97,5 +123,17 @@ internal sealed class FakeTextBackend : ITextBackend
                 coverage[(y * box.Width) + x] = Coverage(glyph, phase, x, y);
             }
         }
+    }
+}
+
+/// <summary>The form of <see cref="ITextBackend.Shape"/> before row I1c, for the tests that read one shaped text.</summary>
+internal static class TextBackendTesting
+{
+    /// <summary>Shapes a text into a new shaped text.</summary>
+    public static ShapedText ShapeNew(this ITextBackend backend, string text, string fontFamily, float size, FontWeight weight, string locale)
+    {
+        var shaped = new ShapedText();
+        backend.Shape(text, fontFamily, size, weight, locale, shaped);
+        return shaped;
     }
 }

@@ -103,11 +103,27 @@ public readonly record struct TextLine(int FirstGlyph, int GlyphCount, float Wid
 /// <param name="Height">The height, at least 0.</param>
 public readonly record struct GlyphBox(int Left, int Top, int Width, int Height);
 
-/// <summary>A text shaped by an <see cref="ITextBackend"/>: its glyphs, its lines, and its size (design §5.6). Immutable.</summary>
+/// <summary>
+/// A text shaped by an <see cref="ITextBackend"/>: its glyphs, its lines, and its size (design §5.6). The engine's shaping
+/// cache keeps one for each text and reuses it for the next text when it drops the old one (row I1c), so a backend writes
+/// into one with <see cref="Set"/> rather than making a new one.
+/// </summary>
+/// <remarks>One thread at a time uses one: the thread that draws.</remarks>
 public sealed class ShapedText
 {
-    private readonly PlacedGlyph[] _glyphs;
-    private readonly TextLine[] _lines;
+    private PlacedGlyph[] _glyphs = [];
+    private TextLine[] _lines = [];
+    private int _glyphCount;
+    private int _lineCount;
+
+    /// <summary>Initializes a new instance of the <see cref="ShapedText"/> class with nothing in it, for <see cref="Set"/>.</summary>
+    public ShapedText() { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ShapedText"/> class with room for a text of up to
+    /// <paramref name="glyphs"/> glyphs and <paramref name="lines"/> lines, so that <see cref="Set"/> grows nothing below it.
+    /// </summary>
+    internal ShapedText(int glyphs, int lines) => (_glyphs, _lines) = (new PlacedGlyph[glyphs], new TextLine[lines]);
 
     /// <summary>Initializes a new instance of the <see cref="ShapedText"/> class with copies of the arrays.</summary>
     /// <param name="metrics">The size.</param>
@@ -119,6 +135,28 @@ public sealed class ShapedText
     {
         ArgumentNullException.ThrowIfNull(glyphs);
         ArgumentNullException.ThrowIfNull(lines);
+        Set(metrics, glyphs, lines);
+    }
+
+    /// <summary>Gets the size.</summary>
+    public TextMetrics Metrics { get; private set; }
+
+    /// <summary>Gets the glyphs, in the order of the lines.</summary>
+    public ReadOnlySpan<PlacedGlyph> Glyphs => _glyphs.AsSpan(0, _glyphCount);
+
+    /// <summary>Gets the lines.</summary>
+    public ReadOnlySpan<TextLine> Lines => _lines.AsSpan(0, _lineCount);
+
+    /// <summary>
+    /// Replaces the text with copies of the spans (row I1c): the arrays grow when they are short and never shrink, so a
+    /// shaped text that is reused allocates nothing once it has held its largest text.
+    /// </summary>
+    /// <param name="metrics">The size.</param>
+    /// <param name="glyphs">The glyphs, in the order of the lines.</param>
+    /// <param name="lines">The lines, at least one; each names its range of <paramref name="glyphs"/>.</param>
+    /// <exception cref="ArgumentException">There is no line, or a line's range lies outside the glyphs.</exception>
+    public void Set(TextMetrics metrics, ReadOnlySpan<PlacedGlyph> glyphs, ReadOnlySpan<TextLine> lines)
+    {
         if (lines.Length == 0)
         {
             throw new ArgumentException("A shaped text has at least one line.", nameof(lines));
@@ -132,19 +170,20 @@ public sealed class ShapedText
             }
         }
 
-        Metrics = metrics;
-        _glyphs = (PlacedGlyph[])glyphs.Clone();
-        _lines = (TextLine[])lines.Clone();
+        if (_glyphs.Length < glyphs.Length)
+        {
+            _glyphs = new PlacedGlyph[Math.Max(glyphs.Length, _glyphs.Length * 2)];
+        }
+
+        if (_lines.Length < lines.Length)
+        {
+            _lines = new TextLine[Math.Max(lines.Length, _lines.Length * 2)];
+        }
+
+        glyphs.CopyTo(_glyphs);
+        lines.CopyTo(_lines);
+        (_glyphCount, _lineCount, Metrics) = (glyphs.Length, lines.Length, metrics);
     }
-
-    /// <summary>Gets the size.</summary>
-    public TextMetrics Metrics { get; }
-
-    /// <summary>Gets the glyphs, in the order of the lines.</summary>
-    public ReadOnlySpan<PlacedGlyph> Glyphs => _glyphs;
-
-    /// <summary>Gets the lines.</summary>
-    public ReadOnlySpan<TextLine> Lines => _lines;
 }
 
 /// <summary>
@@ -163,8 +202,12 @@ public interface ITextBackend
     /// <param name="size">The em size in physical pixels.</param>
     /// <param name="weight">The weight.</param>
     /// <param name="locale">The locale.</param>
-    /// <returns>The glyphs, the lines, and the size. An empty text has one empty line of the font's height.</returns>
-    ShapedText Shape(string text, string fontFamily, float size, FontWeight weight, string locale);
+    /// <param name="destination">
+    /// Where the glyphs, the lines, and the size go, with <see cref="ShapedText.Set"/>; an empty text has one empty line of the
+    /// font's height. The engine reuses it for other texts, so a backend keeps no reference to it (row I1c; before, this
+    /// method took a string and returned a new shaped text).
+    /// </param>
+    void Shape(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale, ShapedText destination);
 
     /// <summary>Gets the box of a glyph's coverage with its origin at the horizontal fraction <paramref name="phase"/>.</summary>
     /// <param name="face">The face's number, from <see cref="Shape"/>.</param>

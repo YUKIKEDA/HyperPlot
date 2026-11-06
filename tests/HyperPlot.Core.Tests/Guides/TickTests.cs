@@ -242,7 +242,7 @@ public sealed class TickTests
         Assert.True(axis.Count >= 2, $"{axis.Count} ticks");
         for (var i = 0; i < axis.Count; i++)
         {
-            var label = axis.TickLabels[i];
+            var label = axis.TickLabels[i].ToString();
             Assert.True(label.Length <= TickFormat.MaxFixedLength, label);
             Assert.Equal(axis.NumberAt(i).Value, double.Parse(label, CultureInfo.InvariantCulture));
         }
@@ -793,38 +793,6 @@ public sealed class TickTests
         Assert.All(blank.Extents.ToArray(), e => Assert.Equal(0, e));
     }
 
-    /// <summary>The label table makes no string for a label it holds, and drops the oldest at 4,097 (design §4.6).</summary>
-    /// <remarks>
-    /// Preconditions:
-    /// - A table with "a".
-    ///
-    /// Steps:
-    /// - Get "a" again from a span; add 4,096 other labels; get "a".
-    ///
-    /// Expected:
-    /// - The same string and 0 bytes; then a new string, since "a" was the oldest.
-    /// </remarks>
-    [Fact]
-    public void LabelTable_HitsAndEviction()
-    {
-        var table = new LabelTable();
-        var first = table.Get("a".AsSpan());
-        Span<char> a = ['a'];
-        _ = table.Get(a);
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        var again = table.Get(a);
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
-        Assert.Same(first, again);
-
-        for (var i = 0; i < LabelTable.Capacity; i++)
-        {
-            _ = table.Get(i.ToString(CultureInfo.InvariantCulture).AsSpan());
-        }
-
-        Assert.Equal(LabelTable.Capacity, table.Count);
-        Assert.NotSame(first, table.Get(a));
-    }
-
     private static TickAxis Axis(ContinuousScaleSpec scale, IScale? transform, ScaleRange domain, double length, double spacing) =>
         new()
         {
@@ -838,7 +806,6 @@ public sealed class TickTests
             Em = Em,
             Style = new TextStyle(new Color(0, 0, 0, 255), (float)Em),
             Text = new TextEngine(new FakeTextBackend()),
-            Labels = new LabelTable(),
         };
 
     private static TickAxis TimeAxis(TimeScaleSpec scale, long low, long high, double length, bool unitTicks = true)

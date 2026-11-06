@@ -14,7 +14,10 @@ internal sealed class TickAxis
     private readonly double[] _oneMapped = new double[1];
     private readonly char[] _buffer = new char[TickFormat.BufferLength];
     private double[] _pixels = new double[16];
-    private string[] _labels = new string[16];
+    private int[] _labelStarts = new int[16];
+    private int[] _labelLengths = new int[16];
+    private char[] _chars = new char[256];
+    private int _charCount;
     private float[] _extents = new float[16];
     private TickNumber[] _numbers = new TickNumber[16];
     private Int128[] _times = new Int128[16];
@@ -73,9 +76,6 @@ internal sealed class TickAxis
     /// <summary>Gets or sets the engine that measures the labels.</summary>
     public TextEngine Text { get; set; } = null!;
 
-    /// <summary>Gets or sets the table of the labels' strings.</summary>
-    public LabelTable Labels { get; set; } = null!;
-
     /// <summary>Gets the domain after nice: the learned one when nice is off or the scale's domain was given.</summary>
     public ScaleRange FinalDomain { get; private set; }
 
@@ -85,15 +85,18 @@ internal sealed class TickAxis
     /// <summary>Gets the pixels of the ticks along the axis, from its low end, over <see cref="FinalDomain"/>.</summary>
     public ReadOnlySpan<double> Pixels => _pixels.AsSpan(0, _count);
 
-    /// <summary>Gets the labels of the ticks; an empty string is not drawn.</summary>
-    public ReadOnlySpan<string> TickLabels => _labels.AsSpan(0, _count);
+    /// <summary>
+    /// Gets the labels of the ticks, as characters in the axis's buffer (row I1c): an empty one is not drawn. They hold until
+    /// the axis labels ticks again.
+    /// </summary>
+    public TickLabelList TickLabels => new(_chars, _labelStarts.AsSpan(0, _count), _labelLengths.AsSpan(0, _count));
 
     /// <summary>Gets each label's extent along the axis.</summary>
     public ReadOnlySpan<float> Extents => _extents.AsSpan(0, _count);
 
     /// <summary>
     /// Chooses the ticks of the scale over the axis (design §4.6), and widens a learned domain to the outer ticks when the
-    /// scale asks for nice. Allocates only for labels the table has not seen.
+    /// scale asks for nice. Allocates only to grow the buffers (row I1c): a label the axis has not seen allocates nothing.
     /// </summary>
     /// <param name="nice">Whether nice applies: the scale asks for it and its domain is learned.</param>
     public void Choose(bool nice)
@@ -196,10 +199,10 @@ internal sealed class TickAxis
     internal void SetBand(BandScaleSpec? band, CategoricalColumn? categories) => (Band, Categories) = (band, band is null ? null : categories);
 
     /// <summary>Adds a labeled tick of a band axis to the candidate set: its label and its extent along the axis, measured.</summary>
-    internal void AddLabel(string label, double pixel, float extent)
+    internal void AddLabel(ReadOnlySpan<char> label, double pixel, float extent)
     {
         Grow();
-        _labels[_count] = label;
+        SetLabel(_count, label);
         _extents[_count] = extent;
         _pixels[_count++] = pixel;
     }
@@ -246,11 +249,23 @@ internal sealed class TickAxis
         for (var i = 0; i < other._count; i++)
         {
             Grow();
-            (_pixels[i], _labels[i], _extents[i]) = (other._pixels[i], other._labels[i], other._extents[i]);
+            (_pixels[i], _labelStarts[i], _labelLengths[i], _extents[i]) = (
+                other._pixels[i],
+                other._labelStarts[i],
+                other._labelLengths[i],
+                other._extents[i]
+            );
             (_numbers[i], _times[i], _boundaries[i]) = (other._numbers[i], other._times[i], other._boundaries[i]);
             _count++;
         }
 
+        if (_chars.Length < other._charCount)
+        {
+            _chars = new char[other._chars.Length];
+        }
+
+        other._chars.AsSpan(0, other._charCount).CopyTo(_chars);
+        _charCount = other._charCount;
         FinalDomain = other.FinalDomain;
     }
 
@@ -270,7 +285,7 @@ internal sealed class TickAxis
         {
             for (var i = 0; i < _count; i++)
             {
-                _labels[i] = Call(format, _numbers[i].Value);
+                Call(i, format, _numbers[i].Value);
             }
         }
 
@@ -287,7 +302,7 @@ internal sealed class TickAxis
             {
                 // The value in the column's unit: ⌊(instant − epoch) / unit⌋.
                 var value = Int128.Clamp(FloorDivide(instant - ((Int128)epochTicks * 100), unitNanoseconds), long.MinValue, long.MaxValue);
-                _labels[i] = CallTime(format, (long)value, _boundaries[i]);
+                CallTime(i, format, (long)value, _boundaries[i]);
             }
             else
             {
@@ -298,7 +313,7 @@ internal sealed class TickAxis
                     throw new InvalidOperationException($"The label of the time tick {time:O} does not fit {TickFormat.BufferLength} characters.");
                 }
 
-                _labels[i] = Labels.Get(_buffer.AsSpan(0, written));
+                SetLabel(i, _buffer.AsSpan(0, written));
             }
         }
 
@@ -310,10 +325,11 @@ internal sealed class TickAxis
     {
         for (var i = 0; i < _count; i++)
         {
+            var label = Label(i);
             _extents[i] =
-                _labels[i].Length == 0 ? 0
-                : Circular ? Math.Max(Text.Measure(_labels[i], Style).Width, LineHeight)
-                : Horizontal ? Text.Measure(_labels[i], Style).Width
+                label.Length == 0 ? 0
+                : Circular ? Math.Max(Text.Measure(label, Style).Width, LineHeight)
+                : Horizontal ? Text.Measure(label, Style).Width
                 : LineHeight;
         }
 
@@ -373,7 +389,7 @@ internal sealed class TickAxis
             {
                 var own = sameDecimals ? decimals : TickFormat.Decimals(_numbers[i]);
                 _ = TickFormat.TryWriteFixed(_numbers[i], own, _buffer, out var written);
-                _labels[i] = Labels.Get(_buffer.AsSpan(0, written));
+                SetLabel(i, _buffer.AsSpan(0, written));
             }
 
             return;
@@ -407,11 +423,11 @@ internal sealed class TickAxis
                 throw new InvalidOperationException($"The label of the tick {_numbers[i].Value} does not fit {TickFormat.BufferLength} characters.");
             }
 
-            _labels[i] = Labels.Get(_buffer.AsSpan(0, written));
+            SetLabel(i, _buffer.AsSpan(0, written));
         }
     }
 
-    private string Call(TickFormatter format, double value)
+    private void Call(int index, TickFormatter format, double value)
     {
         if (!format(value, _buffer, out var written) || written < 0 || written > _buffer.Length)
         {
@@ -420,10 +436,10 @@ internal sealed class TickAxis
             );
         }
 
-        return Labels.Get(_buffer.AsSpan(0, written));
+        SetLabel(index, _buffer.AsSpan(0, written));
     }
 
-    private string CallTime(TimeTickFormatter format, long value, TimeInterval boundary)
+    private void CallTime(int index, TimeTickFormatter format, long value, TimeInterval boundary)
     {
         if (!format(value, boundary, _buffer, out var written) || written < 0 || written > _buffer.Length)
         {
@@ -432,7 +448,31 @@ internal sealed class TickAxis
             );
         }
 
-        return Labels.Get(_buffer.AsSpan(0, written));
+        SetLabel(index, _buffer.AsSpan(0, written));
+    }
+
+    /// <summary>Returns the label of the tick in a slot, as characters in the axis's buffer.</summary>
+    private ReadOnlySpan<char> Label(int index) => _chars.AsSpan(_labelStarts[index], _labelLengths[index]);
+
+    /// <summary>
+    /// Writes the label of the tick in a slot into the axis's buffer (row I1c). Labels are written in the order of their
+    /// slots, from slot 0, so slot 0 starts the buffer again. The buffer grows when it is short and never shrinks.
+    /// </summary>
+    private void SetLabel(int index, ReadOnlySpan<char> text)
+    {
+        if (index == 0)
+        {
+            _charCount = 0;
+        }
+
+        if (_chars.Length - _charCount < text.Length)
+        {
+            Array.Resize(ref _chars, Math.Max(_charCount + text.Length, _chars.Length * 2));
+        }
+
+        text.CopyTo(_chars.AsSpan(_charCount));
+        (_labelStarts[index], _labelLengths[index]) = (_charCount, text.Length);
+        _charCount += text.Length;
     }
 
     private void Grow()
@@ -444,10 +484,57 @@ internal sealed class TickAxis
 
         var size = _pixels.Length * 2;
         Array.Resize(ref _pixels, size);
-        Array.Resize(ref _labels, size);
+        Array.Resize(ref _labelStarts, size);
+        Array.Resize(ref _labelLengths, size);
         Array.Resize(ref _extents, size);
         Array.Resize(ref _numbers, size);
         Array.Resize(ref _times, size);
         Array.Resize(ref _boundaries, size);
+    }
+}
+
+/// <summary>
+/// The labels of an axis's ticks (row I1c): each one the characters of a slot in the axis's buffer, with no string. An
+/// indexer and an enumerator, as a span of strings had.
+/// </summary>
+internal readonly ref struct TickLabelList(ReadOnlySpan<char> chars, ReadOnlySpan<int> starts, ReadOnlySpan<int> lengths)
+{
+    private readonly ReadOnlySpan<char> _chars = chars;
+    private readonly ReadOnlySpan<int> _starts = starts;
+    private readonly ReadOnlySpan<int> _lengths = lengths;
+
+    /// <summary>Gets the number of labels.</summary>
+    public int Length => _starts.Length;
+
+    /// <summary>Gets the label of a tick.</summary>
+    public ReadOnlySpan<char> this[int index] => _chars.Slice(_starts[index], _lengths[index]);
+
+    /// <summary>Returns an enumerator over the labels.</summary>
+    public Enumerator GetEnumerator() => new(this);
+
+    /// <summary>Returns the labels as strings. Allocates; tests only.</summary>
+    public string[] ToArray()
+    {
+        var labels = new string[Length];
+        for (var i = 0; i < labels.Length; i++)
+        {
+            labels[i] = this[i].ToString();
+        }
+
+        return labels;
+    }
+
+    /// <summary>Enumerates the labels in order.</summary>
+    public ref struct Enumerator(TickLabelList list)
+    {
+        private readonly TickLabelList _list = list;
+        private int _index = -1;
+
+        /// <summary>Gets the label at the enumerator's place.</summary>
+        public readonly ReadOnlySpan<char> Current => _list[_index];
+
+        /// <summary>Moves to the next label.</summary>
+        /// <returns>Whether there is one.</returns>
+        public bool MoveNext() => ++_index < _list.Length;
     }
 }
