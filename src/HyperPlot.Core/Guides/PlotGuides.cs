@@ -25,7 +25,6 @@ internal sealed class PlotGuides
 
     private readonly TextEngine _text;
     private readonly float _scale;
-    private readonly LabelTable _labels = new();
     private readonly Vector2[] _segment = new Vector2[2];
 
     // The panels' guides (row G6b): one without a facet. The layout and the recording work on the current one.
@@ -64,10 +63,9 @@ internal sealed class PlotGuides
     internal PlotGuides(TextEngine text, float scale, int width, int height)
     {
         (_text, _scale, _width, _height) = (text, scale, width, height);
-        _current = new PanelGuide(text, _labels);
+        _current = new PanelGuide(text);
         _panels.Add(_current);
         ColorBar.Text = text;
-        ColorBar.Labels = _labels;
     }
 
     /// <summary>Gets the number of panels the last layout laid out (row G6b): one without a facet.</summary>
@@ -148,9 +146,6 @@ internal sealed class PlotGuides
     /// <summary>Gets the axes on the current panel's four sides (row G6a): a side with no axis holds a null axis.</summary>
     private SideAxis[] Sides => _current.Sides;
 
-    /// <summary>Gets the table of the labels' strings, for the tests of its size.</summary>
-    internal LabelTable LabelTable => _labels;
-
     /// <summary>
     /// Places the plot in a rectangle of the target (design §4.6, row G6c): a figure's cell, which stands for the whole target;
     /// the next layout lays the guides out in it.
@@ -221,7 +216,7 @@ internal sealed class PlotGuides
     {
         while (_panels.Count < count)
         {
-            _panels.Add(new PanelGuide(_text, _labels));
+            _panels.Add(new PanelGuide(_text));
         }
 
         _panelCount = count;

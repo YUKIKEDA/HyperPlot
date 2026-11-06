@@ -9,8 +9,9 @@ namespace HyperPlot.Rendering;
 /// was shaped and rasterized.
 /// </summary>
 /// <remarks>
-/// The thread that draws owns it, with no lock, as it owns the backend. The cache keeps 4,096 texts and lets the one used
-/// longest ago go first.
+/// The thread that draws owns it, with no lock, as it owns the backend. The cache keeps 8,192 texts, looked up by their
+/// characters, and lets the one used longest ago go first; its entry, characters, and shaped text carry the next text, so
+/// that once the cache is full a new text allocates nothing (row I1c).
 /// </remarks>
 public sealed class TextEngine
 {
@@ -20,7 +21,8 @@ public sealed class TextEngine
     /// <summary>The most texts the cache keeps.</summary>
     internal const int CacheCapacity = 8192;
 
-    private readonly Dictionary<ShapeKey, LinkedListNode<CacheEntry>> _cache = [];
+    private readonly HashSet<CacheEntry> _cache = new(EntryComparer.Instance);
+    private readonly HashSet<CacheEntry>.AlternateLookup<ShapeProbe> _lookup;
     private readonly LinkedList<CacheEntry> _order = new();
     private readonly GlyphAtlas _atlas;
     private GlyphInstance[] _instances = new GlyphInstance[256];
@@ -36,6 +38,7 @@ public sealed class TextEngine
         ArgumentNullException.ThrowIfNull(backend);
         Backend = backend;
         _atlas = new GlyphAtlas(backend);
+        _lookup = _cache.GetAlternateLookup<ShapeProbe>();
     }
 
     /// <summary>Gets what shapes and rasterizes.</summary>
@@ -53,7 +56,7 @@ public sealed class TextEngine
     /// <summary>Gets the glyph records of the last <see cref="Prepare"/>; each glyph step names its range.</summary>
     internal ReadOnlySpan<GlyphInstance> Instances => _instances.AsSpan(0, _instanceCount);
 
-    /// <summary>Measures a text as <see cref="RenderList.DrawText"/> would draw it, shaping it only if the cache lacks it.</summary>
+    /// <summary>Measures a text as <see cref="RenderList.DrawText(string, Vector2, in TextStyle)"/> would draw it, shaping it only if the cache lacks it.</summary>
     /// <param name="text">The text; a line feed starts a new line.</param>
     /// <param name="style">The style; only the font, the size, the weight, and the locale change the size.</param>
     /// <returns>The size in physical pixels.</returns>
@@ -64,38 +67,60 @@ public sealed class TextEngine
     /// </exception>
     public TextMetrics Measure(string text, in TextStyle style)
     {
-        RenderList.ValidateText(text, style);
+        ArgumentNullException.ThrowIfNull(text);
+        return Measure(text.AsSpan(), style);
+    }
+
+    /// <summary>
+    /// Measures the characters of a text as <see cref="Measure(string, in TextStyle)"/> does, with no string (row I1c). The
+    /// cache is looked up by the characters, so the same characters from a string and from a span are one entry.
+    /// </summary>
+    /// <param name="text">The characters; a line feed starts a new line.</param>
+    /// <param name="style">The style; only the font, the size, the weight, and the locale change the size.</param>
+    /// <returns>The size in physical pixels.</returns>
+    /// <exception cref="ArgumentNullException">The font family or the locale is null.</exception>
+    /// <exception cref="ArgumentException">The font family or the locale is empty.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The size is not finite or outside (0, 512], or the weight, an alignment, or the rotation is not a named value.
+    /// </exception>
+    public TextMetrics Measure(ReadOnlySpan<char> text, in TextStyle style)
+    {
+        RenderList.ValidateStyle(style);
         return Shape(text, style).Metrics;
     }
 
-    /// <summary>Gets a text shaped, from the cache or from the backend, and makes it the newest in the cache.</summary>
-    internal ShapedText Shape(string text, in TextStyle style)
+    /// <summary>
+    /// Gets a text shaped, from the cache or from the backend, and makes it the newest in the cache. A text the cache lacks
+    /// takes a new entry while the cache is not full, and the entry used longest ago once it is.
+    /// </summary>
+    internal ShapedText Shape(ReadOnlySpan<char> text, in TextStyle style)
     {
-        var key = new ShapeKey(text, style.FontFamily, style.Size, style.Weight, style.Locale);
-        if (_cache.TryGetValue(key, out var node))
+        var probe = new ShapeProbe(text, style.FontFamily, style.Size, style.Weight, style.Locale);
+        if (_lookup.TryGetValue(probe, out var entry))
         {
-            _order.Remove(node);
-            _order.AddFirst(node);
-            return node.Value.Shaped;
+            _order.Remove(entry.Node);
+            _order.AddFirst(entry.Node);
+            return entry.Shaped;
         }
 
-        var shaped = Backend.Shape(text, style.FontFamily, style.Size, style.Weight, style.Locale);
         if (_cache.Count == CacheCapacity)
         {
-            // The node of the text used longest ago carries the new one.
-            node = _order.Last!;
+            // The entry of the text used longest ago carries the new one.
+            entry = _order.Last!.Value;
             _order.RemoveLast();
-            _cache.Remove(node.Value.Key);
-            node.Value = new CacheEntry(key, shaped);
+            _ = _cache.Remove(entry);
         }
         else
         {
-            node = new LinkedListNode<CacheEntry>(new CacheEntry(key, shaped));
+            entry = new CacheEntry();
         }
 
-        _order.AddFirst(node);
-        _cache.Add(key, node);
-        return shaped;
+        // Out of the cache until the backend has shaped it: an exception leaves no entry with the old text's glyphs.
+        entry.Set(text, style);
+        Backend.Shape(text, style.FontFamily, style.Size, style.Weight, style.Locale, entry.Shaped);
+        _ = _cache.Add(entry);
+        _order.AddFirst(entry.Node);
+        return entry.Shaped;
     }
 
     /// <summary>
@@ -196,7 +221,7 @@ public sealed class TextEngine
     private bool TryPlace(in TextRecord record, int width, int height)
     {
         var style = record.Style;
-        var shaped = Shape(record.Text, style);
+        var shaped = Shape(record.Chars.Span, style);
         var metrics = shaped.Metrics;
         var glyphs = shaped.Glyphs;
         var top = AlignY(style.Vertical, metrics);
@@ -342,7 +367,7 @@ public sealed class TextEngine
             }
 
             ref readonly var record = ref list.Texts[commands[i].Index];
-            var shaped = Shape(record.Text, record.Style);
+            var shaped = Shape(record.Chars.Span, record.Style);
             foreach (ref readonly var glyph in shaped.Glyphs)
             {
                 var phase = (int)(RoundPixel(4 * glyph.Position.X) & 3);
@@ -368,9 +393,93 @@ public sealed class TextEngine
         );
     }
 
-    private readonly record struct ShapeKey(string Text, string FontFamily, float Size, FontWeight Weight, string Locale);
+    /// <summary>A text looked up in the cache: its characters and the style that changes its shape.</summary>
+    private readonly ref struct ShapeProbe(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale)
+    {
+        public ReadOnlySpan<char> Text { get; } = text;
 
-    private readonly record struct CacheEntry(ShapeKey Key, ShapedText Shaped);
+        public string FontFamily { get; } = fontFamily;
+
+        public float Size { get; } = size;
+
+        public FontWeight Weight { get; } = weight;
+
+        public string Locale { get; } = locale;
+    }
+
+    /// <summary>A text the cache keeps: a copy of its characters, its style, its shape, and its place in the order of use.</summary>
+    private sealed class CacheEntry
+    {
+        private char[] _chars = new char[16];
+
+        public CacheEntry() => Node = new LinkedListNode<CacheEntry>(this);
+
+        public LinkedListNode<CacheEntry> Node { get; }
+
+        // Room for a tick label: an entry carries texts of all lengths in turn, and one that held a short text would grow
+        // again for each longer one (row I1c). 16 glyphs and 2 lines are 288 bytes, about 2.4 MB over a full cache.
+        public ShapedText Shaped { get; } = new(16, 2);
+
+        public int Length { get; private set; }
+
+        public string FontFamily { get; private set; } = string.Empty;
+
+        public float Size { get; private set; }
+
+        public FontWeight Weight { get; private set; }
+
+        public string Locale { get; private set; } = string.Empty;
+
+        public ReadOnlySpan<char> Text => _chars.AsSpan(0, Length);
+
+        /// <summary>Takes a text and its style; the characters' buffer grows when it is short and never shrinks.</summary>
+        public void Set(ReadOnlySpan<char> text, in TextStyle style)
+        {
+            if (_chars.Length < text.Length)
+            {
+                _chars = new char[Math.Max(text.Length, _chars.Length * 2)];
+            }
+
+            text.CopyTo(_chars);
+            (Length, FontFamily, Size, Weight, Locale) = (text.Length, style.FontFamily, style.Size, style.Weight, style.Locale);
+        }
+    }
+
+    /// <summary>Compares the cache's entries, and a probe with an entry, by their characters and style.</summary>
+    private sealed class EntryComparer : IEqualityComparer<CacheEntry>, IAlternateEqualityComparer<ShapeProbe, CacheEntry>
+    {
+        public static readonly EntryComparer Instance = new();
+
+        public bool Equals(CacheEntry? x, CacheEntry? y) =>
+            ReferenceEquals(x, y) || (x is not null && y is not null && Same(x.Text, x.FontFamily, x.Size, x.Weight, x.Locale, y));
+
+        public int GetHashCode(CacheEntry obj) => Hash(obj.Text, obj.FontFamily, obj.Size, obj.Weight, obj.Locale);
+
+        public bool Equals(ShapeProbe alternate, CacheEntry other) =>
+            Same(alternate.Text, alternate.FontFamily, alternate.Size, alternate.Weight, alternate.Locale, other);
+
+        public int GetHashCode(ShapeProbe alternate) =>
+            Hash(alternate.Text, alternate.FontFamily, alternate.Size, alternate.Weight, alternate.Locale);
+
+        // The cache adds entries itself, never from a probe.
+        public CacheEntry Create(ShapeProbe alternate) => throw new NotSupportedException();
+
+        private static bool Same(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale, CacheEntry entry) =>
+            text.SequenceEqual(entry.Text)
+            && size.Equals(entry.Size)
+            && weight == entry.Weight
+            && string.Equals(fontFamily, entry.FontFamily, StringComparison.Ordinal)
+            && string.Equals(locale, entry.Locale, StringComparison.Ordinal);
+
+        private static int Hash(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale) =>
+            HashCode.Combine(
+                string.GetHashCode(text),
+                StringComparer.Ordinal.GetHashCode(fontFamily),
+                size,
+                weight,
+                StringComparer.Ordinal.GetHashCode(locale)
+            );
+    }
 }
 
 /// <summary>What a step of a backend's <c>Draw</c> draws.</summary>

@@ -9,12 +9,11 @@ namespace HyperPlot;
 /// </summary>
 internal sealed class PanelGuide
 {
-    public PanelGuide(TextEngine text, LabelTable labels)
+    public PanelGuide(TextEngine text)
     {
         foreach (var axis in (ReadOnlySpan<TickAxis>)[OwnX, OwnY, OwnX2, OwnY2])
         {
             axis.Text = text;
-            axis.Labels = labels;
         }
 
         (X, Y, X2, Y2) = (OwnX, OwnY, OwnX2, OwnY2);

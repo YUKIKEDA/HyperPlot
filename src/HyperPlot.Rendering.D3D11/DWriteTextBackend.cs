@@ -27,6 +27,10 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
     private readonly Dictionary<nint, int> _faceNumbers = [];
     private readonly List<nint> _faces = [];
     private readonly Collector _collector = new();
+    private DWRITE_LINE_METRICS[] _lineMetrics = new DWRITE_LINE_METRICS[4];
+    private int[] _lineOfRun = new int[8];
+    private PlacedGlyph[] _glyphs = new PlacedGlyph[64];
+    private TextLine[] _lines = new TextLine[4];
     private IDWriteFactory3* _factory;
     private TextRenderer* _renderer;
     private GCHandle _collectorHandle;
@@ -58,16 +62,21 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
     internal int FaceCount => _faces.Count;
 
     /// <inheritdoc />
-    public ShapedText Shape(string text, string fontFamily, float size, FontWeight weight, string locale)
+    public void Shape(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale, ShapedText destination)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(destination);
         var layout = MakeLayout(text, fontFamily, size, weight, locale);
         try
         {
             uint lineCount;
             _ = layout->GetLineMetrics(null, 0, &lineCount);
-            var lines = new DWRITE_LINE_METRICS[lineCount];
-            fixed (DWRITE_LINE_METRICS* metrics = lines)
+            if (_lineMetrics.Length < lineCount)
+            {
+                _lineMetrics = new DWRITE_LINE_METRICS[Math.Max((int)lineCount, _lineMetrics.Length * 2)];
+            }
+
+            fixed (DWRITE_LINE_METRICS* metrics = _lineMetrics)
             {
                 Check(layout->GetLineMetrics(metrics, lineCount, &lineCount), "IDWriteTextLayout::GetLineMetrics");
             }
@@ -78,7 +87,7 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
                 "IDWriteTextLayout::Draw",
                 _collector
             );
-            return Build(lines);
+            Build(_lineMetrics.AsSpan(0, (int)lineCount), destination);
         }
         finally
         {
@@ -306,17 +315,18 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
     ) => S.S_OK;
 
     /// <summary>Makes the layout of a text with no wrapping; the caller releases it.</summary>
-    private IDWriteTextLayout* MakeLayout(string text, string fontFamily, float size, FontWeight weight, string locale)
+    private IDWriteTextLayout* MakeLayout(ReadOnlySpan<char> text, string fontFamily, float size, FontWeight weight, string locale)
     {
         IDWriteTextFormat* format = null;
         IDWriteTextLayout* layout = null;
         try
         {
-            // The strings are pinned for the calls, and a pinned string ends with a 0 character.
+            // The strings are pinned for the calls, and a pinned string ends with a 0 character. The text's length is passed, so
+            // its span needs no 0; an empty span pins as null, so it takes the empty string's characters instead.
             fixed (
                 char* family = fontFamily,
                     localeName = locale,
-                    chars = text
+                    chars = text.IsEmpty ? string.Empty : text
             )
             {
                 var fontWeight =
@@ -376,11 +386,26 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
     }
 
     /// <summary>Puts the collected runs on their lines and makes the shaped text (design §5.6).</summary>
-    private ShapedText Build(DWRITE_LINE_METRICS[] lines)
+    private void Build(ReadOnlySpan<DWRITE_LINE_METRICS> lines, ShapedText destination)
     {
         // A run belongs to the line whose characters hold its first one.
         var runs = _collector.Runs;
-        var lineOfRun = new int[runs.Count];
+        if (_lineOfRun.Length < runs.Count)
+        {
+            _lineOfRun = new int[Math.Max(runs.Count, _lineOfRun.Length * 2)];
+        }
+
+        if (_glyphs.Length < _collector.Glyphs.Count)
+        {
+            _glyphs = new PlacedGlyph[Math.Max(_collector.Glyphs.Count, _glyphs.Length * 2)];
+        }
+
+        if (_lines.Length < lines.Length)
+        {
+            _lines = new TextLine[Math.Max(lines.Length, _lines.Length * 2)];
+        }
+
+        var lineOfRun = _lineOfRun;
         for (var r = 0; r < runs.Count; r++)
         {
             var end = 0u;
@@ -394,8 +419,8 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
             lineOfRun[r] = line;
         }
 
-        var glyphs = new PlacedGlyph[_collector.Glyphs.Count];
-        var textLines = new TextLine[lines.Length];
+        var glyphs = _glyphs;
+        var textLines = _lines;
         var firstBaseline = lines[0].baseline;
         var top = 0f;
         var count = 0;
@@ -427,7 +452,11 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
         }
 
         var last = lines[^1];
-        return new ShapedText(new TextMetrics(width, top, firstBaseline, last.height - last.baseline), glyphs, textLines);
+        destination.Set(
+            new TextMetrics(width, top, firstBaseline, last.height - last.baseline),
+            glyphs.AsSpan(0, count),
+            textLines.AsSpan(0, lines.Length)
+        );
     }
 
     /// <summary>Gets the alpha-texture bounds of one glyph at a phase, keeping the analysis for the rasterization that follows.</summary>

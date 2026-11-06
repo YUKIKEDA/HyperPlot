@@ -1,3 +1,5 @@
+using HyperPlot.Tests;
+
 namespace HyperPlot.Rendering.D3D11.Tests;
 
 /// <summary>
@@ -24,8 +26,8 @@ public sealed class DirectWriteTests
     public void LineWidth_SumOfAdvances_MatchesTheLayout()
     {
         using var text = new DWriteTextBackend();
-        var plain = text.Shape("Sample 123", "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
-        var trailing = text.Shape("Sample 123   ", "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
+        var plain = text.ShapeNew("Sample 123", "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
+        var trailing = text.ShapeNew("Sample 123   ", "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
 
         Assert.Equal(text.LayoutWidths("Sample 123", "Segoe UI", 17.3f).Width, plain.Lines[0].Width, 1e-3f);
         Assert.Equal(text.LayoutWidths("Sample 123   ", "Segoe UI", 17.3f).WithTrailingWhitespace, trailing.Lines[0].Width, 1e-3f);
@@ -51,7 +53,7 @@ public sealed class DirectWriteTests
     public void RightToLeft_Arabic_FirstCharacterIsAtTheRight()
     {
         using var text = new DWriteTextBackend();
-        var shaped = text.Shape("سلام", "Segoe UI", 24, FontWeight.Normal, "ar-eg");
+        var shaped = text.ShapeNew("سلام", "Segoe UI", 24, FontWeight.Normal, "ar-eg");
         var glyphs = shaped.Glyphs;
 
         Assert.True(glyphs.Length >= 2);
@@ -83,13 +85,13 @@ public sealed class DirectWriteTests
     public void Fallback_JapaneseInSegoeUi_DrawsWithTheLocalesFont()
     {
         using var text = new DWriteTextBackend();
-        var japanese = text.Shape("Aa日本語", "Segoe UI", 20, FontWeight.Normal, "ja-jp");
-        var chinese = text.Shape("日本語", "Segoe UI", 20, FontWeight.Normal, "zh-cn");
+        var japanese = text.ShapeNew("Aa日本語", "Segoe UI", 20, FontWeight.Normal, "ja-jp");
+        var chinese = text.ShapeNew("日本語", "Segoe UI", 20, FontWeight.Normal, "zh-cn");
 
         Assert.Equal(5, japanese.Glyphs.Length);
         Assert.Equal(japanese.Glyphs[0].Face, japanese.Glyphs[1].Face);
         Assert.NotEqual(japanese.Glyphs[0].Face, japanese.Glyphs[2].Face);
-        Assert.Equal(japanese.Glyphs[2].Face, text.Shape("本", "Segoe UI", 20, FontWeight.Normal, "ja-jp").Glyphs[0].Face);
+        Assert.Equal(japanese.Glyphs[2].Face, text.ShapeNew("本", "Segoe UI", 20, FontWeight.Normal, "ja-jp").Glyphs[0].Face);
         for (var i = 2; i < 5; i++)
         {
             var glyph = japanese.Glyphs[i];
@@ -117,7 +119,7 @@ public sealed class DirectWriteTests
     public void Coverage_Grayscale_HasLevelsAndFollowsThePhase()
     {
         using var text = new DWriteTextBackend();
-        var glyph = text.Shape("O", "Segoe UI", 15, FontWeight.Normal, "en-us").Glyphs[0];
+        var glyph = text.ShapeNew("O", "Segoe UI", 15, FontWeight.Normal, "en-us").Glyphs[0];
 
         var whole = Rasterize(text, glyph.Face, glyph.Glyph, 15, 0);
         var quarter = Rasterize(text, glyph.Face, glyph.Glyph, 15, 0.25f);
@@ -149,7 +151,7 @@ public sealed class DirectWriteTests
         using var text = new DWriteTextBackend();
         foreach (var (word, locale) in new[] { ("\u0633\u064E", "ar-eg"), ("q\u0301x", "en-us") })
         {
-            var shaped = text.Shape(word, "Segoe UI", 40, FontWeight.Normal, locale);
+            var shaped = text.ShapeNew(word, "Segoe UI", 40, FontWeight.Normal, locale);
             var (letterLeft, letterTop, letterRight, _) = Ink(text, shaped.Glyphs[0]);
             var (markLeft, _, markRight, markBottom) = Ink(text, shaped.Glyphs[1]);
 
@@ -182,9 +184,9 @@ public sealed class DirectWriteTests
     public void WeightAndMissingFamily_Ink_FollowTheStyle()
     {
         using var text = new DWriteTextBackend();
-        var normal = Ink(text, text.Shape("Heading", "Segoe UI", 18, FontWeight.Normal, "en-us"), 18);
-        var bold = Ink(text, text.Shape("Heading", "Segoe UI", 18, FontWeight.Bold, "en-us"), 18);
-        var missing = Ink(text, text.Shape("Heading", "No Such Font 7f3a", 18, FontWeight.Normal, "en-us"), 18);
+        var normal = Ink(text, text.ShapeNew("Heading", "Segoe UI", 18, FontWeight.Normal, "en-us"), 18);
+        var bold = Ink(text, text.ShapeNew("Heading", "Segoe UI", 18, FontWeight.Bold, "en-us"), 18);
+        var missing = Ink(text, text.ShapeNew("Heading", "No Such Font 7f3a", 18, FontWeight.Normal, "en-us"), 18);
 
         Assert.True(bold > normal, $"Bold has {bold}, normal {normal}.");
         Assert.True(missing > 0);
@@ -207,8 +209,8 @@ public sealed class DirectWriteTests
     public void LineFeed_TwoLines_TwiceTheHeight()
     {
         using var text = new DWriteTextBackend();
-        var one = text.Shape("Top", "Segoe UI", 16, FontWeight.Normal, "en-us");
-        var two = text.Shape("Top\nBottom", "Segoe UI", 16, FontWeight.Normal, "en-us");
+        var one = text.ShapeNew("Top", "Segoe UI", 16, FontWeight.Normal, "en-us");
+        var two = text.ShapeNew("Top\nBottom", "Segoe UI", 16, FontWeight.Normal, "en-us");
 
         Assert.Single(one.Lines.ToArray());
         Assert.Equal(2, two.Lines.Length);
@@ -251,11 +253,11 @@ public sealed class DirectWriteTests
         var thrown = new FormatException("From the hook.");
         text.GlyphRunHook = () => throw thrown;
 
-        var caught = Assert.Throws<FormatException>(() => text.Shape("Fails", "Segoe UI", 12, FontWeight.Normal, "en-us"));
+        var caught = Assert.Throws<FormatException>(() => text.ShapeNew("Fails", "Segoe UI", 12, FontWeight.Normal, "en-us"));
         Assert.Same(thrown, caught);
 
         text.GlyphRunHook = null;
-        Assert.Equal(5, text.Shape("Fails", "Segoe UI", 12, FontWeight.Normal, "en-us").Glyphs.Length);
+        Assert.Equal(5, text.ShapeNew("Fails", "Segoe UI", 12, FontWeight.Normal, "en-us").Glyphs.Length);
     }
 
     /// <summary>Shaping and rasterizing work on a thread that never initialized COM itself (design §5.6).</summary>
@@ -279,7 +281,7 @@ public sealed class DirectWriteTests
             try
             {
                 using var text = new DWriteTextBackend();
-                ink = Ink(text, text.Shape("Thread", "Segoe UI", 14, FontWeight.Normal, "en-us"), 14);
+                ink = Ink(text, text.ShapeNew("Thread", "Segoe UI", 14, FontWeight.Normal, "en-us"), 14);
             }
             catch (Exception exception)
             {
@@ -313,5 +315,33 @@ public sealed class DirectWriteTests
         }
 
         return sum;
+    }
+
+    /// <summary>
+    /// DirectWrite shapes into a reused shaped text, which then holds only the last text (design §5.6, row I1c).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A DirectWrite backend; one empty shaped text.
+    ///
+    /// Steps:
+    /// - Shape "Sample 123\nsecond line" into it, then "ab"; shape "ab" into a new one.
+    ///
+    /// Expected:
+    /// - The same glyphs, lines, and metrics: 2 glyphs and 1 line.
+    /// </remarks>
+    [Fact]
+    public void Shape_IntoReusedText_HoldsOnlyTheLastText()
+    {
+        using var text = new DWriteTextBackend();
+        var reused = new ShapedText();
+        text.Shape("Sample 123\nsecond line", "Segoe UI", 17.3f, FontWeight.Normal, "en-us", reused);
+        text.Shape("ab", "Segoe UI", 17.3f, FontWeight.Normal, "en-us", reused);
+        var fresh = text.ShapeNew("ab", "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
+
+        Assert.Equal(2, reused.Glyphs.Length);
+        Assert.Equal(fresh.Glyphs.ToArray(), reused.Glyphs.ToArray());
+        Assert.Equal(fresh.Lines.ToArray(), reused.Lines.ToArray());
+        Assert.Equal(fresh.Metrics, reused.Metrics);
     }
 }

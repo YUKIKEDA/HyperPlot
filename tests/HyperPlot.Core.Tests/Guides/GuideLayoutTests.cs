@@ -185,12 +185,12 @@ public sealed class GuideLayoutTests : IDisposable
         Assert.Equal((int)Math.Ceiling(wideWidest) - (int)Math.Ceiling(widest), g.Width - wide.Guides.Width);
 
         var texts = list.Texts.ToArray();
-        foreach (var label in g.X.TickLabels)
+        foreach (var label in g.X.TickLabels.ToArray())
         {
             Assert.Contains(texts, x => x.Text == label && x.Position.X + TextWidth(label) <= g.Left);
         }
 
-        foreach (var label in g.Y.TickLabels)
+        foreach (var label in g.Y.TickLabels.ToArray())
         {
             Assert.Contains(texts, x => x.Text == label && x.Position.Y >= g.Top + g.Height);
         }
