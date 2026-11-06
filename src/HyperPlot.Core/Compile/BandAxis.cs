@@ -23,6 +23,27 @@ internal readonly record struct BandAxis(int Count, double PaddingInner, bool Re
         return ScaleRange.FromDouble(lower, lower + m);
     }
 
-    /// <summary>Returns the position of a category: its number, or the reverse.</summary>
+    /// <summary>Returns the position of a category: its number, or the reverse. A position's category is the same function.</summary>
     public int Position(int category) => Reverse ? Count - 1 - category : category;
+
+    /// <summary>
+    /// Returns the categories whose bands lie at least partly over an axis's pixels, position j's band starting at pixel
+    /// a · j + b (row I1b): those of a view's range, so that a loop over them is bounded by the view, not by the categories.
+    /// First is past Last when none does.
+    /// </summary>
+    public (int First, int Last) Visible(double a, double b, int offset, int size)
+    {
+        if (a == 0 || !double.IsFinite(a) || !double.IsFinite(b))
+        {
+            return (0, Count - 1);
+        }
+
+        var (p0, p1) = ((offset - b) / a, (offset + size - b) / a);
+        var (low, high) = (Math.Min(p0, p1), Math.Max(p0, p1));
+
+        // Band j covers [j, j + Width]: it shows when it ends past the low end and starts before the high end.
+        var first = (int)Math.Clamp(Math.Ceiling(low - Width), 0, Count);
+        var last = (int)Math.Clamp(Math.Floor(high), -1, Count - 1);
+        return Reverse ? (Count - 1 - last, Count - 1 - first) : (first, last);
+    }
 }

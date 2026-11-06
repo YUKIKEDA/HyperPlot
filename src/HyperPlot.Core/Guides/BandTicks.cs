@@ -26,13 +26,27 @@ internal static class BandTicks
         // The domain's low end as a position: its origin and difference (design §3.6). The difference alone is off by the
         // origin, ⌊L⌋ = −1 for the default padding: a band to the left (Issue #190).
         var low = domain.Origin + domain.Lower;
+
+        // The categories whose middle lies over the axis (row I1b): a view's, so that the labels measured are bounded by the
+        // view, not by the categories. The full domain holds every middle.
+        var high = domain.Origin + domain.Upper;
+        var (firstPosition, lastPosition) = (
+            (long)Math.Clamp(Math.Ceiling(low - (bands.Width / 2)), 0, count),
+            (long)Math.Clamp(Math.Floor(high - (bands.Width / 2)), -1, count - 1)
+        );
+        if (firstPosition > lastPosition)
+        {
+            return;
+        }
+
+        var (from, to) = band.Reverse ? (count - 1 - lastPosition, count - 1 - firstPosition) : (firstPosition, lastPosition);
         var least = axis.Horizontal ? 1f : axis.LineHeight;
-        var first = Extent(axis, categories.Categories[0]);
+        var first = Extent(axis, categories.Categories[(int)from]);
         var gap = axis.Em / 2;
 
         // The least k that keeps two labels of the least size apart, and the first label and one of the least size. Held inside
         // F, the first label moves toward its neighbor by s₀ (design §4.6, row G3b).
-        var firstPixel = (bands.Position(0) + (bands.Width / 2) - low) * step;
+        var firstPixel = (bands.Position((int)from) + (bands.Width / 2) - low) * step;
         var firstShift = Math.Abs(axis.Hold(firstPixel, first) - firstPixel);
         var k = (long)Math.Max(Math.Max(1, Math.Ceiling((least + gap) / step)), Math.Ceiling((((first + least) / 2) + gap + firstShift) / step));
         while (true)
@@ -40,11 +54,13 @@ internal static class BandTicks
             axis.ClearCandidate();
             var (overlap, sum) = (false, 0.0);
             var (previous, previousHeld, previousShift) = (0f, 0.0, 0.0);
-            for (long i = 0; i < count; i += Math.Min(k, count))
+
+            // The labels sit on the categories whose number is a multiple of k, so that they stay as a view pans.
+            for (var i = (from + k - 1) / k * k; i <= to; i += Math.Min(k, count))
             {
                 var category = (int)i;
                 var label = categories.Categories[category];
-                var extent = category == 0 ? first : Extent(axis, label);
+                var extent = category == from ? first : Extent(axis, label);
                 var pixel = (bands.Position(category) + (bands.Width / 2) - low) * step;
                 var held = axis.Hold(pixel, extent);
                 var shift = Math.Abs(held - pixel);
@@ -60,7 +76,7 @@ internal static class BandTicks
                 (previous, previousHeld, previousShift) = (extent, held, shift);
             }
 
-            if (!overlap || k >= count)
+            if (!overlap || k > to - from)
             {
                 return;
             }

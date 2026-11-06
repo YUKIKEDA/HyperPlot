@@ -5,9 +5,9 @@ using HyperPlot.Rendering;
 namespace HyperPlot.Interaction;
 
 /// <summary>
-/// The engine of an interactive plot (design §6, §7.1, row I1a): it keeps a spec, the views, and the tools, takes the input
-/// a host passes, and draws only when something changed. A host draws a frame with <see cref="RenderFrame"/> when
-/// <see cref="FrameRequested"/> comes, at its own time to draw.
+/// The engine of an interactive plot or figure (design §6, §7.1, rows I1a and I1b): it keeps a spec, the views, and the
+/// tools, takes the input a host passes, and draws only when something changed. A host draws a frame with
+/// <see cref="RenderFrame"/> when <see cref="FrameRequested"/> comes, at its own time to draw.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -17,36 +17,30 @@ namespace HyperPlot.Interaction;
 /// time give the same views, notices, and frames each time.
 /// </para>
 /// <para>
-/// In row I1a, <see cref="RenderFrame"/> waits for the plot's indexes as <see cref="HeadlessRenderer"/> does; row W1 draws
-/// what is there and tells the host instead. The size of the target and its scale are fixed (row W1 changes them).
+/// Each panel has a view of its x and y scales and of its secondary x and y scales (row I1b). A facet's panels share the
+/// view of a shared axis; each plot of a figure has its own views and history. A pointer's press picks the plot a drag goes
+/// to, a wheel goes to the plot under the cursor, and a key to the plot last operated on (design §6.2).
+/// </para>
+/// <para>
+/// <see cref="RenderFrame"/> waits for the plot's indexes as <see cref="HeadlessRenderer"/> does; row W1 draws what is
+/// there and tells the host instead. The size of the target and its scale are fixed (row W1 changes them).
 /// </para>
 /// </remarks>
 public sealed class PlotEngine : IDisposable
 {
-    private static readonly PanelId First = new(0, 0);
-
     private readonly HeadlessRenderer _renderer;
     private readonly int _thread;
     private readonly ToolContext _context;
     private readonly ViewProposal _proposal = new();
     private readonly RenderList _overlay = new();
-    private readonly List<(ScaleRange X, ScaleRange Y)> _history = [];
+    private PlotState[] _states = [];
+    private PanelDomains[][] _shownViews = [];
     private PlotSpec? _plot;
     private FigureSpec? _figure;
     private bool _drawn;
     private bool _frameRequested;
-    private ScaleRange _targetX = ScaleRange.None;
-    private ScaleRange _targetY = ScaleRange.None;
-    private ScaleRange _shownX = ScaleRange.None;
-    private ScaleRange _shownY = ScaleRange.None;
-    private ScaleRange _fromX;
-    private ScaleRange _fromY;
-    private long _animationStart;
-    private bool _animating;
-    private int _position;
     private bool _inGesture;
-    private long _lastGroupTimestamp = long.MinValue;
-    private bool _lastWasGroup;
+    private PanelId _active;
     private ViewChangeReason _reason = ViewChangeReason.Code;
     private IPlotTool? _captured;
     private PointerEvent _press;
@@ -75,13 +69,12 @@ public sealed class PlotEngine : IDisposable
         _thread = Environment.CurrentManagedThreadId;
         _context = new ToolContext(this);
         Views = new ViewOperations(this);
-        _history.Add((ScaleRange.None, ScaleRange.None));
     }
 
     /// <summary>Occurs when the engine needs a frame: once until <see cref="RenderFrame"/> draws it.</summary>
     public event Action? FrameRequested;
 
-    /// <summary>Occurs when a view changes (design §6.2): once a change, with the view it goes to.</summary>
+    /// <summary>Occurs when a view changes (design §6.2): once a panel and change, with the view it goes to.</summary>
     public event ViewChangedHandler? ViewChanged;
 
     /// <summary>Gets the operations on the views.</summary>
@@ -108,20 +101,34 @@ public sealed class PlotEngine : IDisposable
     /// <summary>Gets the scale from device-independent to device pixels.</summary>
     public float Scale => _renderer.Scale;
 
-    internal bool CanGoBack => _position > 0;
+    internal bool CanGoBack => Active() is { } state && state.Position > 0;
 
-    internal bool CanGoForward => _position < _history.Count - 1;
+    internal bool CanGoForward => Active() is { } state && state.Position < state.Count - 1;
 
     internal Theme CurrentTheme => _plot?.Theme ?? _figure?.Theme ?? Theme.Light;
 
     /// <summary>Gets the plan of the plot drawn. Tests only.</summary>
-    internal PlotPlan? Plan => _renderer.Plan;
+    internal PlotPlan? Plan => _plot is null ? null : _renderer.Plan;
+
+    /// <summary>Gets the plan of the figure drawn. Tests only.</summary>
+    internal FigurePlan? Figure => _figure is null ? null : _renderer.Figure;
 
     /// <summary>Gets the tool that holds the pointer. Tests only.</summary>
     internal IPlotTool? Captured => _captured;
 
-    /// <summary>Gets the number of entries of the history and the place in it. Tests only.</summary>
-    internal (int Count, int Position) History => (_history.Count, _position);
+    /// <summary>Gets the number of entries of the history of the plot last operated on and the place in it. Tests only.</summary>
+    internal (int Count, int Position) History => Active() is { } state ? (state.Count, state.Position) : (1, 0);
+
+    /// <summary>Gets the panel last operated on: the one keys go to (row I1b). Tests only.</summary>
+    internal PanelId ActivePanel => _active;
+
+    /// <summary>
+    /// Gets the number of plots drawn: 1 for a plot, a figure's plots when its cells are drawn, 0 before the first frame.
+    /// </summary>
+    private int PlotCount =>
+        !_drawn ? 0
+        : _plot is not null ? 1
+        : _renderer.Figure?.Drawn ?? 0;
 
     /// <summary>Sets the plot to draw (design §7.1). The spec is checked now; it is compiled at the next frame.</summary>
     /// <param name="plot">The plot.</param>
@@ -133,9 +140,9 @@ public sealed class PlotEngine : IDisposable
     {
         CheckThread();
         _renderer.Check(plot);
-        if (_figure is not null)
+        if (_figure is not null || _states.Length != 1)
         {
-            ResetState();
+            NewStates(1);
         }
 
         (_plot, _figure) = (plot, null);
@@ -143,8 +150,9 @@ public sealed class PlotEngine : IDisposable
     }
 
     /// <summary>
-    /// Sets a figure of several plots to draw (design §7.1, row G6c). In row I1a a figure is drawn and takes no view; its
-    /// interaction is row I1b's. The figure is checked now (design §4.5); its plots are compiled and checked at the next frame.
+    /// Sets a figure of several plots to draw (design §7.1, rows G6c and I1b): each plot keeps views and a history of its
+    /// own. The figure is checked now (design §4.5); its plots are compiled and checked at the next frame. A figure of as many
+    /// plots as the one before keeps their views where the plots' mappings stay, as <see cref="SetPlot"/> does.
     /// </summary>
     /// <param name="figure">The figure.</param>
     /// <exception cref="ArgumentNullException"><paramref name="figure"/>, a plot, or a cell is null.</exception>
@@ -155,13 +163,18 @@ public sealed class PlotEngine : IDisposable
     {
         CheckThread();
         _renderer.Check(figure);
-        ResetState();
+        var count = FigurePlan.PlotCount(figure);
+        if (_plot is not null || _states.Length != count)
+        {
+            NewStates(count);
+        }
+
         (_plot, _figure) = (null, figure);
         RequestFrame();
     }
 
     /// <summary>
-    /// Draws a frame (design §7.1): moves the animation to the engine's time, gives the views to the plan, draws, and draws
+    /// Draws a frame (design §7.1): moves the animations to the engine's time, gives the views to the plans, draws, and draws
     /// what the tool that holds the pointer draws over it. While an animation runs, it asks for the next frame.
     /// </summary>
     /// <exception cref="InvalidOperationException">The call comes from another thread, or the plot fails as <see cref="HeadlessRenderer.Render(PlotSpec)"/> says.</exception>
@@ -172,32 +185,64 @@ public sealed class PlotEngine : IDisposable
     {
         CheckThread();
         _frameRequested = false;
-        if (_figure is not null)
-        {
-            _renderer.Render(_figure);
-            _drawn = true;
-            return;
-        }
-
-        if (_plot is null)
+        if (_plot is null && _figure is null)
         {
             return;
         }
 
-        Animate();
+        var count = PlotCount;
+        for (var k = 0; k < count; k++)
+        {
+            Animate(k);
+        }
+
         _overlay.Clear();
         _captured?.Overlay(_overlay, _context);
-        _renderer.Render(_plot, _shownX, _shownY, _overlay);
-        _drawn = true;
-        if (_renderer.Plan!.ViewsDropped)
+        if (_plot is not null)
         {
-            // A new mapping: the views over the old one go back to the full view, and the history with them (design §6.2).
-            CancelCaptured();
-            ResetState();
-            Notify(ViewChangeReason.Spec, ScaleRange.None, ScaleRange.None);
+            _renderer.Render(_plot, _states[0].Shown, _overlay);
+        }
+        else
+        {
+            for (var k = 0; k < _states.Length; k++)
+            {
+                _shownViews[k] = _states[k].Shown;
+            }
+
+            _renderer.Render(_figure!, _shownViews, _overlay);
         }
 
-        if (_animating)
+        _drawn = true;
+        var (dropped, animating) = (false, false);
+        count = PlotCount;
+        for (var k = 0; k < count; k++)
+        {
+            var (state, plan) = (_states[k], PlanOf(k));
+            if (plan.ViewsDropped || state.Panels != plan.PanelCount)
+            {
+                // A new mapping, or other panels: the views over the old ones go back to the full view, and the history with
+                // them (design §6.2).
+                var told = plan.ViewsDropped;
+                state.Size(plan.PanelCount);
+                if (told)
+                {
+                    dropped = true;
+                    for (var p = 0; p < state.Panels; p++)
+                    {
+                        Notify(k, p, ViewChangeReason.Spec);
+                    }
+                }
+            }
+
+            animating |= state.Animating;
+        }
+
+        if (dropped)
+        {
+            CancelCaptured();
+        }
+
+        if (animating)
         {
             RequestFrame();
         }
@@ -218,56 +263,25 @@ public sealed class PlotEngine : IDisposable
     /// <param name="panel">The panel.</param>
     /// <returns>The view, as a new object.</returns>
     /// <exception cref="ArgumentOutOfRangeException">The panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or the call comes from another thread.</exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame, or the call comes from another thread.</exception>
     public PanelView CurrentView(PanelId panel)
     {
-        CheckThread();
         CheckPanel(panel);
-        var (x, y) = Shown();
-        return new PanelView2D(ViewRange.FromScale(x), ViewRange.FromScale(y));
+        var shown = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Shown[panel.Panel]);
+        return new PanelView2D(ViewRange.FromScale(shown.X), ViewRange.FromScale(shown.Y));
     }
 
-    /// <summary>Returns what lies at a pixel (design §6.3): a panel, an axis band, the legend, the title, or nothing.</summary>
+    /// <summary>
+    /// Returns what lies at a pixel (design §6.3): a panel, an axis band, the legend, the title, the figure's space, or
+    /// nothing; with the plot and the panel (row I1b).
+    /// </summary>
     /// <param name="pixel">The pixel, in device pixels.</param>
-    /// <returns>The place; <see cref="HitAreaKind.None"/> before the first frame of a plot.</returns>
+    /// <returns>The place; <see cref="HitAreaKind.None"/> before the first frame.</returns>
     /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
     public HitArea HitArea(Vector2 pixel)
     {
         CheckThread();
-        if (!_drawn || _plot is null || _renderer.Plan is not { } plan)
-        {
-            return default;
-        }
-
-        var g = plan.Guides;
-        var (left, top, right, bottom) = (g.Left, g.Top, g.Left + g.Width, g.Top + g.Height);
-        var (x, y) = (pixel.X, pixel.Y);
-        if (x < 0 || y < 0 || x >= Width || y >= Height || g.Empty)
-        {
-            return default;
-        }
-
-        if (x >= left && x < right && y >= top && y < bottom)
-        {
-            return new HitArea(HitAreaKind.Panel, First);
-        }
-
-        var padding = MathF.Round(_plot.Theme.Padding * Scale);
-        if (g.TitleBand > 0 && y < padding + g.TitleBand)
-        {
-            return new HitArea(HitAreaKind.Title, First);
-        }
-
-        if (g.LegendWidth > 0 && x >= Width - padding - g.LegendWidth)
-        {
-            return new HitArea(HitAreaKind.Legend, First);
-        }
-
-        var side =
-            x >= left && x < right ? (y >= bottom ? PlotGuides.SideBottom : PlotGuides.SideTop)
-            : y >= top && y < bottom ? (x < left ? PlotGuides.SideLeft : PlotGuides.SideRight)
-            : -1;
-        return side < 0 ? new HitArea(HitAreaKind.Figure, First) : new HitArea(AxisKind(g, g.SideAt(side).Axis), First);
+        return Hit(pixel, out _);
     }
 
     /// <summary>
@@ -279,16 +293,31 @@ public sealed class PlotEngine : IDisposable
     /// <param name="y">The y value, a range of one point.</param>
     /// <returns>The pixel, in device pixels.</returns>
     /// <exception cref="ArgumentOutOfRangeException">The panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or the call comes from another thread.</exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame, or the call comes from another thread.</exception>
     public Vector2 ViewToPixel(PanelId panel, ViewRange x, ViewRange y)
     {
         CheckPanel(panel);
-        var (vx, vy) = Shown();
-        var g = _renderer.Plan!.Guides;
-        var fx = ((double)(x.Origin - vx.Origin) + x.Lower - vx.Lower) / (vx.Upper - vx.Lower);
-        var fy = ((double)(y.Origin - vy.Origin) + y.Lower - vy.Lower) / (vy.Upper - vy.Lower);
-        var (across, up) = g.Flipped ? (fy, fx) : (fx, fy);
-        return new Vector2((float)(g.Left + (across * g.Width)), (float)(g.Top + g.Height - (up * g.Height)));
+        var shown = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Shown[panel.Panel]);
+        var fx = Fraction(x.ToScale(), shown.X);
+        var fy = Fraction(y.ToScale(), shown.Y);
+        var (spec, guide, flipped) = (SpecOf(panel.Plot), PanelOf(panel), PlanOf(panel.Plot).Guides.Flipped);
+        if (Reversed(spec.ScaleX))
+        {
+            fx = 1 - fx;
+        }
+
+        if (Reversed(spec.ScaleY))
+        {
+            fy = 1 - fy;
+        }
+
+        if (guide.Polar is { } polar)
+        {
+            return polar.Map(fx * polar.AlongSize, fy * polar.AcrossSize);
+        }
+
+        var (across, up) = flipped ? (fy, fx) : (fx, fy);
+        return new Vector2((float)(guide.Left + (across * guide.Width)), (float)(guide.Top + guide.Height - (up * guide.Height)));
     }
 
     /// <summary>Takes a pointer's event (design §6.1).</summary>
@@ -310,7 +339,7 @@ public sealed class PlotEngine : IDisposable
         }
     }
 
-    /// <summary>Takes a wheel's turn (design §6.1).</summary>
+    /// <summary>Takes a wheel's turn (design §6.1): it goes to the plot under the cursor.</summary>
     /// <param name="e">The event.</param>
     /// <returns>Whether the engine used it.</returns>
     /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
@@ -321,8 +350,13 @@ public sealed class PlotEngine : IDisposable
         _reason = ViewChangeReason.Input;
         try
         {
-            var area = HitArea(e.Position);
+            var area = Hit(e.Position, out var inPlot);
             _context.Hit = area;
+            if (inPlot)
+            {
+                _active = area.Panel;
+            }
+
             foreach (var binding in Bindings)
             {
                 if (binding.Gesture.Kind == InputGestureKind.Wheel && Matches(binding, e.Modifiers, area.Kind) && binding.Tool is { } tool)
@@ -342,7 +376,7 @@ public sealed class PlotEngine : IDisposable
         }
     }
 
-    /// <summary>Takes a key (design §6.1): the engine reads keys going down.</summary>
+    /// <summary>Takes a key (design §6.1): the engine reads keys going down, for the plot last operated on.</summary>
     /// <param name="e">The event.</param>
     /// <returns>Whether the engine used it.</returns>
     /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
@@ -358,7 +392,7 @@ public sealed class PlotEngine : IDisposable
         _reason = ViewChangeReason.Input;
         try
         {
-            _context.Hit = new HitArea(HitAreaKind.None, First);
+            _context.Hit = new HitArea(HitAreaKind.None, _active);
             foreach (var binding in Bindings)
             {
                 if (binding.Gesture.Kind != InputGestureKind.Key || binding.Gesture.Key != e.Key || binding.Modifiers != e.Modifiers)
@@ -387,7 +421,7 @@ public sealed class PlotEngine : IDisposable
         }
     }
 
-    /// <summary>Takes a gesture (design §6.1, requirement I-8).</summary>
+    /// <summary>Takes a gesture (design §6.1, requirement I-8): it goes to the plot under its place.</summary>
     /// <param name="e">The event.</param>
     /// <returns>Whether the engine used it.</returns>
     /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
@@ -398,8 +432,13 @@ public sealed class PlotEngine : IDisposable
         _reason = ViewChangeReason.Input;
         try
         {
-            var area = HitArea(e.Position);
+            var area = Hit(e.Position, out var inPlot);
             _context.Hit = area;
+            if (inPlot)
+            {
+                _active = area.Panel;
+            }
+
             var kind = e.Kind == GestureKind.Pinch ? InputGestureKind.Pinch : InputGestureKind.Scroll;
             foreach (var binding in Bindings)
             {
@@ -469,11 +508,19 @@ public sealed class PlotEngine : IDisposable
         FrameRequested?.Invoke();
     }
 
-    /// <summary>Returns the y range the rows of a view of x show (row I1a): the work of <see cref="AutoRangeY"/>.</summary>
+    /// <summary>
+    /// Returns the y range the rows of a view of x show (row I1a): the work of <see cref="AutoRangeY"/>. A facet's panel keeps
+    /// its y: its rows are a part of the columns, which the pyramids do not answer for (row I1b).
+    /// </summary>
     internal bool TryVisibleY(PanelId panel, in ViewRange x, out ViewRange y)
     {
         y = default;
-        if (_plot is null || !_drawn || _renderer.Plan is not { } plan || panel.Plot != 0 || !plan.TryVisibleY(x.ToScale(), out var range))
+        if (panel.Plot < 0 || panel.Plot >= PlotCount || PlanOf(panel.Plot) is not { Facet: null } plan || panel.Panel != 0)
+        {
+            return false;
+        }
+
+        if (!plan.TryVisibleY(x.ToScale(), out var range))
         {
             return false;
         }
@@ -485,123 +532,186 @@ public sealed class PlotEngine : IDisposable
     internal (int Left, int Top, int Width, int Height) PanelRectangle(PanelId panel)
     {
         CheckPanel(panel);
-        var g = _renderer.Plan!.Guides;
-        return (g.Left, g.Top, g.Width, g.Height);
+        var guide = PanelOf(panel);
+        return (guide.Left, guide.Top, guide.Width, guide.Height);
     }
 
     internal (ViewRange X, ViewRange Y) PixelToView(PanelId panel, Vector2 pixel)
     {
         CheckPanel(panel);
-        var (x, y) = Shown();
-        var (fx, fy) = Fractions(pixel);
-        var vx = x.Lower + (fx * (x.Upper - x.Lower));
-        var vy = y.Lower + (fy * (y.Upper - y.Lower));
-        return (new ViewRange(x.Origin, vx, vx), new ViewRange(y.Origin, vy, vy));
+        var shown = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Shown[panel.Panel]);
+        var (fx, fy) = Fractions(panel, pixel, secondary: false);
+        if (PanelOf(panel).Polar is { } polar)
+        {
+            // The angle as a share of the turn from the start, along its scale's direction.
+            var theta = Math.Atan2(pixel.X - polar.CenterX, polar.CenterY - pixel.Y);
+            var share = (theta - polar.Theta(0)) / (polar.Theta(1) - polar.Theta(0)) / polar.Circumference;
+            share -= Math.Floor(share);
+            var spec = SpecOf(panel.Plot);
+            if (polar.ThetaIsX)
+            {
+                fx = Reversed(spec.ScaleX) ? 1 - share : share;
+            }
+            else
+            {
+                fy = Reversed(spec.ScaleY) ? 1 - share : share;
+            }
+        }
+
+        var vx = shown.X.Lower + (fx * (shown.X.Upper - shown.X.Lower));
+        var vy = shown.Y.Lower + (fy * (shown.Y.Upper - shown.Y.Lower));
+        return (new ViewRange(shown.X.Origin, vx, vx), new ViewRange(shown.Y.Origin, vy, vy));
     }
 
     internal void ZoomAt(PanelId panel, Vector2 pixel, double factor, ViewAxes axes, bool animate, bool grouped)
     {
         CheckPanel(panel);
-        var (x, y) = Target();
-        var (fx, fy) = Fractions(pixel);
-        if (Moves(axes, ViewAxes.X, x: true))
-        {
-            x = Zoom(x, fx, factor);
-        }
-
-        if (Moves(axes, ViewAxes.Y, x: false))
-        {
-            y = Zoom(y, fy, factor);
-        }
-
-        Commit(panel, x, y, animate, grouped ? HistoryMode.Group : HistoryMode.Push);
+        _active = panel;
+        var moves = Movable(panel.Plot, axes);
+        var next = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Target[panel.Panel]);
+        var (fx, fy) = Fractions(panel, pixel, secondary: false);
+        var (fx2, fy2) = Fractions(panel, pixel, secondary: true);
+        next = new PanelDomains(
+            (moves & ViewAxes.X) != 0 ? Zoom(next.X, fx, factor) : next.X,
+            (moves & ViewAxes.Y) != 0 ? Zoom(next.Y, fy, factor) : next.Y,
+            (moves & ViewAxes.X2) != 0 ? Zoom(next.X2, fx2, factor) : next.X2,
+            (moves & ViewAxes.Y2) != 0 ? Zoom(next.Y2, fy2, factor) : next.Y2
+        );
+        Commit(panel, next, moves, animate, grouped ? HistoryMode.Group : HistoryMode.Push);
     }
 
     internal void Pan(PanelId panel, Vector2 pixels, ViewAxes axes, bool grouped)
     {
         CheckPanel(panel);
-        var (x, y) = Target();
-        var g = _renderer.Plan!.Guides;
-        var (alongX, alongY) = g.Flipped ? (pixels.Y / g.Height, -pixels.X / g.Width) : (-pixels.X / g.Width, pixels.Y / g.Height);
-        if (Moves(axes, ViewAxes.X, x: true))
+        _active = panel;
+        var moves = Movable(panel.Plot, axes);
+        var next = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Target[panel.Panel]);
+        var (sx, sy) = PanShares(panel, pixels, secondary: false);
+        var (sx2, sy2) = PanShares(panel, pixels, secondary: true);
+        next = new PanelDomains(
+            (moves & ViewAxes.X) != 0 ? Shift(next.X, sx) : next.X,
+            (moves & ViewAxes.Y) != 0 ? Shift(next.Y, sy) : next.Y,
+            (moves & ViewAxes.X2) != 0 ? Shift(next.X2, sx2) : next.X2,
+            (moves & ViewAxes.Y2) != 0 ? Shift(next.Y2, sy2) : next.Y2
+        );
+        if (_inGesture)
         {
-            x = Shift(x, alongX * (x.Upper - x.Lower));
-        }
-
-        if (Moves(axes, ViewAxes.Y, x: false))
-        {
-            y = Shift(y, alongY * (y.Upper - y.Lower));
+            _states[panel.Plot].Touched = true;
         }
 
         var history =
             _inGesture ? HistoryMode.None
             : grouped ? HistoryMode.Group
             : HistoryMode.Push;
-        Commit(panel, x, y, animate: false, history);
+        Commit(panel, next, moves, animate: false, history);
     }
 
     internal void ZoomToRect(PanelId panel, Vector2 corner, Vector2 opposite, ViewAxes axes, bool animate)
     {
         CheckPanel(panel);
-        var (x, y) = Target();
-        var g = _renderer.Plan!.Guides;
+        _active = panel;
+        var guide = PanelOf(panel);
+        var flipped = PlanOf(panel.Plot).Guides.Flipped;
         var least = 4 * Scale;
-        var (a, b) = (Fractions(corner), Fractions(opposite));
         var (wide, tall) = (Math.Abs(opposite.X - corner.X) >= least, Math.Abs(opposite.Y - corner.Y) >= least);
-        var (xSide, ySide) = g.Flipped ? (tall, wide) : (wide, tall);
-        if (xSide && Moves(axes, ViewAxes.X, x: true))
+        var (xSide, ySide) = flipped ? (tall, wide) : (wide, tall);
+        if (guide.Polar is { } polar)
         {
-            x = Part(x, Math.Clamp(Math.Min(a.X, b.X), 0, 1), Math.Clamp(Math.Max(a.X, b.X), 0, 1));
+            // The radius's side: the rectangle's span of distances from the center, which a drag spans when it is wide or tall.
+            (xSide, ySide) = polar.ThetaIsX ? (false, wide || tall) : (wide || tall, false);
         }
 
-        if (ySide && Moves(axes, ViewAxes.Y, x: false))
+        var moves = Movable(panel.Plot, axes);
+        var next = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Target[panel.Panel]);
+        var (a, b) = (Fractions(panel, corner, secondary: false), Fractions(panel, opposite, secondary: false));
+        var (a2, b2) = (Fractions(panel, corner, secondary: true), Fractions(panel, opposite, secondary: true));
+        if (guide.Polar is { } radial)
         {
-            y = Part(y, Math.Clamp(Math.Min(a.Y, b.Y), 0, 1), Math.Clamp(Math.Max(a.Y, b.Y), 0, 1));
+            var (near, far) = Distances(radial, corner, opposite);
+            var spec = SpecOf(panel.Plot);
+            var reverse = Reversed(radial.ThetaIsX ? spec.ScaleY : spec.ScaleX);
+            (near, far) = reverse ? (1 - far, 1 - near) : (near, far);
+            (a, b) = radial.ThetaIsX ? ((a.X, near), (b.X, far)) : ((near, a.Y), (far, b.Y));
         }
 
-        Commit(panel, x, y, animate, HistoryMode.Push);
+        next = new PanelDomains(
+            xSide && (moves & ViewAxes.X) != 0 ? Part(next.X, a.X, b.X) : next.X,
+            ySide && (moves & ViewAxes.Y) != 0 ? Part(next.Y, a.Y, b.Y) : next.Y,
+            xSide && (moves & ViewAxes.X2) != 0 ? Part(next.X2, a2.X, b2.X) : next.X2,
+            ySide && (moves & ViewAxes.Y2) != 0 ? Part(next.Y2, a2.Y, b2.Y) : next.Y2
+        );
+        Commit(panel, next, moves, animate, HistoryMode.Push);
     }
 
     internal void SetView(PanelId panel, in ScaleRange x, in ScaleRange y, bool animate)
     {
         CheckPanel(panel);
-        var (fullX, fullY) = Full();
-        if ((!MovesX() && !SameRange(x, fullX)) || (!MovesY() && !SameRange(y, fullY)))
+        _active = panel;
+        var spec = SpecOf(panel.Plot);
+        var full = Full(panel.Plot, panel.Panel);
+        if (spec.Coord is PolarCoordSpec { Theta: var theta } && !SameRange(theta == PolarTheta.X ? x : y, theta == PolarTheta.X ? full.X : full.Y))
         {
-            throw new ArgumentException("The plot's band axis, polar coordinates, or facet keep the full view in row I1a (design §6.2).", nameof(x));
+            throw new ArgumentException("The angle of polar coordinates keeps its full turn (design §6.2, row I1b).", nameof(x));
         }
 
-        Commit(panel, x, y, animate, HistoryMode.Push);
+        // The secondary scales follow their primaries by the same shares, so that the lines over both keep their overlap.
+        var now = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Target[panel.Panel]);
+        var next = new PanelDomains(
+            x,
+            y,
+            spec.ScaleX2 is null ? now.X2 : Follow(now.X, x, now.X2, Reversed(spec.ScaleX) == Reversed(spec.ScaleX2)),
+            spec.ScaleY2 is null ? now.Y2 : Follow(now.Y, y, now.Y2, Reversed(spec.ScaleY) == Reversed(spec.ScaleY2))
+        );
+        Commit(panel, next, ViewAxes.All, animate, HistoryMode.Push);
     }
 
     internal void Reset(PanelId panel, bool animate)
     {
         CheckPanel(panel);
-        var plan = _renderer.Plan!;
-        if (plan.FullStale)
+        _active = panel;
+        var state = _states[panel.Plot];
+        state.Target.CopyTo(state.Work, 0);
+        state.Work[panel.Panel] = PanelDomains.None;
+        Share(panel.Plot, panel.Panel, state.Work);
+        Apply(panel.Plot, animate && !PlanOf(panel.Plot).FullStale, HistoryMode.Push);
+    }
+
+    internal void ResetAll(bool animate)
+    {
+        CheckThread();
+        if (PlotCount == 0)
         {
-            animate = false;
+            throw new InvalidOperationException("The engine has drawn no frame yet: a view needs the plot's layout.");
         }
 
-        Commit(panel, ScaleRange.None, ScaleRange.None, animate, HistoryMode.Push);
+        for (var k = 0; k < PlotCount; k++)
+        {
+            _states[k].Work.AsSpan().Fill(PanelDomains.None);
+            Apply(k, animate && !PlanOf(k).FullStale, HistoryMode.Push);
+        }
     }
 
     internal bool MoveInHistory(int step)
     {
         CheckThread();
-        var to = _position + step;
-        if (_plot is null || !_drawn || to < 0 || to >= _history.Count)
+        if (Active() is not { } state)
         {
             return false;
         }
 
-        _position = to;
-        var (x, y) = _history[to];
+        var to = state.Position + step;
+        if (to < 0 || to >= state.Count)
+        {
+            return false;
+        }
+
+        state.Position = to;
+        state.Entry(to).CopyTo(state.Work);
         var reason = _reason;
         _reason = ViewChangeReason.History;
         try
         {
-            Commit(First, x, y, animate: true, HistoryMode.None, constrain: false);
+            Apply(_active.Plot, animate: true, HistoryMode.None);
         }
         finally
         {
@@ -615,7 +725,10 @@ public sealed class PlotEngine : IDisposable
     {
         CheckThread();
         _inGesture = true;
-        _lastWasGroup = false;
+        foreach (var state in _states)
+        {
+            state.LastWasGroup = false;
+        }
     }
 
     internal void EndGesture()
@@ -627,45 +740,274 @@ public sealed class PlotEngine : IDisposable
         }
 
         _inGesture = false;
-        Push(_targetX, _targetY);
+        foreach (var state in _states)
+        {
+            if (state.Touched)
+            {
+                state.Touched = false;
+                Push(state);
+            }
+        }
     }
 
     private static bool SameRange(in ScaleRange a, in ScaleRange b) => (PlotPlan.IsNone(a) && PlotPlan.IsNone(b)) || a == b;
 
+    private static bool Same(in PanelDomains a, in PanelDomains b) =>
+        SameRange(a.X, b.X) && SameRange(a.Y, b.Y) && SameRange(a.X2, b.X2) && SameRange(a.Y2, b.Y2);
+
+    private static bool SameViews(ReadOnlySpan<PanelDomains> a, ReadOnlySpan<PanelDomains> b)
+    {
+        for (var p = 0; p < a.Length; p++)
+        {
+            if (!Same(a[p], b[p]))
+            {
+                return false;
+            }
+        }
+
+        return a.Length == b.Length;
+    }
+
+    private static bool Reversed(ScaleSpec? scale) => scale is ContinuousScaleSpec { Reverse: true };
+
     private static ScaleRange Zoom(in ScaleRange range, double at, double factor)
     {
+        if (PlotPlan.IsNone(range))
+        {
+            return range;
+        }
+
         var width = range.Upper - range.Lower;
         var lower = range.Lower + (at * width) - (at * width / factor);
         return new ScaleRange(range.Origin, lower, lower + (width / factor)).Anchor();
     }
 
-    private static ScaleRange Shift(in ScaleRange range, double by) => new ScaleRange(range.Origin, range.Lower + by, range.Upper + by).Anchor();
+    private static ScaleRange Shift(in ScaleRange range, double share) =>
+        PlotPlan.IsNone(range)
+            ? range
+            : new ScaleRange(
+                range.Origin,
+                range.Lower + (share * (range.Upper - range.Lower)),
+                range.Upper + (share * (range.Upper - range.Lower))
+            ).Anchor();
 
-    private static ScaleRange Part(in ScaleRange range, double from, double to)
+    private static ScaleRange Part(in ScaleRange range, double a, double b)
     {
+        if (PlotPlan.IsNone(range))
+        {
+            return range;
+        }
+
+        var (from, to) = (Math.Clamp(Math.Min(a, b), 0, 1), Math.Clamp(Math.Max(a, b), 0, 1));
         var width = range.Upper - range.Lower;
         return new ScaleRange(range.Origin, range.Lower + (from * width), range.Lower + (to * width)).Anchor();
     }
 
-    private static ScaleRange Lerp(in ScaleRange from, in ScaleRange to, double t)
+    /// <summary>Returns a point's share of a range: 0 at its low end, 1 at its high end.</summary>
+    private static double Fraction(in ScaleRange point, in ScaleRange range) =>
+        ((double)(point.Origin - range.Origin) + point.Lower - range.Lower) / (range.Upper - range.Lower);
+
+    /// <summary>
+    /// Returns a secondary range moved as its primary moved, by the same shares of each (row I1b): the primary's new ends as
+    /// shares of its old range, taken over the secondary's, mirrored when one of the two is reversed and the other not.
+    /// </summary>
+    private static ScaleRange Follow(in ScaleRange from, in ScaleRange to, in ScaleRange second, bool sameDirection)
     {
-        // Both ends as differences from the destination's origin: the origins' difference is exact as a long.
-        var shift = (double)(from.Origin - to.Origin);
-        var lower = (from.Lower + shift) + ((to.Lower - (from.Lower + shift)) * t);
-        var upper = (from.Upper + shift) + ((to.Upper - (from.Upper + shift)) * t);
-        return new ScaleRange(to.Origin, lower, upper).Anchor();
+        if (PlotPlan.IsNone(from) || PlotPlan.IsNone(to) || PlotPlan.IsNone(second) || SameRange(from, to))
+        {
+            return second;
+        }
+
+        var (low, high) = (
+            Fraction(new ScaleRange(to.Origin, to.Lower, to.Lower), from),
+            Fraction(new ScaleRange(to.Origin, to.Upper, to.Upper), from)
+        );
+        (low, high) = sameDirection ? (low, high) : (1 - high, 1 - low);
+        var width = second.Upper - second.Lower;
+        return new ScaleRange(second.Origin, second.Lower + (low * width), second.Lower + (high * width)).Anchor();
     }
 
-    private static HitAreaKind AxisKind(PlotGuides guides, TickAxis? axis) =>
+    private static ScaleRange Lerp(in ScaleRange from, in ScaleRange to, in ScaleRange full, double t)
+    {
+        if (PlotPlan.IsNone(from) && PlotPlan.IsNone(to))
+        {
+            return ScaleRange.None;
+        }
+
+        var (a, b) = (PlotPlan.IsNone(from) ? full : from, PlotPlan.IsNone(to) ? full : to);
+        if (PlotPlan.IsNone(a) || PlotPlan.IsNone(b))
+        {
+            return to;
+        }
+
+        // Both ends as differences from the destination's origin: the origins' difference is exact as a long.
+        var shift = (double)(a.Origin - b.Origin);
+        var lower = (a.Lower + shift) + ((b.Lower - (a.Lower + shift)) * t);
+        var upper = (a.Upper + shift) + ((b.Upper - (a.Upper + shift)) * t);
+        return new ScaleRange(b.Origin, lower, upper).Anchor();
+    }
+
+    /// <summary>
+    /// Returns the radius's shares at a rectangle's nearest and farthest points from a polar panel's center, 0 at the inner
+    /// edge and 1 at the outer one.
+    /// </summary>
+    private static (double Near, double Far) Distances(in PolarTransform polar, Vector2 a, Vector2 b)
+    {
+        var (left, right, top, bottom) = (Math.Min(a.X, b.X), Math.Max(a.X, b.X), Math.Min(a.Y, b.Y), Math.Max(a.Y, b.Y));
+        var (cx, cy) = (polar.CenterX, polar.CenterY);
+        var near = Distance(Math.Clamp(cx, left, right) - cx, Math.Clamp(cy, top, bottom) - cy);
+        var far = Math.Max(
+            Math.Max(Distance(left - cx, top - cy), Distance(right - cx, top - cy)),
+            Math.Max(Distance(left - cx, bottom - cy), Distance(right - cx, bottom - cy))
+        );
+        var span = Math.Max(polar.Radius - polar.Inner, 1);
+        return ((near - polar.Inner) / span, (far - polar.Inner) / span);
+
+        static double Distance(double dx, double dy) => Math.Sqrt((dx * dx) + (dy * dy));
+    }
+
+    private static HitAreaKind AxisKind(PanelGuide guide, TickAxis? axis) =>
         axis is null ? HitAreaKind.Figure
-        : axis == guides.X ? HitAreaKind.AxisX
-        : axis == guides.Y ? HitAreaKind.AxisY
-        : axis == guides.X2 ? HitAreaKind.AxisX2
-        : axis == guides.Y2 ? HitAreaKind.AxisY2
+        : axis == guide.X ? HitAreaKind.AxisX
+        : axis == guide.Y ? HitAreaKind.AxisY
+        : axis == guide.X2 ? HitAreaKind.AxisX2
+        : axis == guide.Y2 ? HitAreaKind.AxisY2
         : HitAreaKind.Figure;
 
     private static bool Matches(InputBinding binding, ModifierKeys modifiers, HitAreaKind area) =>
         binding.Modifiers == modifiers && (binding.Areas & area) != 0;
+
+    /// <summary>
+    /// Returns what lies at a pixel (design §6.3, rows I1a and I1b): the plot whose area holds it, then its panel, an axis band
+    /// of a panel beside it, its title, or its legend. <paramref name="inPlot"/> tells whether the pixel lies in a plot's area.
+    /// </summary>
+    private HitArea Hit(Vector2 pixel, out bool inPlot)
+    {
+        inPlot = false;
+        var count = PlotCount;
+        var (x, y) = (pixel.X, pixel.Y);
+        if (count == 0 || x < 0 || y < 0 || x >= Width || y >= Height)
+        {
+            return default;
+        }
+
+        for (var k = 0; k < count; k++)
+        {
+            var guides = PlanOf(k).Guides;
+            var (left, top, width, height) = guides.Area;
+            if (x < left || y < top || x >= left + width || y >= top + height)
+            {
+                continue;
+            }
+
+            inPlot = true;
+            return guides.Empty ? new HitArea(HitAreaKind.Figure, new PanelId(k, 0)) : HitInPlot(k, guides, x, y);
+        }
+
+        return new HitArea(HitAreaKind.Figure, new PanelId(0, 0));
+    }
+
+    private HitArea HitInPlot(int plot, PlotGuides guides, float x, float y)
+    {
+        var panels = guides.PanelCount;
+        for (var p = 0; p < panels; p++)
+        {
+            var g = guides.PanelAt(p);
+            if (x >= g.Left && x < g.Left + g.Width && y >= g.Top && y < g.Top + g.Height)
+            {
+                return new HitArea(HitAreaKind.Panel, new PanelId(plot, p));
+            }
+        }
+
+        var (left, top, width, _) = guides.Area;
+        var padding = MathF.Round(SpecOf(plot).Theme.Padding * Scale);
+        if (guides.TitleBand > 0 && y < top + padding + guides.TitleBand)
+        {
+            return new HitArea(HitAreaKind.Title, new PanelId(plot, 0));
+        }
+
+        if (guides.LegendWidth > 0 && x >= left + width - padding - guides.LegendWidth)
+        {
+            return new HitArea(HitAreaKind.Legend, new PanelId(plot, 0));
+        }
+
+        // An axis band: beside the nearest panel along the pixel's row or column, on a side that panel draws an axis on.
+        var (above, below, before, after) = (-1, -1, -1, -1);
+        for (var p = 0; p < panels; p++)
+        {
+            var g = guides.PanelAt(p);
+            if (x >= g.Left && x < g.Left + g.Width)
+            {
+                if (g.Top + g.Height <= y && (above < 0 || g.Top + g.Height > guides.PanelAt(above).Top + guides.PanelAt(above).Height))
+                {
+                    above = p;
+                }
+
+                if (g.Top > y && (below < 0 || g.Top < guides.PanelAt(below).Top))
+                {
+                    below = p;
+                }
+            }
+
+            if (y >= g.Top && y < g.Top + g.Height)
+            {
+                if (g.Left + g.Width <= x && (before < 0 || g.Left + g.Width > guides.PanelAt(before).Left + guides.PanelAt(before).Width))
+                {
+                    before = p;
+                }
+
+                if (g.Left > x && (after < 0 || g.Left < guides.PanelAt(after).Left))
+                {
+                    after = p;
+                }
+            }
+        }
+
+        if (
+            Side(above, PlotGuides.SideBottom, y - (guides.PanelAt(Math.Max(above, 0)).Top + guides.PanelAt(Math.Max(above, 0)).Height)) is { } bottom
+        )
+        {
+            return bottom;
+        }
+
+        if (Side(below, PlotGuides.SideTop, guides.PanelAt(Math.Max(below, 0)).Top - y) is { } upper)
+        {
+            return upper;
+        }
+
+        if (Side(after, PlotGuides.SideLeft, guides.PanelAt(Math.Max(after, 0)).Left - x) is { } leftSide)
+        {
+            return leftSide;
+        }
+
+        if (
+            Side(before, PlotGuides.SideRight, x - (guides.PanelAt(Math.Max(before, 0)).Left + guides.PanelAt(Math.Max(before, 0)).Width)) is
+            { } rightSide
+        )
+        {
+            return rightSide;
+        }
+
+        return new HitArea(HitAreaKind.Figure, new PanelId(plot, 0));
+
+        // A panel's side, past its strip (row G6b): the axis it draws there, if any.
+        HitArea? Side(int p, int side, float distance)
+        {
+            if (p < 0)
+            {
+                return null;
+            }
+
+            var g = guides.PanelAt(p);
+            if (!g.Draws[side] || g.Sides[side].Axis is not { } axis || distance < g.Offsets[side])
+            {
+                return null;
+            }
+
+            var kind = AxisKind(g, axis);
+            return kind == HitAreaKind.Figure ? null : new HitArea(kind, new PanelId(plot, p));
+        }
+    }
 
     private bool Pointer(in PointerEvent e)
     {
@@ -677,7 +1019,8 @@ public sealed class PlotEngine : IDisposable
                 return true;
             }
 
-            _context.Hit = new HitArea(_pressArea.Kind, _pressArea.Panel);
+            // The plot and the place of the press, wherever the pointer goes (design §6.2, row I1b).
+            _context.Hit = _pressArea;
             Release(captured.OnPointer(e, _context));
             if (e.Kind == PointerEventKind.Up)
             {
@@ -690,7 +1033,11 @@ public sealed class PlotEngine : IDisposable
         switch (e.Kind)
         {
             case PointerEventKind.Down:
-                (_press, _pressArea, _dragging) = (e, HitArea(e.Position), false);
+                (_press, _pressArea, _dragging) = (e, Hit(e.Position, out var inPlot), false);
+                if (inPlot)
+                {
+                    _active = _pressArea.Panel;
+                }
 
                 // A press is taken when a drag or a click of its button may follow on its place (design §6.1).
                 _pressed = Bound(e.Button, e.Modifiers, _pressArea.Kind);
@@ -844,28 +1191,30 @@ public sealed class PlotEngine : IDisposable
             return had;
         }
 
-        if (_plot is null || !_drawn)
+        // The plot and the panel last operated on (design §6.2, row I1b).
+        var panel = _active;
+        if (panel.Plot >= PlotCount || panel.Panel >= _states[panel.Plot].Panels)
         {
             return false;
         }
 
-        var g = _renderer.Plan!.Guides;
+        var g = PanelOf(panel);
         var middle = new Vector2(g.Left + (g.Width / 2f), g.Top + (g.Height / 2f));
         var step = (float)Options.KeyPanFraction;
         switch (command)
         {
             case ViewCommand.Reset:
-                Reset(First, animate: true);
+                Reset(panel, animate: true);
                 return true;
             case ViewCommand.Back:
                 return MoveInHistory(-1);
             case ViewCommand.Forward:
                 return MoveInHistory(+1);
             case ViewCommand.ZoomIn:
-                ZoomAt(First, middle, Options.KeyZoomFactor, ViewAxes.Both, animate: true, grouped: false);
+                ZoomAt(panel, middle, Options.KeyZoomFactor, ViewAxes.All, animate: true, grouped: false);
                 return true;
             case ViewCommand.ZoomOut:
-                ZoomAt(First, middle, 1 / Options.KeyZoomFactor, ViewAxes.Both, animate: true, grouped: false);
+                ZoomAt(panel, middle, 1 / Options.KeyZoomFactor, ViewAxes.All, animate: true, grouped: false);
                 return true;
             case ViewCommand.PanLeft or ViewCommand.PanRight or ViewCommand.PanUp or ViewCommand.PanDown:
                 // A key moves the view, so the data move the other way, as when they are dragged.
@@ -876,45 +1225,106 @@ public sealed class PlotEngine : IDisposable
                     ViewCommand.PanUp => (0f, step * g.Height),
                     _ => (0f, -step * g.Height),
                 };
-                Pan(First, new Vector2(dx, dy), ViewAxes.Both, grouped: false);
+                Pan(panel, new Vector2(dx, dy), ViewAxes.All, grouped: false);
                 return true;
             default:
                 return false;
         }
     }
 
-    /// <summary>Passes a proposal through the limits and the constraints, and takes it as the target (design §6.2).</summary>
-    private void Commit(PanelId panel, ScaleRange x, ScaleRange y, bool animate, HistoryMode history, bool constrain = true)
+    /// <summary>
+    /// Passes a proposal for a panel through the constraints and the limits, gives the shared axes to the panels that share
+    /// them, and takes it as the target (design §6.2, row I1b). <paramref name="next"/> holds every axis of the panel, those
+    /// that do not move at their target's value.
+    /// </summary>
+    private void Commit(PanelId panel, PanelDomains next, ViewAxes moves, bool animate, HistoryMode history)
     {
-        if (constrain)
+        var (plot, p) = (panel.Plot, panel.Panel);
+        var state = _states[plot];
+        var spec = SpecOf(plot);
+        var guide = PanelOf(panel);
+        var now = Resolve(plot, p, state.Target[p]);
+        _proposal.Start(panel, _reason, (guide.Left, guide.Top, guide.Width, guide.Height), next.X, next.Y);
+        foreach (var constraint in Constraints)
         {
-            // The full view is no range to constrain: it is the spec's.
-            var full = PlotPlan.IsNone(x) && PlotPlan.IsNone(y);
-            if (!full)
+            if (!constraint.Constrain(_proposal))
             {
-                var (fullX, fullY) = Full();
-                (x, y) = (PlotPlan.IsNone(x) ? fullX : x, PlotPlan.IsNone(y) ? fullY : y);
-                var g = _renderer.Plan!.Guides;
-                _proposal.Start(panel, _reason, (g.Left, g.Top, g.Width, g.Height), x, y);
-                foreach (var constraint in Constraints)
-                {
-                    if (!constraint.Constrain(_proposal))
-                    {
-                        return;
-                    }
-                }
-
-                // The limits come last, so that no constraint takes a view past them.
-                if (!ZoomLimits.Constrain(_proposal, g))
-                {
-                    return;
-                }
-
-                (x, y) = (_proposal.X, _proposal.Y);
+                return;
             }
         }
 
-        if (SameRange(x, _targetX) && SameRange(y, _targetY))
+        // A secondary scale that moved with its primary follows what the constraints did to the primary.
+        var (x, y) = (_proposal.X, _proposal.Y);
+        var (x2, y2) = (next.X2, next.Y2);
+        if ((moves & ViewAxes.X2) != 0 && (moves & ViewAxes.X) != 0)
+        {
+            x2 = Follow(next.X, x, x2, Reversed(spec.ScaleX) == Reversed(spec.ScaleX2));
+        }
+
+        if ((moves & ViewAxes.Y2) != 0 && (moves & ViewAxes.Y) != 0)
+        {
+            y2 = Follow(next.Y, y, y2, Reversed(spec.ScaleY) == Reversed(spec.ScaleY2));
+        }
+
+        // The limits come last, so that no constraint takes a view past them.
+        var flipped = PlanOf(plot).Guides.Flipped;
+        var (alongX, alongY) = flipped ? (guide.Height, guide.Width) : (guide.Width, guide.Height);
+        if (!ZoomLimits.Wide(x, alongX) || !ZoomLimits.Wide(y, alongY) || !ZoomLimits.Wide(x2, alongX) || !ZoomLimits.Wide(y2, alongY))
+        {
+            return;
+        }
+
+        // An axis the proposal leaves where it was keeps its target: a full view stays the spec's, which follows the data.
+        var current = state.Target[p];
+        var view = new PanelDomains(
+            SameRange(x, now.X) ? current.X : x,
+            SameRange(y, now.Y) ? current.Y : y,
+            SameRange(x2, now.X2) ? current.X2 : x2,
+            SameRange(y2, now.Y2) ? current.Y2 : y2
+        );
+        state.Target.CopyTo(state.Work, 0);
+        state.Work[p] = view;
+        Share(plot, p, state.Work);
+        Apply(plot, animate, history);
+    }
+
+    /// <summary>Gives a panel's shared axes to every panel of a facet that shares them (design §6.2, row I1b).</summary>
+    private void Share(int plot, int panel, PanelDomains[] views)
+    {
+        if (views.Length < 2 || PlanOf(plot).Facet is not { } facet)
+        {
+            return;
+        }
+
+        var spec = SpecOf(plot);
+        var (shareX, shareY) = (!facet.Arrangement.FreeXOf(spec.ScaleX), !facet.Arrangement.FreeY);
+        var source = views[panel];
+        for (var q = 0; q < views.Length; q++)
+        {
+            var view = views[q];
+            views[q] = new PanelDomains(
+                shareX ? source.X : view.X,
+                shareY ? source.Y : view.Y,
+                shareX ? source.X2 : view.X2,
+                shareY ? source.Y2 : view.Y2
+            );
+        }
+    }
+
+    /// <summary>
+    /// Takes a plot's work views as its target (design §6.2): animates to them or shows them, writes the history, and tells
+    /// each panel whose view changed.
+    /// </summary>
+    private void Apply(int plot, bool animate, HistoryMode history)
+    {
+        var state = _states[plot];
+        var changed = false;
+        for (var p = 0; p < state.Panels && !changed; p++)
+        {
+            changed = !Same(state.Work[p], state.Target[p]);
+        }
+
+        if (!changed)
         {
             return;
         }
@@ -922,159 +1332,228 @@ public sealed class PlotEngine : IDisposable
         // The view drawn now, the animation moved to this time: a change that comes while one runs starts from where the
         // view is now, not where the last frame drew it. Otherwise a wheel turned at each frame would restart the animation at
         // its start each time, and the view would not move until the turns stop.
-        Animate();
-        var (shownX, shownY) = Shown();
+        Animate(plot);
         if (animate && Options.ZoomAnimation > TimeSpan.Zero)
         {
-            (_fromX, _fromY, _animationStart, _animating) = (shownX, shownY, Time.GetTimestamp(), true);
+            state.Shown.CopyTo(state.From, 0);
+            (state.AnimationStart, state.Animating) = (Time.GetTimestamp(), true);
         }
         else
         {
-            _animating = false;
-            (_shownX, _shownY) = (x, y);
+            state.Animating = false;
+            state.Work.CopyTo(state.Shown, 0);
         }
 
-        (_targetX, _targetY) = (x, y);
+        // The old target stays in the work views to tell which panels changed.
+        (state.Target, state.Work) = (state.Work, state.Target);
         switch (history)
         {
             case HistoryMode.Push:
-                Push(x, y);
+                Push(state);
                 break;
             case HistoryMode.Group:
                 var now = Time.GetTimestamp();
-                if (_lastWasGroup && Time.GetElapsedTime(_lastGroupTimestamp, now) < Options.WheelGroupGap && _position == _history.Count - 1)
+                if (
+                    state.LastWasGroup
+                    && Time.GetElapsedTime(state.LastGroupTimestamp, now) < Options.WheelGroupGap
+                    && state.Position == state.Count - 1
+                )
                 {
-                    _history[_position] = (x, y);
+                    state.Target.CopyTo(state.Entry(state.Position));
                 }
                 else
                 {
-                    Push(x, y);
+                    Push(state);
                 }
 
-                (_lastGroupTimestamp, _lastWasGroup) = (now, true);
+                (state.LastGroupTimestamp, state.LastWasGroup) = (now, true);
                 break;
         }
 
         if (history != HistoryMode.Group)
         {
-            _lastWasGroup = false;
+            state.LastWasGroup = false;
         }
 
-        Notify(_reason, x, y);
+        for (var p = 0; p < state.Panels; p++)
+        {
+            if (!Same(state.Work[p], state.Target[p]))
+            {
+                Notify(plot, p, _reason);
+            }
+        }
+
         RequestFrame();
     }
 
-    private void Push(in ScaleRange x, in ScaleRange y)
+    private void Push(PlotState state)
     {
-        if (_position < _history.Count && SameRange(_history[_position].X, x) && SameRange(_history[_position].Y, y))
+        if (SameViews(state.Entry(state.Position), state.Target))
         {
             return;
         }
 
-        // Room for the whole depth at once, so that the history allocates once and not each time it doubles.
-        if (_history.Capacity < Options.HistoryDepth + 1)
-        {
-            _history.Capacity = Options.HistoryDepth + 1;
-        }
-
-        _history.RemoveRange(_position + 1, _history.Count - _position - 1);
-        _history.Add((x, y));
-        while (_history.Count > Options.HistoryDepth)
-        {
-            _history.RemoveAt(0);
-        }
-
-        _position = _history.Count - 1;
+        state.Push(state.Target, Options.HistoryDepth);
     }
 
-    private void Notify(ViewChangeReason reason, in ScaleRange x, in ScaleRange y)
+    private void Notify(int plot, int panel, ViewChangeReason reason)
     {
         if (ViewChanged is { } handler)
         {
-            var (fullX, fullY) = PlotPlan.IsNone(x) || PlotPlan.IsNone(y) ? Full() : (x, y);
-            handler(new ViewChange(First, reason, PlotPlan.IsNone(x) ? fullX : x, PlotPlan.IsNone(y) ? fullY : y));
+            var view = Resolve(plot, panel, _states[plot].Target[panel]);
+            handler(new ViewChange(new PanelId(plot, panel), reason, view.X, view.Y));
         }
     }
 
-    private void Animate()
+    private void Animate(int plot)
     {
-        if (!_animating)
+        var state = _states[plot];
+        if (!state.Animating)
         {
             return;
         }
 
-        var t = Time.GetElapsedTime(_animationStart).TotalMilliseconds / Options.ZoomAnimation.TotalMilliseconds;
+        var t = Time.GetElapsedTime(state.AnimationStart).TotalMilliseconds / Options.ZoomAnimation.TotalMilliseconds;
         if (t >= 1)
         {
-            (_shownX, _shownY, _animating) = (_targetX, _targetY, false);
+            state.Target.CopyTo(state.Shown, 0);
+            state.Animating = false;
             return;
         }
 
         // A cubic ease out (design §6.2): fast at first, slowing to the end.
         var eased = 1 - Math.Pow(1 - Math.Max(t, 0), 3);
-        var (fullX, fullY) = Full();
-        var (toX, toY) = (PlotPlan.IsNone(_targetX) ? fullX : _targetX, PlotPlan.IsNone(_targetY) ? fullY : _targetY);
-        var (fromX, fromY) = (PlotPlan.IsNone(_fromX) ? fullX : _fromX, PlotPlan.IsNone(_fromY) ? fullY : _fromY);
-        (_shownX, _shownY) = (Lerp(fromX, toX, eased), Lerp(fromY, toY, eased));
+        for (var p = 0; p < state.Panels; p++)
+        {
+            var (from, to, full) = (state.From[p], state.Target[p], Full(plot, p));
+            state.Shown[p] = new PanelDomains(
+                Lerp(from.X, to.X, full.X, eased),
+                Lerp(from.Y, to.Y, full.Y, eased),
+                Lerp(from.X2, to.X2, full.X2, eased),
+                Lerp(from.Y2, to.Y2, full.Y2, eased)
+            );
+        }
     }
 
-    private void ResetState()
+    private void NewStates(int count)
     {
-        (_targetX, _targetY, _shownX, _shownY, _animating) = (ScaleRange.None, ScaleRange.None, ScaleRange.None, ScaleRange.None, false);
-        _history.Clear();
-        _history.Add((ScaleRange.None, ScaleRange.None));
-        (_position, _inGesture, _lastWasGroup) = (0, false, false);
+        _states = new PlotState[count];
+        for (var k = 0; k < count; k++)
+        {
+            _states[k] = new PlotState();
+        }
+
+        _shownViews = new PanelDomains[count][];
+        (_active, _inGesture) = (default, false);
     }
 
-    private (ScaleRange X, ScaleRange Y) Full()
+    private PlotState? Active() => _active.Plot < PlotCount && _states[_active.Plot].Panels > 0 ? _states[_active.Plot] : null;
+
+    private PlotPlan PlanOf(int plot) => _plot is not null ? _renderer.Plan! : _renderer.Figure!.Plans[plot];
+
+    private PlotSpec SpecOf(int plot) => _plot ?? FigurePlan.PlotAt(_figure!, plot);
+
+    private PanelGuide PanelOf(PanelId panel) => PlanOf(panel.Plot).Guides.PanelAt(panel.Panel);
+
+    private PanelDomains Full(int plot, int panel)
     {
-        var plan = _renderer.Plan!;
-        return (plan.FullX, plan.FullY);
+        var full = PlanOf(plot).Full;
+        return panel < full.Length ? full[panel] : PanelDomains.None;
     }
 
-    private (ScaleRange X, ScaleRange Y) Target()
+    /// <summary>Returns a view with each axis that has none at the full view's range.</summary>
+    private PanelDomains Resolve(int plot, int panel, in PanelDomains view)
     {
-        var (fullX, fullY) = Full();
-        return (PlotPlan.IsNone(_targetX) ? fullX : _targetX, PlotPlan.IsNone(_targetY) ? fullY : _targetY);
+        var full = Full(plot, panel);
+        return new PanelDomains(
+            PlotPlan.IsNone(view.X) ? full.X : view.X,
+            PlotPlan.IsNone(view.Y) ? full.Y : view.Y,
+            PlotPlan.IsNone(view.X2) ? full.X2 : view.X2,
+            PlotPlan.IsNone(view.Y2) ? full.Y2 : view.Y2
+        );
     }
 
-    private (ScaleRange X, ScaleRange Y) Shown()
+    /// <summary>
+    /// Returns the axes an operation may move on a plot (design §6.2, row I1b): of those asked, a cartesian plot's x, y, and
+    /// secondary scales, a polar plot's radius alone. A second axis with no secondary scale is a transform's, which follows
+    /// its primary: asking for it moves the primary.
+    /// </summary>
+    private ViewAxes Movable(int plot, ViewAxes axes)
     {
-        var (fullX, fullY) = Full();
-        return (PlotPlan.IsNone(_shownX) ? fullX : _shownX, PlotPlan.IsNone(_shownY) ? fullY : _shownY);
+        var spec = SpecOf(plot);
+        if (spec.ScaleX2 is null && (axes & ViewAxes.X2) != 0)
+        {
+            axes = (axes & ~ViewAxes.X2) | ViewAxes.X;
+        }
+
+        if (spec.ScaleY2 is null && (axes & ViewAxes.Y2) != 0)
+        {
+            axes = (axes & ~ViewAxes.Y2) | ViewAxes.Y;
+        }
+
+        return spec.Coord is PolarCoordSpec { Theta: var theta } ? axes & (theta == PolarTheta.X ? ViewAxes.Y : ViewAxes.X) : axes;
     }
 
-    /// <summary>Returns a pixel's place along the x and the y scale over the panel, 0 at the low end and 1 at the high end.</summary>
-    private (double X, double Y) Fractions(Vector2 pixel)
+    /// <summary>
+    /// Returns a pixel's share along the x and the y scale over a panel, 0 at the low end and 1 at the high end, each scale's
+    /// direction taken (row I1b): of the primary scales, or of the secondary ones. In polar coordinates the radius's share is
+    /// the distance from the center's, 0 at the inner edge.
+    /// </summary>
+    private (double X, double Y) Fractions(PanelId panel, Vector2 pixel, bool secondary)
     {
-        var g = _renderer.Plan!.Guides;
-        var across = (pixel.X - g.Left) / (double)g.Width;
-        var up = (g.Top + g.Height - pixel.Y) / (double)g.Height;
-        return g.Flipped ? (up, across) : (across, up);
+        var (spec, g) = (SpecOf(panel.Plot), PanelOf(panel));
+        var (scaleX, scaleY) = secondary ? ((ScaleSpec?)spec.ScaleX2, (ScaleSpec?)spec.ScaleY2) : (spec.ScaleX, spec.ScaleY);
+        double x,
+            y;
+        if (g.Polar is { } polar)
+        {
+            var (dx, dy) = (pixel.X - polar.CenterX, pixel.Y - polar.CenterY);
+            var radius = (Math.Sqrt((dx * dx) + (dy * dy)) - polar.Inner) / Math.Max(polar.Radius - polar.Inner, 1);
+            (x, y) = polar.ThetaIsX ? (0.0, radius) : (radius, 0.0);
+        }
+        else
+        {
+            var across = (pixel.X - g.Left) / (double)g.Width;
+            var up = (g.Top + g.Height - pixel.Y) / (double)g.Height;
+            (x, y) = PlanOf(panel.Plot).Guides.Flipped ? (up, across) : (across, up);
+        }
+
+        return (Reversed(scaleX) ? 1 - x : x, Reversed(scaleY) ? 1 - y : y);
     }
 
-    private bool Moves(ViewAxes axes, ViewAxes axis, bool x) => (axes & axis) != 0 && (x ? MovesX() : MovesY());
+    /// <summary>
+    /// Returns the shares of the x and the y range a move of pixels shifts the views by, so that the data follow the pointer
+    /// (row I1b): each scale's direction taken. In polar coordinates a move up moves the radius's data outward.
+    /// </summary>
+    private (double X, double Y) PanShares(PanelId panel, Vector2 pixels, bool secondary)
+    {
+        var (spec, g) = (SpecOf(panel.Plot), PanelOf(panel));
+        var (scaleX, scaleY) = secondary ? ((ScaleSpec?)spec.ScaleX2, (ScaleSpec?)spec.ScaleY2) : (spec.ScaleX, spec.ScaleY);
+        double x,
+            y;
+        if (g.Polar is { } polar)
+        {
+            var outward = -pixels.Y / (double)Math.Max(polar.Radius - polar.Inner, 1);
+            (x, y) = polar.ThetaIsX ? (0.0, outward) : (outward, 0.0);
+        }
+        else
+        {
+            var (across, up) = (pixels.X / (double)g.Width, -pixels.Y / (double)g.Height);
+            (x, y) = PlanOf(panel.Plot).Guides.Flipped ? (up, across) : (across, up);
+        }
 
-    // Row I1a moves a plot of one panel with a continuous x and cartesian coordinates: a band axis, polar coordinates, and
-    // a facet keep the full view until row I1b (design §6.2).
-    private bool MovesX() => MovesY() && _plot!.ScaleX is not BandScaleSpec;
-
-    private bool MovesY() => _plot is { Coord: CartesianCoordSpec, Facet: null };
+        return (Reversed(scaleX) ? x : -x, Reversed(scaleY) ? y : -y);
+    }
 
     private void CheckPanel(PanelId panel)
     {
         CheckThread();
-        if (_figure is not null)
-        {
-            throw new InvalidOperationException("The engine draws a figure; the views of a figure's plots are row I1b's (design §6.2).");
-        }
-
-        if (_plot is null || !_drawn || _renderer.Plan is null)
+        if (PlotCount == 0)
         {
             throw new InvalidOperationException("The engine has drawn no frame of its plot yet: a view needs the plot's layout.");
         }
 
-        if (panel.Plot != 0 || panel.Panel < 0 || panel.Panel >= _renderer.Plan.PanelCount)
+        if (panel.Plot < 0 || panel.Plot >= PlotCount || panel.Panel < 0 || panel.Panel >= _states[panel.Plot].Panels)
         {
             throw new ArgumentOutOfRangeException(nameof(panel), panel, "The engine draws no such panel.");
         }
@@ -1118,25 +1597,105 @@ public sealed class PlotEngine : IDisposable
     }
 
     /// <summary>
-    /// The limits every view keeps, which no application removes (design §6.2): an x range wide enough that the panel's
-    /// boundaries increase strictly (§4.8), and a y range alike, both finite.
+    /// The views of a plot (design §6.2, row I1b): the target, what is drawn, where an animation started, each a panel's
+    /// domains, and the history, whose entries hold every panel's views.
+    /// </summary>
+    private sealed class PlotState
+    {
+        private PanelDomains[] _history = [];
+
+        public PanelDomains[] Target { get; set; } = [];
+
+        public PanelDomains[] Shown { get; private set; } = [];
+
+        public PanelDomains[] From { get; private set; } = [];
+
+        /// <summary>Gets or sets the views a change builds before it is taken; then the target before it.</summary>
+        public PanelDomains[] Work { get; set; } = [];
+
+        public int Panels { get; private set; }
+
+        public int Count { get; private set; } = 1;
+
+        public int Position { get; set; }
+
+        public long AnimationStart { get; set; }
+
+        public bool Animating { get; set; }
+
+        public long LastGroupTimestamp { get; set; } = long.MinValue;
+
+        public bool LastWasGroup { get; set; }
+
+        /// <summary>Gets or sets a value indicating whether a gesture moved the plot's views.</summary>
+        public bool Touched { get; set; }
+
+        /// <summary>Starts over with a number of panels: no view, a history of the full view alone.</summary>
+        public void Size(int panels)
+        {
+            if (panels != Panels)
+            {
+                (Target, Shown, From, Work) = (
+                    new PanelDomains[panels],
+                    new PanelDomains[panels],
+                    new PanelDomains[panels],
+                    new PanelDomains[panels]
+                );
+                _history = new PanelDomains[panels];
+                Panels = panels;
+            }
+
+            Target.AsSpan().Fill(PanelDomains.None);
+            Shown.AsSpan().Fill(PanelDomains.None);
+            _history.AsSpan().Fill(PanelDomains.None);
+            (Count, Position, Animating, LastWasGroup, Touched) = (1, 0, false, false, false);
+        }
+
+        public Span<PanelDomains> Entry(int index) => _history.AsSpan(index * Panels, Panels);
+
+        /// <summary>
+        /// Adds an entry after the current one, dropping those after it and the oldest past the depth. The entries' room is
+        /// taken once, for the whole depth, at the first push, so that the history does not allocate each time it grows.
+        /// </summary>
+        public void Push(ReadOnlySpan<PanelDomains> views, int depth)
+        {
+            var room = (depth + 1) * Panels;
+            if (_history.Length < room)
+            {
+                var grown = new PanelDomains[room];
+                _history.AsSpan(0, Count * Panels).CopyTo(grown);
+                _history = grown;
+            }
+
+            var count = Position + 2;
+            views.CopyTo(Entry(count - 1));
+            while (count > Math.Max(depth, 1))
+            {
+                _history.AsSpan(Panels, (count - 1) * Panels).CopyTo(_history);
+                count--;
+            }
+
+            (Count, Position) = (count, count - 1);
+        }
+    }
+
+    /// <summary>
+    /// The limits every view keeps, which no application removes (design §6.2): a range wide enough that the panel's
+    /// boundaries increase strictly (§4.8), with both ends finite.
     /// </summary>
     private static class ZoomLimits
     {
         // 2^-48 of the panel's pixels: past the boundaries' rounding, which differences in [0, 1) bound by about 2^-52 each.
         private const double Least = 1.0 / (1L << 48);
 
-        public static bool Constrain(ViewProposal proposal, PlotGuides guides)
-        {
-            var (x, y) = (proposal.X, proposal.Y);
-            var (alongX, alongY) = guides.Flipped ? (guides.Height, guides.Width) : (guides.Width, guides.Height);
-            return Wide(x, alongX) && Wide(y, alongY);
-        }
-
-        private static bool Wide(in ScaleRange range, int pixels) =>
-            double.IsFinite(range.Lower)
-            && double.IsFinite(range.Upper)
-            && range.Upper - range.Lower > Least * Math.Max(pixels, 1) * Math.Max(1, Math.Abs(range.Upper));
+        /// <summary>Returns whether a range keeps the limits; an axis with no range does.</summary>
+        public static bool Wide(in ScaleRange range, int pixels) =>
+            PlotPlan.IsNone(range)
+            || (
+                double.IsFinite(range.Lower)
+                && double.IsFinite(range.Upper)
+                && range.Upper - range.Lower > Least * Math.Max(pixels, 1) * Math.Max(1, Math.Abs(range.Upper))
+            );
     }
 }
 

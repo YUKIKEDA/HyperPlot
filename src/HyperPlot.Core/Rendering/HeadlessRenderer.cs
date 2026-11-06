@@ -113,18 +113,18 @@ public sealed class HeadlessRenderer : IDisposable
     /// </exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
-    public void Render(PlotSpec plot) => Render(plot, ScaleRange.None, ScaleRange.None, null);
+    public void Render(PlotSpec plot) => Render(plot, [], null);
 
     /// <summary>
-    /// Draws a plot over views and an overlay (row I1a, design §7.1): the engine's frame. Each axis with a view draws its range
-    /// (§6.2), and the overlay goes over the plot in the same frame.
+    /// Draws a plot over views and an overlay (rows I1a, I1b, design §7.1): the engine's frame. Each axis with a view draws its
+    /// range (§6.2), a panel each, and the overlay goes over the plot in the same frame.
     /// </summary>
-    internal void Render(PlotSpec plot, in ScaleRange viewX, in ScaleRange viewY, RenderList? overlay)
+    internal void Render(PlotSpec plot, ReadOnlySpan<PanelDomains> views, RenderList? overlay)
     {
         ArgumentNullException.ThrowIfNull(plot);
         ObjectDisposedException.ThrowIf(_disposed, this);
         UsePlan();
-        _plan!.SetView(viewX, viewY);
+        _plan!.SetViews(views);
 
         // A headless image is the same whenever it is drawn: every visible tile of an image is sent, past a frame's budget
         // (design §4.8, row G9).
@@ -243,7 +243,13 @@ public sealed class HeadlessRenderer : IDisposable
     /// <exception cref="InvalidOperationException">A plot fails as <see cref="Render(PlotSpec)"/> says.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
-    public void Render(FigureSpec figure)
+    public void Render(FigureSpec figure) => Render(figure, null, null);
+
+    /// <summary>
+    /// Draws a figure over each plot's views and an overlay (row I1b, design §7.1): the engine's frame of a figure. The overlay
+    /// goes over the plots in the same frame.
+    /// </summary>
+    internal void Render(FigureSpec figure, PanelDomains[][]? views, RenderList? overlay)
     {
         ArgumentNullException.ThrowIfNull(figure);
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -253,13 +259,18 @@ public sealed class HeadlessRenderer : IDisposable
         _backend.Images.Unbounded = true;
         try
         {
-            _figure.Render(figure);
+            _figure.Render(figure, views);
             using var frame = _backend.BeginFrame();
             _target.Clear(figure.Theme.Background);
             _backend.Draw(_target, _figure.List);
             for (var i = 0; i < _figure.Drawn; i++)
             {
                 _backend.Draw(_target, _figure.Plans[i].List);
+            }
+
+            if (overlay is { Commands.Length: > 0 })
+            {
+                _backend.Draw(_target, overlay);
             }
         }
         finally

@@ -505,7 +505,8 @@ internal sealed class CategoryBarPlan : LayerPlan
 
         if (Math.Abs(a * band.Width) >= 1)
         {
-            for (var category = 0; category < band.Count; category++)
+            var (first, last) = band.Visible(a, b, context.X.Offset, context.X.Size);
+            for (var category = first; category <= last; category++)
             {
                 var j = band.Position(category);
                 var (from, to) = Place((a * j) + b, (a * (j + band.Width)) + b);

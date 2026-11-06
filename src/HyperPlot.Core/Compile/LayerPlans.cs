@@ -1489,8 +1489,9 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
             return;
         }
 
-        // The buffer of the rectangles is free: an area or a band draws no rectangle.
-        Ensure(ref _sectors, 6 * columns.Length);
+        // The buffer of the rectangles is free: an area or a band draws no rectangle. A column is at most 6 pieces, each cut in
+        // up to 3 at the outer edge (row I1b).
+        Ensure(ref _sectors, 18 * columns.Length);
         var count = 0;
         foreach (ref readonly var column in columns)
         {

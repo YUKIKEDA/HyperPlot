@@ -108,10 +108,11 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         var a = context.PixelX(1 - origin) - b;
         if (Math.Abs(a * band.Width) >= 1)
         {
+            var (first, last) = band.Visible(a, b, context.X.Offset, context.X.Size);
             for (var k = 0; k < _groupCount; k++)
             {
                 var color = ColorOf(bar, k);
-                for (var category = 0; category < band.Count; category++)
+                for (var category = first; category <= last; category++)
                 {
                     var j = band.Position(category);
                     var (from, to) = ((a * j) + b, (a * (j + band.Width)) + b);
@@ -394,17 +395,18 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
         if (Math.Abs(a * band.Width) >= 1)
         {
             var half = bars.CapWidth * context.Scale / 2;
-            var buffer = context.Points(9 * band.Count);
+            var (first, last) = band.Visible(a, b, context.X.Offset, context.X.Size);
+            var buffer = context.Points(9 * Math.Max(last - first + 1, 0));
             var count = 0;
-            for (var category = 0; category < band.Count; category++)
+            for (var category = first; category <= last; category++)
             {
+                var j = band.Position(category);
                 var (min, max) = (low.Min[category], high.Max[category]);
                 if (double.IsNaN(min) || double.IsNaN(max))
                 {
                     continue;
                 }
 
-                var j = band.Position(category);
                 var (from, to) = Place((a * j) + b, (a * (j + band.Width)) + b);
                 var px = (float)((from + to) / 2);
                 var (top, bottom) = ((float)context.PixelY(max - context.YOrigin), (float)context.PixelY(min - context.YOrigin));
@@ -541,15 +543,16 @@ internal sealed class CategoryRulePlan : LayerPlan
         var (top, bottom) = ((float)across.Offset, (float)(across.Offset + across.Size));
         var axis = context.X;
         var wide = Math.Abs(a * band.Width) >= 1;
-        var buffer = context.Points(3 * (wide ? band.Count : axis.Size));
+        var (shownFirst, shownLast) = band.Visible(a, b, axis.Offset, axis.Size);
+        var buffer = context.Points(3 * (wide ? Math.Max(shownLast - shownFirst + 1, 0) : axis.Size));
         var count = 0;
         if (wide)
         {
-            for (var category = 0; category < band.Count; category++)
+            for (var category = shownFirst; category <= shownLast; category++)
             {
+                var j = band.Position(category);
                 if (counts[category] > 0)
                 {
-                    var j = band.Position(category);
                     var (from, to) = Place((a * j) + b, (a * (j + band.Width)) + b);
                     var at = (float)((from + to) / 2);
                     count = ErrorBarPlan.Segment(buffer, count, at, top, at, bottom);

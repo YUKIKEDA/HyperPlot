@@ -1332,9 +1332,10 @@ public sealed class ImageBuilder                         // 行 G9。Image
     - 1 本の線分の小片の数は 8,192 までにする。domain の中では、半径 540 の円で 104 片、半径 4,000 でも 300 片ほどで届かない。clamp しない domain の遠い外の値で、数が限りなく増えないための上限である
   - **Geom の意味**: データの意味を保つ。theta = x の bar は角度の幅を持つ扇（バラ図）、theta = y の bar は輪の一部、`VRule` は theta = x で放射線、`HRule` は同心円。errorbar の端は伸ばした空間の短い線なので、theta = x では弧になる。凡例の見本は変えない
   - **`IGeom`**: `GeomFrame.Polar` が真なら、`PixelX`・`PixelY` は伸ばした空間の（x のデータの軸, y のデータの軸）の画素を返し、`Map` は描画先の点を返す。`Flipped` は偽、`Left`・`Top`・`Width`・`Height` はパネルの矩形。`Map` で写した点どうしを直線で結ぶと弦になる。曲げたい独自 Geom は自分で分ける（分ける補助の口は、使い手が出るまで足さない）
-  - **切り抜き**: パネルの矩形。clamp しない domain の外の値は、円の外へ出てパネルの矩形の中まで描かれる
+  - **切り抜き**: パネルの矩形と、外側の縁。clamp しない domain の上端より外の値（半径の画素が R − r0 と許容差 0.25 画素より外）は、内側の縁の内と同じく domain の外として描かない。行 G11 では円の外へ出てパネルの矩形の中まで描いたが、行 I1b で半径を拡大すると、ビューの外のデータが円の外のパネル全体に広がるので、内側の縁と同じ規則にした（Issue #278、オーナーの決定）。許容差は、domain の上端にちょうど来る点が丸めで切れないためで、ゴールデン画像の場面の結果は変わらない
     - 半径の画素が 0 未満（内側の縁より内。`InnerRadius` の穴の中と、半径が負になる所）は domain の外で、描かない（PR #150 のレビュー、オーナーの決定）。cartesian の domain の外がパネルの端で切られるのと同じ考えで、1 つの規則で穴の中も半径が負になる所も扱う。半径が負のままだと、点が中心をまたいで反対側（角度 θ + π）に描かれ、中心で切れる塗りと食い違った
     - 線は c = 0 の所で切れる。c は線分に沿って伸ばした空間で線形なので、交点は正確に求まる。塗りは c = 0 で切る。theta = x の台形は縁が 0 をまたぐ角度で切ってから、縁を 0 で下から押さえる（切れ目の間では縁の符号が変わらないので直線のまま）。theta = y の台形は辺を c = 0 まで上げる。`GeomFrame.Map` は c < 0 の点を NaN にする
+    - 外側の縁も同じに切る（行 I1b）: 線は外側の縁をまたぐ所で切れて途切れ、塗りの台形は縁が外側の縁をまたぐ角度で切ってから外側の縁で上から押さえる（1 つの台形が 3 つまでに分かれる）、`GeomFrame.Map` は外側の縁より外の点を NaN にする
 
 ### 4.5 ファセットと複数のプロット
 
@@ -1864,7 +1865,7 @@ var shops = Plot.Create(data)
 
 - 行 G6c は、`FigureSpec`・`ConcatFigureSpec`・`GridFigureSpec`・`FigureCell`・`Figure` と、`HeadlessRenderer.Render(FigureSpec)` を公開する（Issue #254）。行 G6c で書ける形は次のとおり（スクラッチでコンパイルした、§4.1）
 - 行 I1c は、`RenderList.DrawText(ReadOnlySpan<char>, …)`・`TextEngine.Measure(ReadOnlySpan<char>, …)`・`ShapedText` の使い回しの口（引数のないコンストラクタと `Set`）を公開し、`ITextBackend.Shape` を span を受けて `ShapedText` に書く形に変える（§5.1・§5.6、Issue #266）
-- 行 I1a は、`HyperPlot.Interaction` の `PlotEngine`（§7.1）、入力（`PointerEvent`・`WheelEvent`・`KeyEvent`・`GestureEvent` とその列挙 `PointerEventKind`・`PointerButtons`・`PointerKind`・`KeyEventKind`・`PlotKey`・`ModifierKeys`・`GestureKind`、§6.1）、ビュー（`PanelView`・`PanelView2D`・`ViewRange`・`PanelId`・`ViewAxes`・`ViewOperations`・`IViewConstraint`・`ViewProposal`・`AutoRangeY`・`ViewChange`・`ViewChangeReason`・`ViewChangedHandler`、§6.2）、場所（`HitArea`・`HitAreaKind`、§6.3）、ツールと割り当て（`IPlotTool`・`ToolContext`・`ToolResult`・`InputBindings`・`InputBinding`・`InputGesture`・`InputGestureKind`・`ViewCommand`・`PanTool`・`RectangleZoomTool`・`WheelZoomTool`・`InteractionOptions`、§6.5）を公開する。`HyperPlot.Testing` は `InputScript`・`ScriptPoint`・`InputReplay`（§6.6）を足す。行 I1b は型を足さない（Issue #266）
+- 行 I1a は、`HyperPlot.Interaction` の `PlotEngine`（§7.1）、入力（`PointerEvent`・`WheelEvent`・`KeyEvent`・`GestureEvent` とその列挙 `PointerEventKind`・`PointerButtons`・`PointerKind`・`KeyEventKind`・`PlotKey`・`ModifierKeys`・`GestureKind`、§6.1）、ビュー（`PanelView`・`PanelView2D`・`ViewRange`・`PanelId`・`ViewAxes`・`ViewOperations`・`IViewConstraint`・`ViewProposal`・`AutoRangeY`・`ViewChange`・`ViewChangeReason`・`ViewChangedHandler`、§6.2）、場所（`HitArea`・`HitAreaKind`、§6.3）、ツールと割り当て（`IPlotTool`・`ToolContext`・`ToolResult`・`InputBindings`・`InputBinding`・`InputGesture`・`InputGestureKind`・`ViewCommand`・`PanTool`・`RectangleZoomTool`・`WheelZoomTool`・`InteractionOptions`、§6.5）を公開する。`HyperPlot.Testing` は `InputScript`・`ScriptPoint`・`InputReplay`（§6.6）を足す。行 I1b は型を足さない（Issue #266）。`ViewAxes` に値 `X2`・`Y2`・`All` を足した（Issue #278）
 
 ```csharp
 // 行 G6c: 3 つのプロットを 2 列に並べた図と、上の段を 2 列にまたがせた格子の図
@@ -2563,11 +2564,18 @@ public interface ITextBackend                 // バックエンドが実装す�
 - **ファセット**（行 I1b）: 共有している軸（`Fixed` の x と y、`FreeX` の y、`FreeY` の x、§4.5）は、あるパネルで動かすと、その軸を共有するパネルもすべて一緒に動く（1 つのビュー範囲を共有する）。自由な軸は、そのパネルだけが動く。行 G6b の「共有の軸は外側のパネルだけに描く」と合う
 - **図**（行 I1b）: ポインタを押したとき、その下のプロットをドラッグの間の相手にし、離すまで変えない。ホイールはカーソルの下のプロット、キーボードは最後に操作したプロットに送る。各プロットのビューと履歴は独立で、プロットの間のリンクは行 I3 である
 - **原点の付け直し**（行 D2 の規則、使うのは行 I1）: パン・ズーム・履歴の移動・リンクの共有でビュー範囲が変わるたびに、§3.6 のとおり 原点 += ⌊下端の差⌋、差 −= ⌊下端の差⌋ と付け直す。ズームの中心（カーソルの位置）も同じ原点の差で計算する。リンクしたパネルは、原点と差の組をそのまま渡す。カーソルの位置をスケールの空間へ戻す（§6.3）ときも、原点と差の組で返す
-- **band の軸と polar**（行 I1b）: band の軸（行 G7b）のビューは、カテゴリの番号の空間（0 から n）の範囲で、ズームとパンはこの範囲を動かす。範囲の外のカテゴリは描かず、ラベルの間引き（§4.6 のカテゴリの軸）は見える範囲に当てる。polar（行 G11）は、半径の軸だけをズームとパンで動かし、θ は全周のまま（Plotly の polar の半径の軸と同じ）。行 I1a では、band の軸と polar の θ は全体表示から動かない（組み込みのツールはその軸を動かさず、`SetView` は全体と違う範囲を `ArgumentException` にする）。ファセットのプロット（複数のパネル）も、行 I1a では全体表示から動かない（同じく。パネルごとの当たり判定と、共有する軸を一緒に動かすことは上の「ファセット」、行 I1b。PR #275 のレビュー、オーナーの決定）
+- **band の軸と polar**（行 I1b）: band の軸（行 G7b）のビューは、カテゴリの番号の空間（0 から n）の範囲で、ズームとパンはこの範囲を動かす。範囲の外のカテゴリは描かず、ラベルの間引き（§4.6 のカテゴリの軸）は見える範囲に当てる。polar（行 G11）は、半径の軸だけをズームとパンで動かし、θ は全周のまま（Plotly の polar の半径の軸と同じ）。polar の θ は組み込みのツールが動かさず、`SetView` は全周と違う θ の範囲を `ArgumentException` にする（行 I1a では band の軸と θ とファセットのプロットが全体表示から動かなかった。PR #275 のレビュー、オーナーの決定。行 I1b で上のとおりに動かした）。band の軸の層（棒・積んだ棒・誤差棒・規則線）の、帯が 1 画素以上の道は、見える範囲にかかるカテゴリだけを回り、目盛りはビューの範囲に中央が入るカテゴリのうち k の倍数の番号のものに付ける（パンしてもラベルが同じカテゴリに留まる）。polar の半径のパンは、縦の移動で動かし、上へのドラッグでデータが外へ動く（`Pan` は画素の量だけを受け、押した位置を知らないので、放射の向きへの射影は使わない）。矩形ズームは、矩形の中心から最も近い点と最も遠い点の距離を半径の範囲にする。半径を拡大したときの外側の縁の切り抜きは §4.4（以上、行 I1b の実装で決めた。Issue #278）
+- **行 I1b の実装で決めたこと**（Issue #278）:
+  - `ViewAxes` は、型を足さずに値を足した: `X2`・`Y2`（二次のスケール）と `All`（4 つすべて）。各値が 1 つのスケールを表す。パネルの中の組み込みの操作（ドラッグ・ホイール・ピンチ・2 本指スクロール・キーボード）は `All` を渡し、`ViewOperations` の `axes` の既定も `All` にした。二次のスケールのない `X2`・`Y2` は、変換の軸（主に従う）の操作として主を動かす。各スケールの画素の割合は、そのスケールの `Reverse` を当てて求める（行 I1a は `Reverse` を見ていなかったので、反転した軸でズームの中心とパンの向きが逆になっていた。同じ書き換えで直した）
+  - 制約（`IViewConstraint`）が読んで直すのは主の x と y で、主と一緒に動いた二次のスケールは、制約が主に加えた変化を同じ割合で受ける。`SetView` も二次のスケールを主の変化と同じ割合で動かす。ズームの限界は 4 つの軸すべてに当てる
+  - 通知は、ビューが変わったパネルごとに 1 回出す（ファセットで共有する軸を動かせば、それを共有するパネルの数だけ）
+  - `AutoRangeY` は、ファセットのないプロットだけに当てる。ファセットのパネルの行は列の一部で、ピラミッドはその範囲に答えないので、y を残す
+  - 図では、`Back`・`Forward`・`CanGoBack`・`CanGoForward` とキーボードの操作は、最後に操作したパネル（押した・ホイールを回した・ジェスチャの場所のプロットとパネル、またはビューの操作の API の相手）に向ける。`ResetAll` はすべてのプロットのすべてのパネルを全体表示にする。`SetFigure` は、プロットの数が前と同じなら各プロットのビューを残し、写像が変わったプロットだけが全体表示に戻る（`SetPlot` と同じ規則）
+  - 履歴の 1 項目はプロットの全パネルの 4 つの軸を持ち、項目の場所は最初に積むときに深さの分だけ 1 度に取る（行 I1a の確保の規則と同じ）
 
 ### 6.3 ヒットテスト
 
-- **場所の当たり判定（行 I1a）**: `PlotEngine.HitArea(Vector2 pixel)` は、画素の位置にあるものを `HitArea`（構造体）で返す。種類（`None`・`Panel`・`AxisX`・`AxisY`・`AxisX2`・`AxisY2`・`Legend`・`Title`・`Figure`。`Figure` は図の余白とセルの間）と、`PanelId`。軸の場所は、軸の帯（目盛り・ラベル・軸のタイトルの矩形、§4.6 の配置の結果）である。配置の結果だけを読むので、データの量によらず、パネルの数に比例する。割り当ての表（§6.5）はこの種類で入力を分け、アプリは右クリックのメニューなどに使う。点や系列の最近傍（下の表）は行 I2 である
+- **場所の当たり判定（行 I1a）**: `PlotEngine.HitArea(Vector2 pixel)` は、画素の位置にあるものを `HitArea`（構造体）で返す。種類（`None`・`Panel`・`AxisX`・`AxisY`・`AxisX2`・`AxisY2`・`Legend`・`Title`・`Figure`。`Figure` は図の余白とセルの間）と、`PanelId`。軸の場所は、軸の帯（目盛り・ラベル・軸のタイトルの矩形、§4.6 の配置の結果）である。配置の結果だけを読むので、データの量によらず、パネルの数に比例する。行 I1b では、図はセル（プロットの領域）で、プロットはパネルの矩形で分け、パネルの外の画素は、その行か列で最も近いパネルの、その辺に描く軸（ファセットで外側だけに描く共有の軸を含む、行 G6b）の帯とする。辺とパネルの間の帯（ファセットの見出し）は軸に含めない。割り当ての表（§6.5）はこの種類で入力を分け、アプリは右クリックのメニューなどに使う。点や系列の最近傍（下の表）は行 I2 である
 
 | 対象 | 方法 | 計算量 |
 | --- | --- | --- |

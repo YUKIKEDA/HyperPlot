@@ -80,12 +80,6 @@ internal sealed class PlotGuides
     /// <summary>Gets the ticks of x: the current panel's (row G6b), the first after a layout.</summary>
     internal TickAxis X => _current.X;
 
-    /// <summary>
-    /// Gets or sets which of the x and y scales the next layout draws over a view (row I1a): their learned domain is the
-    /// view's range, which the ticks take as it is, with no nice (design §6.2).
-    /// </summary>
-    internal (bool X, bool Y) Viewed { get; set; }
-
     /// <summary>Gets the ticks of y.</summary>
     internal TickAxis Y => _current.Y;
 
@@ -167,6 +161,9 @@ internal sealed class PlotGuides
     /// </summary>
     internal void Place(int left, int top, int width, int height) => (_left, _top, _width, _height) = (left, top, width, height);
 
+    /// <summary>Gets the rectangle the plot is laid out in: the target, or a figure's cell (rows G6c, I1b).</summary>
+    internal (int Left, int Top, int Width, int Height) Area => (_left, _top, _width, _height);
+
     /// <summary>Returns a panel's guides (row G6b): its rectangle, its ticks, and its polar transform.</summary>
     internal PanelGuide PanelAt(int index) => _panels[index];
 
@@ -198,6 +195,13 @@ internal sealed class PlotGuides
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
         (_titleBand, _legendBand) = (0, 0);
         UsePanels(facet?.Cells.Length ?? 1);
+
+        // The axes each panel draws over a view take its range as it is (rows I1a, I1b, design §6.2).
+        for (var p = 0; p < _panelCount && p < learned.Length; p++)
+        {
+            _panels[p].Viewed = learned[p].Viewed;
+        }
+
         if (facet is not null)
         {
             if (spec.Coord is PolarCoordSpec facetPolar)
@@ -800,7 +804,9 @@ internal sealed class PlotGuides
         }
 
         // An axis drawn over a view takes the view's range as it is (row I1a, design §6.2).
-        var viewed = (Viewed.X && axis == X) || (Viewed.Y && axis == Y);
+        var bits = _current.Viewed;
+        var viewed =
+            ((bits & 1) != 0 && axis == X) || ((bits & 2) != 0 && axis == Y) || ((bits & 4) != 0 && axis == X2) || ((bits & 8) != 0 && axis == Y2);
         var learned = continuous is TimeScaleSpec time ? time.Domain is null : continuous?.GivenDomain is null;
         axis.Choose(!viewed && continuous is { Nice: true } && learned);
     }

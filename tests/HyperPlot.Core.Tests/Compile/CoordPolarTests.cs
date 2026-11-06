@@ -303,7 +303,7 @@ public sealed class CoordPolarTests
     public void Polar_ThetaYColumns_CoverTheRegion()
     {
         var random = new Random(13);
-        var output = new SectorTrapezoid[6];
+        var output = new SectorTrapezoid[18];
         ColumnTrapezoid[] columns =
         [
             new(100, 101, 500, 500, 800, 800),
@@ -661,8 +661,8 @@ public sealed class CoordPolarTests
     }
 
     /// <summary>
-    /// A target too small for a ring of a pixel draws only the background (design §4.6); data outside a domain that does not
-    /// clamp goes past the circle, clipped to the panel (design §4.4).
+    /// A target too small for a ring of a pixel draws only the background (design §4.6); data past a domain that does not
+    /// clamp is cut at the outer edge, as below the inner one (design §4.4, row I1b: a view of the radius puts data there).
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -673,8 +673,8 @@ public sealed class CoordPolarTests
     /// - Render a line polar on each.
     ///
     /// Expected:
-    /// - No command on the small targets. On the wide one, the line's clip the panel (0, 0, 200, 100), and a point 75 from
-    ///   the center: past R = 50, inside the panel.
+    /// - No command on the small targets. On the wide one, the line's clip the panel (0, 0, 200, 100), and the farthest
+    ///   point 50.25 from the center: R = 50 and the tolerance, where the line is cut.
     /// </remarks>
     [Fact]
     public void Polar_SmallTarget_AndOutsideTheDomain()
@@ -694,13 +694,13 @@ public sealed class CoordPolarTests
         var list = wide.Render(Spec(table, line) with { Coord = Coord.Polar() });
         Assert.Equal(new ClipRect(0, 0, 200, 100), list.Polylines[0].Clip);
         var farthest = list.Segments.ToArray().Max(s => Math.Max((s.Start - new Vector2(100, 50)).Length(), (s.End - new Vector2(100, 50)).Length()));
-        Close(75, farthest);
+        Close(50 + PolarTransform.Tolerance, farthest);
     }
 
     /// <summary>
-    /// A radius pixel below 0, inside the inner edge, is outside the radius's domain (design §4.4, PR #150's review): a line
-    /// is cut where it crosses the inner edge and does not pass the center, a fill stops at the inner edge, and a user's
-    /// geom maps such a point to NaN.
+    /// A radius pixel below 0, inside the inner edge, is outside the radius's domain (design §4.4, PR #150's review), as is
+    /// one past the outer edge (row I1b): a line is cut where it crosses the inner edge and does not pass the center, a fill
+    /// stops at the edges, and a user's geom maps such a point to NaN.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -710,13 +710,13 @@ public sealed class CoordPolarTests
     ///
     /// Steps:
     /// - Render the layers with InnerRadius 0 and 0.4; write the trapezoids; test 4,000 seeded points of each against the
-    ///   region above c = 0 and against the polar trapezoids; map points below c = 0.
+    ///   ring, c from 0 to the outer edge, and against the polar trapezoids; map points below c = 0.
     ///
     /// Expected:
     /// - The line: every point at least r0 from the center, and every point right of it (its angles are 72° to 180°: before
     ///   the cut, the point at −50 was drawn left of the center); points on the inner edge where it is cut, and with the
-    ///   hole a break between them. The rect's and the area's trapezoids: no radius below r0. A point inside the region above c = 0
-    ///   is in a trapezoid and one outside is in none, within 1e-3 pixels of an edge. Map gives NaN below c = 0.
+    ///   hole a break between them. The rect's and the area's trapezoids: no radius below r0. A point inside the region in the
+    ///   ring is in a trapezoid and one outside is in none, within 1e-3 pixels of an edge. Map gives NaN below c = 0.
     /// </remarks>
     [Fact]
     public void Polar_InnerEdge_CutsLinesAndFills()
@@ -772,7 +772,7 @@ public sealed class CoordPolarTests
         }
 
         var random = new Random(17);
-        var output = new SectorTrapezoid[6];
+        var output = new SectorTrapezoid[18];
         ColumnTrapezoid[] columns =
         [
             new(100, 103, -200, 300, 250, 250),
@@ -801,7 +801,8 @@ public sealed class CoordPolarTests
                         var bottom = column.BottomLeft + ((column.BottomRight - column.BottomLeft) * t);
                         var across = Math.Min(top, bottom) - 50 + (random.NextDouble() * (Math.Abs(top - bottom) + 100));
                         var (pa, pc) = theta == PolarTheta.X ? (along, across) : (across, along);
-                        var inRegion = across >= Math.Min(top, bottom) && across <= Math.Max(top, bottom) && pc >= 0;
+                        var outer = polar.Radius - polar.Inner + PolarTransform.Tolerance;
+                        var inRegion = across >= Math.Min(top, bottom) && across <= Math.Max(top, bottom) && pc >= 0 && pc <= outer;
                         var (topSlope, bottomSlope) = (
                             (column.TopRight - column.TopLeft) / (column.Right - column.Left),
                             (column.BottomRight - column.BottomLeft) / (column.Right - column.Left)
@@ -809,7 +810,8 @@ public sealed class CoordPolarTests
                         var nearEdge =
                             Math.Abs(across - top) / Math.Sqrt(1 + (topSlope * topSlope)) < 1e-3
                             || Math.Abs(across - bottom) / Math.Sqrt(1 + (bottomSlope * bottomSlope)) < 1e-3
-                            || Math.Abs(pc) < 1e-3;
+                            || Math.Abs(pc) < 1e-3
+                            || Math.Abs(pc - outer) < 1e-3;
                         var inSectors = output[..count].Any(s => InSector(s, polar.Theta(pa), polar.RadiusOf(pc)));
                         Assert.True(
                             inRegion == inSectors || nearEdge,
