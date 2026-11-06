@@ -121,7 +121,10 @@ public sealed class ScriptRecordingTests
         // The shaping cache full first, as after a long session (design §5.6): until then a new label takes a new entry.
         for (var i = 0; i < Rendering.TextEngine.CacheCapacity; i++)
         {
-            _ = f.Backend.Text.Measure("filler " + i.ToString(System.Globalization.CultureInfo.InvariantCulture), new Rendering.TextStyle(new Color(0, 0, 0, 255), 9));
+            _ = f.Backend.Text.Measure(
+                "filler " + i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new Rendering.TextStyle(new Color(0, 0, 0, 255), 9)
+            );
         }
 
         // The test's own list of notices grows by doubling: room for every notice of the rounds, so that it allocates nothing.
@@ -157,7 +160,10 @@ public sealed class ScriptRecordingTests
             events[0] = f.Pointer(PointerEventKind.Down, m, PointerButtons.Left);
             for (var i = 1; i < 11; i++)
             {
-                events[i] = f.Pointer(PointerEventKind.Move, m + new Vector2(i * (drag % 2 == 0 ? 6 : -6), i * 2)) with { Buttons = PointerButtons.Left };
+                events[i] = f.Pointer(PointerEventKind.Move, m + new Vector2(i * (drag % 2 == 0 ? 6 : -6), i * 2)) with
+                {
+                    Buttons = PointerButtons.Left,
+                };
             }
 
             events[11] = f.Pointer(PointerEventKind.Up, m, PointerButtons.Left);

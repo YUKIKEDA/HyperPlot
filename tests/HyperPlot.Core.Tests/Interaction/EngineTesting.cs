@@ -143,8 +143,12 @@ internal sealed class EngineFixture : IDisposable
     /// <summary>Moves the time past any animation and draws.</summary>
     public void Settle() => Frame(TimeSpan.FromSeconds(1));
 
-    public PointerEvent Pointer(PointerEventKind kind, Vector2 at, PointerButtons button = PointerButtons.None, ModifierKeys modifiers = ModifierKeys.None) =>
-        new(kind, at, button, kind == PointerEventKind.Down ? button : PointerButtons.None, modifiers, PointerKind.Mouse, Time.GetTimestamp());
+    public PointerEvent Pointer(
+        PointerEventKind kind,
+        Vector2 at,
+        PointerButtons button = PointerButtons.None,
+        ModifierKeys modifiers = ModifierKeys.None
+    ) => new(kind, at, button, kind == PointerEventKind.Down ? button : PointerButtons.None, modifiers, PointerKind.Mouse, Time.GetTimestamp());
 
     /// <summary>Drags a button from one point to another in steps of 10 ms.</summary>
     public void Drag(Vector2 from, Vector2 to, PointerButtons button = PointerButtons.Left, ModifierKeys modifiers = ModifierKeys.None, int steps = 4)
@@ -153,7 +157,12 @@ internal sealed class EngineFixture : IDisposable
         for (var i = 1; i <= steps; i++)
         {
             Time.Advance(TimeSpan.FromMilliseconds(10));
-            Engine.OnPointer(Pointer(PointerEventKind.Move, Vector2.Lerp(from, to, i / (float)steps), PointerButtons.None, modifiers) with { Buttons = button });
+            Engine.OnPointer(
+                Pointer(PointerEventKind.Move, Vector2.Lerp(from, to, i / (float)steps), PointerButtons.None, modifiers) with
+                {
+                    Buttons = button,
+                }
+            );
         }
 
         Engine.OnPointer(Pointer(PointerEventKind.Up, to, button, modifiers));

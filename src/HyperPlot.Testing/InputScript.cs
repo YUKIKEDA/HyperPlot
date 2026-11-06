@@ -16,7 +16,8 @@ public readonly struct ScriptPoint
     private readonly double _y;
     private readonly bool _ofView;
 
-    private ScriptPoint(Vector2 pixel, PanelId panel, double x, double y, bool ofView) => (_pixel, _panel, _x, _y, _ofView) = (pixel, panel, x, y, ofView);
+    private ScriptPoint(Vector2 pixel, PanelId panel, double x, double y, bool ofView) =>
+        (_pixel, _panel, _x, _y, _ofView) = (pixel, panel, x, y, ofView);
 
     /// <summary>Returns a pixel.</summary>
     /// <param name="x">The x, in device pixels from the left.</param>
@@ -86,7 +87,13 @@ public sealed class InputScript
     /// <param name="steps">The moves between, at least 1.</param>
     /// <returns>The script.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="steps"/> is below 1.</exception>
-    public InputScript Drag(ScriptPoint from, ScriptPoint to, PointerButtons button = PointerButtons.Left, ModifierKeys modifiers = ModifierKeys.None, int steps = 8)
+    public InputScript Drag(
+        ScriptPoint from,
+        ScriptPoint to,
+        PointerButtons button = PointerButtons.Left,
+        ModifierKeys modifiers = ModifierKeys.None,
+        int steps = 8
+    )
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(steps, 1);
         _steps.Add(
@@ -98,7 +105,12 @@ public sealed class InputScript
                 for (var i = 1; i <= steps; i++)
                 {
                     var at = Vector2.Lerp(a, b, i / (float)steps);
-                    Send(engine, advance, frame, e => engine.OnPointer(Make(engine, PointerEventKind.Move, at, PointerButtons.None, button, modifiers)));
+                    Send(
+                        engine,
+                        advance,
+                        frame,
+                        e => engine.OnPointer(Make(engine, PointerEventKind.Move, at, PointerButtons.None, button, modifiers))
+                    );
                 }
 
                 Send(engine, advance, frame, e => engine.OnPointer(Make(engine, PointerEventKind.Up, b, button, PointerButtons.None, modifiers)));
@@ -126,8 +138,15 @@ public sealed class InputScript
     /// <returns>The script.</returns>
     public InputScript Wheel(ScriptPoint at, double notches, ModifierKeys modifiers = ModifierKeys.None)
     {
-        _steps.Add((engine, advance, frame) =>
-            Send(engine, advance, frame, e => engine.OnWheel(new WheelEvent(at.Resolve(engine), 0, notches, modifiers, engine.Time.GetTimestamp()))));
+        _steps.Add(
+            (engine, advance, frame) =>
+                Send(
+                    engine,
+                    advance,
+                    frame,
+                    e => engine.OnWheel(new WheelEvent(at.Resolve(engine), 0, notches, modifiers, engine.Time.GetTimestamp()))
+                )
+        );
         return this;
     }
 
@@ -137,11 +156,13 @@ public sealed class InputScript
     /// <returns>The script.</returns>
     public InputScript Key(PlotKey key, ModifierKeys modifiers = ModifierKeys.None)
     {
-        _steps.Add((engine, advance, frame) =>
-        {
-            Send(engine, advance, frame, e => engine.OnKey(new KeyEvent(KeyEventKind.Down, key, modifiers, false, engine.Time.GetTimestamp())));
-            Send(engine, advance, frame, e => engine.OnKey(new KeyEvent(KeyEventKind.Up, key, modifiers, false, engine.Time.GetTimestamp())));
-        });
+        _steps.Add(
+            (engine, advance, frame) =>
+            {
+                Send(engine, advance, frame, e => engine.OnKey(new KeyEvent(KeyEventKind.Down, key, modifiers, false, engine.Time.GetTimestamp())));
+                Send(engine, advance, frame, e => engine.OnKey(new KeyEvent(KeyEventKind.Up, key, modifiers, false, engine.Time.GetTimestamp())));
+            }
+        );
         return this;
     }
 
@@ -151,8 +172,15 @@ public sealed class InputScript
     /// <returns>The script.</returns>
     public InputScript Pinch(ScriptPoint at, double scale)
     {
-        _steps.Add((engine, advance, frame) =>
-            Send(engine, advance, frame, e => engine.OnGesture(new GestureEvent(GestureKind.Pinch, at.Resolve(engine), scale, Vector2.Zero, engine.Time.GetTimestamp()))));
+        _steps.Add(
+            (engine, advance, frame) =>
+                Send(
+                    engine,
+                    advance,
+                    frame,
+                    e => engine.OnGesture(new GestureEvent(GestureKind.Pinch, at.Resolve(engine), scale, Vector2.Zero, engine.Time.GetTimestamp()))
+                )
+        );
         return this;
     }
 
@@ -162,8 +190,15 @@ public sealed class InputScript
     /// <returns>The script.</returns>
     public InputScript Scroll(ScriptPoint at, Vector2 delta)
     {
-        _steps.Add((engine, advance, frame) =>
-            Send(engine, advance, frame, e => engine.OnGesture(new GestureEvent(GestureKind.Scroll, at.Resolve(engine), 1, delta, engine.Time.GetTimestamp()))));
+        _steps.Add(
+            (engine, advance, frame) =>
+                Send(
+                    engine,
+                    advance,
+                    frame,
+                    e => engine.OnGesture(new GestureEvent(GestureKind.Scroll, at.Resolve(engine), 1, delta, engine.Time.GetTimestamp()))
+                )
+        );
         return this;
     }
 
@@ -174,17 +209,19 @@ public sealed class InputScript
     public InputScript Wait(TimeSpan time)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(time, TimeSpan.Zero);
-        _steps.Add((engine, advance, frame) =>
-        {
-            var left = time;
-            while (left > TimeSpan.Zero)
+        _steps.Add(
+            (engine, advance, frame) =>
             {
-                var step = left < Step ? left : Step;
-                advance(step);
-                left -= step;
-                frame();
+                var left = time;
+                while (left > TimeSpan.Zero)
+                {
+                    var step = left < Step ? left : Step;
+                    advance(step);
+                    left -= step;
+                    frame();
+                }
             }
-        });
+        );
         return this;
     }
 
@@ -225,8 +262,23 @@ public sealed class InputScript
         }
     }
 
-    private static PointerEvent Make(PlotEngine engine, PointerEventKind kind, Vector2 at, PointerButtons button, PointerButtons buttons, ModifierKeys modifiers) =>
-        new(kind, at, kind is PointerEventKind.Down or PointerEventKind.Up ? button : PointerButtons.None, buttons, modifiers, PointerKind.Mouse, engine.Time.GetTimestamp());
+    private static PointerEvent Make(
+        PlotEngine engine,
+        PointerEventKind kind,
+        Vector2 at,
+        PointerButtons button,
+        PointerButtons buttons,
+        ModifierKeys modifiers
+    ) =>
+        new(
+            kind,
+            at,
+            kind is PointerEventKind.Down or PointerEventKind.Up ? button : PointerButtons.None,
+            buttons,
+            modifiers,
+            PointerKind.Mouse,
+            engine.Time.GetTimestamp()
+        );
 
     private void Send(PlotEngine engine, Action<TimeSpan> advance, Func<bool> frame, Func<object?, bool> send)
     {
@@ -238,7 +290,10 @@ public sealed class InputScript
 
     private InputScript Pointer(PointerEventKind kind, ScriptPoint at, PointerButtons button, PointerButtons buttons, ModifierKeys modifiers)
     {
-        _steps.Add((engine, advance, frame) => Send(engine, advance, frame, e => engine.OnPointer(Make(engine, kind, at.Resolve(engine), button, buttons, modifiers))));
+        _steps.Add(
+            (engine, advance, frame) =>
+                Send(engine, advance, frame, e => engine.OnPointer(Make(engine, kind, at.Resolve(engine), button, buttons, modifiers)))
+        );
         return this;
     }
 }
@@ -269,7 +324,11 @@ public static class InputReplay
             throw new InvalidOperationException($"The recording starts with \"{header}\", not a recording of HyperPlot's input.");
         }
 
-        var (width, height, scale) = (int.Parse(fields["width"], CultureInfo.InvariantCulture), int.Parse(fields["height"], CultureInfo.InvariantCulture), float.Parse(fields["scale"], CultureInfo.InvariantCulture));
+        var (width, height, scale) = (
+            int.Parse(fields["width"], CultureInfo.InvariantCulture),
+            int.Parse(fields["height"], CultureInfo.InvariantCulture),
+            float.Parse(fields["scale"], CultureInfo.InvariantCulture)
+        );
         if (width != engine.Width || height != engine.Height || scale != engine.Scale)
         {
             throw new InvalidOperationException(
@@ -306,10 +365,32 @@ public static class InputReplay
                             now
                         )
                     ),
-                    "wheel" => engine.OnWheel(new WheelEvent(new Vector2(Single(f, "x"), Single(f, "y")), Double(f, "dx"), Double(f, "dy"), Enum.Parse<ModifierKeys>(f["mods"]), now)),
-                    "key" => engine.OnKey(new KeyEvent(Enum.Parse<KeyEventKind>(words[2]), Enum.Parse<PlotKey>(f["key"]), Enum.Parse<ModifierKeys>(f["mods"]), bool.Parse(f["repeat"]), now)),
+                    "wheel" => engine.OnWheel(
+                        new WheelEvent(
+                            new Vector2(Single(f, "x"), Single(f, "y")),
+                            Double(f, "dx"),
+                            Double(f, "dy"),
+                            Enum.Parse<ModifierKeys>(f["mods"]),
+                            now
+                        )
+                    ),
+                    "key" => engine.OnKey(
+                        new KeyEvent(
+                            Enum.Parse<KeyEventKind>(words[2]),
+                            Enum.Parse<PlotKey>(f["key"]),
+                            Enum.Parse<ModifierKeys>(f["mods"]),
+                            bool.Parse(f["repeat"]),
+                            now
+                        )
+                    ),
                     "gesture" => engine.OnGesture(
-                        new GestureEvent(Enum.Parse<GestureKind>(words[2]), new Vector2(Single(f, "x"), Single(f, "y")), Double(f, "scale"), new Vector2(Single(f, "dx"), Single(f, "dy")), now)
+                        new GestureEvent(
+                            Enum.Parse<GestureKind>(words[2]),
+                            new Vector2(Single(f, "x"), Single(f, "y")),
+                            Double(f, "scale"),
+                            new Vector2(Single(f, "dx"), Single(f, "dy")),
+                            now
+                        )
                     ),
                     _ => throw new FormatException($"\"{line}\" is not an event of a recording."),
                 };

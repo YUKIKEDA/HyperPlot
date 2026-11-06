@@ -2642,7 +2642,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 道具（`HyperPlot.Testing`、公開。アプリのテストも使う）:
 
 - **入力の台本**（`InputScript`）: 操作を順に書き、`PlotEngine` に流す。位置は画素（`ScriptPoint.Pixel(x, y)`）か、データの座標（`ScriptPoint.Data(panel, x, y)`。流すときに今のビューで画素に直す）で書く。操作は `Move`・`Press`・`Release`・`Drag(from, to, button, steps)`・`Click`・`DoubleClick`・`Wheel(at, notches)`・`Key`・`Pinch`・`Scroll`・`Wait(TimeSpan)`。`Run(engine, advance)` は、各イベントの時刻を `advance`（時刻を進めるデリゲート。テストの偽の `TimeProvider` の `Advance` を渡す）で進めた時刻にして流し、フレームの要求があれば `RenderFrame` を呼ぶ（呼ばない設定も持つ）。`HyperPlot.Testing` は Core だけを参照するので、偽の `TimeProvider` の型には依らない
-- **入力の記録と再生**（要件 I-9）: `PlotEngine.StartRecording(TextWriter)`・`StopRecording()`（Core）は、受けた入力を 1 行に 1 つ、決まった形のテキストに書く。先頭の行は描画先の大きさと倍率で、続く行は `t=<前の行からの時間 µs> pointer down x=<画素> y=<画素> button=left buttons=left mods=control kind=mouse` の形（キーと値の組、値は不変カルチャ）。記録は入力の経路で文字列を書くので確保する（フレームの経路ではない）。`InputReplay.Run(engine, TextReader, advance)`（`HyperPlot.Testing`）は、読み戻して同じ間隔で流す。大きさか倍率が記録と違えば `InvalidOperationException`。アプリの利用者の操作で起きた不具合を、ファイル 1 つで再現できる
+- **入力の記録と再生**（要件 I-9）: `PlotEngine.StartRecording(TextWriter)`・`StopRecording()`（Core）は、受けた入力を 1 行に 1 つ、決まった形のテキストに書く。先頭の行は描画先の大きさと倍率で、続く行は `t=<前の行からの時間 µs> pointer Down x=<画素> y=<画素> button=Left buttons=Left mods=Control kind=Mouse` の形（イベントの種類のあとに、キーと値の組。値は列挙の名前と不変カルチャの数で、数は往復で同じ値に戻る形 `R`）。先頭の行は `hyperplot-input 1 width=<幅> height=<高さ> scale=<倍率>`。記録は入力の経路で文字列を書くので確保する（フレームの経路ではない）。`InputReplay.Run(engine, TextReader, advance)`（`HyperPlot.Testing`）は、読み戻して同じ間隔で流す。大きさか倍率が記録と違えば `InvalidOperationException`。アプリの利用者の操作で起きた不具合を、ファイル 1 つで再現できる
 - 行の形は §10 の I1a の行のテストが、書いて読み戻して同じ入力になることで確かめる
 
 ## 7. ホスト統合

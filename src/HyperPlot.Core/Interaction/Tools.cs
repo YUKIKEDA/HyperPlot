@@ -216,7 +216,12 @@ public enum InputGestureKind
 /// <param name="Button">The button of a drag or a click.</param>
 /// <param name="ClickCount">The clicks in a row of a click: 1 or 2.</param>
 /// <param name="Key">The key of a key.</param>
-public readonly record struct InputGesture(InputGestureKind Kind, PointerButtons Button = PointerButtons.None, int ClickCount = 0, PlotKey Key = PlotKey.None)
+public readonly record struct InputGesture(
+    InputGestureKind Kind,
+    PointerButtons Button = PointerButtons.None,
+    int ClickCount = 0,
+    PlotKey Key = PlotKey.None
+)
 {
     /// <summary>Returns a drag of a button.</summary>
     /// <param name="button">The button.</param>
@@ -353,7 +358,7 @@ public sealed class InteractionOptions
     public TimeSpan ZoomAnimation
     {
         get => _zoomAnimation;
-        set => _zoomAnimation = value >= TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The animation is 0 or more.");
+        set => _zoomAnimation = Check(value, value >= TimeSpan.Zero, "The animation is 0 or more.");
     }
 
     /// <summary>Gets or sets the zoom of one wheel notch: finite and above 1. 1.2 by default.</summary>
@@ -361,7 +366,7 @@ public sealed class InteractionOptions
     public double WheelZoomFactor
     {
         get => _wheelZoomFactor;
-        set => _wheelZoomFactor = double.IsFinite(value) && value > 1 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The factor is finite and above 1.");
+        set => _wheelZoomFactor = Check(value, double.IsFinite(value) && value > 1, "The factor is finite and above 1.");
     }
 
     /// <summary>Gets or sets the share of the view's width an arrow key pans: finite, above 0, at most 1. 0.1 by default.</summary>
@@ -369,7 +374,7 @@ public sealed class InteractionOptions
     public double KeyPanFraction
     {
         get => _keyPanFraction;
-        set => _keyPanFraction = value is > 0 and <= 1 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The fraction is in (0, 1].");
+        set => _keyPanFraction = Check(value, value is > 0 and <= 1, "The fraction is in (0, 1].");
     }
 
     /// <summary>Gets or sets the zoom of Plus and Minus: finite and above 1. 1.25 by default.</summary>
@@ -377,7 +382,7 @@ public sealed class InteractionOptions
     public double KeyZoomFactor
     {
         get => _keyZoomFactor;
-        set => _keyZoomFactor = double.IsFinite(value) && value > 1 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The factor is finite and above 1.");
+        set => _keyZoomFactor = Check(value, double.IsFinite(value) && value > 1, "The factor is finite and above 1.");
     }
 
     /// <summary>Gets or sets the most entries the history keeps: at least 1. 100 by default.</summary>
@@ -385,7 +390,7 @@ public sealed class InteractionOptions
     public int HistoryDepth
     {
         get => _historyDepth;
-        set => _historyDepth = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The depth is at least 1.");
+        set => _historyDepth = Check(value, value >= 1, "The depth is at least 1.");
     }
 
     /// <summary>Gets or sets the pause after which a wheel's turns start a new entry of the history: above 0. 300 ms by default.</summary>
@@ -393,7 +398,7 @@ public sealed class InteractionOptions
     public TimeSpan WheelGroupGap
     {
         get => _wheelGroupGap;
-        set => _wheelGroupGap = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The gap is above 0.");
+        set => _wheelGroupGap = Check(value, value > TimeSpan.Zero, "The gap is above 0.");
     }
 
     /// <summary>Gets or sets the most time between the clicks of a double click: above 0. 500 ms by default, as Windows's.</summary>
@@ -401,7 +406,7 @@ public sealed class InteractionOptions
     public TimeSpan DoubleClickTime
     {
         get => _doubleClickTime;
-        set => _doubleClickTime = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The time is above 0.");
+        set => _doubleClickTime = Check(value, value > TimeSpan.Zero, "The time is above 0.");
     }
 
     /// <summary>Gets or sets how far, in DIPs on each axis, the second click of a double click may lie from the first: 0 or more. 2 by default.</summary>
@@ -409,7 +414,7 @@ public sealed class InteractionOptions
     public float DoubleClickDistance
     {
         get => _doubleClickDistance;
-        set => _doubleClickDistance = float.IsFinite(value) && value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The distance is finite and 0 or more.");
+        set => _doubleClickDistance = Check(value, float.IsFinite(value) && value >= 0, "The distance is finite and 0 or more.");
     }
 
     /// <summary>Gets or sets how far, in DIPs on each axis, a pressed pointer moves before a drag starts: 0 or more. 4 by default, as Windows's.</summary>
@@ -417,6 +422,9 @@ public sealed class InteractionOptions
     public float DragThreshold
     {
         get => _dragThreshold;
-        set => _dragThreshold = float.IsFinite(value) && value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value), value, "The threshold is finite and 0 or more.");
+        set => _dragThreshold = Check(value, float.IsFinite(value) && value >= 0, "The threshold is finite and 0 or more.");
     }
+
+    private static T Check<T>(T value, bool good, string message) =>
+        good ? value : throw new ArgumentOutOfRangeException(nameof(value), value, message);
 }

@@ -103,8 +103,7 @@ public readonly struct ViewChange
     private readonly ScaleRange _x;
     private readonly ScaleRange _y;
 
-    internal ViewChange(PanelId panel, ViewChangeReason reason, in ScaleRange x, in ScaleRange y) =>
-        (Panel, Reason, _x, _y) = (panel, reason, x, y);
+    internal ViewChange(PanelId panel, ViewChangeReason reason, in ScaleRange x, in ScaleRange y) => (Panel, Reason, _x, _y) = (panel, reason, x, y);
 
     /// <summary>Gets the panel.</summary>
     public PanelId Panel { get; }
@@ -175,8 +174,13 @@ public sealed class ViewProposal
 
     internal ScaleRange Y => _y;
 
-    internal void Start(PanelId panel, ViewChangeReason reason, (int Left, int Top, int Width, int Height) rectangle, in ScaleRange x, in ScaleRange y) =>
-        (Panel, Reason, PanelRectangle, _x, _y) = (panel, reason, rectangle, x, y);
+    internal void Start(
+        PanelId panel,
+        ViewChangeReason reason,
+        (int Left, int Top, int Width, int Height) rectangle,
+        in ScaleRange x,
+        in ScaleRange y
+    ) => (Panel, Reason, PanelRectangle, _x, _y) = (panel, reason, rectangle, x, y);
 }
 
 /// <summary>

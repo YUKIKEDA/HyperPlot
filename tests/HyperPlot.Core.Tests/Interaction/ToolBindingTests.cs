@@ -69,12 +69,14 @@ public sealed class ToolBindingTests
         Assert.Equal((full.X.Upper - full.X.Lower) * 1.25, f.View().X.Upper - f.View().X.Lower, 1e-9);
         Assert.Equal((false, false), Run(new InputScript().Wheel(p, 1).Key(PlotKey.Home)));
 
-        foreach (var (back, forward) in new (InputScript Back, InputScript Forward)[]
-        {
-            (new InputScript().Key(PlotKey.BrowserBack), new InputScript().Key(PlotKey.BrowserForward)),
-            (new InputScript().Key(PlotKey.Left, ModifierKeys.Alt), new InputScript().Key(PlotKey.Right, ModifierKeys.Alt)),
-            (new InputScript().Click(p, PointerButtons.X1), new InputScript().Click(p, PointerButtons.X2)),
-        })
+        foreach (
+            var (back, forward) in new (InputScript Back, InputScript Forward)[]
+            {
+                (new InputScript().Key(PlotKey.BrowserBack), new InputScript().Key(PlotKey.BrowserForward)),
+                (new InputScript().Key(PlotKey.Left, ModifierKeys.Alt), new InputScript().Key(PlotKey.Right, ModifierKeys.Alt)),
+                (new InputScript().Click(p, PointerButtons.X1), new InputScript().Click(p, PointerButtons.X2)),
+            }
+        )
         {
             f.Engine.Views.Reset(EngineFixture.Panel, animate: false);
             f.Engine.Views.ZoomAt(EngineFixture.Panel, m, 2, animate: false);
@@ -87,7 +89,11 @@ public sealed class ToolBindingTests
         }
 
         var before = f.View();
-        new InputScript().Press(p, PointerButtons.Right).Move(ScriptPoint.Pixel(m.X + 60, m.Y + 40)).Key(PlotKey.Escape).Release(ScriptPoint.Pixel(m.X + 60, m.Y + 40), PointerButtons.Right)
+        new InputScript()
+            .Press(p, PointerButtons.Right)
+            .Move(ScriptPoint.Pixel(m.X + 60, m.Y + 40))
+            .Key(PlotKey.Escape)
+            .Release(ScriptPoint.Pixel(m.X + 60, m.Y + 40), PointerButtons.Right)
             .Run(f.Engine, f.Time.Advance);
         Assert.Equal(before, f.View());
         Assert.Null(f.Engine.Captured);
@@ -224,7 +230,9 @@ public sealed class ToolBindingTests
     private static bool Narrower(EngineFixture f, (ViewRange X, ViewRange Y) full, (bool X, bool Y) moved)
     {
         var view = f.View();
-        return moved == (true, true) && view.X.Upper - view.X.Lower < full.X.Upper - full.X.Lower && view.Y.Upper - view.Y.Lower < full.Y.Upper - full.Y.Lower;
+        return moved == (true, true)
+            && view.X.Upper - view.X.Lower < full.X.Upper - full.X.Lower
+            && view.Y.Upper - view.Y.Lower < full.Y.Upper - full.Y.Lower;
     }
 
     private sealed class RecordingTool : IPlotTool

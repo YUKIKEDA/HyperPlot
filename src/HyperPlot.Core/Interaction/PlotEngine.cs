@@ -533,7 +533,11 @@ public sealed class PlotEngine : IDisposable
             y = Shift(y, alongY * (y.Upper - y.Lower));
         }
 
-        Commit(panel, x, y, animate: false, _inGesture ? HistoryMode.None : grouped ? HistoryMode.Group : HistoryMode.Push);
+        var history =
+            _inGesture ? HistoryMode.None
+            : grouped ? HistoryMode.Group
+            : HistoryMode.Push;
+        Commit(panel, x, y, animate: false, history);
     }
 
     internal void ZoomToRect(PanelId panel, Vector2 corner, Vector2 opposite, ViewAxes axes, bool animate)
@@ -795,7 +799,11 @@ public sealed class PlotEngine : IDisposable
     {
         foreach (var binding in Bindings)
         {
-            if (binding.Gesture.Kind is InputGestureKind.Drag or InputGestureKind.Click && binding.Gesture.Button == button && Matches(binding, modifiers, area))
+            if (
+                binding.Gesture.Kind is InputGestureKind.Drag or InputGestureKind.Click
+                && binding.Gesture.Button == button
+                && Matches(binding, modifiers, area)
+            )
             {
                 return true;
             }
@@ -1122,7 +1130,9 @@ public sealed class PlotEngine : IDisposable
         }
 
         private static bool Wide(in ScaleRange range, int pixels) =>
-            double.IsFinite(range.Lower) && double.IsFinite(range.Upper) && range.Upper - range.Lower > Least * Math.Max(pixels, 1) * Math.Max(1, Math.Abs(range.Upper));
+            double.IsFinite(range.Lower)
+            && double.IsFinite(range.Upper)
+            && range.Upper - range.Lower > Least * Math.Max(pixels, 1) * Math.Max(1, Math.Abs(range.Upper));
     }
 }
 
@@ -1144,7 +1154,10 @@ internal static class InputLog
                 CultureInfo.InvariantCulture,
                 $"t={t} pointer {p.Kind} x={p.Position.X:R} y={p.Position.Y:R} button={p.Button} buttons={p.Buttons} mods={p.Modifiers} kind={p.Device}"
             ),
-            WheelEvent w => string.Create(CultureInfo.InvariantCulture, $"t={t} wheel x={w.Position.X:R} y={w.Position.Y:R} dx={w.DeltaX:R} dy={w.DeltaY:R} mods={w.Modifiers}"),
+            WheelEvent w => string.Create(
+                CultureInfo.InvariantCulture,
+                $"t={t} wheel x={w.Position.X:R} y={w.Position.Y:R} dx={w.DeltaX:R} dy={w.DeltaY:R} mods={w.Modifiers}"
+            ),
             KeyEvent k => string.Create(CultureInfo.InvariantCulture, $"t={t} key {k.Kind} key={k.Key} mods={k.Modifiers} repeat={k.IsRepeat}"),
             GestureEvent g => string.Create(
                 CultureInfo.InvariantCulture,

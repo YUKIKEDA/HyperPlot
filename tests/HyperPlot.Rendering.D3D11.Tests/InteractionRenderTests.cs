@@ -48,12 +48,39 @@ public sealed class InteractionRenderTests
         using var engine = new PlotEngine(backend, Width, Height, 1, pool);
         engine.SetPlot(spec);
         engine.RenderFrame();
-        engine.OnPointer(new PointerEvent(PointerEventKind.Down, new Vector2(200, 100), PointerButtons.Right, PointerButtons.Right, ModifierKeys.None, PointerKind.Mouse, 0));
-        engine.OnPointer(new PointerEvent(PointerEventKind.Move, new Vector2(420, 230), PointerButtons.None, PointerButtons.Right, ModifierKeys.None, PointerKind.Mouse, 1));
+        engine.OnPointer(
+            new PointerEvent(
+                PointerEventKind.Down,
+                new Vector2(200, 100),
+                PointerButtons.Right,
+                PointerButtons.Right,
+                ModifierKeys.None,
+                PointerKind.Mouse,
+                0
+            )
+        );
+        engine.OnPointer(
+            new PointerEvent(
+                PointerEventKind.Move,
+                new Vector2(420, 230),
+                PointerButtons.None,
+                PointerButtons.Right,
+                ModifierKeys.None,
+                PointerKind.Mouse,
+                1
+            )
+        );
         engine.RenderFrame();
 
         var pixels = new byte[Width * Height * 4];
         engine.ReadPixels(pixels);
-        GoldenImage.AssertMatches(pixels, Width, Height, GoldenImageTests.Baseline("interaction-rectangle.png"), GoldenImageTests.Tolerance, GoldenImageTests.Output);
+        GoldenImage.AssertMatches(
+            pixels,
+            Width,
+            Height,
+            GoldenImageTests.Baseline("interaction-rectangle.png"),
+            GoldenImageTests.Tolerance,
+            GoldenImageTests.Output
+        );
     }
 }

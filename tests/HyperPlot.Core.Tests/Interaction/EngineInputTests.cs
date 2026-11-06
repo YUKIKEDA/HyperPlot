@@ -23,12 +23,23 @@ public sealed class EngineInputTests
     [Fact]
     public void Events_CarryTheirValues()
     {
-        var pointer = new PointerEvent(PointerEventKind.Down, new Vector2(3, 4), PointerButtons.Right, PointerButtons.Right, ModifierKeys.Control, PointerKind.Pen, 42);
+        var pointer = new PointerEvent(
+            PointerEventKind.Down,
+            new Vector2(3, 4),
+            PointerButtons.Right,
+            PointerButtons.Right,
+            ModifierKeys.Control,
+            PointerKind.Pen,
+            42
+        );
         var wheel = new WheelEvent(new Vector2(1, 2), 0.5, -1.25, ModifierKeys.Shift, 7);
         var key = new KeyEvent(KeyEventKind.Up, PlotKey.Q, ModifierKeys.Alt, true, 9);
         var gesture = new GestureEvent(GestureKind.Pinch, new Vector2(5, 6), 1.5, new Vector2(7, 8), 11);
 
-        Assert.Equal((PointerEventKind.Down, new Vector2(3, 4), PointerButtons.Right, PointerKind.Pen, 42L), (pointer.Kind, pointer.Position, pointer.Button, pointer.Device, pointer.Timestamp));
+        Assert.Equal(
+            (PointerEventKind.Down, new Vector2(3, 4), PointerButtons.Right, PointerKind.Pen, 42L),
+            (pointer.Kind, pointer.Position, pointer.Button, pointer.Device, pointer.Timestamp)
+        );
         Assert.Equal((0.5, -1.25, ModifierKeys.Shift), (wheel.DeltaX, wheel.DeltaY, wheel.Modifiers));
         Assert.Equal((KeyEventKind.Up, PlotKey.Q, true), (key.Kind, key.Key, key.IsRepeat));
         Assert.Equal((GestureKind.Pinch, 1.5, new Vector2(7, 8)), (gesture.Kind, gesture.Scale, gesture.Delta));
