@@ -685,8 +685,11 @@ public sealed class PlotEngine : IDisposable
         switch (e.Kind)
         {
             case PointerEventKind.Down:
-                (_press, _pressArea, _pressed, _dragging) = (e, HitArea(e.Position), true, false);
-                return _pressArea.Kind != HitAreaKind.None;
+                (_press, _pressArea, _dragging) = (e, HitArea(e.Position), false);
+
+                // A press is taken when a drag or a click of its button may follow on its place (design §6.1).
+                _pressed = Bound(e.Button, e.Modifiers, _pressArea.Kind);
+                return _pressed;
             case PointerEventKind.Move when _pressed && !_dragging:
                 var threshold = Options.DragThreshold * Scale;
                 if (Math.Abs(e.Position.X - _press.Position.X) <= threshold && Math.Abs(e.Position.Y - _press.Position.Y) <= threshold)
@@ -706,8 +709,9 @@ public sealed class PlotEngine : IDisposable
 
                 return true;
             case PointerEventKind.Cancel:
+                var had = _pressed;
                 _pressed = false;
-                return true;
+                return had;
             default:
                 return false;
         }
@@ -783,7 +787,20 @@ public sealed class PlotEngine : IDisposable
             }
         }
 
-        return _pressArea.Kind != HitAreaKind.None;
+        return false;
+    }
+
+    private bool Bound(PointerButtons button, ModifierKeys modifiers, HitAreaKind area)
+    {
+        foreach (var binding in Bindings)
+        {
+            if (binding.Gesture.Kind is InputGestureKind.Drag or InputGestureKind.Click && binding.Gesture.Button == button && Matches(binding, modifiers, area))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void Release(ToolResult result)
