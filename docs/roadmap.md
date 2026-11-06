@@ -18,7 +18,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** C（インタラクションと WPF）
-- **作業中:** I1a（I1c は #270 の PR で済み）
+- **作業中:** I1b（I1a は #274 の PR で済み）
 - **ブランチ:** —
 - **Issue:** —
 
@@ -69,7 +69,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | G6c | 複数のプロット（要件 G-9、§4.5）: `FigureSpec` の concat と grid（セルのまたぎ、同じ大きさのセル、セルごとに 1 枚の図と同じ配置、スケールと凡例はプロットごと、入れ子なし、図の中でピラミッドを共有）と `HeadlessRenderer.Render(FigureSpec)`（§4.5・§4.6）。計測: NativeAOT の Release、1,920 × 1,080、3 回。2 × 2 の図に同じ 1e9 点の系列を 4 つと 1 枚の図で、作る時間と 1 フレームの CPU と GPU の時間と確保（要件 P-1） | done | [#254](https://github.com/YUKIKEDA/HyperPlot/issues/254)（設計）、[#258](https://github.com/YUKIKEDA/HyperPlot/issues/258) |
 | **C: インタラクションと WPF** | | | |
 | I1c | ズーム中に新しい目盛りのラベルで確保しない（不変条件 3）: ラベルの文字を計画の置き場に書き、span を受ける `DrawText`、文字で引く整形のキャッシュの使い回し、`ITextBackend.Shape` を span を受けて `ShapedText` に書く形に（§4.6・§5.1・§5.6）。計測: x の domain を毎フレームずらして新しいラベルが出続ける 300 フレームの確保（偽の文字のバックエンドと DirectWrite、前の値は 1 フレーム 8.0 KB） | done | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計）、[#270](https://github.com/YUKIKEDA/HyperPlot/issues/270) |
-| I1a | 対話の土台（要件 I-1・I-7・I-8・I-9）: `PlotEngine`（`SetPlot`・`SetFigure`・`FrameRequested`・`RenderFrame`、作ったスレッドだけ）、入力のモデル、ビュー（`PanelView2D`・`ViewRange`、仕様の domain との関係）、ビューの操作の API と制約と通知と履歴とアニメーション、原点の付け直し（§6.2）、場所の当たり判定（`HitArea`）、ツールの枠（`IPlotTool`）と割り当ての表（`InputBindings`）と組み込みのツール（パン・矩形ズーム・軸のドラッグ・ホイール・全体表示・キーボード・戻る・進む・Y の自動範囲）、入力の台本と記録と再生（`HyperPlot.Testing`、§6.6）。計測: 1e9 点に入力の台本を流した 1 フレームの CPU と GPU の時間の p95 と確保、入力の処理の時間（NativeAOT の Release、1,920 × 1,080、3 回） | not-started | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計） |
+| I1a | 対話の土台（要件 I-1・I-7・I-8・I-9）: `PlotEngine`（`SetPlot`・`SetFigure`・`FrameRequested`・`RenderFrame`、作ったスレッドだけ）、入力のモデル、ビュー（`PanelView2D`・`ViewRange`、仕様の domain との関係）、ビューの操作の API と制約と通知と履歴とアニメーション、原点の付け直し（§6.2）、場所の当たり判定（`HitArea`）、ツールの枠（`IPlotTool`）と割り当ての表（`InputBindings`）と組み込みのツール（パン・矩形ズーム・軸のドラッグ・ホイール・全体表示・キーボード・戻る・進む・Y の自動範囲）、入力の台本と記録と再生（`HyperPlot.Testing`、§6.6）。計測: 1e9 点に入力の台本を流した 1 フレームの CPU と GPU の時間の p95 と確保、入力の処理の時間（NativeAOT の Release、1,920 × 1,080、3 回） | done | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計）、[#274](https://github.com/YUKIKEDA/HyperPlot/issues/274) |
 | I1b | 1 枚の図の外への対話（§6.2）: 二次のスケール（行 G6a）へのズームとパン（パネルの中は同じ割合、軸の上はその軸だけ）、ファセット（行 G6b）の共有する軸を一緒に動かすこと、図（行 G6c）の操作の相手の決め方とプロットごとのビュー、band の軸（行 G7b）のズームとパン、polar（行 G11）の半径のズームとパン | not-started | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計） |
 | W1 | WPF のホスト（D3DImage、ソフトウェア描画の経路、DPI とその変化での描き直し、入力）、層のテクスチャでの合成（§5.4）、索引ができる前の暫定の表示とホストへの通知（§4.8、要件 P-2）、プロットの要約をアクセシビリティの API に渡すこと（要件 N-10、§4.6）、図（`FigureSpec`）の表示（行 G6c） | not-started | |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6） | not-started | |
