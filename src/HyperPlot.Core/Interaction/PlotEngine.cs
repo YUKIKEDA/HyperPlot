@@ -144,16 +144,17 @@ public sealed class PlotEngine : IDisposable
 
     /// <summary>
     /// Sets a figure of several plots to draw (design §7.1, row G6c). In row I1a a figure is drawn and takes no view; its
-    /// interaction is row I1b's. The figure is checked at the next frame.
+    /// interaction is row I1b's. The figure is checked now (design §4.5); its plots are compiled and checked at the next frame.
     /// </summary>
     /// <param name="figure">The figure.</param>
-    /// <exception cref="ArgumentNullException"><paramref name="figure"/> is null.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="figure"/>, a plot, or a cell is null.</exception>
+    /// <exception cref="ArgumentException">The figure does not check (design §4.5).</exception>
     /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
     /// <exception cref="ObjectDisposedException">The engine was disposed.</exception>
     public void SetFigure(FigureSpec figure)
     {
         CheckThread();
-        ArgumentNullException.ThrowIfNull(figure);
+        _renderer.Check(figure);
         ResetState();
         (_plot, _figure) = (null, figure);
         RequestFrame();

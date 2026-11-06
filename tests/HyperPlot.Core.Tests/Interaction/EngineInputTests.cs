@@ -156,4 +156,39 @@ public sealed class EngineInputTests
         using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time);
         Assert.Equal(HitAreaKind.None, fresh.HitArea(new Vector2(50, 50)).Kind);
     }
+
+    /// <summary>
+    /// A spec is checked when it is set, and a figure too (design §7.1); a figure is drawn and takes no view in row I1a; an
+    /// operation before the first frame has no layout to read and throws.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine over a line, drawn; a fresh engine with no frame.
+    ///
+    /// Steps:
+    /// - Set a spec with a null theme; set a figure with a spacing of −1; set a figure of two plots and draw it; zoom; on the
+    ///   fresh engine, zoom.
+    ///
+    /// Expected:
+    /// - ArgumentNullException and ArgumentException at the set, the engine drawing the line still; the figure's frame
+    ///   draws three lists (the figure's and two plots'); InvalidOperationException for the zooms.
+    /// </remarks>
+    [Fact]
+    public void Specs_CheckedWhenSet_FigureDrawn()
+    {
+        using var f = new EngineFixture();
+        _ = Assert.Throws<ArgumentNullException>(() => f.Engine.SetPlot(f.Spec with { Theme = null! }));
+        _ = Assert.Throws<ArgumentException>(() => f.Engine.SetFigure(Figure.HConcat(f.Spec, f.Spec) with { Spacing = -1 }));
+        f.Engine.SetPlot(f.Spec);
+        f.Engine.RenderFrame();
+
+        f.Engine.SetFigure(Figure.HConcat(f.Spec, f.Spec));
+        f.Engine.RenderFrame();
+        Assert.Equal(3, f.Backend.DrawsInFrame);
+        _ = Assert.Throws<InvalidOperationException>(() => f.Engine.Views.ZoomAt(EngineFixture.Panel, new Vector2(100, 100), 2));
+
+        using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time);
+        fresh.SetPlot(f.Spec);
+        _ = Assert.Throws<InvalidOperationException>(() => fresh.Views.ZoomAt(EngineFixture.Panel, new Vector2(50, 50), 2));
+    }
 }

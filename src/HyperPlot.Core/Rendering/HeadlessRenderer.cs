@@ -155,6 +155,17 @@ public sealed class HeadlessRenderer : IDisposable
         _plan!.Check(plot);
     }
 
+    /// <summary>Throws unless a figure checks, as <see cref="Render(FigureSpec)"/> would before its plots compile (row I1a).</summary>
+    internal void Check(FigureSpec figure)
+    {
+        ArgumentNullException.ThrowIfNull(figure);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        _plan?.Dispose();
+        _plan = null;
+        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        _ = _figure.Check(figure);
+    }
+
     /// <summary>Takes the plan of a plot alone, releasing the figure's (design §7.5, row G6c).</summary>
     private void UsePlan()
     {
