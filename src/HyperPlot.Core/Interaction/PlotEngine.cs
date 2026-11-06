@@ -956,9 +956,15 @@ public sealed class PlotEngine : IDisposable
             return;
         }
 
+        // Room for the whole depth at once, so that the history allocates once and not each time it doubles.
+        if (_history.Capacity < Options.HistoryDepth + 1)
+        {
+            _history.Capacity = Options.HistoryDepth + 1;
+        }
+
         _history.RemoveRange(_position + 1, _history.Count - _position - 1);
         _history.Add((x, y));
-        if (_history.Count > Options.HistoryDepth)
+        while (_history.Count > Options.HistoryDepth)
         {
             _history.RemoveAt(0);
         }
