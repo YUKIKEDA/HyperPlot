@@ -344,4 +344,32 @@ public sealed class DirectWriteTests
         Assert.Equal(fresh.Lines.ToArray(), reused.Lines.ToArray());
         Assert.Equal(fresh.Metrics, reused.Metrics);
     }
+
+    /// <summary>
+    /// An empty text shapes to no glyph and one empty line of the font's height (design §5.6): DirectWrite gets a pointer
+    /// that is not null and the length 0 (row I1c, PR #271's review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A DirectWrite backend.
+    ///
+    /// Steps:
+    /// - Shape the empty text and "x" at 17.3 pixels.
+    ///
+    /// Expected:
+    /// - No glyph, one line of width 0, width 0, and the height of "x"'s one line.
+    /// </remarks>
+    [Fact]
+    public void Shape_EmptyText_IsOneEmptyLine()
+    {
+        using var text = new DWriteTextBackend();
+        var empty = text.ShapeNew(string.Empty, "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
+        var x = text.ShapeNew("x", "Segoe UI", 17.3f, FontWeight.Normal, "en-us");
+
+        Assert.Empty(empty.Glyphs.ToArray());
+        var line = Assert.Single(empty.Lines.ToArray());
+        Assert.Equal((0, 0f), (line.GlyphCount, line.Width));
+        Assert.Equal(0, empty.Metrics.Width);
+        Assert.Equal(x.Metrics.Height, empty.Metrics.Height);
+    }
 }

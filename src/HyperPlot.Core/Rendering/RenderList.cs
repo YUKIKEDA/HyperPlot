@@ -600,13 +600,6 @@ public sealed class RenderList
         }
     }
 
-    /// <summary>Throws unless a text and its style are in range (design §5.1): what <see cref="DrawText(string, Vector2, in TextStyle)"/> and <see cref="TextEngine.Measure(string, in TextStyle)"/> check.</summary>
-    internal static void ValidateText(string text, in TextStyle style)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-        ValidateStyle(style);
-    }
-
     /// <summary>Checks a text's style as <see cref="DrawText(string, Vector2, in TextStyle)"/> does.</summary>
     internal static void ValidateStyle(in TextStyle style)
     {

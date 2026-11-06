@@ -24,6 +24,9 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
 
     private static readonly void** _vtable = MakeVtable();
 
+    // The character an empty text pins, so that CreateTextLayout gets a pointer that is not null (row I1c).
+    private static readonly char[] NulCharacter = ['\0'];
+
     private readonly Dictionary<nint, int> _faceNumbers = [];
     private readonly List<nint> _faces = [];
     private readonly Collector _collector = new();
@@ -322,11 +325,12 @@ internal sealed unsafe class DWriteTextBackend : ITextBackend, IDisposable
         try
         {
             // The strings are pinned for the calls, and a pinned string ends with a 0 character. The text's length is passed, so
-            // its span needs no 0; an empty span pins as null, so it takes the empty string's characters instead.
+            // its span needs no 0. An empty span pins as null, so an empty text pins a one-character buffer and passes length 0,
+            // as the empty string's '\0' was passed before row I1c.
             fixed (
                 char* family = fontFamily,
                     localeName = locale,
-                    chars = text.IsEmpty ? string.Empty : text
+                    chars = text.IsEmpty ? NulCharacter : text
             )
             {
                 var fontWeight =
