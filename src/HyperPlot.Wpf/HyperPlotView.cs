@@ -48,9 +48,12 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     private HwndSource? _source;
     private nint _shown;
     private (double X, double Y) _dpi = (1, 1);
+    private (int Width, int Height, float Scale) _size = (1, 1, 1);
     private bool _sized;
+    private bool _resizing;
     private bool _wanted;
     private bool _polling;
+    private bool _pollingShared;
     private bool _hooked;
     private bool _pressed;
     private bool _releasing;
@@ -123,7 +126,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
 
     /// <summary>Gets a value indicating whether the frames go through the shared textures (else they are read back).</summary>
     internal bool UsesSharedTextures =>
-        _host.D3D9 is { } d3d9 && _backend.AdapterLuid == d3d9.AdapterLuid && (FrontBuffer ?? _d3dImage.IsFrontBufferAvailable);
+        _host.D3D9 is { HasDevice: true } d3d9 && _backend.AdapterLuid == d3d9.AdapterLuid && (FrontBuffer ?? _d3dImage.IsFrontBufferAvailable);
 
     /// <inheritdoc />
     protected override int VisualChildrenCount => 1;
@@ -150,12 +153,31 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     /// </summary>
     internal void Render()
     {
-        if (_disposed || Spec is null || !_sized)
+        if (_disposed)
         {
             return;
         }
 
+        if (Spec is null || !_sized || !IsVisible)
+        {
+            // Nothing to draw: the tick is left until a spec, a size, or the view shown again asks again (design §7.2).
+            Unhook();
+            return;
+        }
+
+        if (_wanted && _host.D3D9 is { HasDevice: false } d3d9)
+        {
+            // The Direct3D 9Ex device could not be made: tried again once a frame, which is read back until it is (design §7.2).
+            _ = d3d9.EnsureDevice();
+        }
+
         var shared = UsesSharedTextures;
+        if (_polling && shared != _pollingShared)
+        {
+            // The way changed while a copy waited (the front buffer, the Direct3D 9Ex device): the frame is drawn again.
+            (_polling, _wanted) = (false, true);
+        }
+
         try
         {
             if (_wanted)
@@ -163,6 +185,13 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                 _wanted = false;
                 using (_backend.BeginFrame())
                 {
+                    if (_resizing)
+                    {
+                        // A size the device loss kept from the engine: the frame has made the device again.
+                        Engine.Resize(_size.Width, _size.Height, _size.Scale);
+                        _resizing = false;
+                    }
+
                     Engine.RenderFrame();
 
                     if (shared)
@@ -175,19 +204,18 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                     }
                 }
 
-                _polling = true;
+                (_polling, _pollingShared) = (true, shared);
             }
 
             if (_polling)
             {
-                _polling = !(shared ? ShowShared() : ShowReadback());
+                // A read of the older copy goes on polling for the newest, the last frame shown.
+                _polling = !(shared ? ShowShared() : ShowReadback() && !_readback!.HasUnread);
             }
         }
         catch (GpuDeviceLostException)
         {
-            // The backend makes the device again at the next frame; the surfaces and the opened textures are made again then.
-            ReleaseSurfaces();
-            _wanted = true;
+            Lost();
         }
 
         if (_wanted || _polling)
@@ -211,9 +239,27 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         _dpi = (dpi.DpiScaleX, dpi.DpiScaleY);
         var (width, height) = InputTranslator.PixelSize(ActualWidth, ActualHeight, dpi.DpiScaleX, dpi.DpiScaleY);
         _sized = width >= 1 && height >= 1;
-        if (_sized)
+        if (!_sized)
         {
-            Engine.Resize(Math.Min(width, RenderTargetDescription.MaxSide), Math.Min(height, RenderTargetDescription.MaxSide), (float)dpi.DpiScaleX);
+            return;
+        }
+
+        _size = (Math.Min(width, RenderTargetDescription.MaxSide), Math.Min(height, RenderTargetDescription.MaxSide), (float)dpi.DpiScaleX);
+        try
+        {
+            Engine.Resize(_size.Width, _size.Height, _size.Scale);
+        }
+        catch (GpuDeviceLostException)
+        {
+            // Called from WPF's layout, where the application cannot catch it: the next frame resizes (design §7.2).
+            _resizing = true;
+            Lost();
+        }
+
+        // A view shown again at the size it had asks for nothing new; a frame wanted while it was empty is drawn now.
+        if (_wanted || _polling)
+        {
+            Hook();
         }
     }
 
@@ -491,6 +537,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         AddVisualChild(_image);
         _d3dImage.IsFrontBufferAvailableChanged += (_, _) => FrontBufferChanged();
         Loaded += (_, _) => OnLoaded();
+        IsVisibleChanged += (_, _) => OnVisibleChanged();
         Unloaded += (_, _) => OnUnloaded();
         return engine;
     }
@@ -517,6 +564,18 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         _source?.AddHook(WndProc);
         UpdateSize();
         if (_wanted || _polling)
+        {
+            Hook();
+        }
+    }
+
+    /// <summary>
+    /// A view collapsed or hidden keeps its size (WPF gives no size change), so the tick is left by <see cref="Render"/>;
+    /// shown again, a frame wanted meanwhile is drawn.
+    /// </summary>
+    private void OnVisibleChanged()
+    {
+        if (IsVisible && (_wanted || _polling))
         {
             Hook();
         }
@@ -601,6 +660,12 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         {
             // The Direct3D 9Ex device was made again: what it had opened is gone (design §7.2).
             ReleaseOpened();
+            if (!d3d9.HasDevice)
+            {
+                // It could not be made: the frame is drawn again, read back (UsesSharedTextures).
+                _wanted = true;
+                return true;
+            }
         }
 
         if (!_shared!.TryTakeCompleted(out var handle))
@@ -652,6 +717,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         _bitmap.Lock();
         try
         {
+            // The back buffer holds BackBufferStride · PixelHeight bytes, valid between Lock and Unlock.
             var stride = _bitmap.BackBufferStride;
             read = _readback.TryRead(new Span<byte>((void*)_bitmap.BackBuffer, stride * height), stride);
             if (read)
@@ -711,6 +777,17 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
             D3D9Host.Release(_opened[i].Surface);
             _opened[i] = default;
         }
+    }
+
+    /// <summary>
+    /// A lost device (design §7.2): the backend makes it again at the next frame; the surfaces and the opened textures are
+    /// made again then.
+    /// </summary>
+    private void Lost()
+    {
+        ReleaseSurfaces();
+        _wanted = true;
+        Hook();
     }
 
     private void ReleaseSurfaces()

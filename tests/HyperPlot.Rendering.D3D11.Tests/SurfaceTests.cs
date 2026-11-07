@@ -210,6 +210,45 @@ public sealed class SurfaceTests
         Assert.False(surface.TryRead(buffer, Stride));
     }
 
+    /// <summary>
+    /// The newest copy stays unread until it is read, even when the older one is read first (design §7.2): a host polls
+    /// until the last frame it presented is shown.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend; a 64 × 48 target cleared to green and one cleared to red; a readback surface.
+    ///
+    /// Steps:
+    /// - Present the green one, then the red one; read until nothing is unread.
+    ///
+    /// Expected:
+    /// - Nothing is unread before the copies and something is after them. The reads end within the polls, and the pixels
+    ///   are the red target's.
+    /// </remarks>
+    [Fact]
+    public void Readback_KeepsTheNewestUnreadUntilRead()
+    {
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var green = backend.CreateRenderTarget(new RenderTargetDescription(Width, Height));
+        using var red = backend.CreateRenderTarget(new RenderTargetDescription(Width, Height));
+        green.Clear(Green);
+        red.Clear(Red);
+        using var surface = new D3D11ReadbackSurface(backend, Width, Height);
+        var buffer = new byte[Width * Height * 4];
+        Assert.False(surface.HasUnread);
+
+        surface.Present(green);
+        surface.Present(red);
+        Assert.True(surface.HasUnread);
+        for (var i = 0; i < Polls && surface.HasUnread; i++)
+        {
+            _ = surface.TryRead(buffer, Width * 4);
+        }
+
+        Assert.False(surface.HasUnread);
+        Assert.Equal(Straight(red), Rgba(buffer));
+    }
+
     /// <summary>A readback checks its destination before it reads (design §7.2).</summary>
     /// <remarks>
     /// Preconditions:

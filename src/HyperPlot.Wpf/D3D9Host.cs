@@ -7,8 +7,9 @@ namespace HyperPlot.Wpf;
 
 /// <summary>
 /// The Direct3D 9Ex device of a dispatcher's views (design §7.2, row W1a): on adapter 0, made as "WPF and Direct3D9
-/// Interoperation" says (a window for the device, windowed with a 1 × 1 back buffer, multithreaded, the FPU kept). It opens
-/// the shared textures of <see cref="Rendering.D3D11.D3D11SharedSurface"/> as surfaces <c>D3DImage</c> shows.
+/// Interoperation" says (windowed with a 1 × 1 back buffer, multithreaded, the FPU kept), on the desktop's window, since it
+/// never presents. It opens the shared textures of <see cref="Rendering.D3D11.D3D11SharedSurface"/> as surfaces
+/// <c>D3DImage</c> shows.
 /// </summary>
 /// <remarks>Used from the dispatcher's thread only.</remarks>
 internal sealed unsafe class D3D9Host : IDisposable
@@ -62,26 +63,35 @@ internal sealed unsafe class D3D9Host : IDisposable
         return new D3D9Host(d3d9, device, ((long)luid.HighPart << 32) | luid.LowPart);
     }
 
+    /// <summary>Gets a value indicating whether there is a device: false after one could not be made again.</summary>
+    public bool HasDevice => _device != null;
+
+    /// <summary>Gets or sets a value indicating whether making the device again fails, as while a driver is replaced. Tests only.</summary>
+    internal bool FailMakeDevice { get; set; }
+
     /// <summary>
     /// Returns whether the device can still show (<c>CheckDeviceState</c>; <c>TestCooperativeLevel</c> always succeeds on
-    /// 9Ex). A device that cannot is made again, and the surfaces opened on it are to be opened again.
+    /// 9Ex). A device that cannot is made again, and the surfaces opened on it are to be opened again; a device that could
+    /// not be made is tried again (<see cref="HasDevice"/> tells whether it was).
     /// </summary>
     /// <returns>True when the device was there; false when it was made again (or could not be).</returns>
     public bool EnsureDevice()
     {
+        if (_device == null)
+        {
+            _device = MakeDevice();
+            return false;
+        }
+
         var state = DeviceState is { } hook ? hook() : (int)_device->CheckDeviceState(HWND.NULL);
-        if (state >= 0 && _device != null)
+        if (state >= 0)
         {
             return true;
         }
 
         // A lost device is not reset: everything on it is released and made again (the same page).
-        if (_device != null)
-        {
-            _ = _device->Release();
-        }
-
-        _device = MakeDevice(_d3d9);
+        _ = _device->Release();
+        _device = MakeDevice();
         return false;
     }
 
@@ -148,8 +158,11 @@ internal sealed unsafe class D3D9Host : IDisposable
         }
     }
 
+    private IDirect3DDevice9Ex* MakeDevice() => FailMakeDevice ? null : MakeDevice(_d3d9);
+
     private static IDirect3DDevice9Ex* MakeDevice(IDirect3D9Ex* d3d9)
     {
+        // The device never presents: its window is only what CreateDeviceEx asks for, so the desktop's serves.
         foreach (var vertices in (ReadOnlySpan<uint>)[HardwareVertexProcessing, SoftwareVertexProcessing])
         {
             var parameters = new D3DPRESENT_PARAMETERS

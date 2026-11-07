@@ -61,6 +61,13 @@ public sealed unsafe class D3D11ReadbackSurface : IDisposable, IDeviceResource
     public int Height { get; }
 
     /// <summary>
+    /// Gets a value indicating whether the newest copy has not been read: after a <see cref="Present"/>, until
+    /// <see cref="TryRead"/> reads that copy. A read of the older copy, while the newest is still being made, leaves it true,
+    /// so that a host reads again at its next tick and shows the last frame (PR #288's review).
+    /// </summary>
+    public bool HasUnread => Math.Max(_slots[0].Copy, _slots[1].Copy) > _read;
+
+    /// <summary>
     /// Copies a render target into the older staging texture (the one not copied last). Nothing waits for the GPU. Opens a
     /// frame of the backend, or joins the caller's.
     /// </summary>

@@ -60,11 +60,13 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// - The scene of <see cref="SharedTextures_ShowTheEnginesPixels"/>, shown.
     ///
     /// Steps:
-    /// - Say the front buffer is lost; draw until shown. Say it is back; draw until shown.
+    /// - Say the front buffer is lost; draw until shown. Say it is back; draw until shown. Zoom and tick, then say the
+    ///   front buffer is lost without its event (the copy may still wait); tick; zoom; draw until shown.
     ///
     /// Expected:
     /// - Lost: no shared texture is shown, the image shows a Pbgra32 bitmap of the engine's size, whose pixels, made
-    ///   straight, are the target's. Back: the image shows the D3DImage with a shared texture again.
+    ///   straight, are the target's. Back: the image shows the D3DImage with a shared texture again. A way that changes
+    ///   while a copy waits throws nothing, and the next frame is read back with the target's pixels.
     /// </remarks>
     [Fact]
     public void LostFrontBuffer_ReadsBackAndComesBack() =>
@@ -88,6 +90,14 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             DrawUntilShown(view);
             _ = Assert.IsType<D3DImage>(view.Shown);
             Assert.NotEqual(0, view.ShownHandle);
+
+            Zoom(view);
+            view.Tick();
+            view.FrontBuffer = false;
+            view.Tick();
+            Zoom(view);
+            DrawUntilShown(view);
+            Assert.Equal(Target(view), Rgba(Pixels(Assert.IsType<WriteableBitmap>(view.Shown))));
         });
 
     /// <summary>A backend on another adapter than Direct3D 9Ex's is read back (design §7.2), and stays its owner's.</summary>
@@ -171,6 +181,104 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         });
 
     /// <summary>
+    /// A Direct3D 9Ex device that cannot be made again reads the frames back, and is tried again at each frame until it is
+    /// made (design §7.2).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene of <see cref="SharedTextures_ShowTheEnginesPixels"/>, shown.
+    ///
+    /// Steps:
+    /// - Make CheckDeviceState say D3DERR_DEVICELOST and making the device fail; zoom; draw until shown. Let the device be
+    ///   made; zoom; draw until shown.
+    ///
+    /// Expected:
+    /// - While it fails: there is no device, the view does not use the shared textures, and the image shows a bitmap with
+    ///   the target's pixels. Then: the device is there, and a shared texture is shown with the target's pixels.
+    /// </remarks>
+    [Fact]
+    public void D3D9DeviceNotMadeAgain_ReadsBackUntilItIs() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            var d3d9 = view.Host.D3D9!;
+            DrawUntilShown(view);
+
+            d3d9.DeviceState = () => unchecked((int)0x88760868);
+            d3d9.FailMakeDevice = true;
+            try
+            {
+                Zoom(view);
+                DrawUntilShown(view);
+                Assert.False(d3d9.HasDevice);
+                Assert.False(view.UsesSharedTextures);
+                Assert.Equal(Target(view), Rgba(Pixels(Assert.IsType<WriteableBitmap>(view.Shown))));
+            }
+            finally
+            {
+                d3d9.DeviceState = null;
+                d3d9.FailMakeDevice = false;
+            }
+
+            Zoom(view);
+            DrawUntilShown(view);
+            Assert.True(d3d9.HasDevice);
+            _ = Assert.IsType<D3DImage>(view.Shown);
+            using var reader = new D3D9Reader();
+            Assert.Equal(Target(view), Rgba(reader.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+        });
+
+    /// <summary>
+    /// A device lost while the view resizes is not thrown into WPF's layout: the next frame makes the device again and
+    /// resizes (design §7.2).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene's view, shown.
+    ///
+    /// Steps:
+    /// - Make the backend's CreateTexture2D and GetDeviceRemovedReason say DEVICE_REMOVED; make the window 400 × 260 and
+    ///   lay it out; remove the seams; draw until shown.
+    ///
+    /// Expected:
+    /// - The layout throws nothing and the view waits for the tick. After the draw, the engine's size is the view's new size
+    ///   in pixels, and the shown texture has the target's pixels.
+    /// </remarks>
+    [Fact]
+    public void DeviceLostInResize_ResizesAtTheNextFrame() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            DrawUntilShown(view);
+
+            view.Backend.CheckResult = (call, result) => call == "CreateTexture2D" ? DXGI.DXGI_ERROR_DEVICE_REMOVED : result;
+            view.Backend.RemovedReason = () => DXGI.DXGI_ERROR_DEVICE_REMOVED;
+            try
+            {
+                scene.Window.Width = 400;
+                scene.Window.Height = 260;
+                WpfThread.Pump();
+                Assert.True(view.Hooked);
+            }
+            finally
+            {
+                view.Backend.CheckResult = null;
+                view.Backend.RemovedReason = null;
+            }
+
+            DrawUntilShown(view);
+            var dpi = VisualTreeHelper.GetDpi(view);
+            Assert.Equal(
+                InputTranslator.PixelSize(view.ActualWidth, view.ActualHeight, dpi.DpiScaleX, dpi.DpiScaleY),
+                (view.Engine.Width, view.Engine.Height)
+            );
+            using var d3d9 = new D3D9Reader();
+            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+        });
+
+    /// <summary>
     /// <c>Spec</c> takes a plot or a figure, and null shows nothing; another node throws (design §7.2).
     /// </summary>
     /// <remarks>
@@ -178,11 +286,13 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// - A view in a window.
     ///
     /// Steps:
-    /// - Set a figure of two plots and draw; set a plot and draw; set a scale; set null.
+    /// - Set a figure of two plots and draw; set a plot and draw; set a scale; set the figure and, before the tick, null;
+    ///   tick.
     ///
     /// Expected:
     /// - The figure: the view of plot 1 reads. The plot: the view of plot 0 reads and plot 1's throws. The scale:
-    ///   ArgumentException, the spec unchanged. Null: the image shows nothing.
+    ///   ArgumentException, the spec unchanged. Null: the image shows nothing, and the tick leaves WPF's tick though the
+    ///   figure's frame was wanted.
     /// </remarks>
     [Fact]
     public void Spec_TakesAPlotOrAFigure() =>
@@ -202,8 +312,12 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
 
             _ = Assert.Throws<ArgumentException>(() => view.Spec = Scale.Linear());
             Assert.Same(plot, view.Spec);
+            view.Spec = Figure.HConcat(plot, plot);
+            Assert.True(view.Hooked);
             view.Spec = null;
             Assert.Null(view.Shown);
+            view.Tick();
+            Assert.False(view.Hooked);
         });
 
     /// <summary>
@@ -215,11 +329,13 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// - The scene's view in a 320 × 200 window.
     ///
     /// Steps:
-    /// - Read the engine's size; make the window 400 × 260; collapse the view and draw.
+    /// - Read the engine's size; make the window 400 × 260; collapse the view and draw; zoom and tick; show the view again
+    ///   at the same size; draw until shown.
     ///
     /// Expected:
     /// - Each time, the engine's size and scale are the view's DIPs times the DPI, rounded, and the DPI's scale. Collapsed,
-    ///   a draw keeps the size and the image as it was.
+    ///   a draw keeps the size and the image as it was, and a wanted frame leaves WPF's tick after one tick. Shown again,
+    ///   it waits for the tick, and the shown texture has the zoomed target's pixels.
     /// </remarks>
     [Fact]
     public void Size_FollowsTheViewAndItsDpi() =>
@@ -240,6 +356,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             view.Tick();
             Assert.Equal(size, (view.Engine.Width, view.Engine.Height));
             Assert.Same(shown, view.Shown);
+            Zoom(view);
+            Assert.True(view.Hooked);
+            view.Tick();
+            Assert.False(view.Hooked);
+
+            view.Visibility = Visibility.Visible;
+            WpfThread.Pump();
+            Assert.Equal(size, (view.Engine.Width, view.Engine.Height));
+            Assert.True(view.Hooked);
+            DrawUntilShown(view);
+            using var d3d9 = new D3D9Reader();
+            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
 
             static void AssertSize(HyperPlotView view)
             {
