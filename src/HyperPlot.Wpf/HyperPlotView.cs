@@ -556,6 +556,12 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                 _image.Source = null;
                 break;
         }
+
+        // A frame wanted before a null spec left the tick: the engine asks once until it draws, so a new spec asks nothing.
+        if (_wanted || _polling)
+        {
+            Hook();
+        }
     }
 
     private void OnLoaded()

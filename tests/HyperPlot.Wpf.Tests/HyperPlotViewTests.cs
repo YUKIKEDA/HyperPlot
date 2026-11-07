@@ -287,12 +287,13 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     ///
     /// Steps:
     /// - Set a figure of two plots and draw; set a plot and draw; set a scale; set the figure and, before the tick, null;
-    ///   tick.
+    ///   tick; set the plot; draw until shown.
     ///
     /// Expected:
     /// - The figure: the view of plot 1 reads. The plot: the view of plot 0 reads and plot 1's throws. The scale:
     ///   ArgumentException, the spec unchanged. Null: the image shows nothing, and the tick leaves WPF's tick though the
-    ///   figure's frame was wanted.
+    ///   figure's frame was wanted. The plot again: the view waits for the tick, and the shown texture has the target's
+    ///   pixels.
     /// </remarks>
     [Fact]
     public void Spec_TakesAPlotOrAFigure() =>
@@ -318,6 +319,12 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.Null(view.Shown);
             view.Tick();
             Assert.False(view.Hooked);
+
+            view.Spec = plot;
+            Assert.True(view.Hooked);
+            DrawUntilShown(view);
+            using var d3d9 = new D3D9Reader();
+            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
         });
 
     /// <summary>
