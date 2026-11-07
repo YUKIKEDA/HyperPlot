@@ -8,8 +8,8 @@ namespace HyperPlot.Rendering;
 public sealed class HeadlessRenderer : IDisposable
 {
     private readonly IGpuBackend _backend;
-    private readonly IRenderTarget _target;
     private readonly PlotWorkerPool? _pool;
+    private IRenderTarget _target;
     private PlotPlan? _plan;
     private FigurePlan? _figure;
     private bool _disposed;
@@ -31,17 +31,7 @@ public sealed class HeadlessRenderer : IDisposable
     public HeadlessRenderer(IGpuBackend backend, int width, int height, PlotWorkerPool? pool = null, float scale = 1)
     {
         ArgumentNullException.ThrowIfNull(backend);
-
-        // Checked here too, so that the exception names the caller's argument, not the backend's description.
-        ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(width, RenderTargetDescription.MaxSide);
-        ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(height, RenderTargetDescription.MaxSide);
-        if (!float.IsFinite(scale) || scale <= 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(scale), scale, "The scale is finite and above 0.");
-        }
-
+        CheckSize(width, height, scale);
         Scale = scale;
         _backend = backend;
         _pool = pool;
@@ -55,7 +45,10 @@ public sealed class HeadlessRenderer : IDisposable
     public int Height => _target.Description.Height;
 
     /// <summary>Gets the scale from DIPs to physical pixels of <see cref="Render(PlotSpec)"/> (design §4.6).</summary>
-    public float Scale { get; }
+    public float Scale { get; private set; }
+
+    /// <summary>Gets the render target the renderer draws to: <see cref="Interaction.PlotEngine.Target"/>.</summary>
+    internal IRenderTarget Target => _target;
 
     /// <summary>Fills the image with one color.</summary>
     /// <param name="color">The color.</param>
@@ -313,6 +306,41 @@ public sealed class HeadlessRenderer : IDisposable
         var pixels = new byte[Width * Height * 4];
         _target.ReadPixels(pixels);
         PngWriter.Write(stream, pixels, Width, Height);
+    }
+
+    /// <summary>
+    /// Changes the target's size and the scale for <see cref="Interaction.PlotEngine.Resize"/> (design §7.1, row W1a): a new target
+    /// only for a new size, and the plans keep their pyramids and lay out again at the next render. A renderer of its own
+    /// keeps its scale (§7.5); the engine is the one caller.
+    /// </summary>
+    internal void Resize(int width, int height, float scale)
+    {
+        CheckSize(width, height, scale);
+        if (width != Width || height != Height)
+        {
+            // The new target first: if it fails, the renderer keeps the old one and its size.
+            var target = _backend.CreateRenderTarget(new RenderTargetDescription(width, height));
+            _target.Dispose();
+            _target = target;
+        }
+
+        Scale = scale;
+        _plan?.SetTarget(width, height, scale);
+        _figure?.SetTarget(width, height, scale);
+    }
+
+    /// <summary>Throws unless the sides are from 1 to 16,384 and the scale is finite and above 0.</summary>
+    private static void CheckSize(int width, int height, float scale)
+    {
+        // Checked here too, so that the exception names the caller's argument, not the backend's description.
+        ArgumentOutOfRangeException.ThrowIfLessThan(width, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(width, RenderTargetDescription.MaxSide);
+        ArgumentOutOfRangeException.ThrowIfLessThan(height, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(height, RenderTargetDescription.MaxSide);
+        if (!float.IsFinite(scale) || scale <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scale), scale, "The scale is finite and above 0.");
+        }
     }
 
     /// <summary>

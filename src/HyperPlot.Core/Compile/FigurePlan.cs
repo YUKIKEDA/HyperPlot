@@ -14,13 +14,13 @@ internal sealed class FigurePlan : IDisposable
 {
     private readonly PlotWorkerPool _pool;
     private readonly TextEngine _text;
-    private readonly float _scale;
-    private readonly int _width;
-    private readonly int _height;
     private readonly ResidencyCache _images;
     private readonly bool _ownImages;
     private readonly PyramidStore _store = new();
     private readonly RenderList _list = new();
+    private float _scale;
+    private int _width;
+    private int _height;
     private PlotPlan[] _plans = [];
     private (int Left, int Top, int Width, int Height)[] _cells = [];
 
@@ -117,6 +117,22 @@ internal sealed class FigurePlan : IDisposable
         }
 
         RecordFigure(figure, count);
+    }
+
+    /// <summary>
+    /// Takes a new target size and scale (design §7.1, row W1a): each plot's plan takes them, and the next Render lays the
+    /// cells out and places every plot again. The pyramids stay.
+    /// </summary>
+    internal void SetTarget(int width, int height, float scale)
+    {
+        (_width, _height, _scale) = (width, height, scale);
+        foreach (var plan in _plans)
+        {
+            plan.SetTarget(width, height, scale);
+        }
+
+        // An empty cell differs from every new one, so that the layout places each plot again.
+        _cells.AsSpan().Clear();
     }
 
     /// <summary>Releases the plans and the pyramids.</summary>

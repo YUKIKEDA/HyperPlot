@@ -92,6 +92,12 @@ public sealed class PlotEngine : IDisposable
     /// <summary>Gets the time of the animations.</summary>
     public TimeProvider Time { get; }
 
+    /// <summary>
+    /// Gets the render target the engine draws to (design §7.1): a host copies it to its display after each
+    /// <see cref="RenderFrame"/>. <see cref="Resize"/> replaces it when the size changes.
+    /// </summary>
+    public IRenderTarget Target => _renderer.Target;
+
     /// <summary>Gets the target's width in device pixels.</summary>
     public int Width => _renderer.Width;
 
@@ -170,6 +176,32 @@ public sealed class PlotEngine : IDisposable
         }
 
         (_plot, _figure) = (null, figure);
+        RequestFrame();
+    }
+
+    /// <summary>
+    /// Changes the target's size and the scale (design §7.1, row W1a): a host calls it when its element's size or DPI
+    /// changes. The target is made again only for a new size (<see cref="Target"/> is then a new object); the plot is laid
+    /// out again at the next frame, with its views, animations, and history kept, and its indexes kept. The same values do
+    /// nothing; others ask for a frame. A text the new scale makes too large fails at the next <see cref="RenderFrame"/>,
+    /// as <see cref="SetPlot"/> would.
+    /// </summary>
+    /// <param name="width">The target's width in device pixels, from 1 to 16,384.</param>
+    /// <param name="height">The target's height in device pixels, from 1 to 16,384.</param>
+    /// <param name="scale">The scale from device-independent to device pixels: finite and above 0.</param>
+    /// <exception cref="ArgumentOutOfRangeException">A size is out of range, or the scale is not finite and above 0.</exception>
+    /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
+    /// <exception cref="ObjectDisposedException">The engine was disposed.</exception>
+    /// <exception cref="GpuDeviceLostException">The device was lost while the new target was made.</exception>
+    public void Resize(int width, int height, float scale)
+    {
+        CheckThread();
+        if (width == Width && height == Height && scale == Scale)
+        {
+            return;
+        }
+
+        _renderer.Resize(width, height, scale);
         RequestFrame();
     }
 
