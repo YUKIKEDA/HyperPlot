@@ -8,6 +8,7 @@
     <Project Path="samples/BillionSeries/BillionSeries.csproj" />
     <Project Path="samples/HelloPlot/HelloPlot.csproj" />
     <Project Path="samples/SpecPlot/SpecPlot.csproj" />
+    <Project Path="samples/WpfPlot/WpfPlot.csproj" />
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/HyperPlot.Core/HyperPlot.Core.csproj" />

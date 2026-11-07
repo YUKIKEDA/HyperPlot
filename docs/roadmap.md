@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** C（インタラクションと WPF）
-- **作業中:** W1 の設計（W1a・W1b・W1c に分けた）
-- **ブランチ:** `docs/282-w1-wpf`
-- **Issue:** [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)
+- **作業中:** W1b（W1a は #286 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -71,7 +71,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | I1c | ズーム中に新しい目盛りのラベルで確保しない（不変条件 3）: ラベルの文字を計画の置き場に書き、span を受ける `DrawText`、文字で引く整形のキャッシュの使い回し、`ITextBackend.Shape` を span を受けて `ShapedText` に書く形に（§4.6・§5.1・§5.6）。計測: x の domain を毎フレームずらして新しいラベルが出続ける 300 フレームの確保（偽の文字のバックエンドと DirectWrite、前の値は 1 フレーム 8.0 KB） | done | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計）、[#270](https://github.com/YUKIKEDA/HyperPlot/issues/270) |
 | I1a | 対話の土台（要件 I-1・I-7・I-8・I-9）: `PlotEngine`（`SetPlot`・`SetFigure`・`FrameRequested`・`RenderFrame`、作ったスレッドだけ）、入力のモデル、ビュー（`PanelView2D`・`ViewRange`、仕様の domain との関係）、ビューの操作の API と制約と通知と履歴とアニメーション、原点の付け直し（§6.2）、場所の当たり判定（`HitArea`）、ツールの枠（`IPlotTool`）と割り当ての表（`InputBindings`）と組み込みのツール（パン・矩形ズーム・軸のドラッグ・ホイール・全体表示・キーボード・戻る・進む・Y の自動範囲）、入力の台本と記録と再生（`HyperPlot.Testing`、§6.6）。計測: 1e9 点に入力の台本を流した 1 フレームの CPU と GPU の時間の p95 と確保、入力の処理の時間（NativeAOT の Release、1,920 × 1,080、3 回） | done | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計）、[#274](https://github.com/YUKIKEDA/HyperPlot/issues/274) |
 | I1b | 1 枚の図の外への対話（§6.2）: 二次のスケール（行 G6a）へのズームとパン（パネルの中は同じ割合、軸の上はその軸だけ）、ファセット（行 G6b）の共有する軸を一緒に動かすこと、図（行 G6c）の操作の相手の決め方とプロットごとのビュー、band の軸（行 G7b）のズームとパン、polar（行 G11）の半径のズームとパン | done | [#266](https://github.com/YUKIKEDA/HyperPlot/issues/266)（設計）、[#278](https://github.com/YUKIKEDA/HyperPlot/issues/278) |
-| W1a | WPF のホストの土台（要件 H-1・H-2・H-3、§7.2）: `HyperPlot.Wpf` の `HyperPlotView`（`Spec`・`Engine`）、`D3D11SharedSurface` で共有テクスチャ 2 枚へ写して D3DImage へ渡す道、アダプタの LUID、`Dispatcher` ごとのバックエンド、`D3D11ReadbackSurface` で待たない読み出しの経路（ソフトウェア描画、フロントバッファの喪失、アダプタの不一致）、デバイスの喪失、DPI と大きさ（`PlotEngine.Resize`）、入力の変換とキャプチャとフォーカス（§6.1）、図の表示、`samples/WpfPlot`、写す時間の計測（§9） | not-started | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計） |
+| W1a | WPF のホストの土台（要件 H-1・H-2・H-3、§7.2）: `HyperPlot.Wpf` の `HyperPlotView`（`Spec`・`Engine`）、`D3D11SharedSurface` で共有テクスチャ 2 枚へ写して D3DImage へ渡す道、アダプタの LUID、`Dispatcher` ごとのバックエンド、`D3D11ReadbackSurface` で待たない読み出しの経路（ソフトウェア描画、フロントバッファの喪失、アダプタの不一致）、デバイスの喪失、DPI と大きさ（`PlotEngine.Resize`）、入力の変換とキャプチャとフォーカス（§6.1）、図の表示、`samples/WpfPlot`、写す時間の計測（§9） | done | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計）、[#286](https://github.com/YUKIKEDA/HyperPlot/issues/286) |
 | W1b | 索引ができる前の暫定の表示とホストへの通知（要件 P-2、不変条件 4・7、§4.8 の「`PlotEngine` の待たない描き方」）: `RenderFrame` を待たない形に、`IsProvisional`・`ProvisionalChanged`・`WorkFailed`、失敗した層の作り直し | not-started | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計） |
 | W1c | プロットの要約をアクセシビリティの API に渡す（要件 N-10、§7.1・§7.2）: `PlotEngine.Describe`、`HyperPlotView` の `AutomationPeer` | not-started | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計） |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6）、層のテクスチャでの合成（§5.4、要件 R-5。マウスを動かしただけのフレームでデータ層を描き直さない。行 W1 から移した、Issue #282） | not-started | |

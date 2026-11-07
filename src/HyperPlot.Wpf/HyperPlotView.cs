@@ -38,6 +38,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     private readonly Image _image = new() { Stretch = Stretch.Fill };
     private readonly D3DImage _d3dImage = new();
     private readonly TouchTracker _touch = new();
+    private readonly EventHandler _onRendering;
 
     // The shared textures opened in Direct3D 9Ex, by handle: the two of the shared surface, at most.
     private readonly (nint Handle, nint Surface)[] _opened = new (nint, nint)[2];
@@ -66,6 +67,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     {
         _host = HostResources.ForCurrentThread();
         _backend = _host.Backend;
+        _onRendering = OnRendering;
         Engine = Initialize();
     }
 
@@ -80,6 +82,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         ArgumentNullException.ThrowIfNull(backend);
         _host = HostResources.ForCurrentThread();
         _backend = backend;
+        _onRendering = OnRendering;
         Engine = Initialize();
     }
 
@@ -161,6 +164,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                 using (_backend.BeginFrame())
                 {
                     Engine.RenderFrame();
+
                     if (shared)
                     {
                         Shared().Present(Engine.Target);
@@ -359,7 +363,8 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     {
         base.OnManipulationInertiaStarting(e);
 
-        // WPF's inertia, in DIPs per ms²: 10 inches/s² for a move, 0.1 inches/s² for a scale (WPF's documented examples).
+        // WPF's inertia, in DIPs per ms²: 10 inches/s² for a move and 0.1 inches/s² for a scale, the values of Microsoft Learn's
+        // "Walkthrough: Creating Your First Touch Application".
         e.TranslationBehavior.DesiredDeceleration = 10.0 * 96 / (1000.0 * 1000.0);
         e.ExpansionBehavior.DesiredDeceleration = 0.1 * 96 / (1000.0 * 1000.0);
         e.Handled = true;
@@ -528,7 +533,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     {
         if (!_hooked && IsLoaded && !_disposed)
         {
-            CompositionTarget.Rendering += OnRendering;
+            CompositionTarget.Rendering += _onRendering;
             _hooked = true;
         }
     }
@@ -537,17 +542,26 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     {
         if (_hooked)
         {
-            CompositionTarget.Rendering -= OnRendering;
+            CompositionTarget.Rendering -= _onRendering;
             _hooked = false;
         }
     }
 
     private void OnRendering(object? sender, EventArgs e) => Tick();
 
-    /// <summary>What WPF's rendering tick does: stops waiting for it, then draws (which waits again if a frame is still wanted).</summary>
+    /// <summary>
+    /// What WPF's rendering tick does: draws the frame wanted or shows the copy that waits; a tick that finds neither stops
+    /// waiting for the tick. While frames keep coming the view stays subscribed, since each subscription allocates WPF's
+    /// handler list; the cost is one tick with nothing to do after the last frame.
+    /// </summary>
     internal void Tick()
     {
-        Unhook();
+        if (!_wanted && !_polling)
+        {
+            Unhook();
+            return;
+        }
+
         Render();
     }
 
@@ -595,6 +609,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         }
 
         var surface = Open(d3d9, handle);
+
         if (surface == 0)
         {
             return true;

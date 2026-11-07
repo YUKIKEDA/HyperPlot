@@ -260,10 +260,11 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// - The scene's view, drawn.
     ///
     /// Steps:
-    /// - Zoom; draw until shown; take the view out of the window and zoom; put it back.
+    /// - Zoom; tick; zoom; tick; draw until shown; take the view out of the window and zoom; put it back.
     ///
     /// Expected:
-    /// - After the zoom it waits; after the copy is shown it does not; out of the window it does not wait though a frame is
+    /// - After the zoom it waits, and still after the tick that drew it and another zoom and tick (frames that keep coming
+    ///   keep the subscription, design §7.2); after the copy is shown it does not; out of the window it does not wait though a frame is
     ///   wanted; back in, it waits.
     /// </remarks>
     [Fact]
@@ -276,6 +277,10 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.False(view.Hooked);
 
             Zoom(view);
+            Assert.True(view.Hooked);
+            view.Tick();
+            Zoom(view);
+            view.Tick();
             Assert.True(view.Hooked);
             DrawUntilShown(view);
             Assert.False(view.Hooked);
@@ -399,11 +404,12 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// - The scene's view, drawn, with the default bindings.
     ///
     /// Steps:
-    /// - Press the left button at the middle; move 30 DIPs right with it held; release. Press again; move 30 right; take the
-    ///   capture away; move 30 more with it held.
+    /// - Press the left button at the middle; move 30 DIPs right with it held; move to 40 DIPs right of the view; release.
+    ///   Press again; move 30 right; take the capture away; move 30 more with it held.
     ///
     /// Expected:
-    /// - After the press, the view is focused and captures the mouse; the move pans x; after the release, no capture. In the
+    /// - After the press, the view is focused and captures the mouse; the move pans x, and so does the move outside the view
+    ///   (the drag's tool has the pointer); after the release, no capture. In the
     ///   second drag, the moves after the lost capture leave the view as it was at the loss, and the view has no capture.
     /// </remarks>
     [Fact]
@@ -421,7 +427,11 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(view.IsMouseCaptured);
             _ = view.Pointer(PointerEventKind.Move, middle + new Vector(30, 0), PointerButtons.None, PointerButtons.Left, PointerKind.Mouse);
             Assert.NotEqual(x, X(view));
-            _ = view.Pointer(PointerEventKind.Up, middle + new Vector(30, 0), PointerButtons.Left, PointerButtons.None, PointerKind.Mouse);
+            var inside = X(view);
+            var outside = new Point(view.ActualWidth + 40, middle.Y);
+            _ = view.Pointer(PointerEventKind.Move, outside, PointerButtons.None, PointerButtons.Left, PointerKind.Mouse);
+            Assert.NotEqual(inside, X(view));
+            _ = view.Pointer(PointerEventKind.Up, outside, PointerButtons.Left, PointerButtons.None, PointerKind.Mouse);
             Assert.False(view.IsMouseCaptured);
 
             _ = view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse);

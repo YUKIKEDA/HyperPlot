@@ -6,6 +6,8 @@
     <RootNamespace>HyperPlot.Wpf.Tests</RootNamespace>
     <!-- The Direct3D 9Ex reader of the surface tests calls COM vtables (row W1a). -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The allocation test reads GC.GetAllocatedBytesForCurrentThread; tiering could allocate in its window (.cursor/rules/bench.mdc). -->
+    <TieredCompilation>false</TieredCompilation>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\HyperPlot.Wpf\HyperPlot.Wpf.csproj" />

@@ -278,6 +278,85 @@ public sealed class SurfaceTests
         Assert.Equal(Fill(Blue), Rgba(buffer));
     }
 
+    /// <summary>
+    /// A host's frame allocates nothing once warm (design §7.2, rule perf): the engine's draw and the copy to a shared texture
+    /// with its take, and the same with a read back. WPF's own calls (<c>D3DImage.Lock</c>, <c>SetBackBuffer</c>,
+    /// <c>WriteableBitmap.Lock</c>) allocate, the design's exception; this test runs HyperPlot's part of the frame alone, on
+    /// a thread without WPF.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend; an engine of 320 × 200 over a line of 1,000 points, drawn; a shared and a readback surface of its
+    ///   size; animations off.
+    ///
+    /// Steps:
+    /// - Rounds of 20 frames, each a pan of 2 pixels, the draw and the copy in one frame of the backend, and the takes or
+    ///   reads until the copy is done, until a round allocates nothing (at most 6), then one more; for each surface.
+    ///
+    /// Expected:
+    /// - The last round of each: 0 bytes.
+    /// </remarks>
+    [Fact]
+    public void HostFrame_AllocatesNothingOnceWarm()
+    {
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var y = Column.Wrap(Enumerable.Range(0, 1000).Select(i => MathF.Sin(i * 0.02f) * 10).ToArray());
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 1000)).Add("y", y).Build();
+        using var engine = new Interaction.PlotEngine(backend, 320, 200);
+        engine.Options.ZoomAnimation = TimeSpan.Zero;
+        engine.SetPlot(Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build());
+        engine.RenderFrame();
+        using var shared = new D3D11SharedSurface(backend, 320, 200);
+        using var readback = new D3D11ReadbackSurface(backend, 320, 200);
+        var buffer = new byte[320 * 200 * 4];
+        Assert.Equal(0, Warm(() => _ = Take(shared), present: shared.Present));
+        Assert.Equal(0, Warm(() => Read(readback, buffer), present: readback.Present));
+
+        long Warm(Action show, Action<IRenderTarget> present)
+        {
+            var bytes = -1L;
+            for (var i = 0; i < 6 && bytes != 0; i++)
+            {
+                bytes = Round(show, present);
+            }
+
+            return Round(show, present);
+        }
+
+        long Round(Action show, Action<IRenderTarget> present)
+        {
+            var total = 0L;
+            for (var i = 0; i < 20; i++)
+            {
+                var before = GC.GetAllocatedBytesForCurrentThread();
+                engine.Views.Pan(new Interaction.PanelId(0, 0), new Vector2(i % 2 == 0 ? 2 : -2, 0));
+                using (backend.BeginFrame())
+                {
+                    engine.RenderFrame();
+                    present(engine.Target);
+                }
+
+                show();
+                total += GC.GetAllocatedBytesForCurrentThread() - before;
+            }
+
+            return total;
+        }
+
+        static void Read(D3D11ReadbackSurface surface, byte[] buffer)
+        {
+            for (var i = 0; i < Polls; i++)
+            {
+                if (surface.TryRead(buffer, 320 * 4))
+                {
+                    return;
+                }
+            }
+
+            Assert.Fail($"No copy was read after {Polls} polls.");
+        }
+    }
+
     private static nint Take(D3D11SharedSurface surface)
     {
         for (var i = 0; i < Polls; i++)
