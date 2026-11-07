@@ -8,6 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
+    <!-- The WPF tests make the device lost through the same seam (row W1a). -->
+    <InternalsVisibleTo Include="HyperPlot.Wpf.Tests" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\HyperPlot.Core\HyperPlot.Core.csproj" />

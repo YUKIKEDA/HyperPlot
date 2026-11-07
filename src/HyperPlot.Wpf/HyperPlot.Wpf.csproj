@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>HyperPlot.Wpf</RootNamespace>
+    <Description>The WPF host of HyperPlot: HyperPlotView shows a plot through D3DImage, with its input (design §7.2).</Description>
+    <!-- WPF cannot be NativeAOT-published, so this adapter runs on the JIT only; its own code uses no reflection (.cursor/rules/aot.mdc). -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <!-- Direct3D 9Ex is called through its COM vtables (.cursor/rules/interop.mdc). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="HyperPlot.Wpf.Tests" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\HyperPlot.Rendering.D3D11\HyperPlot.Rendering.D3D11.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="TerraFX.Interop.Windows" />
+  </ItemGroup>
+</Project>
