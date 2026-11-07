@@ -540,6 +540,48 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.False(view.Touches.Gesturing);
         });
 
+    /// <summary>
+    /// A WPF element over the plot takes the pointer where it is, and the plot takes it elsewhere (requirement H-2, design
+    /// §7.2): the view is a WPF element, not a child window.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A grid with the scene's view and a 100 × 30 button over its top-right corner, in the window; drawn.
+    ///
+    /// Steps:
+    /// - Hit-test the button's middle, and the view's middle.
+    ///
+    /// Expected:
+    /// - The button's middle hits the button (or an element in it); the view's middle hits the view (or its image).
+    /// </remarks>
+    [Fact]
+    public void Overlay_ElementOverThePlotTakesThePointer() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            var button = new System.Windows.Controls.Button
+            {
+                Content = "Reset",
+                Width = 100,
+                Height = 30,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top,
+            };
+            var grid = new System.Windows.Controls.Grid();
+            scene.Window.Content = grid;
+            _ = grid.Children.Add(view);
+            _ = grid.Children.Add(button);
+            DrawUntilShown(view);
+
+            var onButton = button.TranslatePoint(new Point(50, 15), grid);
+            var hit = VisualTreeHelper.HitTest(grid, onButton)?.VisualHit as DependencyObject;
+            Assert.True(hit is not null && (hit == button || button.IsAncestorOf(hit)), $"{hit}");
+            var onView = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
+            var inView = VisualTreeHelper.HitTest(grid, onView)?.VisualHit as DependencyObject;
+            Assert.True(inView is not null && (inView == view || view.IsAncestorOf(inView)), $"{inView}");
+        });
+
     /// <summary>The view takes the keyboard focus and Tab stops on it (design §6.1).</summary>
     /// <remarks>
     /// Preconditions:
