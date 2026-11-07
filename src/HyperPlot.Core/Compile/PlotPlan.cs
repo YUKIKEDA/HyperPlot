@@ -56,8 +56,8 @@ internal sealed class PlotPlan : IDisposable
     private bool _pendingFlipped;
     private bool _pendingExtract;
     private bool _pendingRecord;
-    private ScaleRange _viewX = ScaleRange.None;
-    private ScaleRange _viewY = ScaleRange.None;
+    private PanelDomains[] _views = [];
+    private PanelDomains[] _full = [];
     private bool _viewChanged;
     private bool _placed;
     private IScale? _yTransform;
@@ -205,31 +205,44 @@ internal sealed class PlotPlan : IDisposable
     internal bool ViewsDropped { get; private set; }
 
     /// <summary>
-    /// Gets the x domain the plot draws with no view, after nice (row I1a): the full view of design §6.2. Updated by each
-    /// <see cref="Prepare"/> that draws x with no view; <see cref="FullStale"/> tells when the learned domain moved since.
+    /// Gets each panel's domains with no view, after nice (rows I1a, I1b): the full view of design §6.2. An axis's is updated
+    /// by each <see cref="Prepare"/> that draws it with no view; <see cref="FullStale"/> tells when the learned domains moved
+    /// since.
     /// </summary>
-    internal ScaleRange FullX { get; private set; } = ScaleRange.None;
+    internal ReadOnlySpan<PanelDomains> Full => _full;
 
-    /// <summary>Gets the y domain the plot draws with no view, after nice (row I1a).</summary>
-    internal ScaleRange FullY { get; private set; } = ScaleRange.None;
-
-    /// <summary>Gets a value indicating whether the plot learned again while an axis had a view, so that <see cref="FullX"/> or <see cref="FullY"/> may be out of date.</summary>
+    /// <summary>Gets a value indicating whether the plot learned again while an axis had a view, so that <see cref="Full"/> may be out of date.</summary>
     internal bool FullStale { get; private set; }
 
     /// <summary>Gets the number of times the plot learned its domains, for the tests of the view stage (row I1a).</summary>
     internal int Learnings { get; private set; }
 
     /// <summary>
-    /// Sets the views the next <see cref="Prepare"/> draws (row I1a, design §6.2, §4.8): a range for the x scale and one for
-    /// the y scale, or <see cref="ScaleRange.None"/> for an axis with no view. A view that changes only lays out, extracts,
-    /// and records again: the plot does not learn.
+    /// Sets the views the next <see cref="Prepare"/> draws (rows I1a, I1b, design §6.2, §4.8): a panel each, an axis with no
+    /// view <see cref="ScaleRange.None"/>; panels past the span have none. A view that changes only lays out, extracts, and
+    /// records again: the plot does not learn. Allocates only when the number of panels changes.
     /// </summary>
-    internal void SetView(in ScaleRange x, in ScaleRange y)
+    internal void SetViews(ReadOnlySpan<PanelDomains> views)
     {
-        if (!Same(x, _viewX) || !Same(y, _viewY))
+        var same = views.Length == _views.Length;
+        for (var p = 0; same && p < views.Length; p++)
         {
-            (_viewX, _viewY, _viewChanged) = (x, y, true);
+            same =
+                Same(views[p].X, _views[p].X) && Same(views[p].Y, _views[p].Y) && Same(views[p].X2, _views[p].X2) && Same(views[p].Y2, _views[p].Y2);
         }
+
+        if (same)
+        {
+            return;
+        }
+
+        if (_views.Length != views.Length)
+        {
+            _views = new PanelDomains[views.Length];
+        }
+
+        views.CopyTo(_views);
+        _viewChanged = true;
 
         static bool Same(in ScaleRange a, in ScaleRange b) => (IsNone(a) && IsNone(b)) || a == b;
     }
@@ -294,6 +307,24 @@ internal sealed class PlotPlan : IDisposable
 
         y = ScaleRange.FromDouble(min, max);
         return true;
+    }
+
+    /// <summary>Returns the flags of the axes a view gives a range (<see cref="PanelDomains.Viewed"/>).</summary>
+    private static byte Flags(in PanelDomains view) =>
+        (byte)((IsNone(view.X) ? 0 : 1) | (IsNone(view.Y) ? 0 : 2) | (IsNone(view.X2) ? 0 : 4) | (IsNone(view.Y2) ? 0 : 8));
+
+    /// <summary>Returns whether any panel has a view on any axis.</summary>
+    private bool AnyView()
+    {
+        foreach (var view in _views)
+        {
+            if (Flags(view) != 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Returns whether a range is <see cref="ScaleRange.None"/>.</summary>
@@ -467,10 +498,10 @@ internal sealed class PlotPlan : IDisposable
         var (spec, scales, ranges, looks, flipped) = (_pendingSpec!, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped);
         WaitForIndexes();
         ViewsDropped = false;
-        if (scales && (!IsNone(_viewX) || !IsNone(_viewY)))
+        if ((scales || _views.Length != _panels.Length) && AnyView())
         {
-            // A view over the old mapping no longer means the same values: the full view (design §6.2).
-            (_viewX, _viewY, ViewsDropped) = (ScaleRange.None, ScaleRange.None, true);
+            // A view over the old mapping, or of other panels, no longer means the same values: the full view (design §6.2).
+            (_views, ViewsDropped) = ([], true);
         }
 
         var learn = ranges || scales || ValuesChanged();
@@ -567,24 +598,41 @@ internal sealed class PlotPlan : IDisposable
             for (var p = 0; p < _panels.Length; p++)
             {
                 var panel = _panels[p];
+                var view = p < _views.Length ? _views[p] : PanelDomains.None;
                 _learned[p] = new PanelDomains(
-                    IsNone(_viewX) ? panel.LearnedX : _viewX,
-                    IsNone(_viewY) ? panel.LearnedY : _viewY,
-                    panel.LearnedX2,
-                    panel.LearnedY2
+                    IsNone(view.X) ? panel.LearnedX : view.X,
+                    IsNone(view.Y) ? panel.LearnedY : view.Y,
+                    IsNone(view.X2) ? panel.LearnedX2 : view.X2,
+                    IsNone(view.Y2) ? panel.LearnedY2 : view.Y2,
+                    Flags(view)
                 );
             }
 
-            _guides.Viewed = (!IsNone(_viewX), !IsNone(_viewY));
             _guides.Layout(spec, _xTransform, _yTransform, BandColumn(spec), Color, _xTransform2, _yTransform2, _facet?.Arrangement, _learned);
 
             // The full view: what the plot draws with no view (row I1a). An axis with a view keeps the last one it drew, which
             // a learning since may have moved.
             if (!_guides.Empty)
             {
-                FullX = IsNone(_viewX) ? _guides.PanelAt(0).X.FinalDomain : FullX;
-                FullY = IsNone(_viewY) ? _guides.PanelAt(0).Y.FinalDomain : FullY;
-                FullStale = !(IsNone(_viewX) && IsNone(_viewY)) && (FullStale || learn);
+                if (_full.Length != _panels.Length)
+                {
+                    _full = new PanelDomains[_panels.Length];
+                    _full.AsSpan().Fill(PanelDomains.None);
+                }
+
+                for (var p = 0; p < _panels.Length; p++)
+                {
+                    var (guide, flags) = (_guides.PanelAt(p), _learned[p].Viewed);
+                    var old = _full[p];
+                    _full[p] = new PanelDomains(
+                        (flags & 1) == 0 ? guide.X.FinalDomain : old.X,
+                        (flags & 2) == 0 ? guide.Y.FinalDomain : old.Y,
+                        (flags & 4) == 0 && spec.ScaleX2 is not null ? guide.X2.FinalDomain : old.X2,
+                        (flags & 8) == 0 && spec.ScaleY2 is not null ? guide.Y2.FinalDomain : old.Y2
+                    );
+                }
+
+                FullStale = AnyView() && (FullStale || learn);
             }
 
             Color?.CheckMiddle();

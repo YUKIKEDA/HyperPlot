@@ -62,7 +62,7 @@ internal sealed class FigurePlan : IDisposable
     /// <exception cref="ArgumentNullException">The figure or a member, a plot, or a cell is null.</exception>
     /// <exception cref="ArgumentException">The figure does not check (design §4.5), or a plot does not (§4.8).</exception>
     /// <exception cref="InvalidOperationException">A plot's compile fails as <see cref="PlotPlan.Render(PlotSpec)"/> does.</exception>
-    internal void Render(FigureSpec figure)
+    internal void Render(FigureSpec figure, PanelDomains[][]? views = null)
     {
         var count = Check(figure);
         Layout(figure, count);
@@ -73,6 +73,7 @@ internal sealed class FigurePlan : IDisposable
         for (var i = 0; i < count; i++)
         {
             _plans[i].Compile(PlotAt(figure, i));
+            _plans[i].SetViews(views is not null && i < views.Length ? views[i] : []);
             panels += _plans[i].PanelCount;
         }
 
@@ -131,8 +132,11 @@ internal sealed class FigurePlan : IDisposable
     }
 
     /// <summary>Returns the plot at a place of a figure: a concatenation's in its order, a grid's in its cells' order.</summary>
-    private static PlotSpec PlotAt(FigureSpec figure, int index) =>
+    internal static PlotSpec PlotAt(FigureSpec figure, int index) =>
         figure is ConcatFigureSpec concat ? concat.Plots[index] : ((GridFigureSpec)figure).Cells[index].Plot;
+
+    /// <summary>Returns the number of plots of a figure that checks: a concatenation's plots, or a grid's cells.</summary>
+    internal static int PlotCount(FigureSpec figure) => figure is ConcatFigureSpec concat ? concat.Plots.Count : ((GridFigureSpec)figure).Cells.Count;
 
     /// <summary>
     /// Throws unless the figure checks (design §4.5): its kind, its members, its plots or cells, and its theme; and returns its

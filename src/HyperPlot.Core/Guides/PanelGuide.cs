@@ -19,6 +19,9 @@ internal sealed class PanelGuide
         (X, Y, X2, Y2) = (OwnX, OwnY, OwnX2, OwnY2);
     }
 
+    /// <summary>Gets or sets the axes of the panel over a view, as the flags of <see cref="PanelDomains.Viewed"/> (rows I1a, I1b).</summary>
+    public byte Viewed { get; set; }
+
     /// <summary>Gets or sets the ticks of x: the panel's own, or the first panel's when the panels share x (row G6b).</summary>
     public TickAxis X { get; set; }
 

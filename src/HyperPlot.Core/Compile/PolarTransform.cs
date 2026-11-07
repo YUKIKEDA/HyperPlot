@@ -9,12 +9,20 @@ namespace HyperPlot;
 /// 1 clockwise and −1 otherwise, measured from 12 o'clock clockwise on the target, and r = r0 + c; the point is
 /// center + r · (sin θ, −cos θ). Layers compute along × across as in cartesian (x pixels along, y pixels across); the angle
 /// is x when theta is x, and y otherwise. A radius pixel below 0 lies inside the inner edge, outside the radius's domain:
-/// lines are cut where c is 0, fills are cut at c = 0, and a point there maps to NaN (design §4.4).
+/// lines are cut where c is 0, fills are cut at c = 0, and a point there maps to NaN (design §4.4). A radius pixel past the
+/// outer edge, R − r0 and <see cref="OuterTolerance"/> more, lies past the domain's high end, where a view of the radius puts
+/// data (row I1b): it is cut there the same way.
 /// </summary>
 internal readonly struct PolarTransform
 {
     /// <summary>The largest deviation of a piece of a line from the curve it stands for, in physical pixels (design §4.4).</summary>
     public const double Tolerance = 0.25;
+
+    /// <summary>
+    /// How far past the outer edge a radius pixel is still drawn, in physical pixels (design §4.4, row I1b): the end of the
+    /// radius's domain, rounded to the pixel, is not cut. Its own value: <see cref="Tolerance"/> bounds the pieces of a line.
+    /// </summary>
+    public const double OuterTolerance = 0.25;
 
     /// <summary>
     /// The most pieces one segment is cut into. A segment inside the panel's domains needs a few hundred at most (a circle of
@@ -25,6 +33,7 @@ internal readonly struct PolarTransform
     private readonly double _sigma;
     private readonly double _start;
     private readonly double _turn;
+    private readonly double _outer;
 
     /// <summary>Initializes a new instance of the <see cref="PolarTransform"/> struct.</summary>
     /// <param name="centerX">The center's x, in physical pixels.</param>
@@ -40,6 +49,7 @@ internal readonly struct PolarTransform
         _sigma = spec.Clockwise ? 1 : -1;
         _start = spec.Start;
         _turn = 2 * Math.PI / Circumference;
+        _outer = radius - inner + OuterTolerance;
     }
 
     /// <summary>Gets the center's x.</summary>
@@ -88,11 +98,14 @@ internal readonly struct PolarTransform
         return new Vector2((float)(CenterX + (r * Math.Sin(theta))), (float)(CenterY - (r * Math.Cos(theta))));
     }
 
-    /// <summary>Returns the target's point of an along × across point (x pixel, y pixel); NaN inside the inner edge (c &lt; 0).</summary>
+    /// <summary>
+    /// Returns the target's point of an along × across point (x pixel, y pixel); NaN inside the inner edge (c &lt; 0) or past
+    /// the outer one.
+    /// </summary>
     public Vector2 Map(double along, double across)
     {
         var (a, c) = ThetaIsX ? (along, across) : (across, along);
-        return c >= 0 ? Point(a, c) : new Vector2(float.NaN);
+        return c >= 0 && c <= _outer ? Point(a, c) : new Vector2(float.NaN);
     }
 
     /// <summary>
@@ -112,8 +125,8 @@ internal readonly struct PolarTransform
     /// <summary>
     /// Writes a polyline of along × across points as target points, each segment cut into <see cref="Pieces"/> pieces of
     /// equal steps in the stretched space; a point that is not finite breaks the line and is written as NaN. The parts with
-    /// a radius pixel below 0 are left out: a segment that crosses c = 0 is cut there, exactly, since c runs linearly along
-    /// it, and the line breaks (design §4.4). Grows the output to twice its size when it is short, and returns the number of
+    /// a radius pixel below 0 or past the outer edge are left out: a segment that crosses an edge is cut there, exactly, since
+    /// c runs linearly along it, and the line breaks (design §4.4, row I1b). Grows the output to twice its size when it is short, and returns the number of
     /// points written.
     /// </summary>
     public int Polyline(ReadOnlySpan<Vector2> points, ref Vector2[] output)
@@ -132,28 +145,30 @@ internal readonly struct PolarTransform
 
             if (!has)
             {
-                if (c >= 0)
+                if (c >= 0 && c <= _outer)
                 {
                     Put(ref output, ref count, Point(a, c));
                 }
             }
-            else if (lastC >= 0 && c >= 0)
+            else
             {
-                Follow(lastA, lastC, a, c, ref output, ref count);
-            }
-            else if (lastC >= 0 || c >= 0)
-            {
-                // The segment crosses the inner edge: c = 0 at the share t of its length.
-                var cut = lastA + ((a - lastA) * (lastC / (lastC - c)));
-                if (lastC >= 0)
+                // The part of the segment between the edges, c = 0 and the outer one: c runs linearly along it, so the cuts are
+                // exact. The line breaks where it leaves.
+                var (t0, t1) = (Enter(lastC, c), Leave(lastC, c));
+                if (t0 <= t1)
                 {
-                    Follow(lastA, lastC, cut, 0, ref output, ref count);
-                    Put(ref output, ref count, new Vector2(float.NaN));
-                }
-                else
-                {
-                    Put(ref output, ref count, Point(cut, 0));
-                    Follow(cut, 0, a, c, ref output, ref count);
+                    var (a0, c0) = t0 > 0 ? (lastA + ((a - lastA) * t0), lastC + ((c - lastC) * t0)) : (lastA, lastC);
+                    var (a1, c1) = t1 < 1 ? (lastA + ((a - lastA) * t1), lastC + ((c - lastC) * t1)) : (a, c);
+                    if (t0 > 0)
+                    {
+                        Put(ref output, ref count, Point(a0, c0));
+                    }
+
+                    Follow(a0, c0, a1, c1, ref output, ref count);
+                    if (t1 < 1)
+                    {
+                        Put(ref output, ref count, new Vector2(float.NaN));
+                    }
                 }
             }
 
@@ -195,8 +210,8 @@ internal readonly struct PolarTransform
 
         var (a0, a1, c0, c1) = ThetaIsX ? (x0, x1, y0, y1) : (y0, y1, x0, x1);
         (a0, a1) = (Math.Min(a0, a1), Math.Max(a0, a1));
-        (c0, c1) = (Math.Max(0, Math.Min(c0, c1)), Math.Max(c0, c1));
-        if (!(c1 > 0))
+        (c0, c1) = (Math.Max(0, Math.Min(c0, c1)), Math.Min(_outer, Math.Max(c0, c1)));
+        if (!(c1 > 0) || !(c0 < _outer))
         {
             return false;
         }
@@ -237,7 +252,7 @@ internal readonly struct PolarTransform
                     continue;
                 }
 
-                output[count++] = Sector(from, to, top0, top1, bottom0, bottom1);
+                count += Clipped(from, to, top0, top1, bottom0, bottom1, output[count..]);
             }
 
             return count;
@@ -316,7 +331,7 @@ internal readonly struct PolarTransform
 
             var (low0, high0) = Range(a0);
             var (low1, high1) = Range(a1);
-            output[count++] = Sector(a0, a1, high0, high1, low0, low1);
+            count += Clipped(a0, a1, high0, high1, low0, low1, output[count..]);
         }
 
         return count;
@@ -348,6 +363,60 @@ internal readonly struct PolarTransform
                 low = Math.Max(low, at);
             }
         }
+    }
+
+    /// <summary>Returns the share of a segment from c0 to c1 where it enters the ring: 0 when it starts inside, past 1 when it never does.</summary>
+    private double Enter(double c0, double c1) =>
+        c0 >= 0 && c0 <= _outer ? 0
+        : c0 < 0 ? (c1 >= 0 ? -c0 / (c1 - c0) : 2)
+        : c1 <= _outer ? (_outer - c0) / (c1 - c0)
+        : 2;
+
+    /// <summary>Returns the share of a segment from c0 to c1 where it leaves the ring: 1 when it ends inside, below 0 when it never is.</summary>
+    private double Leave(double c0, double c1) =>
+        c1 >= 0 && c1 <= _outer ? 1
+        : c1 < 0 ? (c0 >= 0 ? -c0 / (c1 - c0) : -1)
+        : c0 <= _outer ? (_outer - c0) / (c1 - c0)
+        : -1;
+
+    /// <summary>
+    /// Writes the polar trapezoid over angle pixels a0 to a1 with its outer and inner radius pixels at each end, the radii
+    /// held at the outer edge (row I1b), and returns how many pieces: cut where an edge crosses it, so that the held edges
+    /// stay linear, at most three, the parts past it left out.
+    /// </summary>
+    private int Clipped(double a0, double a1, double outer0, double outer1, double inner0, double inner1, Span<SectorTrapezoid> output)
+    {
+        if (outer0 <= _outer && outer1 <= _outer && inner0 <= _outer && inner1 <= _outer)
+        {
+            output[0] = Sector(a0, a1, outer0, outer1, inner0, inner1);
+            return 1;
+        }
+
+        Span<double> cuts = [0, Crossing(outer0, outer1, _outer), Crossing(inner0, inner1, _outer), 1];
+        cuts[1..3].Sort();
+        var count = 0;
+        for (var i = 0; i < 3; i++)
+        {
+            var (s, u) = (cuts[i], cuts[i + 1]);
+            if (!(u > s))
+            {
+                continue;
+            }
+
+            var (top0, top1) = (Math.Min(_outer, outer0 + ((outer1 - outer0) * s)), Math.Min(_outer, outer0 + ((outer1 - outer0) * u)));
+            var (bottom0, bottom1) = (Math.Min(_outer, inner0 + ((inner1 - inner0) * s)), Math.Min(_outer, inner0 + ((inner1 - inner0) * u)));
+            if (top0 == bottom0 && top1 == bottom1)
+            {
+                continue;
+            }
+
+            output[count++] = Sector(a0 + ((a1 - a0) * s), a0 + ((a1 - a0) * u), top0, top1, bottom0, bottom1);
+        }
+
+        return count;
+
+        // The share where an edge from v0 to v1 crosses the outer edge, or 0 when it does not (a cut at 0 adds nothing).
+        static double Crossing(double v0, double v1, double edge) => (v0 > edge) != (v1 > edge) ? (edge - v0) / (v1 - v0) : 0;
     }
 
     /// <summary>

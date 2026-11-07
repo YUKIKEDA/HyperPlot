@@ -4,7 +4,7 @@ using HyperPlot.Rendering;
 namespace HyperPlot.Interaction;
 
 /// <summary>
-/// Pans by a drag (design §6.5): on a panel both axes, on an axis that axis alone; and by a two-finger scroll. A drag is
+/// Pans by a drag (design §6.5): on a panel every scale, on an axis that axis's alone; and by a two-finger scroll. A drag is
 /// one entry of the history; the turns of a scroll group as a wheel's do.
 /// </summary>
 public sealed class PanTool : IPlotTool
@@ -52,7 +52,7 @@ public sealed class PanTool : IPlotTool
         }
 
         // The content follows the fingers, as a drag; the turns group in the history (design §6.2).
-        context.Views.Pan(context.Hit.Panel, e.Delta, ViewAxes.Both, group: true);
+        context.Views.Pan(context.Hit.Panel, e.Delta, ViewAxes.All, group: true);
         return ToolResult.Handled;
     }
 
@@ -67,9 +67,11 @@ public sealed class PanTool : IPlotTool
     internal static ViewAxes Axes(HitAreaKind kind) =>
         kind switch
         {
-            HitAreaKind.Panel => ViewAxes.Both,
+            HitAreaKind.Panel => ViewAxes.All,
             HitAreaKind.AxisX => ViewAxes.X,
             HitAreaKind.AxisY => ViewAxes.Y,
+            HitAreaKind.AxisX2 => ViewAxes.X2,
+            HitAreaKind.AxisY2 => ViewAxes.Y2,
             _ => ViewAxes.None,
         };
 }
@@ -174,7 +176,7 @@ public sealed class WheelZoomTool : IPlotTool
             return ToolResult.Ignored;
         }
 
-        context.Views.ZoomAt(context.Hit.Panel, e.Position, e.Scale, ViewAxes.Both, animate: false, group: true);
+        context.Views.ZoomAt(context.Hit.Panel, e.Position, e.Scale, ViewAxes.All, animate: false, group: true);
         return ToolResult.Handled;
     }
 }

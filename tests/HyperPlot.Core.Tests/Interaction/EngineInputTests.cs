@@ -169,7 +169,7 @@ public sealed class EngineInputTests
     }
 
     /// <summary>
-    /// A spec is checked when it is set, and a figure too (design §7.1); a figure is drawn and takes no view in row I1a; an
+    /// A spec is checked when it is set, and a figure too (design §7.1); a figure is drawn and its plots take views (row I1b); an
     /// operation before the first frame has no layout to read and throws.
     /// </summary>
     /// <remarks>
@@ -177,12 +177,13 @@ public sealed class EngineInputTests
     /// - An engine over a line, drawn; a fresh engine with no frame.
     ///
     /// Steps:
-    /// - Set a spec with a null theme; set a figure with a spacing of −1; set a figure of two plots and draw it; zoom; on the
-    ///   fresh engine, zoom.
+    /// - Set a spec with a null theme; set a figure with a spacing of −1; set a figure of two plots and draw it; zoom its
+    ///   second plot; zoom a third plot; on the fresh engine, zoom.
     ///
     /// Expected:
     /// - ArgumentNullException and ArgumentException at the set, the engine drawing the line still; the figure's frame
-    ///   draws three lists (the figure's and two plots'); InvalidOperationException for the zooms.
+    ///   draws three lists (the figure's and two plots'); the second plot's view narrower (row I1b);
+    ///   ArgumentOutOfRangeException for the third plot; InvalidOperationException for the fresh engine's zoom.
     /// </remarks>
     [Fact]
     public void Specs_CheckedWhenSet_FigureDrawn()
@@ -196,7 +197,12 @@ public sealed class EngineInputTests
         f.Engine.SetFigure(Figure.HConcat(f.Spec, f.Spec));
         f.Engine.RenderFrame();
         Assert.Equal(3, f.Backend.DrawsInFrame);
-        _ = Assert.Throws<InvalidOperationException>(() => f.Engine.Views.ZoomAt(EngineFixture.Panel, new Vector2(100, 100), 2));
+        var second = new PanelId(1, 0);
+        var before = ((PanelView2D)f.Engine.CurrentView(second)).X;
+        f.Engine.Views.ZoomAt(second, new Vector2(EngineFixture.Width * 0.75f, EngineFixture.Height / 2f), 2, animate: false);
+        var after = ((PanelView2D)f.Engine.CurrentView(second)).X;
+        Assert.True(after.HighValue - after.LowValue < before.HighValue - before.LowValue);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => f.Engine.Views.ZoomAt(new PanelId(2, 0), new Vector2(100, 100), 2));
 
         using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time);
         fresh.SetPlot(f.Spec);

@@ -58,7 +58,10 @@ public abstract record PanelView
 /// <param name="Y">The y scale's range.</param>
 public sealed record PanelView2D(ViewRange X, ViewRange Y) : PanelView;
 
-/// <summary>The axes an operation moves (design §6.2).</summary>
+/// <summary>
+/// The scales an operation moves (design §6.2, rows I1a and I1b): each flag one scale. An operation in a panel moves them all,
+/// a secondary scale by the same shares of its range as its primary; one on an axis moves that axis's scale alone.
+/// </summary>
 [Flags]
 public enum ViewAxes
 {
@@ -71,8 +74,19 @@ public enum ViewAxes
     /// <summary>The y scale.</summary>
     Y = 2,
 
-    /// <summary>Both scales.</summary>
+    /// <summary>The x and the y scale, not the secondary ones.</summary>
     Both = X | Y,
+
+    /// <summary>
+    /// The secondary x scale (row G6a). With none, x's second axis is a transform's, which follows x: the flag moves x.
+    /// </summary>
+    X2 = 4,
+
+    /// <summary>The secondary y scale; with none, as <see cref="X2"/>, y.</summary>
+    Y2 = 8,
+
+    /// <summary>Every scale: x, y, and the secondary x and y scales, as an operation in a panel moves them.</summary>
+    All = X | Y | X2 | Y2,
 }
 
 /// <summary>What changed a view (design §6.2).</summary>

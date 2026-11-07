@@ -193,12 +193,14 @@ public sealed class ViewOperationTests
 
     /// <summary>
     /// The y fitted to the visible x keeps the y where the design says so (design §6.2, PR #275's review): an x of a log
-    /// scale, a stat's line alone, and a line split by categories that lie in runs, whose x starts again in each run.
+    /// scale, a stat's line alone, a line split by categories that lie in runs, whose x starts again in each run, and a
+    /// facet's panel, whose rows are a part of the columns (row I1b).
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - <see cref="AutoRangeY"/> added; animations off. Three plots: a line over x from 1 to 1,000 on a log x; a smooth of
-    ///   the sine alone; a line colored by 2 categories of 500 rows each, x from 0 to 499 in each.
+    /// - <see cref="AutoRangeY"/> added; animations off. Four plots: a line over x from 1 to 1,000 on a log x; a smooth of
+    ///   the sine alone; a line colored by 2 categories of 500 rows each, x from 0 to 499 in each; the line over x from 0 to
+    ///   999 wrapped by the same categories with free scales, its first panel set.
     ///
     /// Steps:
     /// - For each, set a view of a narrower x with the y as it is.
@@ -227,6 +229,11 @@ public sealed class ViewOperationTests
             (Plot.Create(table).Line(table.Col<double>("p"), table.Col<float>("y")).ScaleX(Scale.Log()).Build(), 1, 2),
             (Plot.Create(table).Smooth(table.Col<double>("x"), table.Col<float>("y"), 8).Build(), 100, 140),
             (Plot.Create(table).Line(table.Col<double>("r"), table.Col<float>("y"), l => l.ColorBy(table.Cat("k"))).Build(), 100, 140),
+            (
+                Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).FacetWrap(table.Cat("k"), scales: FacetScales.Free).Build(),
+                100,
+                140
+            ),
         };
         using var f = new EngineFixture();
         f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
@@ -243,38 +250,40 @@ public sealed class ViewOperationTests
     }
 
     /// <summary>
-    /// A plot of a facet keeps the full view in row I1a (design §6.2, PR #275's review): the wheel and a drag move no view,
-    /// and a view other than the full one is refused.
+    /// A reversed scale zooms and pans by its own direction (design §6.2, row I1b): the value under the pixel of a zoom stays
+    /// under it, and a pan moves the data with the pointer.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - An engine over a line wrapped by 2 categories.
+    /// - The fixture's line with x and y reversed, y fixed to [−20, 20]; animations off.
     ///
     /// Steps:
-    /// - Turn the wheel and drag on the first panel; set a narrower view.
+    /// - Read the values under a pixel a third of the way across and a quarter of the way up; zoom by 2 there; read them
+    ///   again; pan by (30, −20) pixels; read the values under the pixel moved by as much.
     ///
     /// Expected:
-    /// - The view is the full one; ArgumentException.
+    /// - Each time the values first read: within 1e-6 after the zoom, and within 1e-3 after the pan, whose pixels are floats.
     /// </remarks>
     [Fact]
-    public void Facet_KeepsTheFullView()
+    public void ReversedScales_ZoomAndPanByTheirDirection()
     {
-        var names = Enumerable.Range(0, 1000).Select(i => i < 500 ? "a" : "b").ToArray();
-        using var y = Column.Wrap(new float[1000]);
-        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 1000)).Add("y", y).Add("k", Column.Categorical(names, ["a", "b"])).Build();
-        using var f = new EngineFixture();
-        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
-        f.Engine.SetPlot(Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).FacetWrap(table.Cat("k")).Build());
-        f.Engine.RenderFrame();
-        var full = f.View();
-        f.Wheel(f.Middle, 2);
-        f.Drag(f.Middle, f.Middle + new System.Numerics.Vector2(30, 10));
-        f.Engine.RenderFrame();
-
-        Assert.Equal(full, f.View());
-        _ = Assert.Throws<ArgumentException>(() =>
-            f.Engine.Views.SetView(EngineFixture.Panel, new PanelView2D(ViewRange.FromValues(10.0, 20.0), full.Y))
+        using var f = new EngineFixture(b =>
+            b.ScaleX(Scale.Linear() with { Reverse = true }).ScaleY(Scale.Linear().WithDomain(-20, 20) with { Reverse = true })
         );
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        var (left, top, width, height) = f.Rect;
+        var at = new Vector2(left + (width / 3f), top + (height * 3 / 4f));
+        var (x, y) = f.Engine.PixelToView(EngineFixture.Panel, at);
+        f.Engine.Views.ZoomAt(EngineFixture.Panel, at, 2);
+        var (zoomedX, zoomedY) = f.Engine.PixelToView(EngineFixture.Panel, at);
+        Assert.Equal(x.LowValue, zoomedX.LowValue, 1e-6);
+        Assert.Equal(y.LowValue, zoomedY.LowValue, 1e-6);
+
+        var by = new Vector2(30, -20);
+        f.Engine.Views.Pan(EngineFixture.Panel, by);
+        var (pannedX, pannedY) = f.Engine.PixelToView(EngineFixture.Panel, at + by);
+        Assert.Equal(x.LowValue, pannedX.LowValue, 1e-3);
+        Assert.Equal(y.LowValue, pannedY.LowValue, 1e-3);
     }
 
     /// <summary>

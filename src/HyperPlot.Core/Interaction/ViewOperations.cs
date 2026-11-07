@@ -3,15 +3,16 @@ using System.Numerics;
 namespace HyperPlot.Interaction;
 
 /// <summary>
-/// The operations on an engine's views (design §6.2, row I1a): zoom, pan, a rectangle, a view set directly, the full view,
+/// The operations on an engine's views (design §6.2, rows I1a and I1b): zoom, pan, a rectangle, a view set directly, the full view,
 /// and the history. The built-in tools call these and nothing else; an application's buttons and menus call the same, so
 /// that both go through the same rules: the origin moved again (§3.6), the constraints, the history, the animation, and
 /// the notice.
 /// </summary>
 /// <remarks>
 /// Call it from the engine's thread only. Before the engine has drawn its first frame of a plot, there is no layout to read
-/// pixels against, and the operations throw <see cref="InvalidOperationException"/>. In row I1a a plot alone has views;
-/// its band x axis and a polar plot keep the full view (row I1b).
+/// pixels against, and the operations throw <see cref="InvalidOperationException"/>. A facet's panels share the view of a
+/// shared axis; each plot of a figure has its own views and history, and the history goes back and forward on the plot last
+/// operated on. A polar plot moves its radius alone (row I1b).
 /// </remarks>
 public sealed class ViewOperations
 {
@@ -36,8 +37,8 @@ public sealed class ViewOperations
     /// pause of <see cref="InteractionOptions.WheelGroupGap"/> (design §6.2).
     /// </param>
     /// <exception cref="ArgumentOutOfRangeException">The factor is not finite or not above 0, or the panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or draws a figure (row I1b).</exception>
-    public void ZoomAt(PanelId panel, Vector2 pixel, double factor, ViewAxes axes = ViewAxes.Both, bool? animate = null, bool group = false)
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame.</exception>
+    public void ZoomAt(PanelId panel, Vector2 pixel, double factor, ViewAxes axes = ViewAxes.All, bool? animate = null, bool group = false)
     {
         if (!double.IsFinite(factor) || factor <= 0)
         {
@@ -53,8 +54,8 @@ public sealed class ViewOperations
     /// <param name="axes">The axes it moves.</param>
     /// <param name="group">Whether it joins the entry of the history just before, as a scroll's turns do (design §6.2).</param>
     /// <exception cref="ArgumentOutOfRangeException">A move is not finite, or the panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or draws a figure (row I1b).</exception>
-    public void Pan(PanelId panel, Vector2 pixels, ViewAxes axes = ViewAxes.Both, bool group = false)
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame.</exception>
+    public void Pan(PanelId panel, Vector2 pixels, ViewAxes axes = ViewAxes.All, bool group = false)
     {
         if (!float.IsFinite(pixels.X) || !float.IsFinite(pixels.Y))
         {
@@ -71,8 +72,8 @@ public sealed class ViewOperations
     /// <param name="axes">The axes it moves: an axis whose side of the rectangle is under 4 DIPs keeps its range.</param>
     /// <param name="animate">Whether it animates; null for the default, which does.</param>
     /// <exception cref="ArgumentOutOfRangeException">A corner is not finite, or the panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or draws a figure (row I1b).</exception>
-    public void ZoomToRect(PanelId panel, Vector2 corner, Vector2 opposite, ViewAxes axes = ViewAxes.Both, bool? animate = null)
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame.</exception>
+    public void ZoomToRect(PanelId panel, Vector2 corner, Vector2 opposite, ViewAxes axes = ViewAxes.All, bool? animate = null)
     {
         if (!float.IsFinite(corner.X) || !float.IsFinite(corner.Y) || !float.IsFinite(opposite.X) || !float.IsFinite(opposite.Y))
         {
@@ -82,17 +83,20 @@ public sealed class ViewOperations
         _engine.ZoomToRect(panel, corner, opposite, axes, animate ?? true);
     }
 
-    /// <summary>Sets a panel's view (requirement I-9).</summary>
+    /// <summary>
+    /// Sets a panel's view (requirement I-9): its x and y ranges, a secondary scale following its primary by the same shares,
+    /// and a facet's shared axis on every panel that shares it (row I1b).
+    /// </summary>
     /// <param name="panel">The panel.</param>
     /// <param name="view">The view: a <see cref="PanelView2D"/>.</param>
     /// <param name="animate">Whether it animates; false by default.</param>
     /// <exception cref="ArgumentNullException"><paramref name="view"/> is null.</exception>
     /// <exception cref="ArgumentException">
-    /// The view is not two-dimensional, an end is not finite, a low end is not below its high end, or the plot's band axis or
-    /// polar plot keeps its full view (row I1b).
+    /// The view is not two-dimensional, an end is not finite, a low end is not below its high end, or the range of a polar
+    /// plot's angle is not its full turn (row I1b).
     /// </exception>
     /// <exception cref="ArgumentOutOfRangeException">The panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or draws a figure (row I1b).</exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame.</exception>
     public void SetView(PanelId panel, PanelView view, bool animate = false)
     {
         ArgumentNullException.ThrowIfNull(view);
@@ -110,13 +114,13 @@ public sealed class ViewOperations
     /// <param name="panel">The panel.</param>
     /// <param name="animate">Whether it animates; null for the default, which does.</param>
     /// <exception cref="ArgumentOutOfRangeException">The panel is not drawn.</exception>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or draws a figure (row I1b).</exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame.</exception>
     public void Reset(PanelId panel, bool? animate = null) => _engine.Reset(panel, animate ?? true);
 
-    /// <summary>Shows every panel's full view.</summary>
+    /// <summary>Shows the full view of every panel of every plot.</summary>
     /// <param name="animate">Whether it animates; null for the default, which does.</param>
-    /// <exception cref="InvalidOperationException">The engine has drawn no frame of the plot, or draws a figure (row I1b).</exception>
-    public void ResetAll(bool? animate = null) => _engine.Reset(new PanelId(0, 0), animate ?? true);
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame.</exception>
+    public void ResetAll(bool? animate = null) => _engine.ResetAll(animate ?? true);
 
     /// <summary>Goes back to the view before in the history; nothing when there is none.</summary>
     /// <returns>Whether it went back.</returns>
