@@ -694,7 +694,7 @@ public sealed class CoordPolarTests
         var list = wide.Render(Spec(table, line) with { Coord = Coord.Polar() });
         Assert.Equal(new ClipRect(0, 0, 200, 100), list.Polylines[0].Clip);
         var farthest = list.Segments.ToArray().Max(s => Math.Max((s.Start - new Vector2(100, 50)).Length(), (s.End - new Vector2(100, 50)).Length()));
-        Close(50 + PolarTransform.Tolerance, farthest);
+        Close(50 + PolarTransform.OuterTolerance, farthest);
     }
 
     /// <summary>
@@ -801,7 +801,7 @@ public sealed class CoordPolarTests
                         var bottom = column.BottomLeft + ((column.BottomRight - column.BottomLeft) * t);
                         var across = Math.Min(top, bottom) - 50 + (random.NextDouble() * (Math.Abs(top - bottom) + 100));
                         var (pa, pc) = theta == PolarTheta.X ? (along, across) : (across, along);
-                        var outer = polar.Radius - polar.Inner + PolarTransform.Tolerance;
+                        var outer = polar.Radius - polar.Inner + PolarTransform.OuterTolerance;
                         var inRegion = across >= Math.Min(top, bottom) && across <= Math.Max(top, bottom) && pc >= 0 && pc <= outer;
                         var (topSlope, bottomSlope) = (
                             (column.TopRight - column.TopLeft) / (column.Right - column.Left),

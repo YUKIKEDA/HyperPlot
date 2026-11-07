@@ -10,13 +10,19 @@ namespace HyperPlot;
 /// center + r · (sin θ, −cos θ). Layers compute along × across as in cartesian (x pixels along, y pixels across); the angle
 /// is x when theta is x, and y otherwise. A radius pixel below 0 lies inside the inner edge, outside the radius's domain:
 /// lines are cut where c is 0, fills are cut at c = 0, and a point there maps to NaN (design §4.4). A radius pixel past the
-/// outer edge, R − r0 and <see cref="Tolerance"/> more, lies past the domain's high end, where a view of the radius puts
+/// outer edge, R − r0 and <see cref="OuterTolerance"/> more, lies past the domain's high end, where a view of the radius puts
 /// data (row I1b): it is cut there the same way.
 /// </summary>
 internal readonly struct PolarTransform
 {
     /// <summary>The largest deviation of a piece of a line from the curve it stands for, in physical pixels (design §4.4).</summary>
     public const double Tolerance = 0.25;
+
+    /// <summary>
+    /// How far past the outer edge a radius pixel is still drawn, in physical pixels (design §4.4, row I1b): the end of the
+    /// radius's domain, rounded to the pixel, is not cut. Its own value: <see cref="Tolerance"/> bounds the pieces of a line.
+    /// </summary>
+    public const double OuterTolerance = 0.25;
 
     /// <summary>
     /// The most pieces one segment is cut into. A segment inside the panel's domains needs a few hundred at most (a circle of
@@ -43,7 +49,7 @@ internal readonly struct PolarTransform
         _sigma = spec.Clockwise ? 1 : -1;
         _start = spec.Start;
         _turn = 2 * Math.PI / Circumference;
-        _outer = radius - inner + Tolerance;
+        _outer = radius - inner + OuterTolerance;
     }
 
     /// <summary>Gets the center's x.</summary>

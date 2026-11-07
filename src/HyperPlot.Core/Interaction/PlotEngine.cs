@@ -963,27 +963,22 @@ public sealed class PlotEngine : IDisposable
             }
         }
 
-        if (
-            Side(above, PlotGuides.SideBottom, y - (guides.PanelAt(Math.Max(above, 0)).Top + guides.PanelAt(Math.Max(above, 0)).Height)) is { } bottom
-        )
+        if (Side(above, PlotGuides.SideBottom) is { } bottom)
         {
             return bottom;
         }
 
-        if (Side(below, PlotGuides.SideTop, guides.PanelAt(Math.Max(below, 0)).Top - y) is { } upper)
+        if (Side(below, PlotGuides.SideTop) is { } upper)
         {
             return upper;
         }
 
-        if (Side(after, PlotGuides.SideLeft, guides.PanelAt(Math.Max(after, 0)).Left - x) is { } leftSide)
+        if (Side(after, PlotGuides.SideLeft) is { } leftSide)
         {
             return leftSide;
         }
 
-        if (
-            Side(before, PlotGuides.SideRight, x - (guides.PanelAt(Math.Max(before, 0)).Left + guides.PanelAt(Math.Max(before, 0)).Width)) is
-            { } rightSide
-        )
+        if (Side(before, PlotGuides.SideRight) is { } rightSide)
         {
             return rightSide;
         }
@@ -991,7 +986,7 @@ public sealed class PlotEngine : IDisposable
         return new HitArea(HitAreaKind.Figure, new PanelId(plot, 0));
 
         // A panel's side, past its strip (row G6b): the axis it draws there, if any.
-        HitArea? Side(int p, int side, float distance)
+        HitArea? Side(int p, int side)
         {
             if (p < 0)
             {
@@ -999,6 +994,13 @@ public sealed class PlotEngine : IDisposable
             }
 
             var g = guides.PanelAt(p);
+            var distance = side switch
+            {
+                PlotGuides.SideBottom => y - (g.Top + g.Height),
+                PlotGuides.SideTop => g.Top - y,
+                PlotGuides.SideLeft => g.Left - x,
+                _ => x - (g.Left + g.Width),
+            };
             if (!g.Draws[side] || g.Sides[side].Axis is not { } axis || distance < g.Offsets[side])
             {
                 return null;

@@ -193,12 +193,14 @@ public sealed class ViewOperationTests
 
     /// <summary>
     /// The y fitted to the visible x keeps the y where the design says so (design §6.2, PR #275's review): an x of a log
-    /// scale, a stat's line alone, and a line split by categories that lie in runs, whose x starts again in each run.
+    /// scale, a stat's line alone, a line split by categories that lie in runs, whose x starts again in each run, and a
+    /// facet's panel, whose rows are a part of the columns (row I1b).
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - <see cref="AutoRangeY"/> added; animations off. Three plots: a line over x from 1 to 1,000 on a log x; a smooth of
-    ///   the sine alone; a line colored by 2 categories of 500 rows each, x from 0 to 499 in each.
+    /// - <see cref="AutoRangeY"/> added; animations off. Four plots: a line over x from 1 to 1,000 on a log x; a smooth of
+    ///   the sine alone; a line colored by 2 categories of 500 rows each, x from 0 to 499 in each; the line over x from 0 to
+    ///   999 wrapped by the same categories with free scales, its first panel set.
     ///
     /// Steps:
     /// - For each, set a view of a narrower x with the y as it is.
@@ -227,6 +229,11 @@ public sealed class ViewOperationTests
             (Plot.Create(table).Line(table.Col<double>("p"), table.Col<float>("y")).ScaleX(Scale.Log()).Build(), 1, 2),
             (Plot.Create(table).Smooth(table.Col<double>("x"), table.Col<float>("y"), 8).Build(), 100, 140),
             (Plot.Create(table).Line(table.Col<double>("r"), table.Col<float>("y"), l => l.ColorBy(table.Cat("k"))).Build(), 100, 140),
+            (
+                Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).FacetWrap(table.Cat("k"), scales: FacetScales.Free).Build(),
+                100,
+                140
+            ),
         };
         using var f = new EngineFixture();
         f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
