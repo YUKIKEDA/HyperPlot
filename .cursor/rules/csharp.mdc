@@ -12,6 +12,7 @@ Formatting is CSharpier's (`.cursor/rules/engineering.mdc`). This rule covers wh
 
 - Modern C# is allowed: `var` when the type is apparent on the right, collection expressions, target-typed `new`, primary constructors, file-scoped namespaces, `required` members, `ref struct`, `scoped`, `allows ref struct`.
 - Private fields are `_camelCase`, static ones included. Constants are PascalCase. No `this.` unless needed to disambiguate. Interfaces start with `I`.
+- A constant has one meaning. Two meanings with the same value are two constants, each with its own XML doc, so that a change to one does not move the other. PR #279 cut polar lines at the outer edge with `PolarTransform.Tolerance`, the bound on a chord's deviation, and the review asked for `OuterTolerance`.
 - Namespaces follow assembly names (`HyperPlot.Rendering.D3D11`, `HyperPlot.Wpf`), not folders. Core is the exception the design names: the types a user writes are all in `HyperPlot`, and the contracts a backend implements in `HyperPlot.Rendering` (design §2.1); Core's layers are folders, not namespaces.
 - One type per file by default. A file name matches its main type.
 - No `using` alias to shorten a BCL type name. Qualify the name where it collides.
