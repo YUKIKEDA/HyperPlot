@@ -21,7 +21,6 @@ internal sealed class PlotPlan : IDisposable
     private readonly Dictionary<Raster, RasterPyramid> _rasters = [];
     private readonly bool _ownImages;
     private readonly PlotWorkerPool _pool;
-    private readonly float _scale;
     private readonly PlotGuides _guides;
 
     // The pyramids the plan reads (design §5.5.3): its own store, or its figure's, which the plots share (row G6c); and
@@ -41,11 +40,15 @@ internal sealed class PlotPlan : IDisposable
     // The default color scales (design §4.2, row G7c), made once: a spec without one draws without allocating.
     private static readonly OrdinalScaleSpec DefaultOrdinal = Scale.Ordinal();
     private static readonly SequentialScaleSpec DefaultSequential = Scale.Sequential();
-    private readonly int _capacity;
 
     // The channels of a layer's node and of the one before it, for the checks and the diff (design §4.8).
     private readonly ColumnRef[] _channels = new ColumnRef[4];
     private readonly ColumnRef[] _previousChannels = new ColumnRef[4];
+    private float _scale;
+    private int _capacity;
+
+    // The target grew past the capacity of the layers' M4 output (row W1a): the layers are made again, their pyramids kept.
+    private bool _grown;
     private IScale? _xTransform;
 
     // A Render's stages (row G6c): what Compile found, for Prepare and Finish, so that a figure extracts all its plots at once.
@@ -103,8 +106,12 @@ internal sealed class PlotPlan : IDisposable
 
         // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10), and polar over the
         // outer circle, ⌈2πR⌉ with R at most half the smaller side (row G11).
-        _capacity = M4.MaxPointCount(Math.Max(Math.Max(width, height), PolarTransform.Turn((Math.Min(width, height) / 2) + 1)));
+        _capacity = Capacity(width, height);
     }
+
+    /// <summary>Returns the most points one series' M4 output holds on a target: the panel is never wider or taller.</summary>
+    private static int Capacity(int width, int height) =>
+        M4.MaxPointCount(Math.Max(Math.Max(width, height), PolarTransform.Turn((Math.Min(width, height) / 2) + 1)));
 
     /// <summary>Gets the number of pyramids built, for the tests of the diff (design §4.8).</summary>
     internal int PyramidsBuilt { get; private set; }
@@ -187,6 +194,26 @@ internal sealed class PlotPlan : IDisposable
     {
         _guides.Place(left, top, width, height);
         _placed = true;
+    }
+
+    /// <summary>
+    /// Takes a new target size and scale (design §7.1, row W1a): the plot fills the target until a figure places it, and the
+    /// next Render lays out and records again, as after <see cref="Place"/>. The pyramids stay. A target larger than the
+    /// layers' M4 output holds makes the layers again at the next Render, with room for a side up to the next power of two,
+    /// so that a window dragged larger does not make them at every pixel.
+    /// </summary>
+    internal void SetTarget(int width, int height, float scale)
+    {
+        _scale = scale;
+        _guides.SetTarget(scale, width, height);
+        _placed = true;
+        var needed = Capacity(width, height);
+        if (needed > _capacity)
+        {
+            var side = (int)Math.Min(System.Numerics.BitOperations.RoundUpToPowerOf2((uint)Math.Max(width, height)), RenderTargetDescription.MaxSide);
+            _capacity = Math.Max(needed, Capacity(side, side));
+            _grown = true;
+        }
     }
 
     /// <summary>
@@ -442,8 +469,11 @@ internal sealed class PlotPlan : IDisposable
             _facet!.Rearrange(after);
         }
 
+        var grown = _grown;
+        _grown = false;
         if (
             data
+            || grown
             || StaleLayers()
             || (previous is not null && previous.Facet?.Scales != spec.Facet?.Scales && HasStat(spec))
             || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true, secondary: false))

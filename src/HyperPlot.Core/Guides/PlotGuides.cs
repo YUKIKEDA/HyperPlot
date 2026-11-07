@@ -24,11 +24,11 @@ internal sealed class PlotGuides
     internal const int SideRight = 3;
 
     private readonly TextEngine _text;
-    private readonly float _scale;
     private readonly Vector2[] _segment = new Vector2[2];
 
     // The panels' guides (row G6b): one without a facet. The layout and the recording work on the current one.
     private readonly List<PanelGuide> _panels = [];
+    private float _scale;
 
     // The rectangle the plot is laid out in (row G6c): the target's whole, or a figure's cell.
     private int _left;
@@ -160,6 +160,13 @@ internal sealed class PlotGuides
     /// the next layout lays the guides out in it.
     /// </summary>
     internal void Place(int left, int top, int width, int height) => (_left, _top, _width, _height) = (left, top, width, height);
+
+    /// <summary>Takes a new scale and fills a target of a new size (row W1a), until a figure places the plot.</summary>
+    internal void SetTarget(float scale, int width, int height)
+    {
+        _scale = scale;
+        Place(0, 0, width, height);
+    }
 
     /// <summary>Gets the rectangle the plot is laid out in: the target, or a figure's cell (rows G6c, I1b).</summary>
     internal (int Left, int Top, int Width, int Height) Area => (_left, _top, _width, _height);

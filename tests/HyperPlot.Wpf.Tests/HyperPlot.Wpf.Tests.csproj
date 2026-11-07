@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>HyperPlot.Wpf.Tests</RootNamespace>
+    <!-- The Direct3D 9Ex reader of the surface tests calls COM vtables (row W1a). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The allocation test reads GC.GetAllocatedBytesForCurrentThread; tiering could allocate in its window (.cursor/rules/bench.mdc). -->
+    <TieredCompilation>false</TieredCompilation>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\HyperPlot.Wpf\HyperPlot.Wpf.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- What WPF's D3DImage would show: a shared texture opened in Direct3D 9Ex (design §7.2), shared with the D3D11 tests. -->
+    <Compile Include="..\HyperPlot.Rendering.D3D11.Tests\D3D9Reader.cs" Link="D3D9Reader.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit.v3" />
+  </ItemGroup>
+</Project>

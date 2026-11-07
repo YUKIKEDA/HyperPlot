@@ -7,7 +7,7 @@ namespace HyperPlot.Rendering.D3D11;
 /// An offscreen render target (design §5.3): <c>B8G8R8A8_UNORM</c>, premultiplied alpha, no MSAA, the sRGB values as they
 /// are. Its staging texture for readback is made once and reused.
 /// </summary>
-internal sealed unsafe class D3D11RenderTarget : IRenderTarget
+internal sealed unsafe class D3D11RenderTarget : IRenderTarget, IDeviceResource
 {
     private readonly D3D11Backend _backend;
     private ID3D11Texture2D* _texture;
@@ -41,6 +41,9 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     public RenderTargetDescription Description { get; }
 
     internal ID3D11RenderTargetView* View => _view;
+
+    /// <summary>Gets the color texture, which the host's surfaces copy (design §7.2).</summary>
+    internal ID3D11Texture2D* Texture => _texture;
 
     /// <summary>Gets the view of the R8 coverage texture as a target: the polylines' pass 1 and 3 (design §5.3).</summary>
     internal ID3D11RenderTargetView* CoverageView => _coverageView;
@@ -148,7 +151,7 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     }
 
     /// <summary>Makes the textures from the description and clears them to transparent (design §5.3).</summary>
-    internal void MakeResources()
+    public void MakeResources()
     {
         var device = _backend.Device;
         var description = new D3D11_TEXTURE2D_DESC
@@ -200,7 +203,7 @@ internal sealed unsafe class D3D11RenderTarget : IRenderTarget
     }
 
     /// <summary>Releases the textures; the description stays, so that the backend can make them again.</summary>
-    internal void ReleaseResources()
+    public void ReleaseResources()
     {
         Release(ref _maskResourceView);
         Release(ref _maskAccess);
