@@ -676,12 +676,17 @@ internal sealed class RulePlan : LayerPlan
             return LayerReadiness.Ready;
         }
 
-        if (indexes.XStats(column) == LayerReadiness.Pending)
+        bool nonDecreasing;
+        if (indexes.Waits)
+        {
+            nonDecreasing = column.IsNonDecreasing(indexes.Pool, Rows);
+        }
+        else if (indexes.XStats(column) == LayerReadiness.Pending || !column.TryIsNonDecreasing(Rows, out nonDecreasing))
         {
             return LayerReadiness.Pending;
         }
 
-        if (!column.IsNonDecreasing(indexes.Pool, Rows))
+        if (!nonDecreasing)
         {
             throw new InvalidOperationException(
                 $"The {(rule.X.IsDefault ? "Y" : "X")} column of a rule layer is not non-decreasing without NaN; a rule's lines are found by searching it (design §5.5.3)."

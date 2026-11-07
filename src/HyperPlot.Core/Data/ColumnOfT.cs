@@ -183,7 +183,7 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     /// Gets whether a run's values are non-decreasing with no NaN (row G6b): the statistics of the chunks it covers and a pass
     /// over its rows in the chunks at its ends; false when a covered chunk's statistics are not computed.
     /// </summary>
-    internal bool TryIsNonDecreasing(RowRange rows, out bool nonDecreasing)
+    internal override bool TryIsNonDecreasing(RowRange rows, out bool nonDecreasing)
     {
         var (start, end) = (Math.Clamp(rows.Start, 0, Length), rows.EndIn(Length));
         if (start == 0 && end == Length)
@@ -279,18 +279,28 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
         complete = true;
         while (start < end)
         {
-            // A whole chunk reads its stored statistics, or is left out; a part of one at an end of the run is passed over.
+            // A whole chunk reads its stored statistics; those of its values before an Invalidate stand in until they are
+            // computed again, as a pyramid's older chunk does (Issue #291 Decision 4), and a chunk with none is left out. A
+            // part of one at an end of the run is passed over.
             var chunk = (int)(start >> ChunkShift);
             var chunkStart = (long)chunk << ChunkShift;
             var stop = Math.Min(end, chunkStart + ChunkLengthOf(chunk));
             ChunkStats<T> stats;
             if (start == chunkStart && stop == chunkStart + ChunkLengthOf(chunk))
             {
-                if (!TryGetStoredStats(chunk, out stats))
+                var entry = Volatile.Read(ref _stats[chunk]);
+                if (entry is null || entry.Generation != Volatile.Read(ref _generations[chunk]))
                 {
-                    (complete, start) = (false, stop);
+                    complete = false;
+                }
+
+                if (entry is null)
+                {
+                    start = stop;
                     continue;
                 }
+
+                stats = entry.Stats;
             }
             else
             {

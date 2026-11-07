@@ -230,13 +230,24 @@ public abstract class Column
     /// <summary>
     /// Returns the range of a run's values that are not NaN from the statistics already computed, without computing any of a
     /// whole chunk (design §4.8, row W1b1): a frame that does not wait learns from them. <paramref name="complete"/> is false
-    /// when a chunk the run covers has none, which the range then leaves out. The chunks at a run's two ends are passed over,
+    /// when a chunk the run covers has none for its current values: those of its values before an Invalidate stand in, and
+    /// a chunk that never had any is left out. The chunks at a run's two ends are passed over,
     /// as <see cref="TryGetRange(RowRange, out ScaleEnd, out ScaleEnd)"/> does: a chunk at most.
     /// </summary>
     internal virtual bool TryGetStoredRange(RowRange rows, out ScaleEnd min, out ScaleEnd max, out bool complete)
     {
         complete = true;
         return TryGetRange(rows, out min, out max);
+    }
+
+    /// <summary>
+    /// Tells whether a run's values are non-decreasing with no NaN from the statistics already computed (row W1b1): false
+    /// when a chunk the run covers has none. A column without statistics (uniform) always is.
+    /// </summary>
+    internal virtual bool TryIsNonDecreasing(RowRange rows, out bool nonDecreasing)
+    {
+        nonDecreasing = true;
+        return true;
     }
 
     /// <summary>Gets a value indicating whether every chunk's statistics are computed for its current values; a column without statistics has them all.</summary>

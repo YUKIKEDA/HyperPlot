@@ -101,6 +101,12 @@ public sealed class M4Batch
     /// <summary>Gives a series the number of the layer it belongs to (row W1b1): a failed series fails that layer.</summary>
     internal void SetTag(int series, int tag) => JobAt(series).Tag = tag;
 
+    /// <summary>
+    /// Sets whether a series is left out of the extractions (row W1b1): its layer draws nothing this frame, so it reads no
+    /// data. A series left out has an empty result and no error.
+    /// </summary>
+    internal void SetSkipped(int series, bool skipped) => JobAt(series).Skipped = skipped;
+
     /// <summary>Returns the exception a series' last extraction threw, or null when it did not.</summary>
     /// <param name="series">The series' number.</param>
     /// <returns>The exception, or null.</returns>
@@ -184,12 +190,19 @@ public sealed class M4Batch
 
         public int Tag { get; set; } = -1;
 
+        public bool Skipped { get; set; }
+
         public Exception? Error { get; private set; }
 
         public void Reset() => (Result, Error) = (default, null);
 
         public void Run(ScaleOrigin origin, double[] boundaries)
         {
+            if (Skipped)
+            {
+                return;
+            }
+
             try
             {
                 Result = Extract(origin, boundaries);

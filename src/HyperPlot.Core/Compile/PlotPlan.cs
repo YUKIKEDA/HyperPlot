@@ -140,6 +140,9 @@ internal sealed class PlotPlan : IDisposable
     /// <summary>Gets the number of times the guides were laid out, for the tests of the diff (design §4.8).</summary>
     internal int Layouts { get; private set; }
 
+    /// <summary>Gets the number of layers the last recording drew, over every panel (row W1b1). Tests only.</summary>
+    internal int LayersRecorded { get; private set; }
+
     /// <summary>Gets the color scale of the last spec drawn, or null when no layer has a color channel. Tests only.</summary>
     internal ColorScale? Color { get; private set; }
 
@@ -763,6 +766,10 @@ internal sealed class PlotPlan : IDisposable
             }
 
             _pendingRecord = true;
+            if (_pendingExtract && !Waits)
+            {
+                SkipSeries();
+            }
         }
 
         return _pendingExtract;
@@ -2186,6 +2193,22 @@ internal sealed class PlotPlan : IDisposable
         return retry;
     }
 
+    /// <summary>Leaves out of the extraction the series of the layers that draw nothing this frame (row W1b1).</summary>
+    private void SkipSeries()
+    {
+        foreach (var panel in _panels)
+        {
+            foreach (var batch in panel.Batches)
+            {
+                for (var s = 0; s < batch.Count; s++)
+                {
+                    var layer = batch.TagOf(s);
+                    batch.SetSkipped(s, layer >= 0 && !Drawn(layer, panel.Layers[layer]));
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Reads the series' errors and results after an extraction that did not throw (row W1b1): a failed series fails its
     /// layer, and a provisional result of a layer that draws makes the frame provisional.
@@ -2281,6 +2304,7 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _guides.RecordBehind(_list, spec);
+        LayersRecorded = 0;
         for (var p = 0; p < _panels.Length; p++)
         {
             RecordPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
@@ -2379,6 +2403,7 @@ internal sealed class PlotPlan : IDisposable
             if (Drawn(i, layer))
             {
                 layer.Record(_context);
+                LayersRecorded++;
             }
 
             _context.Flush();
