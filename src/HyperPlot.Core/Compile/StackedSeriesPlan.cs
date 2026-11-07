@@ -130,12 +130,15 @@ internal sealed class StackedSeriesPlan : LayerPlan
         }
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
+    public override LayerReadiness Poll(LayerIndexes indexes)
     {
+        var readiness = LayerReadiness.Ready;
         foreach (var part in _parts)
         {
-            part.Plan.WaitForIndexes(pool);
+            readiness = LayerIndexes.Join(readiness, part.Plan.Poll(indexes));
         }
+
+        return readiness;
     }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
@@ -319,7 +322,7 @@ internal sealed class FloatingBarPlan : LayerPlan
         (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.Y.Column);
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     // The stacked layer adds the ranges (design §4.2).
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data) { }

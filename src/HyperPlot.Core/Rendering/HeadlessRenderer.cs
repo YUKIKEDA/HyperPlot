@@ -146,7 +146,7 @@ public sealed class HeadlessRenderer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         // The figure's plan goes only once the plot checks, as for a figure.
-        var plan = _plan ?? new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        var plan = _plan ?? new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
         try
         {
             plan.Check(plot);
@@ -172,7 +172,7 @@ public sealed class HeadlessRenderer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         // The plot's plan goes only once the figure checks: a figure that throws leaves what is drawn as it is.
-        var plan = _figure ?? new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        var plan = _figure ?? new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
         try
         {
             _ = plan.Check(figure);
@@ -198,7 +198,7 @@ public sealed class HeadlessRenderer : IDisposable
         // A plot alone and a figure have plans of their own: the one not drawn any more is released.
         _figure?.Dispose();
         _figure = null;
-        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
     }
 
     /// <summary>
@@ -248,7 +248,7 @@ public sealed class HeadlessRenderer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         _plan?.Dispose();
         _plan = null;
-        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images);
+        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
         _backend.Images.Unbounded = true;
         try
         {
@@ -271,6 +271,22 @@ public sealed class HeadlessRenderer : IDisposable
             _backend.Images.Unbounded = false;
         }
     }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether a render waits for the indexes and the workers' results, so that the image is
+    /// the same whenever it is drawn (design §4.8), or draws what is there (the engine's frame, row W1b1): true unless the
+    /// engine sets it. Set on the plans the renderer holds.
+    /// </summary>
+    internal bool Waits
+    {
+        get;
+        set
+        {
+            field = value;
+            _plan?.Waits = value;
+            _figure?.Waits = value;
+        }
+    } = true;
 
     /// <summary>Gets the compiled plot, or null before the first <see cref="Render(PlotSpec)"/>. Tests only.</summary>
     internal PlotPlan? Plan => _plan;

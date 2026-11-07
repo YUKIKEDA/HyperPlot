@@ -133,6 +133,48 @@ public sealed class SurfaceTests
         Assert.Equal(Fill(Green), Rgba(d3d9.Read(last, Width, Height)));
     }
 
+    /// <summary>
+    /// The newest copy stays unread until it is handed over, even when the older one is handed over first (design §7.2, row
+    /// W1b1): a host takes until the last frame it presented is shown.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A backend on adapter 0, a 64 × 48 target, and a surface.
+    ///
+    /// Steps:
+    /// - Present the target cleared to red, then cleared to green; take until nothing is unread.
+    ///
+    /// Expected:
+    /// - Nothing is unread before the copies and something is after them. The takes end within the polls, and the last
+    ///   handle taken holds green.
+    /// </remarks>
+    [Fact]
+    public void Shared_KeepsTheNewestUnreadUntilTaken()
+    {
+        using var d3d9 = new D3D9Reader();
+        using var backend = D3D11Backend.Create(adapterLuid: d3d9.AdapterLuid);
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(Width, Height));
+        using var surface = new D3D11SharedSurface(backend, Width, Height);
+        Assert.False(surface.HasUnread);
+
+        target.Clear(Red);
+        surface.Present(target);
+        target.Clear(Green);
+        surface.Present(target);
+        Assert.True(surface.HasUnread);
+        nint last = 0;
+        for (var i = 0; i < Polls && surface.HasUnread; i++)
+        {
+            if (surface.TryTakeCompleted(out var handle))
+            {
+                last = handle;
+            }
+        }
+
+        Assert.False(surface.HasUnread);
+        Assert.Equal(Fill(Green), Rgba(d3d9.Read(last, Width, Height)));
+    }
+
     /// <summary>A surface copies a target of its own backend and size only (design §7.2).</summary>
     /// <remarks>
     /// Preconditions:

@@ -95,7 +95,10 @@ internal sealed class EngineFixture : IDisposable
         Table = DataTable.Create().Add("x", Column.Uniform(0, 1, values.Length)).Add("y", _y).Build();
         var builder = Plot.Create(Table).Line(Table.Col<double>("x"), Table.Col<float>("y")).ScaleY(Scale.Linear().WithDomain(-20, 20));
         Spec = (configure?.Invoke(builder) ?? builder).Build();
-        Engine = new PlotEngine(Backend, Width, Height, 1, Pool, Time);
+
+        // The frames wait for the indexes, so that a test of the interaction sees what the workers make, whatever their speed;
+        // the frames that do not wait have tests of their own (row W1b1).
+        Engine = new PlotEngine(Backend, Width, Height, 1, Pool, Time) { WaitsForIndexes = true };
         Engine.FrameRequested += () => Requests++;
         Engine.ViewChanged += (in ViewChange change) => Changes.Add(change);
         Engine.SetPlot(Spec);

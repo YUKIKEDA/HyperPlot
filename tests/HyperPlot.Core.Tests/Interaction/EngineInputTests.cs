@@ -164,7 +164,7 @@ public sealed class EngineInputTests
         f.Settle();
         Assert.Equal(before, f.View());
 
-        using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time);
+        using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time) { WaitsForIndexes = true };
         Assert.Equal(HitAreaKind.None, fresh.HitArea(new Vector2(50, 50)).Kind);
     }
 
@@ -204,7 +204,7 @@ public sealed class EngineInputTests
         Assert.True(after.HighValue - after.LowValue < before.HighValue - before.LowValue);
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => f.Engine.Views.ZoomAt(new PanelId(2, 0), new Vector2(100, 100), 2));
 
-        using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time);
+        using var fresh = new PlotEngine(new NullBackend(), 100, 100, 1, f.Pool, f.Time) { WaitsForIndexes = true };
         fresh.SetPlot(f.Spec);
         _ = Assert.Throws<InvalidOperationException>(() => fresh.Views.ZoomAt(EngineFixture.Panel, new Vector2(50, 50), 2));
     }

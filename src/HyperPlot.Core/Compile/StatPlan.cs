@@ -100,7 +100,7 @@ internal sealed class StatPlan : LayerPlan
         }
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => _inner.WaitForIndexes(pool);
+    public override LayerReadiness Poll(LayerIndexes indexes) => _inner.Poll(indexes);
 
     public override void BeginLearning() => _inner.BeginLearning();
 

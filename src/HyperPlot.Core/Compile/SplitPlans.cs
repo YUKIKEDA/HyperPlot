@@ -436,7 +436,7 @@ internal sealed class SplitPlan : LayerPlan
         }
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
+    public override LayerReadiness Poll(LayerIndexes indexes)
     {
         if (_gathers.Length > 0)
         {
@@ -448,23 +448,28 @@ internal sealed class SplitPlan : LayerPlan
 
             if (changed)
             {
-                Gather(pool);
+                // The gather waits for its workers even in a frame that does not wait: row W1b2 (invariant 7).
+                Gather(indexes.Pool);
                 foreach (var gather in _gathers)
                 {
                     gather.Invalidate();
                 }
             }
 
+            // The gathered series' pyramids: built while M4 reads what is there (row W1b1).
             foreach (var pyramid in _gatheredPyramids)
             {
-                pyramid.WhenComplete().GetAwaiter().GetResult();
+                _ = indexes.Complete(pyramid);
             }
         }
 
+        var readiness = LayerReadiness.Ready;
         foreach (var part in _parts)
         {
-            part.Plan.WaitForIndexes(pool);
+            readiness = LayerIndexes.Join(readiness, part.Plan.Poll(indexes));
         }
+
+        return readiness;
     }
 
     public override void BeginLearning()

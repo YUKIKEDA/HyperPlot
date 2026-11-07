@@ -21,9 +21,13 @@ internal sealed class MainWindow : Window, IDisposable
 
     public MainWindow(int points, bool measure)
     {
-        Title = $"WpfPlot: {points:N0} points a series";
+        var title = $"WpfPlot: {points:N0} points a series";
+        Title = title;
         Width = 1200;
         Height = 760;
+
+        // The host's notice (design §4.8, row W1b1): while the pyramids build, the frames are provisional, and the title says so.
+        _series.Engine.ProvisionalChanged += () => Title = _series.Engine.IsProvisional ? $"{title} (provisional)" : title;
         _series.Spec = TimeSeries(points);
 
         // A WPF button over the plot (requirement H-2): it resets every view through the engine's operations.

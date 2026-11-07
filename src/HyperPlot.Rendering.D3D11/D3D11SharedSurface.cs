@@ -62,6 +62,14 @@ public sealed unsafe class D3D11SharedSurface : IDisposable, IDeviceResource
     public int Height { get; }
 
     /// <summary>
+    /// Gets a value indicating whether the newest copy has not been handed over: after a <see cref="Present"/>, until
+    /// <see cref="TryTakeCompleted"/> hands that copy over. Taking the older copy while the newest is still being made leaves
+    /// it true, so that a host takes again at its next tick and shows the last frame (row W1b1, as
+    /// <see cref="D3D11ReadbackSurface.HasUnread"/>).
+    /// </summary>
+    public bool HasUnread => Math.Max(_slots[0].Copy, _slots[1].Copy) > (_held >= 0 ? _slots[_held].Copy : 0);
+
+    /// <summary>
     /// Copies a render target into the texture the host does not hold: the other one when it holds one, the older one when
     /// it holds none (design §7.2). The copy is queued with an event query and flushed; nothing waits for the GPU. Opens a
     /// frame of the backend, or joins the caller's.

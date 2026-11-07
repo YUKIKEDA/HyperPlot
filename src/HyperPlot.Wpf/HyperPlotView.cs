@@ -209,8 +209,9 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
 
             if (_polling)
             {
-                // A read of the older copy goes on polling for the newest, the last frame shown.
-                _polling = !(shared ? ShowShared() : ShowReadback() && !_readback!.HasUnread);
+                // A copy taken while a newer one is still made goes on polling for the newest, the last frame shown; a frame
+                // wanted meanwhile is drawn at the next tick instead (row W1b1: provisional frames keep coming).
+                _polling = !(shared ? ShowShared() && (_wanted || !_shared!.HasUnread) : ShowReadback() && (_wanted || !_readback!.HasUnread));
             }
         }
         catch (GpuDeviceLostException)
