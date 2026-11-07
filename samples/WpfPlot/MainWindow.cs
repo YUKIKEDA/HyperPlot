@@ -118,22 +118,21 @@ internal sealed class MainWindow : Window, IDisposable
         const int Each = 100_000;
         var names = new[] { "north", "east", "south", "west" };
         var values = new float[Each * 4];
+        var positions = new double[Each * 4];
         var groups = new string[Each * 4];
         for (var i = 0; i < values.Length; i++)
         {
             var g = i / Each;
+            positions[i] = i % Each;
             values[i] = (float)((Math.Sin((i % Each) * 0.0005 * (g + 1)) * (g + 1)) + (Noise(i) * 0.3));
             groups[i] = names[g];
         }
 
-        var y = Column.Wrap(values);
+        // Each group's rows run over the same x, from 0, so that the shared x lines them up.
+        var (x, y) = (Column.Wrap(positions), Column.Wrap(values));
+        _columns.Add(x);
         _columns.Add(y);
-        var table = DataTable
-            .Create()
-            .Add("x", Column.Uniform(0, 1, values.Length))
-            .Add("y", y)
-            .Add("group", Column.Categorical(groups, names))
-            .Build();
+        var table = DataTable.Create().Add("x", x).Add("y", y).Add("group", Column.Categorical(groups, names)).Build();
         return Plot.Create(table)
             .Line(table.Col<double>("x"), table.Col<float>("y"))
             .FacetWrap(table.Cat("group"), columns: 2, scales: FacetScales.FreeY)
