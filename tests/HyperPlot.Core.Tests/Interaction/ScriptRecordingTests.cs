@@ -92,7 +92,7 @@ public sealed class ScriptRecordingTests
         Assert.Contains(Lines(recording), l => l.Contains(" key ", StringComparison.Ordinal));
         Assert.Contains(Lines(recording), l => l.Contains(" gesture ", StringComparison.Ordinal));
 
-        using var other = new PlotEngine(new NullBackend(), 320, 200, 1, first.Pool, first.Time);
+        using var other = new PlotEngine(new NullBackend(), 320, 200, 1, first.Pool, first.Time) { WaitsForIndexes = true };
         other.SetPlot(first.Spec);
         other.RenderFrame();
         _ = Assert.Throws<InvalidOperationException>(() => InputReplay.Run(other, new StringReader(recording), first.Time.Advance));

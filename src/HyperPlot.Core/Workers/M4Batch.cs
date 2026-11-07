@@ -95,6 +95,12 @@ public sealed class M4Batch
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="series"/> is not a series' number.</exception>
     public M4Result GetResult(int series) => JobAt(series).Result;
 
+    /// <summary>Gets the number a plan gave a series: the position of the layer it belongs to (row W1b1), or -1.</summary>
+    internal int TagOf(int series) => JobAt(series).Tag;
+
+    /// <summary>Gives a series the number of the layer it belongs to (row W1b1): a failed series fails that layer.</summary>
+    internal void SetTag(int series, int tag) => JobAt(series).Tag = tag;
+
     /// <summary>Returns the exception a series' last extraction threw, or null when it did not.</summary>
     /// <param name="series">The series' number.</param>
     /// <returns>The exception, or null.</returns>
@@ -175,6 +181,8 @@ public sealed class M4Batch
     private abstract class Job
     {
         public M4Result Result { get; private set; }
+
+        public int Tag { get; set; } = -1;
 
         public Exception? Error { get; private set; }
 

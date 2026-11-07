@@ -64,7 +64,8 @@ public sealed class PlotEngine : IDisposable
     /// <exception cref="ArgumentOutOfRangeException">A size is out of range, or the scale is not finite and above 0.</exception>
     public PlotEngine(IGpuBackend backend, int width, int height, float scale = 1, PlotWorkerPool? pool = null, TimeProvider? time = null)
     {
-        _renderer = new HeadlessRenderer(backend, width, height, pool, scale);
+        // The engine's frame does not wait for the indexes or the workers (invariant 7, row W1b1).
+        _renderer = new HeadlessRenderer(backend, width, height, pool, scale) { Waits = false };
         Time = time ?? TimeProvider.System;
         _thread = Environment.CurrentManagedThreadId;
         _context = new ToolContext(this);
@@ -76,6 +77,36 @@ public sealed class PlotEngine : IDisposable
 
     /// <summary>Occurs when a view changes (design §6.2): once a panel and change, with the view it goes to.</summary>
     public event ViewChangedHandler? ViewChanged;
+
+    /// <summary>
+    /// Occurs at the end of a <see cref="RenderFrame"/> whose frame is provisional when the one before was not, or the other
+    /// way (design §4.8, invariant 4, row W1b1): once each time <see cref="IsProvisional"/> changes.
+    /// </summary>
+    public event Action? ProvisionalChanged;
+
+    /// <summary>
+    /// Occurs in a <see cref="RenderFrame"/> that finds a layer's work failed (design §4.8, row W1b1): once a failure. The
+    /// frame does not throw it; the layer is not drawn until one of its columns' versions moves, and is then tried again.
+    /// </summary>
+    public event WorkFailedHandler? WorkFailed;
+
+    /// <summary>
+    /// Gets a value indicating whether the last frame was provisional (design §4.8, row W1b1): drawn before the indexes and
+    /// the workers' results were all there, so that a coarser picture stood in for them. While it is, each frame asks for the
+    /// next. A layer that failed does not make the frame provisional.
+    /// </summary>
+    public bool IsProvisional { get; private set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the frames wait for the indexes and the workers' results, as a headless render
+    /// does (design §4.8). Tests only: the tests of the interaction draw what a frame that waited would, whatever the
+    /// workers' speed.
+    /// </summary>
+    internal bool WaitsForIndexes
+    {
+        get => _renderer.Waits;
+        set => _renderer.Waits = value;
+    }
 
     /// <summary>Gets the operations on the views.</summary>
     public ViewOperations Views { get; }
@@ -207,9 +238,11 @@ public sealed class PlotEngine : IDisposable
 
     /// <summary>
     /// Draws a frame (design §7.1): moves the animations to the engine's time, gives the views to the plans, draws, and draws
-    /// what the tool that holds the pointer draws over it. While an animation runs, it asks for the next frame.
+    /// what the tool that holds the pointer draws over it. It does not wait for the indexes or the workers (design §4.8,
+    /// invariant 7): it draws what is there, and a layer's work that failed is reported through <see cref="WorkFailed"/>, not
+    /// thrown. While an animation runs or the frame is provisional, it asks for the next frame.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The call comes from another thread, or the plot fails as <see cref="HeadlessRenderer.Render(PlotSpec)"/> says.</exception>
+    /// <exception cref="InvalidOperationException">The call comes from another thread, or the plot fails as <see cref="HeadlessRenderer.Render(PlotSpec)"/> says for a cause other than a layer's work.</exception>
     /// <exception cref="ArgumentException">The plot does not check.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost.</exception>
     /// <exception cref="ObjectDisposedException">The engine was disposed.</exception>
@@ -274,7 +307,26 @@ public sealed class PlotEngine : IDisposable
             CancelCaptured();
         }
 
-        if (animating)
+        // The plots' failures and whether the frame is provisional (row W1b1). An index, not foreach: no enumerator is boxed.
+        var provisional = false;
+        for (var k = 0; k < count; k++)
+        {
+            var plan = PlanOf(k);
+            provisional |= plan.IsProvisional;
+            var failures = plan.Failures;
+            for (var f = 0; f < failures.Count; f++)
+            {
+                WorkFailed?.Invoke(new WorkFailure(k, failures[f].Layer, failures[f].Error));
+            }
+        }
+
+        if (provisional != IsProvisional)
+        {
+            IsProvisional = provisional;
+            ProvisionalChanged?.Invoke();
+        }
+
+        if (animating || provisional)
         {
             RequestFrame();
         }

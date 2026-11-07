@@ -268,6 +268,46 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => TryIsNonDecreasing(out _) ? null : pool.PrecomputeStats(this);
 
     /// <inheritdoc />
+    internal override bool HasAllStats => TryIsNonDecreasing(out _);
+
+    /// <inheritdoc />
+    internal override bool TryGetStoredRange(RowRange rows, out ScaleEnd min, out ScaleEnd max, out bool complete)
+    {
+        var (start, end) = (Math.Max(rows.Start, 0), rows.EndIn(Length));
+        var total = ChunkStats<T>.Empty;
+        var first = true;
+        complete = true;
+        while (start < end)
+        {
+            // A whole chunk reads its stored statistics, or is left out; a part of one at an end of the run is passed over.
+            var chunk = (int)(start >> ChunkShift);
+            var chunkStart = (long)chunk << ChunkShift;
+            var stop = Math.Min(end, chunkStart + ChunkLengthOf(chunk));
+            ChunkStats<T> stats;
+            if (start == chunkStart && stop == chunkStart + ChunkLengthOf(chunk))
+            {
+                if (!TryGetStoredStats(chunk, out stats))
+                {
+                    (complete, start) = (false, stop);
+                    continue;
+                }
+            }
+            else
+            {
+                stats = ChunkStatsKernel.Compute(GetChunk(chunk)[(int)(start - chunkStart)..(int)(stop - chunkStart)]);
+            }
+
+            total = first ? stats : ChunkStats<T>.Combine(total, stats);
+            (first, start) = (false, stop);
+        }
+
+        (min, max) = ScaleSpace.IsInteger<T>()
+            ? (ScaleEnd.Of(long.CreateTruncating(total.Min)), ScaleEnd.Of(long.CreateTruncating(total.Max)))
+            : (ScaleEnd.Of(double.CreateTruncating(total.Min)), ScaleEnd.Of(double.CreateTruncating(total.Max)));
+        return total.Count > 0;
+    }
+
+    /// <inheritdoc />
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>
         batch.AddRun(this, y, destination, rows);
 

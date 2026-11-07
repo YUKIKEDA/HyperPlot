@@ -228,6 +228,21 @@ public abstract class Column
     internal abstract bool TryGetRange(RowRange rows, out ScaleEnd min, out ScaleEnd max);
 
     /// <summary>
+    /// Returns the range of a run's values that are not NaN from the statistics already computed, without computing any of a
+    /// whole chunk (design §4.8, row W1b1): a frame that does not wait learns from them. <paramref name="complete"/> is false
+    /// when a chunk the run covers has none, which the range then leaves out. The chunks at a run's two ends are passed over,
+    /// as <see cref="TryGetRange(RowRange, out ScaleEnd, out ScaleEnd)"/> does: a chunk at most.
+    /// </summary>
+    internal virtual bool TryGetStoredRange(RowRange rows, out ScaleEnd min, out ScaleEnd max, out bool complete)
+    {
+        complete = true;
+        return TryGetRange(rows, out min, out max);
+    }
+
+    /// <summary>Gets a value indicating whether every chunk's statistics are computed for its current values; a column without statistics has them all.</summary>
+    internal virtual bool HasAllStats => true;
+
+    /// <summary>
     /// Starts computing the chunk statistics that M4 needs of this column as X (design §5.5.1), or returns null when they are
     /// all there or the column needs none.
     /// </summary>

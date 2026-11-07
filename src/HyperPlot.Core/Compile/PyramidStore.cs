@@ -29,6 +29,19 @@ internal sealed class PyramidStore : IDisposable
         return entry.Pyramid;
     }
 
+    /// <summary>
+    /// Builds a column's pyramid again when it holds a fault (design §4.8, row W1b1): a failed chunk is not built again until
+    /// its generation moves (§3.3, rule 3), so a retry makes a new pyramid. The plans keep their holds.
+    /// </summary>
+    public void Rebuild(Column y, PlotWorkerPool pool)
+    {
+        if (_entries.TryGetValue(y, out var entry) && entry.Pyramid.Fault is not null)
+        {
+            entry.Pyramid.Dispose();
+            entry.Pyramid = ((IPyramidColumn)y).BuildPlotPyramid(pool);
+        }
+    }
+
     /// <summary>Returns a column's pyramid, or null when no plan holds one.</summary>
     public PlotPyramid? Find(Column y) => _entries.TryGetValue(y, out var entry) ? entry.Pyramid : null;
 
@@ -55,7 +68,7 @@ internal sealed class PyramidStore : IDisposable
 
     private sealed class Entry(PlotPyramid pyramid)
     {
-        public PlotPyramid Pyramid { get; } = pyramid;
+        public PlotPyramid Pyramid { get; set; } = pyramid;
 
         public int Users { get; set; }
     }

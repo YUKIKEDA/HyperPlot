@@ -23,6 +23,15 @@ internal abstract class PlotPyramid : IDisposable
     /// <summary>Returns a task that ends when every chunk is built for the column's current values (design §3.3).</summary>
     public abstract Task WhenComplete();
 
+    /// <summary>Gets the first exception a chunk's build threw, or null.</summary>
+    public abstract Exception? Fault { get; }
+
+    /// <summary>
+    /// Returns whether every chunk is built for the column's current values, without waiting (row W1b1); otherwise requests
+    /// the stale chunks again. Does not allocate.
+    /// </summary>
+    public abstract bool RequestStale();
+
     /// <summary>Adds a series over this pyramid, with <paramref name="x"/> as its X, to a batch.</summary>
     public abstract int AddTo(M4Batch batch, Column x, M4Point[] destination, RowRange rows);
 
@@ -49,6 +58,12 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
 
     /// <inheritdoc />
     public override Task WhenComplete() => pyramid.WhenComplete();
+
+    /// <inheritdoc />
+    public override Exception? Fault => pyramid.Fault;
+
+    /// <inheritdoc />
+    public override bool RequestStale() => pyramid.RequestStale();
 
     /// <inheritdoc />
     public override int AddTo(M4Batch batch, Column x, M4Point[] destination, RowRange rows) => x.AddSeries(batch, pyramid, destination, rows);

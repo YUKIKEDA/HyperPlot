@@ -103,7 +103,7 @@ public sealed class ResizeTests
         Assert.Equal(2f, f.Engine.Scale);
         Assert.True(f.Rect.Left > rect.Left && f.Rect.Top > rect.Top, $"{rect} → {f.Rect}");
 
-        using var fresh = new PlotEngine(f.Backend, EngineFixture.Width, EngineFixture.Height, 2, f.Pool, f.Time);
+        using var fresh = new PlotEngine(f.Backend, EngineFixture.Width, EngineFixture.Height, 2, f.Pool, f.Time) { WaitsForIndexes = true };
         fresh.SetPlot(f.Spec);
         fresh.RenderFrame();
         var g = fresh.Plan!.Guides;
@@ -134,7 +134,7 @@ public sealed class ResizeTests
         f.Engine.Resize(1920, 1080, 1);
         f.Engine.RenderFrame();
 
-        using var fresh = new PlotEngine(f.Backend, 1920, 1080, 1, f.Pool, f.Time);
+        using var fresh = new PlotEngine(f.Backend, 1920, 1080, 1, f.Pool, f.Time) { WaitsForIndexes = true };
         fresh.SetPlot(f.Spec);
         fresh.RenderFrame();
         var (grown, made) = (f.Engine.Plan.List, fresh.Plan!.List);
