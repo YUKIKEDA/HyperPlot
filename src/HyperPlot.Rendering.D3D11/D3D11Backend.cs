@@ -5,7 +5,7 @@ namespace HyperPlot.Rendering.D3D11;
 
 /// <summary>
 /// The Direct3D 11 backend (design §5.3): one device, hardware or WARP, and the offscreen render targets made on it. Use
-/// <see cref="Shared"/>, or make one of your own with <see cref="Create(bool)"/> and dispose it.
+/// <see cref="Shared"/>, or make one of your own with <see cref="Create"/> and dispose it.
 /// </summary>
 /// <remarks>
 /// One thread at a time uses a backend and its render targets: the immediate context is not free-threaded, and the backend
@@ -15,13 +15,16 @@ namespace HyperPlot.Rendering.D3D11;
 public sealed unsafe class D3D11Backend : IGpuBackend
 {
     private static readonly Lazy<D3D11Backend> _shared = new(
-        () => new D3D11Backend(useWarp: false, isShared: true, createDevice: null, text: null),
+        () => new D3D11Backend(useWarp: false, adapterLuid: null, isShared: true, createDevice: null, text: null),
         LazyThreadSafetyMode.ExecutionAndPublication
     );
 
     private readonly bool _useWarp;
+    private readonly long? _adapterLuid;
     private readonly bool _isShared;
-    private readonly List<D3D11RenderTarget> _targets = [];
+
+    // The render targets and the host's surfaces: released on a device loss and made again with the device (design §5.3).
+    private readonly List<IDeviceResource> _resources = [];
     private readonly D3D11LinePipeline _lines;
     private readonly D3D11GlyphPipeline _glyphs;
     private readonly D3D11RectPipeline _rects;
@@ -38,9 +41,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private ID3D11DeviceContext* _context;
     private State _state;
 
-    private D3D11Backend(bool useWarp, bool isShared, Func<D3D_DRIVER_TYPE, int>? createDevice, TextEngine? text)
+    private D3D11Backend(bool useWarp, long? adapterLuid, bool isShared, Func<D3D_DRIVER_TYPE, int>? createDevice, TextEngine? text)
     {
-        _useWarp = useWarp;
+        (_useWarp, _adapterLuid) = (useWarp, adapterLuid);
         _isShared = isShared;
         CreateDevice = createDevice;
         _lines = new D3D11LinePipeline(this);
@@ -84,6 +87,13 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     /// <inheritdoc />
     public bool IsWarp { get; private set; }
+
+    /// <summary>
+    /// Gets the locally unique identifier of the device's adapter, as a 64-bit value (the high part above the low part): a
+    /// host compares it with the adapter it shows on, since a shared texture opens on the same adapter only (design §7.2).
+    /// It changes when the device is made again after a loss.
+    /// </summary>
+    public long AdapterLuid { get; private set; }
 
     /// <inheritdoc />
     public GpuFrameTime? LastFrameTime => _timer.Last;
@@ -129,9 +139,15 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     /// <summary>Makes a backend with a device of its own.</summary>
     /// <param name="useWarp">Use WARP even when there is hardware: for tests, which need the same pixels on every machine.</param>
+    /// <param name="adapterLuid">
+    /// The hardware adapter to use, by its <see cref="AdapterLuid"/>; null for the default one. When that adapter has no
+    /// device of feature level 11_0 (or no adapter has the identifier), the backend falls back to WARP, as without one, and
+    /// <see cref="AdapterLuid"/> tells (design §7.2).
+    /// </param>
     /// <returns>The backend. Dispose it after its render targets.</returns>
     /// <exception cref="InvalidOperationException">No device could be made.</exception>
-    public static D3D11Backend Create(bool useWarp = false) => new(useWarp, isShared: false, createDevice: null, text: null);
+    public static D3D11Backend Create(bool useWarp = false, long? adapterLuid = null) =>
+        new(useWarp, adapterLuid, isShared: false, createDevice: null, text: null);
 
     /// <inheritdoc />
     public IRenderTarget CreateRenderTarget(in RenderTargetDescription description)
@@ -147,7 +163,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
         using var frame = BeginFrame();
         var target = new D3D11RenderTarget(this, description);
-        _targets.Add(target);
+        _resources.Add(target);
         return target;
     }
 
@@ -341,9 +357,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             return;
         }
 
-        foreach (var target in _targets.ToArray())
+        foreach (var resource in _resources.ToArray())
         {
-            target.Dispose();
+            resource.Dispose();
         }
 
         ReleaseDevice();
@@ -375,7 +391,13 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     internal void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_state == State.Disposed, this);
 
-    internal void Remove(D3D11RenderTarget target) => _targets.Remove(target);
+    /// <summary>Adds a resource made on the device, so that a loss releases it and the next frame makes it again.</summary>
+    internal void Add(IDeviceResource resource) => _resources.Add(resource);
+
+    internal void Remove(IDeviceResource resource) => _resources.Remove(resource);
+
+    /// <summary>Gets a value indicating whether the device is there: false between a loss and the next frame.</summary>
+    internal bool IsReady => _state == State.Ready;
 
     private static bool IsDeviceLost(int result) =>
         result
@@ -389,9 +411,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     [System.Diagnostics.CodeAnalysis.DoesNotReturn]
     private void Lose(int result, int reason, string message)
     {
-        foreach (var target in _targets)
+        foreach (var resource in _resources)
         {
-            target.ReleaseResources();
+            resource.ReleaseResources();
         }
 
         ReleaseDevice();
@@ -407,18 +429,18 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         MakeDevice();
         try
         {
-            foreach (var target in _targets)
+            foreach (var resource in _resources)
             {
-                target.MakeResources();
+                resource.MakeResources();
             }
         }
         catch (InvalidOperationException)
         {
             // A target that failed to come back leaves the backend lost, with nothing half made, so that the next frame
             // tries the whole remake again (design §5.3). A loss in the middle has already done this through Lose.
-            foreach (var target in _targets)
+            foreach (var resource in _resources)
             {
-                target.ReleaseResources();
+                resource.ReleaseResources();
             }
 
             ReleaseDevice();
@@ -469,14 +491,26 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             return forced;
         }
 
+        // The adapter asked for (design §7.2): hardware only, found by its identifier. A device on an adapter is made with
+        // the unknown driver type.
+        IDXGIAdapter* adapter = null;
+        if (driver == D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_HARDWARE && _adapterLuid is { } luid)
+        {
+            var found = FindAdapter(luid, &adapter);
+            if (found < 0)
+            {
+                return found;
+            }
+        }
+
         // Feature level 11_0 or above (requirement §3); BGRA for the WPF host's shared textures and the render targets.
         var levels = stackalloc D3D_FEATURE_LEVEL[] { D3D_FEATURE_LEVEL.D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL.D3D_FEATURE_LEVEL_11_0 };
         ID3D11Device* device;
         ID3D11DeviceContext* context;
         D3D_FEATURE_LEVEL level;
         var result = DirectX.D3D11CreateDevice(
-            null,
-            driver,
+            adapter,
+            adapter == null ? driver : D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_UNKNOWN,
             HMODULE.NULL,
             (uint)D3D11_CREATE_DEVICE_FLAG.D3D11_CREATE_DEVICE_BGRA_SUPPORT,
             levels,
@@ -486,6 +520,11 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             &level,
             &context
         );
+        if (adapter != null)
+        {
+            _ = adapter->Release();
+        }
+
         if (result.FAILED)
         {
             return result;
@@ -494,7 +533,50 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _device = device;
         _context = context;
         IsWarp = driver == D3D_DRIVER_TYPE.D3D_DRIVER_TYPE_WARP;
+        AdapterLuid = ReadAdapterLuid(device);
         return result;
+    }
+
+    /// <summary>Finds the adapter with an identifier through DXGI; the caller releases it.</summary>
+    private static int FindAdapter(long luid, IDXGIAdapter** adapter)
+    {
+        IDXGIFactory4* factory;
+        var iid = IID.IID_IDXGIFactory4;
+        var result = DirectX.CreateDXGIFactory2(0, &iid, (void**)&factory);
+        if (result.FAILED)
+        {
+            return result;
+        }
+
+        var id = new LUID { LowPart = (uint)luid, HighPart = (int)(luid >> 32) };
+        var adapterId = IID.IID_IDXGIAdapter;
+        result = factory->EnumAdapterByLuid(id, &adapterId, (void**)adapter);
+        _ = factory->Release();
+        return result;
+    }
+
+    /// <summary>Reads the identifier of a device's adapter.</summary>
+    private static long ReadAdapterLuid(ID3D11Device* device)
+    {
+        IDXGIDevice* dxgi;
+        var iid = IID.IID_IDXGIDevice;
+        if (((IUnknown*)device)->QueryInterface(&iid, (void**)&dxgi).FAILED)
+        {
+            return 0;
+        }
+
+        IDXGIAdapter* adapter;
+        var result = dxgi->GetAdapter(&adapter);
+        _ = dxgi->Release();
+        if (result.FAILED)
+        {
+            return 0;
+        }
+
+        DXGI_ADAPTER_DESC description;
+        result = adapter->GetDesc(&description);
+        _ = adapter->Release();
+        return result.FAILED ? 0 : ((long)description.AdapterLuid.HighPart << 32) | description.AdapterLuid.LowPart;
     }
 
     private void ReleaseDevice()
@@ -522,5 +604,5 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     /// <summary>Makes a backend for a test: a hook on making the device, and a text engine of the test's own (design §10).</summary>
     internal static D3D11Backend CreateForTest(bool useWarp, Func<D3D_DRIVER_TYPE, int>? createDevice, TextEngine? text = null) =>
-        new(useWarp, isShared: false, createDevice, text);
+        new(useWarp, adapterLuid: null, isShared: false, createDevice, text);
 }
