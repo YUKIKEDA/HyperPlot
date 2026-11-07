@@ -106,7 +106,8 @@ public sealed class ProvisionalFrameTests
     /// - Draw; release the chunk; draw until a frame is not provisional.
     ///
     /// Expected:
-    /// - Held: the layer is pending and not drawn, the frame is provisional. Released: the layer is drawn.
+    /// - Held: the layer is pending and not drawn, its series is left out of the extraction (no point), and the frame is
+    ///   provisional. Released: the layer is drawn.
     /// </remarks>
     [Fact]
     public void XWithoutStatistics_DrawsOnceTheyAreThere()
@@ -123,6 +124,7 @@ public sealed class ProvisionalFrameTests
         engine.RenderFrame();
         Assert.Equal(LayerReadiness.Pending, engine.Plan!.Layers[0].Readiness);
         Assert.Equal(0, engine.Plan.LayersRecorded);
+        Assert.Equal(0, engine.Plan.Panels[0].Batches[0].GetResult(0).Count);
         Assert.True(engine.IsProvisional);
 
         storage.Release(0);

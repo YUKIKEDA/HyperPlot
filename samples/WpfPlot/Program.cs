@@ -9,7 +9,8 @@ namespace HyperPlot.Samples;
 /// <code>
 /// dotnet run --project samples/WpfPlot -c Release [-- --points 1e8] [--measure]
 /// </code>
-/// <c>--points</c> sets each time series' points (1e7 by default; 1e9 needs 8 GB). <c>--measure</c> takes the measurements
+/// <c>--points</c> sets each time series' points (1e7 by default; 1e9 needs 8 GB). While the pyramids build, the window's
+/// title ends with "(provisional)" (row W1b1). <c>--measure</c> takes the measurements
 /// of design §9 "WPF のホスト" and prints them.
 /// </summary>
 internal static class Program

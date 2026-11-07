@@ -214,47 +214,47 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(16L * cells, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var sums = new double[partials][];
         var pass = pool.RunChunks(
-                partials,
-                part =>
+            partials,
+            part =>
+            {
+                var mine = sums[part] = new double[2 * cells];
+                var buffer = ArrayPool<double>.Shared.Rent(Column.ChunkLength);
+                try
                 {
-                    var mine = sums[part] = new double[2 * cells];
-                    var buffer = ArrayPool<double>.Shared.Rent(Column.ChunkLength);
-                    try
+                    var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
+                    for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
                     {
-                        var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                        for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
+                        var (lo, hi) = StatWork.PartOf(_y, chunk, Rows);
+                        var codes = _x.GetCodes(chunk)[lo..hi];
+                        var groups = _groups is null ? default : _groups.GetCodes(chunk)[lo..hi];
+                        var values = buffer.AsSpan(0, codes.Length);
+                        _y.ReadChunk(chunk, lo, values, 0);
+                        for (var i = 0; i < codes.Length; i++)
                         {
-                            var (lo, hi) = StatWork.PartOf(_y, chunk, Rows);
-                            var codes = _x.GetCodes(chunk)[lo..hi];
-                            var groups = _groups is null ? default : _groups.GetCodes(chunk)[lo..hi];
-                            var values = buffer.AsSpan(0, codes.Length);
-                            _y.ReadChunk(chunk, lo, values, 0);
-                            for (var i = 0; i < codes.Length; i++)
+                            var (code, group, value) = (codes[i], groups.IsEmpty ? 0 : groups[i], values[i]);
+                            if (code < 0 || group < 0 || double.IsNaN(value))
                             {
-                                var (code, group, value) = (codes[i], groups.IsEmpty ? 0 : groups[i], values[i]);
-                                if (code < 0 || group < 0 || double.IsNaN(value))
-                                {
-                                    continue;
-                                }
+                                continue;
+                            }
 
-                                var cell = (group * nx) + code;
-                                if (value > 0)
-                                {
-                                    mine[cell] += value;
-                                }
-                                else if (value < 0)
-                                {
-                                    mine[cells + cell] += value;
-                                }
+                            var cell = (group * nx) + code;
+                            if (value > 0)
+                            {
+                                mine[cell] += value;
+                            }
+                            else if (value < 0)
+                            {
+                                mine[cells + cell] += value;
                             }
                         }
                     }
-                    finally
-                    {
-                        ArrayPool<double>.Shared.Return(buffer);
-                    }
                 }
-            );
+                finally
+                {
+                    ArrayPool<double>.Shared.Return(buffer);
+                }
+            }
+        );
         return (pass, sums);
     }
 
@@ -564,21 +564,21 @@ internal sealed class CategoryRulePlan : LayerPlan
         var counts = new long[categories.CategoryCount];
         var (start, end) = (Rows.Start, Rows.EndIn(categories.Length));
         var pass = pool.RunChunks(
-                categories.ChunkCount,
-                chunk =>
+            categories.ChunkCount,
+            chunk =>
+            {
+                var codes = categories.GetCodes(chunk);
+                var first = (long)chunk << Column.ChunkShift;
+                var (from, to) = ((int)Math.Clamp(start - first, 0, codes.Length), (int)Math.Clamp(end - first, 0, codes.Length));
+                for (var i = from; i < to; i++)
                 {
-                    var codes = categories.GetCodes(chunk);
-                    var first = (long)chunk << Column.ChunkShift;
-                    var (from, to) = ((int)Math.Clamp(start - first, 0, codes.Length), (int)Math.Clamp(end - first, 0, codes.Length));
-                    for (var i = from; i < to; i++)
+                    if (codes[i] >= 0)
                     {
-                        if (codes[i] >= 0)
-                        {
-                            _ = Interlocked.Increment(ref counts[codes[i]]);
-                        }
+                        _ = Interlocked.Increment(ref counts[codes[i]]);
                     }
                 }
-            );
+            }
+        );
         return (pass, counts);
     }
 
