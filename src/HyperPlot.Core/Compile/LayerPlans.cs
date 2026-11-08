@@ -105,6 +105,15 @@ internal abstract class LayerPlan
     /// </summary>
     public M4Batch Batch { get; set; } = new();
 
+    /// <summary>
+    /// Gets or sets the columns whose pyramids the layer reads (row W1b2): its plan holds them while a drawn or a standing
+    /// layer reads them, and releases the rest when a layer is replaced.
+    /// </summary>
+    public List<Column> PyramidColumns { get; set; } = [];
+
+    /// <summary>Gets or sets the rasters whose mipmaps the layer reads (row W1b2), as <see cref="PyramidColumns"/>.</summary>
+    public List<Raster> Rasters { get; set; } = [];
+
     /// <summary>Gets the versions of <see cref="Columns"/> this Render read before it reached the indexes.</summary>
     public long[] Seen { get; private set; } = [];
 
