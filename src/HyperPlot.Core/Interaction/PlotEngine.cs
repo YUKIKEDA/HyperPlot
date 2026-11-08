@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Numerics;
+using System.Text;
 using HyperPlot.Rendering;
 
 namespace HyperPlot.Interaction;
@@ -341,6 +342,53 @@ public sealed class PlotEngine : IDisposable
     {
         CheckThread();
         _renderer.ReadPixels(destination);
+    }
+
+    /// <summary>
+    /// Returns an English summary of the current spec and view (design §7.1, requirement N-10, row W1c): the plot's kind
+    /// (its layers' geoms), its title, each axis's title and the range of the current view in the format of its tick labels,
+    /// and the series' labels and geoms, those not drawn marked; a figure's plots in order, and a facet's number of panels.
+    /// A provisional frame's summary ends with "(provisional)". Made when called, off the frame path.
+    /// </summary>
+    /// <returns>The summary.</returns>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame, or the call comes from another thread.</exception>
+    /// <exception cref="ObjectDisposedException">The engine was disposed.</exception>
+    public string Describe()
+    {
+        CheckThread();
+        if (!_drawn)
+        {
+            throw new InvalidOperationException("The engine has drawn no frame of its plot yet: the summary needs the plot's layout.");
+        }
+
+        var text = new StringBuilder();
+        if (_plot is not null)
+        {
+            Plan!.Describe(text, "Plot");
+        }
+        else
+        {
+            var plans = _renderer.Figure!.Plans;
+            _ = text.Append("Figure");
+            if (_figure!.Title is { Length: > 0 } title)
+            {
+                _ = text.Append(" \"").Append(title).Append('"');
+            }
+
+            _ = text.Append(CultureInfo.InvariantCulture, $" of {plans.Count} plots.");
+            for (var i = 0; i < plans.Count; i++)
+            {
+                _ = text.Append(' ');
+                plans[i].Describe(text, $"Plot {i + 1}");
+            }
+        }
+
+        if (IsProvisional)
+        {
+            _ = text.Append(" (provisional)");
+        }
+
+        return text.ToString();
     }
 
     /// <summary>Returns a panel's current view: the one drawn, mid-animation included.</summary>

@@ -16,5 +16,7 @@
     <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
     <!-- GoldenImage writes the actual and diff images with the same PNG writer as HeadlessRenderer (design §10.1). -->
     <InternalsVisibleTo Include="HyperPlot.Testing" />
+    <!-- The view's accessibility tests hold a column's chunk on the workers, so that its frames stay provisional (row W1c). -->
+    <InternalsVisibleTo Include="HyperPlot.Wpf.Tests" />
   </ItemGroup>
 </Project>

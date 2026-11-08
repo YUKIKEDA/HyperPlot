@@ -8,7 +8,7 @@ namespace HyperPlot;
 /// domain that nice widened. The plan keeps one for x and one for y and reuses their buffers.
 /// </summary>
 /// <remarks>One thread at a time uses an axis, the plan's.</remarks>
-internal sealed class TickAxis
+internal sealed partial class TickAxis
 {
     private readonly double[] _one = new double[1];
     private readonly double[] _oneMapped = new double[1];
