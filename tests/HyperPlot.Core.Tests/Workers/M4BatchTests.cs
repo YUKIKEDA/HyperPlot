@@ -92,6 +92,52 @@ public sealed class M4BatchTests
     }
 
     /// <summary>
+    /// A pool made with the warm-up has made its lock's wait event (Issue #304): the first wait on the lock inside a measured
+    /// extraction allocates nothing, where a pool without it allocates the event then.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread with the warm-up or without it; a batch of 4 series; an extraction of no batch first, so that the
+    ///   extraction's code is compiled outside the window.
+    ///
+    /// Steps:
+    /// - Hold the pool's lock on another thread for 50 ms; extract the batch together, which takes the lock to link it, and
+    ///   count the bytes this thread allocates.
+    ///
+    /// Expected:
+    /// - With the warm-up, 0 bytes; without it, more than 0 (the lock's wait event, 56 bytes under the JIT).
+    /// </remarks>
+    /// <param name="warm">Whether the pool is made with the warm-up.</param>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Extract_FirstWaitOnTheLock_IsMadeByTheWarmUp(bool warm)
+    {
+        using var pool = new PlotWorkerPool(1, warm);
+        using var fixture = new Fixture(pool, 4);
+        var batch = fixture.Batch(4);
+        M4Batch[] batches = [batch];
+        ScaleOrigin[] origins = [default];
+        double[][] boundaries = [fixture.Boundaries];
+        pool.ExtractTogether(batches, origins, boundaries, 0);
+
+        var holder = pool.HoldGate(TimeSpan.FromMilliseconds(50));
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        pool.ExtractTogether(batches, origins, boundaries, 1);
+        var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        holder.Join();
+
+        if (warm)
+        {
+            Assert.Equal(0, bytes);
+        }
+        else
+        {
+            Assert.True(bytes > 0, $"The first wait on the lock of a pool without the warm-up allocated {bytes} bytes.");
+        }
+    }
+
+    /// <summary>
     /// With every worker held in a chunk build, the caller alone ends the batch (design §8.1).
     /// </summary>
     /// <remarks>

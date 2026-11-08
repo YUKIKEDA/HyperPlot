@@ -10,7 +10,7 @@ namespace HyperPlot;
 public sealed class PlotWorkerPool : IDisposable
 {
     private static readonly Lazy<PlotWorkerPool> _shared = new(
-        () => new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1), isShared: true),
+        () => new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1), isShared: true, WarmsGate),
         LazyThreadSafetyMode.ExecutionAndPublication
     );
 
@@ -29,9 +29,16 @@ public sealed class PlotWorkerPool : IDisposable
     /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
     /// <param name="threadCount">The number of threads, at least 1.</param>
     public PlotWorkerPool(int threadCount)
-        : this(threadCount, isShared: false) { }
+        : this(threadCount, isShared: false, WarmsGate) { }
 
-    private PlotWorkerPool(int threadCount, bool isShared)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PlotWorkerPool"/> class that makes its lock's wait event when it is made, or
+    /// not (Issue #304). Tests only: the test of the warm-up makes a pool of each kind.
+    /// </summary>
+    internal PlotWorkerPool(int threadCount, bool warmGate)
+        : this(threadCount, isShared: false, warmGate) { }
+
+    private PlotWorkerPool(int threadCount, bool isShared, bool warmGate)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(threadCount);
         _isShared = isShared;
@@ -62,7 +69,24 @@ public sealed class PlotWorkerPool : IDisposable
 
             throw;
         }
+
+        if (warmGate)
+        {
+            // This thread waits on the lock while another holds it: the runtime makes the lock's wait event now.
+            var holder = HoldGate(TimeSpan.FromMilliseconds(20));
+            lock (_gate) { }
+
+            holder.Join();
+        }
     }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether a new pool waits once on its lock while another thread holds it (Issue #304).
+    /// Tests only: the runtime makes a lock's wait event the first time a thread waits on it (56 bytes, and 240 the first
+    /// time in a process, under the JIT), so a Zero-Alloc test whose caller first waits on the pool's lock inside its window
+    /// would count it. The test assemblies turn it on in a module initializer.
+    /// </summary>
+    internal static bool WarmsGate { get; set; }
 
     /// <summary>
     /// Gets the pool that every plot shares, made when first read with <see cref="Environment.ProcessorCount"/> − 1 threads
@@ -393,6 +417,31 @@ public sealed class PlotWorkerPool : IDisposable
     /// chunk's call comes after the chunk is built, so after a completion that chunk ends.
     /// </summary>
     internal Action<bool>? TestTook { get; set; }
+
+    /// <summary>
+    /// Holds the pool's lock on a new thread for a time, and returns that thread once it holds it (Issue #304). Tests only, and
+    /// the warm-up of <see cref="WarmsGate"/>: a thread that takes the lock meanwhile waits on it.
+    /// </summary>
+    internal Thread HoldGate(TimeSpan duration)
+    {
+        using var held = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            // A wait on an event no one sets ends after the time: the holder keeps the lock that long.
+            using var never = new ManualResetEventSlim();
+            lock (_gate)
+            {
+                held.Set();
+                _ = never.Wait(duration);
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        holder.Start();
+        held.Wait();
+        return holder;
+    }
 
     /// <summary>Wakes the threads to look for work. Neither allocates nor waits (design §3.3).</summary>
     internal void Wake()
