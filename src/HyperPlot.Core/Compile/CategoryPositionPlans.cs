@@ -23,14 +23,11 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
     private readonly CategoricalColumn? _groups;
     private readonly int _groupCount;
     private readonly bool _fill;
-    private double[][] _positive = [];
-    private double[][] _negative = [];
-    private Column<double>[] _columns = [];
-    private MinMaxPyramid<double>[] _pyramids = [];
     private double[] _extremes = [];
-    private long _version = -1;
-    private (double Min, double Max)? _range;
-    private bool _anyNegative;
+
+    // The sums drawn, and those of a newer version of the Y column that the workers make meanwhile (row W1b1).
+    private Sums? _done;
+    private Sums? _making;
 
     public StackedCategoryBarPlan(BarLayerSpec spec, RowRange rows)
         : base(spec, rows)
@@ -43,42 +40,36 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         SetColumns(_groups is null ? [_x, _y] : [_x, _y, _groups]);
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
+    public override LayerReadiness Poll(LayerIndexes indexes)
     {
+        // The sums of the Y column's version, made once; until they are, those of the version before are drawn (row W1b1).
         var version = _y.Version;
-        if (_version == version)
+        if (_done?.Version == version)
         {
-            return;
+            return LayerReadiness.Ready;
         }
 
-        Release();
-        Sum(pool);
-
-        // A column of no category has nothing to draw: no pyramid over empty arrays (rows G7b and G5a).
-        _columns = new Column<double>[
-            _x.CategoryCount == 0 ? 0
-            : _anyNegative ? 2 * _groupCount
-            : _groupCount
-        ];
-        _pyramids = new MinMaxPyramid<double>[_columns.Length];
-        for (var i = 0; i < _columns.Length; i++)
+        if (_making?.Version != version)
         {
-            _columns[i] = Column.Wrap(i < _groupCount ? _positive[i] : _negative[i - _groupCount]);
-            _pyramids[i] = pool.BuildPyramid(_columns[i]);
+            _making?.Free();
+            _making = null;
+            _making = new Sums(version, Sum(indexes.Pool));
         }
 
-        foreach (var pyramid in _pyramids)
+        if (!_making.Advance(this, indexes))
         {
-            pyramid.WhenComplete().GetAwaiter().GetResult();
+            return _done is null ? LayerReadiness.Pending : LayerReadiness.Previous;
         }
 
-        _version = version;
+        _done?.Free();
+        (_done, _making) = (_making, null);
+        return LayerReadiness.Ready;
     }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         // x is the band's: its domain comes from the categories (design §4.2, row G7b).
-        if (ofX || _range is not { } range)
+        if (ofX || _done is not { Range: { } range } done)
         {
             return;
         }
@@ -88,7 +79,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         sink.AddBaseline(0);
         if (_fill)
         {
-            sink.Add(_anyNegative ? -1 : 0, 1, name);
+            sink.Add(done.AnyNegative ? -1 : 0, 1, name);
             return;
         }
 
@@ -97,10 +88,12 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 
     public override void Record(RecordContext context)
     {
-        if (_version < 0 || context.X.Band is not { Count: > 0 } band)
+        if (_done is not { } done || context.X.Band is not { Count: > 0 } band)
         {
             return;
         }
+
+        var (positive, negative, pyramids, anyNegative) = (done.Positive, done.Negative, done.Pyramids, done.AnyNegative);
 
         var bar = (BarLayerSpec)Spec;
         var origin = context.XOrigin;
@@ -116,10 +109,10 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
                 {
                     var j = band.Position(category);
                     var (from, to) = ((a * j) + b, (a * (j + band.Width)) + b);
-                    Piece(context, from, to, Lower(_positive, k, category), _positive[k][category], color);
-                    if (_anyNegative)
+                    Piece(context, from, to, Lower(positive, k, category), positive[k][category], color);
+                    if (anyNegative)
                     {
-                        Piece(context, from, to, _negative[k][category], Lower(_negative, k, category), color);
+                        Piece(context, from, to, negative[k][category], Lower(negative, k, category), color);
                     }
                 }
             }
@@ -131,7 +124,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         // accumulated array is asked once a column, for both ends: a group's top and the next group's bottom come from the
         // same array. Then the pieces are drawn in the groups' order.
         var axis = context.X;
-        var arrays = _pyramids.Length;
+        var arrays = pyramids.Length;
         if (_extremes.Length < 2 * arrays * axis.Size)
         {
             _extremes = new double[2 * arrays * axis.Size];
@@ -154,7 +147,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
                     continue;
                 }
 
-                var extremes = _pyramids[p].GetMinMax(band.Reverse ? band.Count - 1 - to : from, to - from + 1);
+                var extremes = pyramids[p].GetMinMax(band.Reverse ? band.Count - 1 - to : from, to - from + 1);
                 (_extremes[at], _extremes[at + 1]) = (extremes.Min, extremes.Max);
             }
         }
@@ -174,7 +167,7 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
                 var top = _extremes[at + (2 * k) + 1];
                 var bottom = k + 1 < _groupCount ? _extremes[at + (2 * (k + 1))] : 0;
                 Piece(context, column, column + 1, bottom, top, color);
-                if (_anyNegative)
+                if (anyNegative)
                 {
                     var low = _extremes[at + (2 * (_groupCount + k))];
                     var high = k + 1 < _groupCount ? _extremes[at + (2 * (_groupCount + k + 1)) + 1] : 0;
@@ -186,17 +179,9 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 
     public override void Release()
     {
-        foreach (var pyramid in _pyramids)
-        {
-            pyramid.Dispose();
-        }
-
-        foreach (var column in _columns)
-        {
-            column.Dispose();
-        }
-
-        (_pyramids, _columns, _version) = ([], [], -1);
+        _done?.Free();
+        _making?.Free();
+        (_done, _making) = (null, null);
     }
 
     /// <summary>Returns the lower end of group k's piece in a category: the next group's sum, or 0 under the last.</summary>
@@ -215,10 +200,11 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
     private Color ColorOf(BarLayerSpec bar, int k) => _groups is null ? FillOf(bar.Fill, translucent: false) : Colors!.Palette.Series(k);
 
     /// <summary>
-    /// Sums each cell's positive and negative values (design §5.5.3): the chunks split into a fixed number of groups summed
-    /// apart on the workers, joined in their order, so that the sums do not depend on which worker ends first.
+    /// Starts summing each cell's positive and negative values (design §5.5.3): the chunks split into a fixed number of groups
+    /// summed apart on the workers, joined in their order by <see cref="Accumulate"/>, so that the sums do not depend on
+    /// which worker ends first.
     /// </summary>
-    private void Sum(PlotWorkerPool pool)
+    private (Task Pass, double[][] Partials) Sum(PlotWorkerPool pool)
     {
         var nx = _x.CategoryCount;
         var nk = _groupCount;
@@ -227,51 +213,61 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
         var chunks = endChunk - firstChunk;
         var partials = (int)Math.Min(Math.Clamp(PartialBytes / Math.Max(16L * cells, 1), 1, MaxPartials), Math.Max(chunks, 1));
         var sums = new double[partials][];
-        pool.RunChunks(
-                partials,
-                part =>
+        var pass = pool.RunChunks(
+            partials,
+            part =>
+            {
+                var mine = sums[part] = new double[2 * cells];
+                var buffer = ArrayPool<double>.Shared.Rent(Column.ChunkLength);
+                try
                 {
-                    var mine = sums[part] = new double[2 * cells];
-                    var buffer = ArrayPool<double>.Shared.Rent(Column.ChunkLength);
-                    try
+                    var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
+                    for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
                     {
-                        var (first, end) = ((int)((long)part * chunks / partials), (int)((long)(part + 1) * chunks / partials));
-                        for (var chunk = firstChunk + first; chunk < firstChunk + end; chunk++)
+                        var (lo, hi) = StatWork.PartOf(_y, chunk, Rows);
+                        var codes = _x.GetCodes(chunk)[lo..hi];
+                        var groups = _groups is null ? default : _groups.GetCodes(chunk)[lo..hi];
+                        var values = buffer.AsSpan(0, codes.Length);
+                        _y.ReadChunk(chunk, lo, values, 0);
+                        for (var i = 0; i < codes.Length; i++)
                         {
-                            var (lo, hi) = StatWork.PartOf(_y, chunk, Rows);
-                            var codes = _x.GetCodes(chunk)[lo..hi];
-                            var groups = _groups is null ? default : _groups.GetCodes(chunk)[lo..hi];
-                            var values = buffer.AsSpan(0, codes.Length);
-                            _y.ReadChunk(chunk, lo, values, 0);
-                            for (var i = 0; i < codes.Length; i++)
+                            var (code, group, value) = (codes[i], groups.IsEmpty ? 0 : groups[i], values[i]);
+                            if (code < 0 || group < 0 || double.IsNaN(value))
                             {
-                                var (code, group, value) = (codes[i], groups.IsEmpty ? 0 : groups[i], values[i]);
-                                if (code < 0 || group < 0 || double.IsNaN(value))
-                                {
-                                    continue;
-                                }
+                                continue;
+                            }
 
-                                var cell = (group * nx) + code;
-                                if (value > 0)
-                                {
-                                    mine[cell] += value;
-                                }
-                                else if (value < 0)
-                                {
-                                    mine[cells + cell] += value;
-                                }
+                            var cell = (group * nx) + code;
+                            if (value > 0)
+                            {
+                                mine[cell] += value;
+                            }
+                            else if (value < 0)
+                            {
+                                mine[cells + cell] += value;
                             }
                         }
                     }
-                    finally
-                    {
-                        ArrayPool<double>.Shared.Return(buffer);
-                    }
                 }
-            )
-            .GetAwaiter()
-            .GetResult();
+                finally
+                {
+                    ArrayPool<double>.Shared.Return(buffer);
+                }
+            }
+        );
+        return (pass, sums);
+    }
 
+    /// <summary>
+    /// Joins a pass's partial sums in their order and accumulates them from the last group, which lies next to 0, to the
+    /// first, outermost (design §4.1): bounded by the cells, not the rows.
+    /// </summary>
+    private void Accumulate(Sums into, double[][] sums)
+    {
+        var nx = _x.CategoryCount;
+        var nk = _groupCount;
+        var cells = nk * nx;
+        var partials = sums.Length;
         var total = sums[0];
         for (var p = 1; p < partials; p++)
         {
@@ -281,14 +277,13 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
             }
         }
 
-        // Accumulated from the last group, which lies next to 0, to the first, outermost (design §4.1).
-        (_positive, _negative) = (new double[nk][], new double[nk][]);
+        var (positive, negative) = (new double[nk][], new double[nk][]);
         for (var k = 0; k < nk; k++)
         {
-            (_positive[k], _negative[k]) = (new double[nx], new double[nx]);
+            (positive[k], negative[k]) = (new double[nx], new double[nx]);
         }
 
-        (_range, _anyNegative) = (null, false);
+        var anyNegative = false;
         var (min, max) = (double.PositiveInfinity, double.NegativeInfinity);
         for (var i = 0; i < nx; i++)
         {
@@ -297,22 +292,22 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
             {
                 up += total[(k * nx) + i];
                 down += total[cells + (k * nx) + i];
-                (_positive[k][i], _negative[k][i]) = (up, down);
+                (positive[k][i], negative[k][i]) = (up, down);
             }
 
             if (_fill)
             {
                 for (var k = 0; k < nk; k++)
                 {
-                    _positive[k][i] = up == 0 ? 0 : _positive[k][i] / up;
-                    _negative[k][i] = down == 0 ? 0 : _negative[k][i] / -down;
+                    positive[k][i] = up == 0 ? 0 : positive[k][i] / up;
+                    negative[k][i] = down == 0 ? 0 : negative[k][i] / -down;
                 }
             }
 
-            _anyNegative |= down < 0;
+            anyNegative |= down < 0;
             for (var k = 0; k < nk; k++)
             {
-                foreach (var value in (ReadOnlySpan<double>)[_positive[k][i], _negative[k][i]])
+                foreach (var value in (ReadOnlySpan<double>)[positive[k][i], negative[k][i]])
                 {
                     if (value != 0)
                     {
@@ -322,7 +317,76 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
             }
         }
 
-        _range = min <= max ? (min, max) : null;
+        (into.Positive, into.Negative, into.AnyNegative, into.Range) = (positive, negative, anyNegative, min <= max ? (min, max) : null);
+    }
+
+    /// <summary>The accumulated sums of a version of the Y column and the pyramids over them, made in steps (row W1b1).</summary>
+    private sealed class Sums(long version, (Task Pass, double[][] Partials) pass)
+    {
+        private Column<double>[]? _columns;
+
+        public long Version => version;
+
+        public double[][] Positive { get; set; } = [];
+
+        public double[][] Negative { get; set; } = [];
+
+        public bool AnyNegative { get; set; }
+
+        public (double Min, double Max)? Range { get; set; }
+
+        public MinMaxPyramid<double>[] Pyramids { get; private set; } = [];
+
+        /// <summary>Moves on as far as the workers have: the pass, then the pyramids over its sums. Returns whether all are done.</summary>
+        public bool Advance(StackedCategoryBarPlan plan, LayerIndexes indexes)
+        {
+            if (_columns is null)
+            {
+                if (!indexes.Done(pass.Pass))
+                {
+                    return false;
+                }
+
+                plan.Accumulate(this, pass.Partials);
+
+                // A column of no category has nothing to draw: no pyramid over empty arrays (rows G7b and G5a).
+                _columns = new Column<double>[
+                    plan._x.CategoryCount == 0 ? 0
+                    : AnyNegative ? 2 * plan._groupCount
+                    : plan._groupCount
+                ];
+                Pyramids = new MinMaxPyramid<double>[_columns.Length];
+                for (var i = 0; i < _columns.Length; i++)
+                {
+                    _columns[i] = Column.Wrap(i < plan._groupCount ? Positive[i] : Negative[i - plan._groupCount]);
+                    Pyramids[i] = indexes.Pool.BuildPyramid(_columns[i]);
+                }
+            }
+
+            var complete = true;
+            foreach (var pyramid in Pyramids)
+            {
+                complete &= indexes.Complete(pyramid);
+            }
+
+            return complete;
+        }
+
+        /// <summary>Frees the pyramids and their columns.</summary>
+        public void Free()
+        {
+            foreach (var pyramid in Pyramids)
+            {
+                pyramid.Dispose();
+            }
+
+            foreach (var column in _columns ?? [])
+            {
+                column.Dispose();
+            }
+
+            (Pyramids, _columns) = ([], null);
+        }
     }
 }
 
@@ -333,41 +397,17 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 /// </summary>
 internal sealed class CategoryErrorBarPlan : LayerPlan
 {
-    private CategoryExtremes? _low;
-    private CategoryExtremes? _high;
-    private Column<double>? _minColumn;
-    private Column<double>? _maxColumn;
-    private MinMaxPyramid<double>? _minPyramid;
-    private MinMaxPyramid<double>? _maxPyramid;
+    // The envelope drawn, and the one of newer versions of the Y columns that the workers make meanwhile (row W1b1).
+    private CategoryEnvelope? _done;
+    private CategoryEnvelope? _making;
 
     public CategoryErrorBarPlan(ErrorBarLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(spec.X.Column, spec.YMin.Column, spec.YMax.Column);
 
     private CategoricalColumn Categories => (CategoricalColumn)Columns[0];
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
-    {
-        var (yMin, yMax) = (Columns[1], Columns[2]);
-        if (_low is { } low && _high is { } high && low.Version == yMin.Version && high.Version == yMax.Version)
-        {
-            return;
-        }
-
-        Release();
-        var lows = yMin.StartCategoryExtremes(Categories, pool, Rows);
-        var highs = yMax.StartCategoryExtremes(Categories, pool, Rows);
-        lows.Completion.GetAwaiter().GetResult();
-        highs.Completion.GetAwaiter().GetResult();
-        if (lows.Min.Length > 0)
-        {
-            (_minColumn, _maxColumn) = (Column.Wrap(lows.Min), Column.Wrap(highs.Max));
-            (_minPyramid, _maxPyramid) = (pool.BuildPyramid(_minColumn), pool.BuildPyramid(_maxColumn));
-            _minPyramid.WhenComplete().GetAwaiter().GetResult();
-            _maxPyramid.WhenComplete().GetAwaiter().GetResult();
-        }
-
-        (_low, _high) = (lows, highs);
-    }
+    public override LayerReadiness Poll(LayerIndexes indexes) =>
+        CategoryEnvelope.Step(ref _done, ref _making, Columns[1], Columns[2], Categories, Rows, indexes);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -383,10 +423,12 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
 
     public override void Record(RecordContext context)
     {
-        if (_low is not { } low || _high is not { } high || context.X.Band is not { } band)
+        if (_done is not { } envelope || context.X.Band is not { } band)
         {
             return;
         }
+
+        var (low, high) = (envelope.Low, envelope.High);
 
         var bars = (ErrorBarLayerSpec)Spec;
         var origin = context.XOrigin;
@@ -440,8 +482,8 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
             }
 
             var start = band.Reverse ? band.Count - 1 - to : from;
-            var lowest = _minPyramid!.GetMinMax(start, to - from + 1);
-            var highest = _maxPyramid!.GetMinMax(start, to - from + 1);
+            var lowest = envelope.MinPyramid!.GetMinMax(start, to - from + 1);
+            var highest = envelope.MaxPyramid!.GetMinMax(start, to - from + 1);
             if (lowest.Count > 0 && highest.Count > 0)
             {
                 var center = column + 0.5f;
@@ -455,11 +497,9 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
 
     public override void Release()
     {
-        _minPyramid?.Dispose();
-        _maxPyramid?.Dispose();
-        _minColumn?.Dispose();
-        _maxColumn?.Dispose();
-        (_minPyramid, _maxPyramid, _minColumn, _maxColumn, _low, _high) = (null, null, null, null, null, null);
+        _done?.Free();
+        _making?.Free();
+        (_done, _making) = (null, null);
     }
 }
 
@@ -475,54 +515,71 @@ internal sealed class CategoryRulePlan : LayerPlan
     private Column<double>? _countColumn;
     private MinMaxPyramid<double>? _pyramid;
 
+    // The workers' count of each category's rows, and its tallies, until it ends (row W1b1).
+    private Task? _pass;
+    private long[] _tallies = [];
+
     public CategoryRulePlan(RuleLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(spec.X.Column);
 
     private CategoricalColumn Categories => (CategoricalColumn)Columns[0];
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
+    public override LayerReadiness Poll(LayerIndexes indexes)
     {
-        if (_counts is not null)
+        // A categorical column's codes do not change: its rows are counted once.
+        if (_counts is null)
         {
-            return;
+            if (_pass is null)
+            {
+                (_pass, _tallies) = Count(indexes.Pool);
+            }
+
+            if (!indexes.Done(_pass))
+            {
+                return LayerReadiness.Pending;
+            }
+
+            var held = new double[_tallies.Length];
+            for (var c = 0; c < _tallies.Length; c++)
+            {
+                held[c] = _tallies[c];
+            }
+
+            if (held.Length > 0)
+            {
+                _countColumn = Column.Wrap(held);
+                _pyramid = indexes.Pool.BuildPyramid(_countColumn);
+            }
+
+            _counts = held;
         }
 
+        return _pyramid is null || indexes.Complete(_pyramid) ? LayerReadiness.Ready : LayerReadiness.Pending;
+    }
+
+    /// <summary>Starts the workers' count of each category's rows in the layer's run.</summary>
+    private (Task Pass, long[] Counts) Count(PlotWorkerPool pool)
+    {
         var categories = Categories;
         var counts = new long[categories.CategoryCount];
         var (start, end) = (Rows.Start, Rows.EndIn(categories.Length));
-        pool.RunChunks(
-                categories.ChunkCount,
-                chunk =>
+        var pass = pool.RunChunks(
+            categories.ChunkCount,
+            chunk =>
+            {
+                var codes = categories.GetCodes(chunk);
+                var first = (long)chunk << Column.ChunkShift;
+                var (from, to) = ((int)Math.Clamp(start - first, 0, codes.Length), (int)Math.Clamp(end - first, 0, codes.Length));
+                for (var i = from; i < to; i++)
                 {
-                    var codes = categories.GetCodes(chunk);
-                    var first = (long)chunk << Column.ChunkShift;
-                    var (from, to) = ((int)Math.Clamp(start - first, 0, codes.Length), (int)Math.Clamp(end - first, 0, codes.Length));
-                    for (var i = from; i < to; i++)
+                    if (codes[i] >= 0)
                     {
-                        if (codes[i] >= 0)
-                        {
-                            _ = Interlocked.Increment(ref counts[codes[i]]);
-                        }
+                        _ = Interlocked.Increment(ref counts[codes[i]]);
                     }
                 }
-            )
-            .GetAwaiter()
-            .GetResult();
-
-        var held = new double[counts.Length];
-        for (var c = 0; c < counts.Length; c++)
-        {
-            held[c] = counts[c];
-        }
-
-        if (held.Length > 0)
-        {
-            _countColumn = Column.Wrap(held);
-            _pyramid = pool.BuildPyramid(_countColumn);
-            _pyramid.WhenComplete().GetAwaiter().GetResult();
-        }
-
-        _counts = held;
+            }
+        );
+        return (pass, counts);
     }
 
     // x is the band's, and a vertical rule adds nothing to y.
@@ -583,6 +640,6 @@ internal sealed class CategoryRulePlan : LayerPlan
     {
         _pyramid?.Dispose();
         _countColumn?.Dispose();
-        (_pyramid, _countColumn, _counts) = (null, null, null);
+        (_pyramid, _countColumn, _counts, _pass, _tallies) = (null, null, null, null, []);
     }
 }

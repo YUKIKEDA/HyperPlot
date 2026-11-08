@@ -259,11 +259,12 @@ public sealed class PlotWorkerPool : IDisposable
     /// <param name="origins">Each batch's origin.</param>
     /// <param name="boundaries">Each batch's boundaries.</param>
     /// <param name="count">The number of batches to take from the arrays.</param>
+    /// <param name="rethrow">Whether a failed series is thrown again; false leaves the errors in the batches (row W1b1).</param>
     /// <exception cref="ArgumentException">A batch's boundaries are fewer than 2, not finite, or not strictly increasing.</exception>
     /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
     /// <exception cref="InvalidOperationException">Called on one of a pool's worker threads.</exception>
-    /// <remarks>After all have ended, the first failed series' exception of the first batch that has one is thrown again as it was.</remarks>
-    internal void ExtractTogether(M4Batch[] batches, ScaleOrigin[] origins, double[][] boundaries, int count)
+    /// <remarks>After all have ended, the first failed series' exception of the first batch that has one is thrown again as it was, unless <paramref name="rethrow"/> is false.</remarks>
+    internal void ExtractTogether(M4Batch[] batches, ScaleOrigin[] origins, double[][] boundaries, int count, bool rethrow = true)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_isWorkerThread)
@@ -321,7 +322,8 @@ public sealed class PlotWorkerPool : IDisposable
             }
         }
 
-        for (var i = 0; i < count; i++)
+        // A frame that does not wait reads each series' error itself (row W1b1): a failed series fails its layer alone.
+        for (var i = 0; rethrow && i < count; i++)
         {
             if (batches[i].Count > 0 && batches[i].FirstError() is { } error)
             {

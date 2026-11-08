@@ -283,6 +283,21 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         return task;
     }
 
+    /// <summary>
+    /// Returns whether every chunk is built for the column's current values, without waiting (row W1b1): otherwise requests
+    /// every chunk built for an older generation, as <see cref="WhenComplete"/> does, and returns false. Does not allocate.
+    /// </summary>
+    internal bool RequestStale()
+    {
+        if (IsComplete)
+        {
+            return true;
+        }
+
+        RequestStaleChunks();
+        return false;
+    }
+
     /// <summary>Gets a chunk's state, for tests: 0 unbuilt, 1 requested, 2 building, 3 done, 4 failed.</summary>
     internal int GetState(int chunk) => Volatile.Read(ref _states[chunk]);
 
@@ -651,7 +666,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         Exception? error = Work.IsDisposed ? new ObjectDisposedException(nameof(MinMaxPyramid<T>)) : Fault;
         if (error is null && !IsComplete)
         {
-            RequestStale();
+            RequestStaleChunks();
             return;
         }
 
@@ -676,7 +691,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     /// Requests every built chunk whose generation moved, as a read of it would. An unbuilt chunk needs no request: the workers
     /// build it in order anyway. A failed chunk ends the wait through <see cref="Fault"/>.
     /// </summary>
-    private void RequestStale()
+    private void RequestStaleChunks()
     {
         for (var chunk = 0; chunk < _states.Length; chunk++)
         {

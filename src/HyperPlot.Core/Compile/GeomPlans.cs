@@ -19,7 +19,7 @@ internal sealed class LinePlan : LayerPlan
     /// <summary>Returns the line's M4 points of the last extraction from its batch. Tests only.</summary>
     internal ReadOnlySpan<M4Point> Points(M4Batch batch) => _output.AsSpan(0, batch.GetResult(_series).Count);
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -49,7 +49,7 @@ internal sealed class StepPlan : LayerPlan
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -111,7 +111,7 @@ internal sealed class AreaPlan : LayerPlan
         (_series, _output) = build.AddSeries(spec.X.Column, spec.Y.Column, rows);
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -202,7 +202,7 @@ internal sealed class BandPlan : LayerPlan
         (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.YMax.Column, rows);
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -317,7 +317,7 @@ internal sealed class BarPlan : LayerPlan
     /// <summary>Returns the default width of a stored X of a range and a number of rows: 0.9 times its mean spacing, or 0.9.</summary>
     internal static double DefaultWidth(double min, double max, long count) => count > 1 && max > min ? (max - min) / (count - 1) * 0.9 : 0.9;
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -418,38 +418,17 @@ internal sealed class BarPlan : LayerPlan
 /// </summary>
 internal sealed class CategoryBarPlan : LayerPlan
 {
-    private CategoryExtremes? _extremes;
-    private Column<double>? _minColumn;
-    private Column<double>? _maxColumn;
-    private MinMaxPyramid<double>? _minPyramid;
-    private MinMaxPyramid<double>? _maxPyramid;
+    // The envelope drawn, and the one of a newer version of the Y column that the workers make meanwhile (row W1b1).
+    private CategoryEnvelope? _done;
+    private CategoryEnvelope? _making;
 
     public CategoryBarPlan(BarLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(AndColors(spec.X.Column, spec.Y.Column));
 
     private CategoricalColumn Categories => (CategoricalColumn)Columns[0];
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
-    {
-        var y = Columns[1];
-        if (_extremes is { } done && done.Version == y.Version)
-        {
-            return;
-        }
-
-        Release();
-        var extremes = y.StartCategoryExtremes(Categories, pool, Rows);
-        extremes.Completion.GetAwaiter().GetResult();
-        if (extremes.Min.Length > 0)
-        {
-            (_minColumn, _maxColumn) = (Column.Wrap(extremes.Min), Column.Wrap(extremes.Max));
-            (_minPyramid, _maxPyramid) = (pool.BuildPyramid(_minColumn), pool.BuildPyramid(_maxColumn));
-            _minPyramid.WhenComplete().GetAwaiter().GetResult();
-            _maxPyramid.WhenComplete().GetAwaiter().GetResult();
-        }
-
-        _extremes = extremes;
-    }
+    public override LayerReadiness Poll(LayerIndexes indexes) =>
+        CategoryEnvelope.Step(ref _done, ref _making, Columns[1], Columns[1], Categories, Rows, indexes);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -467,10 +446,12 @@ internal sealed class CategoryBarPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var bar = (BarLayerSpec)Spec;
-        if (_extremes is not { } extremes || context.X.Band is not { } band)
+        if (_done is not { } envelope || context.X.Band is not { } band)
         {
             return;
         }
+
+        var extremes = envelope.Low;
 
         var baseline = context.BaselinePixel(bar.Baseline);
         var fill = FillOf(bar.Fill, translucent: false);
@@ -533,8 +514,8 @@ internal sealed class CategoryBarPlan : LayerPlan
 
             // Positions from..to are categories from..to, or the reverse, a run either way.
             var start = band.Reverse ? band.Count - 1 - to : from;
-            var low = _minPyramid!.GetMinMax(start, to - from + 1);
-            var high = _maxPyramid!.GetMinMax(start, to - from + 1);
+            var low = envelope.MinPyramid!.GetMinMax(start, to - from + 1);
+            var high = envelope.MaxPyramid!.GetMinMax(start, to - from + 1);
             if (low.Count > 0)
             {
                 Bars(context, column, column + 1, low.Min, high.Max, baseline, fill);
@@ -544,11 +525,9 @@ internal sealed class CategoryBarPlan : LayerPlan
 
     public override void Release()
     {
-        _minPyramid?.Dispose();
-        _maxPyramid?.Dispose();
-        _minColumn?.Dispose();
-        _maxColumn?.Dispose();
-        (_minPyramid, _maxPyramid, _minColumn, _maxColumn, _extremes) = (null, null, null, null, null);
+        _done?.Free();
+        _making?.Free();
+        (_done, _making) = (null, null);
     }
 
     /// <summary>Records a category's bars between two x pixels: from the baseline to its greatest y and to its least.</summary>
@@ -591,7 +570,7 @@ internal sealed class ErrorBarPlan : LayerPlan
         (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.YMax.Column, rows);
     }
 
-    public override void WaitForIndexes(PlotWorkerPool pool) => Columns[0].PrecomputeStatsIfMissing(pool)?.GetAwaiter().GetResult();
+    public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -685,18 +664,29 @@ internal sealed class RulePlan : LayerPlan
 
     private static ColumnRef Channel(RuleLayerSpec rule) => rule.X.IsDefault ? rule.Y : rule.X;
 
-    public override void WaitForIndexes(PlotWorkerPool pool)
+    public override LayerReadiness Poll(LayerIndexes indexes)
     {
-        // The rows a rule searches, the run of a facet's panel or a split's category (row G6b), checked once a version.
+        // The rows a rule searches, the run of a facet's panel or a split's category (row G6b), checked once a version, from
+        // the statistics the workers computed: until they are there, the rule is not drawn (row W1b1).
         var rule = (RuleLayerSpec)Spec;
         var column = Columns[0];
         var version = column.Version;
         if (version == _checked)
         {
-            return;
+            return LayerReadiness.Ready;
         }
 
-        if (!column.IsNonDecreasing(pool, Rows))
+        bool nonDecreasing;
+        if (indexes.Waits)
+        {
+            nonDecreasing = column.IsNonDecreasing(indexes.Pool, Rows);
+        }
+        else if (indexes.XStats(column) == LayerReadiness.Pending || !column.TryIsNonDecreasing(Rows, out nonDecreasing))
+        {
+            return LayerReadiness.Pending;
+        }
+
+        if (!nonDecreasing)
         {
             throw new InvalidOperationException(
                 $"The {(rule.X.IsDefault ? "Y" : "X")} column of a rule layer is not non-decreasing without NaN; a rule's lines are found by searching it (design §5.5.3)."
@@ -704,6 +694,7 @@ internal sealed class RulePlan : LayerPlan
         }
 
         _checked = version;
+        return LayerReadiness.Ready;
     }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)

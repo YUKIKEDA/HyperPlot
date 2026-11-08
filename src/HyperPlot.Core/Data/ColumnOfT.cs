@@ -183,7 +183,7 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
     /// Gets whether a run's values are non-decreasing with no NaN (row G6b): the statistics of the chunks it covers and a pass
     /// over its rows in the chunks at its ends; false when a covered chunk's statistics are not computed.
     /// </summary>
-    internal bool TryIsNonDecreasing(RowRange rows, out bool nonDecreasing)
+    internal override bool TryIsNonDecreasing(RowRange rows, out bool nonDecreasing)
     {
         var (start, end) = (Math.Clamp(rows.Start, 0, Length), rows.EndIn(Length));
         if (start == 0 && end == Length)
@@ -266,6 +266,56 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
 
     /// <inheritdoc />
     internal override Task? PrecomputeStatsIfMissing(PlotWorkerPool pool) => TryIsNonDecreasing(out _) ? null : pool.PrecomputeStats(this);
+
+    /// <inheritdoc />
+    internal override bool HasAllStats => TryIsNonDecreasing(out _);
+
+    /// <inheritdoc />
+    internal override bool TryGetStoredRange(RowRange rows, out ScaleEnd min, out ScaleEnd max, out bool complete)
+    {
+        var (start, end) = (Math.Max(rows.Start, 0), rows.EndIn(Length));
+        var total = ChunkStats<T>.Empty;
+        var first = true;
+        complete = true;
+        while (start < end)
+        {
+            // A whole chunk reads its stored statistics; those of its values before an Invalidate stand in until they are
+            // computed again, as a pyramid's older chunk does (Issue #291 Decision 4), and a chunk with none is left out. A
+            // part of one at an end of the run is passed over.
+            var chunk = (int)(start >> ChunkShift);
+            var chunkStart = (long)chunk << ChunkShift;
+            var stop = Math.Min(end, chunkStart + ChunkLengthOf(chunk));
+            ChunkStats<T> stats;
+            if (start == chunkStart && stop == chunkStart + ChunkLengthOf(chunk))
+            {
+                var entry = Volatile.Read(ref _stats[chunk]);
+                if (entry is null || entry.Generation != Volatile.Read(ref _generations[chunk]))
+                {
+                    complete = false;
+                }
+
+                if (entry is null)
+                {
+                    start = stop;
+                    continue;
+                }
+
+                stats = entry.Stats;
+            }
+            else
+            {
+                stats = ChunkStatsKernel.Compute(GetChunk(chunk)[(int)(start - chunkStart)..(int)(stop - chunkStart)]);
+            }
+
+            total = first ? stats : ChunkStats<T>.Combine(total, stats);
+            (first, start) = (false, stop);
+        }
+
+        (min, max) = ScaleSpace.IsInteger<T>()
+            ? (ScaleEnd.Of(long.CreateTruncating(total.Min)), ScaleEnd.Of(long.CreateTruncating(total.Max)))
+            : (ScaleEnd.Of(double.CreateTruncating(total.Min)), ScaleEnd.Of(double.CreateTruncating(total.Max)));
+        return total.Count > 0;
+    }
 
     /// <inheritdoc />
     internal override int AddSeries<TY>(M4Batch batch, MinMaxPyramid<TY> y, M4Point[] destination, RowRange rows) =>

@@ -93,7 +93,13 @@ internal abstract class LayerPlan
     /// </summary>
     public virtual bool Stale => false;
 
-    /// <summary>Gets the versions of <see cref="Columns"/> this Render read before its wait.</summary>
+    /// <summary>
+    /// Gets or sets what the layer drew in the last frame (row W1b1): its plan sets it from <see cref="Poll"/>. A frame
+    /// that waits always finds it ready.
+    /// </summary>
+    public LayerReadiness Readiness { get; set; }
+
+    /// <summary>Gets the versions of <see cref="Columns"/> this Render read before it reached the indexes.</summary>
     public long[] Seen { get; private set; } = [];
 
     /// <summary>Gets the versions of <see cref="Columns"/> at the last extraction.</summary>
@@ -918,8 +924,12 @@ internal abstract class LayerPlan
     /// <summary>Takes a new node of the same columns (row G7c): a split layer passes it on to its parts.</summary>
     protected virtual void OnSpecChanged(LayerSpec before, LayerSpec after) { }
 
-    /// <summary>Waits until the statistics the layer's searches need are there, and checks its sorted columns' order.</summary>
-    public virtual void WaitForIndexes(PlotWorkerPool pool) { }
+    /// <summary>
+    /// Returns what the layer can draw (design §4.8, row W1b1): the statistics its searches need, its workers' results, and its
+    /// sorted columns' order, waited for when the indexes wait. A failure, of a worker's pass or of the data, is thrown as it
+    /// was. Does not allocate once its results are there.
+    /// </summary>
+    public virtual LayerReadiness Poll(LayerIndexes indexes) => LayerReadiness.Ready;
 
     /// <summary>Starts a learning of both domains, before the layer adds its ranges on each axis.</summary>
     public virtual void BeginLearning() { }
@@ -940,11 +950,18 @@ internal abstract class LayerPlan
             return;
         }
 
-        if (TryGetRange(column, out var low, out var high))
+        if (TryGetRange(sink, column, out var low, out var high))
         {
             sink.AddEnds(low, high, name);
         }
     }
+
+    /// <summary>
+    /// Returns a column's range over the layer's rows while a domain learns (row W1b1): through the sink's indexes, which in a
+    /// frame that does not wait read only the statistics the workers computed.
+    /// </summary>
+    protected bool TryGetRange(RangeSink sink, Column column, out ScaleEnd low, out ScaleEnd high) =>
+        sink.Indexes is { Waits: false } indexes ? TryGetRunRange(indexes, column, out low, out high) : TryGetRange(column, out low, out high);
 
     /// <summary>
     /// Returns a column's range over the layer's rows (row G6b): the whole column's statistics, or its run's range, kept for
@@ -983,6 +1000,63 @@ internal abstract class LayerPlan
 
         (low, high) = (_runRanges[at].Min, _runRanges[at].Max);
         return _runRanges[at].Found;
+    }
+
+    /// <summary>
+    /// Returns a column's range over the layer's rows from the statistics already computed (row W1b1): a run's range is kept
+    /// only once every chunk it covers has them.
+    /// </summary>
+    private bool TryGetRunRange(LayerIndexes indexes, Column column, out ScaleEnd low, out ScaleEnd high)
+    {
+        if (Rows == RowRange.All)
+        {
+            return indexes.TryGetRange(column, Rows, out low, out high);
+        }
+
+        var version = column.Version;
+        foreach (var kept in _runRanges)
+        {
+            if (ReferenceEquals(kept.Column, column) && kept.Version == version)
+            {
+                (low, high) = (kept.Min, kept.Max);
+                return kept.Found;
+            }
+        }
+
+        var incomplete = indexes.Incomplete;
+        indexes.Incomplete = false;
+        var found = indexes.TryGetRange(column, Rows, out low, out high);
+        RunRangeReads++;
+        if (indexes.Incomplete)
+        {
+            return found;
+        }
+
+        indexes.Incomplete = incomplete;
+        Keep(new RunRange(column, version, found, low, high));
+        return found;
+    }
+
+    /// <summary>Keeps a run's range in place of the column's older one.</summary>
+    private void Keep(RunRange range)
+    {
+        var at = -1;
+        for (var i = 0; i < _runRanges.Length; i++)
+        {
+            if (ReferenceEquals(_runRanges[i].Column, range.Column))
+            {
+                at = i;
+                break;
+            }
+        }
+
+        if (at < 0)
+        {
+            at = _runRanges.Length;
+            Array.Resize(ref _runRanges, at + 1);
+        }
+
+        _runRanges[at] = range;
     }
 
     /// <summary>Returns the number of the layer's rows in a column of a length: all of them, or its run's.</summary>
@@ -1209,7 +1283,11 @@ internal sealed class PlanBuild(
     public (int Series, M4Point[] Output) AddSeries(Column x, Column y, RowRange rows)
     {
         var output = new M4Point[capacity];
-        return (pyramid(y).AddTo(batch, x, output, rows), output);
+        var series = pyramid(y).AddTo(batch, x, output, rows);
+
+        // A series that fails fails the layer it belongs to (row W1b1).
+        batch.SetTag(series, Layer);
+        return (series, output);
     }
 }
 
@@ -1254,10 +1332,19 @@ internal sealed class RangeSink
     /// </summary>
     public void AddBaseline(double value) => (BaselineMin, BaselineMax) = (Math.Min(BaselineMin, value), Math.Max(BaselineMax, value));
 
+    /// <summary>
+    /// Gets or sets how the ranges are read (row W1b1): null computes every chunk's statistics on the caller; indexes that do
+    /// not wait read only those the workers computed.
+    /// </summary>
+    public LayerIndexes? Indexes { get; set; }
+
     /// <summary>Adds a column's range of values that are not NaN, or nothing when it has none; throws for an infinite end.</summary>
     public void AddColumn(Column column, string name)
     {
-        if (column.TryGetRange(out var low, out var high))
+        var found = Indexes is { } indexes
+            ? indexes.TryGetRange(column, RowRange.All, out var low, out var high)
+            : column.TryGetRange(out low, out high);
+        if (found)
         {
             AddEnds(low, high, name);
         }

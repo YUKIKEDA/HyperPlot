@@ -35,6 +35,23 @@ internal sealed class FigurePlan : IDisposable
         (_images, _ownImages) = (images ?? new ResidencyCache(), images is null);
     }
 
+    /// <summary>
+    /// Gets or sets a value indicating whether a Render waits for its plots' indexes (a headless render) or draws what is
+    /// there (the engine's frame, row W1b1): set on every plot's plan.
+    /// </summary>
+    internal bool Waits
+    {
+        get;
+        set
+        {
+            field = value;
+            foreach (var plan in _plans)
+            {
+                plan.Waits = value;
+            }
+        }
+    } = true;
+
     /// <summary>Gets the figure's own list: the cells' backgrounds and the title, drawn before the plots' lists.</summary>
     internal RenderList List => _list;
 
@@ -107,7 +124,7 @@ internal sealed class FigurePlan : IDisposable
 
         if (total > 0)
         {
-            _pool.ExtractTogether(_batches, _origins, _boundaries, total);
+            _pool.ExtractTogether(_batches, _origins, _boundaries, total, rethrow: Waits);
             Extractions++;
         }
 
@@ -266,7 +283,7 @@ internal sealed class FigurePlan : IDisposable
         {
             if (i < count)
             {
-                plans[i] = i < _plans.Length ? _plans[i] : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store);
+                plans[i] = i < _plans.Length ? _plans[i] : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store) { Waits = Waits };
             }
             else
             {

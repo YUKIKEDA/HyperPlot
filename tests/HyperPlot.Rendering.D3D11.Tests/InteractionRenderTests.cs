@@ -45,7 +45,7 @@ public sealed class InteractionRenderTests
             .Title("Rectangle zoom")
             .Build();
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));
-        using var engine = new PlotEngine(backend, Width, Height, 1, pool);
+        using var engine = new PlotEngine(backend, Width, Height, 1, pool) { WaitsForIndexes = true };
         engine.SetPlot(spec);
         engine.RenderFrame();
         engine.OnPointer(

@@ -37,6 +37,17 @@ internal sealed class PlotPlan : IDisposable
     private readonly RangeSink _sink = new();
     private readonly ColorScale _color = new();
 
+    // How the layers reach their indexes: waited for (a headless render) or read as they are (the engine's frame, row W1b1).
+    private readonly LayerIndexes _indexes;
+
+    // The failures of the layers at their positions in the spec (row W1b1), each with the sum of its columns' versions when
+    // it failed: a layer that failed is not drawn until a version moves; then it is made again.
+    private readonly List<(int Layer, Exception Error)> _newFailures = [];
+    private (Exception Error, long Versions)?[] _failures = [];
+
+    // Whether the last extraction read a pyramid not built, for a layer that draws (row W1b1).
+    private bool _extractProvisional;
+
     // The default color scales (design §4.2, row G7c), made once: a spec without one draws without allocating.
     private static readonly OrdinalScaleSpec DefaultOrdinal = Scale.Ordinal();
     private static readonly SequentialScaleSpec DefaultSequential = Scale.Sequential();
@@ -98,6 +109,7 @@ internal sealed class PlotPlan : IDisposable
     {
         (_store, _ownStore, _inFigure) = (store ?? new PyramidStore(), store is null, store is not null);
         _pool = pool;
+        _indexes = new LayerIndexes(pool, column => _held.Contains(column) ? _store.Find(column) : null);
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
         _context = new RecordContext(_guides, _panels[0].Batches[0], _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
@@ -127,6 +139,9 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>Gets the number of times the guides were laid out, for the tests of the diff (design §4.8).</summary>
     internal int Layouts { get; private set; }
+
+    /// <summary>Gets the number of layers the last recording drew, over every panel (row W1b1). Tests only.</summary>
+    internal int LayersRecorded { get; private set; }
 
     /// <summary>Gets the color scale of the last spec drawn, or null when no layer has a color channel. Tests only.</summary>
     internal ColorScale? Color { get; private set; }
@@ -159,6 +174,26 @@ internal sealed class PlotPlan : IDisposable
     internal ScaleRange YDomain => _panels[0].Y;
 
     /// <summary>
+    /// Gets or sets a value indicating whether a Render waits for the indexes and the workers' results (a headless render,
+    /// design §4.8) or draws what is there and reports failures instead of throwing them (the engine's frame, row W1b1).
+    /// </summary>
+    internal bool Waits
+    {
+        get => _indexes.Waits;
+        set => _indexes.Waits = value;
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether the last Render was provisional (row W1b1): a layer drew results older than its
+    /// columns or nothing yet, a domain learned without every chunk's statistics, or M4 read a pyramid not built. A layer
+    /// that failed does not make it provisional. Always false for a render that waits.
+    /// </summary>
+    internal bool IsProvisional { get; private set; }
+
+    /// <summary>Gets the failures the last Render found (row W1b1): a layer's position and the exception, once each.</summary>
+    internal IReadOnlyList<(int Layer, Exception Error)> Failures => _newFailures;
+
+    /// <summary>
     /// Compiles a spec against the last one drawn, waits until its pyramids and X statistics are built for the columns'
     /// current values, lays out the guides, and returns the recorded panel, grid, lines, axes, titles, and legend (design
     /// §4.6, §4.8); an empty list when the panel is too small. Allocates nothing for the spec drawn last once warm.
@@ -179,7 +214,7 @@ internal sealed class PlotPlan : IDisposable
         Compile(spec);
         if (Prepare())
         {
-            _pool.ExtractTogether(_allBatches, _allOrigins, _allBoundaries, _allBatches.Length);
+            _pool.ExtractTogether(_allBatches, _allOrigins, _allBoundaries, _allBatches.Length, rethrow: Waits);
         }
 
         Finish();
@@ -364,6 +399,7 @@ internal sealed class PlotPlan : IDisposable
     internal void Compile(PlotSpec spec)
     {
         Check(spec);
+        _newFailures.Clear();
         var previous = _spec;
 
         // Until this spec is drawn, the next one is compiled from the start: a stage that threw leaves no state to trust.
@@ -471,9 +507,11 @@ internal sealed class PlotPlan : IDisposable
 
         var grown = _grown;
         _grown = false;
+        var retry = Retry(spec);
         if (
             data
             || grown
+            || retry
             || StaleLayers()
             || (previous is not null && previous.Facet?.Scales != spec.Facet?.Scales && HasStat(spec))
             || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true, secondary: false))
@@ -526,7 +564,7 @@ internal sealed class PlotPlan : IDisposable
     internal bool Prepare()
     {
         var (spec, scales, ranges, looks, flipped) = (_pendingSpec!, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped);
-        WaitForIndexes();
+        PollIndexes();
         ViewsDropped = false;
         if ((scales || _views.Length != _panels.Length) && AnyView())
         {
@@ -534,12 +572,15 @@ internal sealed class PlotPlan : IDisposable
             (_views, ViewsDropped) = ([], true);
         }
 
-        var learn = ranges || scales || ValuesChanged();
+        // While a frame is provisional, the next one learns and extracts again (row W1b1): the statistics, the pyramids, and
+        // the workers' results fill in between frames.
+        var learn = ranges || scales || ValuesChanged() || IsProvisional;
         var extract = learn || _viewChanged;
         _viewChanged = false;
         if (learn)
         {
             Learnings++;
+            _indexes.Incomplete = false;
 
             // A user's geom learns only when an axis learns: with both domains given, nothing would read its ranges.
             if (
@@ -725,6 +766,10 @@ internal sealed class PlotPlan : IDisposable
             }
 
             _pendingRecord = true;
+            if (_pendingExtract && !Waits)
+            {
+                SkipSeries();
+            }
         }
 
         return _pendingExtract;
@@ -746,6 +791,16 @@ internal sealed class PlotPlan : IDisposable
                     layer.MarkExtracted();
                 }
             }
+
+            if (!Waits)
+            {
+                ReadSeries();
+            }
+        }
+
+        if (!Waits)
+        {
+            IsProvisional = Provisional();
         }
 
         if (_pendingRecord)
@@ -1178,6 +1233,28 @@ internal sealed class PlotPlan : IDisposable
         // An index, not foreach: the interface's enumerator would be boxed on every layout.
         for (var i = 0; i < spec.Layers.Count; i++)
         {
+            if (Failed(i))
+            {
+                continue;
+            }
+
+            try
+            {
+                LearnColor(spec, i);
+            }
+            catch (Exception exception) when (!Waits)
+            {
+                Fail(i, exception);
+            }
+        }
+
+        _color.Domain = FromSink(inner, _color.Transform);
+    }
+
+    /// <summary>Adds a layer's ranges to the color domain: its color channels, its raster of numbers, its 2D bins' cells.</summary>
+    private void LearnColor(PlotSpec spec, int i)
+    {
+        {
             var layer = spec.Layers[i];
             foreach (var channel in (ReadOnlySpan<ColumnRef?>)[layer.ColorBy, layer.FillBy])
             {
@@ -1202,8 +1279,6 @@ internal sealed class PlotPlan : IDisposable
                 }
             }
         }
-
-        _color.Domain = FromSink(inner, _color.Transform);
     }
 
     /// <summary>
@@ -1596,12 +1671,22 @@ internal sealed class PlotPlan : IDisposable
         _sink.Reset();
         foreach (var panel in panels)
         {
-            foreach (var layer in panel.Layers)
+            for (var i = 0; i < panel.Layers.Length; i++)
             {
                 // A scale learns from the layers it maps (row G6a): the primary from those not on the secondary.
-                if ((ofX ? layer.Spec.SecondaryX : layer.Spec.SecondaryY) == secondary)
+                var layer = panel.Layers[i];
+                if ((ofX ? layer.Spec.SecondaryX : layer.Spec.SecondaryY) != secondary || Failed(i))
+                {
+                    continue;
+                }
+
+                try
                 {
                     layer.AddRanges(_sink, ofX, panel.Table ?? spec.Data);
+                }
+                catch (Exception exception) when (!Waits)
+                {
+                    Fail(i, exception);
                 }
             }
         }
@@ -1862,6 +1947,8 @@ internal sealed class PlotPlan : IDisposable
             _learned = new PanelDomains[count];
         }
 
+        // Layers made again try again (row W1b1): the passes of statistics a failed one started are forgotten too.
+        _indexes.Forget();
         var shared = SharedSources(spec);
         for (var p = 0; p < count; p++)
         {
@@ -1887,6 +1974,12 @@ internal sealed class PlotPlan : IDisposable
             var layers = new LayerPlan[spec.Layers.Count];
             for (var i = 0; i < layers.Length; i++)
             {
+                // A layer made again tries again (row W1b1).
+                if (i < _failures.Length)
+                {
+                    _failures[i] = null;
+                }
+
                 // A layer's series go into the batch of its pair of scales, and its stat reads those scales (row G6a).
                 var layer = spec.Layers[i];
                 build.Layer = i;
@@ -1960,17 +2053,30 @@ internal sealed class PlotPlan : IDisposable
     }
 
     /// <summary>
-    /// Waits until every pyramid and the statistics and orders the layers search are there for the columns' current values
-    /// (design §4.8): a headless image is the same whenever it is drawn. A failure is thrown again as it was.
+    /// Reaches every pyramid and the statistics, the orders, and the workers' results the layers read, for the columns'
+    /// current values (design §4.8). A render that waits waits for them, so that a headless image is the same whenever it
+    /// is drawn, and throws a failure as it was. The engine's frame reads what is there (row W1b1): it requests the stale
+    /// chunks of the pyramids, takes each layer's readiness, and fails a layer alone.
     /// </summary>
-    private void WaitForIndexes()
+    private void PollIndexes()
     {
+        _sink.Indexes = Waits ? null : _indexes;
         foreach (var column in _held)
         {
-            _store.Find(column)!.WhenComplete().GetAwaiter().GetResult();
+            // A fault fails the layers that read the pyramid, below; the others go on.
+            var pyramid = _store.Find(column)!;
+            if (Waits)
+            {
+                pyramid.WhenComplete().GetAwaiter().GetResult();
+            }
+            else
+            {
+                _ = pyramid.RequestStale();
+            }
         }
 
-        // The rasters' mipmaps: the rows of the chunks that changed, on the workers (design §3.7, row G9).
+        // The rasters' mipmaps: the rows of the chunks that changed, on the workers (design §3.7, row G9). The update waits in
+        // a frame that does not wait too: row W1b2 (invariant 7).
         foreach (var mipmap in _rasters.Values)
         {
             mipmap.Update(_pool);
@@ -1978,11 +2084,188 @@ internal sealed class PlotPlan : IDisposable
 
         foreach (var panel in _panels)
         {
-            foreach (var layer in panel.Layers)
+            for (var i = 0; i < panel.Layers.Length; i++)
             {
-                layer.WaitForIndexes(_pool);
+                var layer = panel.Layers[i];
+                if (Failed(i))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    layer.Readiness = LayerReadiness.Ready;
+                    ThrowFault(layer);
+                    layer.Readiness = layer.Poll(_indexes);
+                }
+                catch (Exception exception) when (!Waits)
+                {
+                    Fail(i, exception);
+                }
             }
         }
+    }
+
+    /// <summary>Throws the fault of a pyramid a layer reads (row W1b1): its build failed, and the layer fails with it.</summary>
+    private void ThrowFault(LayerPlan layer)
+    {
+        if (Waits)
+        {
+            return;
+        }
+
+        foreach (var column in layer.Columns)
+        {
+            if (_held.Contains(column) && _store.Find(column)!.Fault is { } fault)
+            {
+                System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(fault);
+            }
+        }
+    }
+
+    /// <summary>Returns whether the layer at a position in the spec failed and waits for a version to move (row W1b1).</summary>
+    private bool Failed(int layer) => layer < _failures.Length && _failures[layer] is not null;
+
+    /// <summary>Returns whether a layer is drawn: it has not failed, and its results, current or older, are there (row W1b1).</summary>
+    private bool Drawn(int position, LayerPlan layer) => !Failed(position) && layer.Readiness != LayerReadiness.Pending;
+
+    /// <summary>
+    /// Fails the layer at a position in the spec (row W1b1): it is not drawn and learns nothing until one of its columns'
+    /// versions moves, and the failure is reported once.
+    /// </summary>
+    private void Fail(int layer, Exception error)
+    {
+        if (Failed(layer))
+        {
+            return;
+        }
+
+        _failures[layer] = (error, VersionsOf(layer));
+        _newFailures.Add((layer, error));
+    }
+
+    /// <summary>Returns the sum of the versions of the columns the layer at a position reads, in every panel: it grows when one moves.</summary>
+    private long VersionsOf(int layer)
+    {
+        var sum = 0L;
+        foreach (var panel in _panels)
+        {
+            if (layer < panel.Layers.Length)
+            {
+                foreach (var column in panel.Layers[layer].Columns)
+                {
+                    sum += column.Version;
+                }
+            }
+        }
+
+        return sum;
+    }
+
+    /// <summary>
+    /// Returns whether a failed layer's columns moved, so that the layers are made again and try once more (row W1b1); a
+    /// pyramid with a fault among them is built again. Forgets the failures of a spec of another number of layers.
+    /// </summary>
+    private bool Retry(PlotSpec spec)
+    {
+        if (_failures.Length != spec.Layers.Count)
+        {
+            _failures = new (Exception, long)?[spec.Layers.Count];
+            return false;
+        }
+
+        var retry = false;
+        for (var i = 0; i < _failures.Length; i++)
+        {
+            if (_failures[i] is not { } failure || VersionsOf(i) == failure.Versions)
+            {
+                continue;
+            }
+
+            retry = true;
+            foreach (var panel in _panels)
+            {
+                foreach (var column in panel.Layers[i].Columns)
+                {
+                    _store.Rebuild(column, _pool);
+                }
+            }
+        }
+
+        return retry;
+    }
+
+    /// <summary>Leaves out of the extraction the series of the layers that draw nothing this frame (row W1b1).</summary>
+    private void SkipSeries()
+    {
+        foreach (var panel in _panels)
+        {
+            foreach (var batch in panel.Batches)
+            {
+                for (var s = 0; s < batch.Count; s++)
+                {
+                    var layer = batch.TagOf(s);
+                    batch.SetSkipped(s, layer >= 0 && !Drawn(layer, panel.Layers[layer]));
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reads the series' errors and results after an extraction that did not throw (row W1b1): a failed series fails its
+    /// layer, and a provisional result of a layer that draws makes the frame provisional.
+    /// </summary>
+    private void ReadSeries()
+    {
+        _extractProvisional = false;
+        foreach (var panel in _panels)
+        {
+            foreach (var batch in panel.Batches)
+            {
+                for (var s = 0; s < batch.Count; s++)
+                {
+                    var layer = batch.TagOf(s);
+                    if (layer < 0 || Failed(layer))
+                    {
+                        continue;
+                    }
+
+                    if (batch.GetError(s) is { } error)
+                    {
+                        Fail(layer, error);
+                    }
+                    else
+                    {
+                        _extractProvisional |= batch.GetResult(s).IsProvisional && Drawn(layer, panel.Layers[layer]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns whether the frame is provisional (row W1b1): a layer that has not failed draws older results or none yet, a
+    /// domain learned without every chunk's statistics, or M4 read a pyramid not built.
+    /// </summary>
+    private bool Provisional()
+    {
+        if (_indexes.Incomplete || _extractProvisional)
+        {
+            return true;
+        }
+
+        foreach (var panel in _panels)
+        {
+            for (var i = 0; i < panel.Layers.Length; i++)
+            {
+                if (!Failed(i) && panel.Layers[i].Readiness != LayerReadiness.Ready)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Returns whether a column's values changed between the last extraction and this Render's read of the versions (an Invalidate).</summary>
@@ -2023,6 +2306,7 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _guides.RecordBehind(_list, spec);
+        LayersRecorded = 0;
         for (var p = 0; p < _panels.Length; p++)
         {
             RecordPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
@@ -2118,7 +2402,12 @@ internal sealed class PlotPlan : IDisposable
             layer.SeriesColor = palette.Series(i);
             layer.Index = i;
             layer.Colors = Color;
-            layer.Record(_context);
+            if (Drawn(i, layer))
+            {
+                layer.Record(_context);
+                LayersRecorded++;
+            }
+
             _context.Flush();
         }
     }
