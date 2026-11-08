@@ -878,6 +878,13 @@ internal sealed partial class PlotPlan : IDisposable
         {
             Record(_pendingSpec!, _pendingFlipped);
             Recordings++;
+
+            // An image that drew a tile from an ancestor waits for tiles the frame's budget left out (design §5.5.3, Issue
+            // #319): the frame is provisional, so that the next one sends more.
+            if (!Waits && RecordedProvisional())
+            {
+                IsProvisional = true;
+            }
         }
 
         _spec = _pendingSpec;
@@ -2340,6 +2347,23 @@ internal sealed partial class PlotPlan : IDisposable
             for (var i = 0; i < panel.Layers.Length; i++)
             {
                 if (!Failed(i) && panel.Layers[i].Readiness != LayerReadiness.Ready)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Returns whether a layer of the last recording drew a stand-in, an image's tile from an ancestor (Issue #319).</summary>
+    private bool RecordedProvisional()
+    {
+        foreach (var panel in _panels)
+        {
+            foreach (var layer in panel.Layers)
+            {
+                if (layer.RecordedProvisional)
                 {
                     return true;
                 }

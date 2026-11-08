@@ -150,8 +150,9 @@ public sealed class AccessibilityTests(WpfThread wpf)
         private readonly Column<float> _y;
         private readonly HeldStorage? _held;
 
-        // A held Y's view runs on a pool of 1 thread, as the engine's tests of row W1b1 do: with many workers, a frame waits
-        // for a held chunk (Issue #328).
+        // A held Y's view runs on a pool of 1 thread, as the engine's tests of row W1b1 do: the held storage holds every read
+        // on a worker, and with many workers a free one takes the frame's M4 job, whose read of the chunk's edge is held too
+        // (Issue #328; real storage holds nothing).
         private readonly PlotWorkerPool? _pool;
 
         public Scene(TimeProvider? clock = null, bool listener = false, bool held = false)
