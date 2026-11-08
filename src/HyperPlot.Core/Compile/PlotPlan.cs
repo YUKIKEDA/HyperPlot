@@ -112,7 +112,7 @@ internal sealed class PlotPlan : IDisposable
         _indexes = new LayerIndexes(pool, column => _held.Contains(column) ? _store.Find(column) : null);
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
-        _context = new RecordContext(_guides, _panels[0].Batches[0], _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
+        _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
         _ownImages = images is null;
         GatherBatches();
 
@@ -747,18 +747,17 @@ internal sealed class PlotPlan : IDisposable
 
             if (extract || boundaries)
             {
-                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A pair
-                // with a secondary scale runs over its own x boundaries and origins, beside the primary pair (row G6a). Every
-                // panel's pairs run together (row G6b).
-                for (var p = 0; p < _panels.Length; p++)
+                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A layer
+                // on a secondary scale runs over its pair's x boundaries and origins (row G6a). Every panel's layers run
+                // together (row G6b), each in a batch of its own (row W1b2).
+                var at = 0;
+                foreach (var panel in _panels)
                 {
-                    var panel = _panels[p];
-                    for (var pair = 0; pair < 4; pair++)
+                    foreach (var layer in panel.Layers)
                     {
-                        (_allOrigins[(p * 4) + pair], _allBoundaries[(p * 4) + pair]) = (
-                            OriginOf(panel, pair),
-                            (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries
-                        );
+                        var pair = Pair(layer.Spec);
+                        (_allOrigins[at], _allBoundaries[at]) = (OriginOf(panel, pair), (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries);
+                        at++;
                     }
                 }
 
@@ -1900,20 +1899,29 @@ internal sealed class PlotPlan : IDisposable
                     _ => true,
                 };
 
-    /// <summary>Gathers every panel's batches into the arrays M4 extracts together, made when the panels change.</summary>
+    /// <summary>
+    /// Gathers every panel's layers' batches into the arrays M4 extracts together (row W1b2: a batch a layer, so that a layer
+    /// is replaced alone), made again when the layers change.
+    /// </summary>
     private void GatherBatches()
     {
-        var count = _panels.Length * 4;
+        var count = 0;
+        foreach (var panel in _panels)
+        {
+            count += panel.Layers.Length;
+        }
+
         if (_allBatches.Length != count)
         {
             (_allBatches, _allOrigins, _allBoundaries) = (new M4Batch[count], new ScaleOrigin[count], new double[count][]);
         }
 
-        for (var p = 0; p < _panels.Length; p++)
+        var at = 0;
+        foreach (var panel in _panels)
         {
-            for (var pair = 0; pair < 4; pair++)
+            foreach (var layer in panel.Layers)
             {
-                _allBatches[(p * 4) + pair] = _panels[p].Batches[pair];
+                _allBatches[at++] = layer.Batch;
             }
         }
     }
@@ -1954,15 +1962,10 @@ internal sealed class PlotPlan : IDisposable
         {
             var panel = _panels[p];
             (panel.Data, panel.Table) = _facet is null ? (null, spec.Data) : (_facet.Panels[p], _facet.Panels[p].Data);
-            foreach (var batch in panel.Batches)
-            {
-                batch.Clear();
-            }
-
             var build = new PlanBuild(
                 Pyramid,
                 _store.Find,
-                panel.Batches[0],
+                new M4Batch(),
                 _capacity,
                 _pool,
                 Mipmap,
@@ -1980,17 +1983,20 @@ internal sealed class PlotPlan : IDisposable
                     _failures[i] = null;
                 }
 
-                // A layer's series go into the batch of its pair of scales, and its stat reads those scales (row G6a).
+                // A layer's series go into a batch of its own (row W1b2), extracted over its pair of scales, and its stat
+                // reads those scales (row G6a).
                 var layer = spec.Layers[i];
+                var batch = new M4Batch();
                 build.Layer = i;
                 build.Use(
-                    panel.Batches[Pair(layer)],
+                    batch,
                     layer.SecondaryX ? spec.ScaleX2 : spec.ScaleX,
                     layer.SecondaryX ? _xTransform2 : _xTransform,
                     layer.SecondaryY ? spec.ScaleY2 : spec.ScaleY,
                     layer.SecondaryY ? _yTransform2 : _yTransform
                 );
                 layers[i] = PanelLayer(layer, panel.Data, build, shared[i]);
+                layers[i].Batch = batch;
             }
 
             olds.AddRange(panel.Layers);
@@ -2200,12 +2206,13 @@ internal sealed class PlotPlan : IDisposable
     {
         foreach (var panel in _panels)
         {
-            foreach (var batch in panel.Batches)
+            for (var i = 0; i < panel.Layers.Length; i++)
             {
+                var batch = panel.Layers[i].Batch;
+                var skipped = !Drawn(i, panel.Layers[i]);
                 for (var s = 0; s < batch.Count; s++)
                 {
-                    var layer = batch.TagOf(s);
-                    batch.SetSkipped(s, layer >= 0 && !Drawn(layer, panel.Layers[layer]));
+                    batch.SetSkipped(s, skipped);
                 }
             }
         }
@@ -2220,14 +2227,14 @@ internal sealed class PlotPlan : IDisposable
         _extractProvisional = false;
         foreach (var panel in _panels)
         {
-            foreach (var batch in panel.Batches)
+            for (var layer = 0; layer < panel.Layers.Length; layer++)
             {
+                var batch = panel.Layers[layer].Batch;
                 for (var s = 0; s < batch.Count; s++)
                 {
-                    var layer = batch.TagOf(s);
-                    if (layer < 0 || Failed(layer))
+                    if (Failed(layer))
                     {
-                        continue;
+                        break;
                     }
 
                     if (batch.GetError(s) is { } error)
@@ -2327,7 +2334,6 @@ internal sealed class PlotPlan : IDisposable
             ContinuousScaleSpec c => (c.Reverse, c.Clamp, null),
             _ => (false, false, null),
         };
-        _context.Use(panel.Batches[0]);
         var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
         if (guide.Polar is { } polar)
         {
@@ -2381,7 +2387,8 @@ internal sealed class PlotPlan : IDisposable
             // The series color of the layer's position (design §4.1, row G7a).
             var layer = layers[i];
 
-            // A layer on a secondary scale is mapped by its pair's axes and reads its pair's batch (row G6a). Polar has none.
+            // A layer on a secondary scale is mapped by its pair's axes (row G6a); polar has none. A layer reads its own batch
+            // (row W1b2).
             var pair = Pair(layer.Spec);
             if (pair != current)
             {
@@ -2395,9 +2402,10 @@ internal sealed class PlotPlan : IDisposable
                     _context.Panel,
                     null
                 );
-                _context.Use(panel.Batches[pair]);
                 current = pair;
             }
+
+            _context.Use(layer.Batch);
 
             layer.SeriesColor = palette.Series(i);
             layer.Index = i;

@@ -99,6 +99,12 @@ internal abstract class LayerPlan
     /// </summary>
     public LayerReadiness Readiness { get; set; }
 
+    /// <summary>
+    /// Gets or sets the M4 batch the layer's series are in (row W1b2): one a layer, so that a layer is replaced alone. Its
+    /// plan sets it when it makes the layer, and extracts every layer's batch together.
+    /// </summary>
+    public M4Batch Batch { get; set; } = new();
+
     /// <summary>Gets the versions of <see cref="Columns"/> this Render read before it reached the indexes.</summary>
     public long[] Seen { get; private set; } = [];
 
