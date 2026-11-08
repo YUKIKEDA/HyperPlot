@@ -11,7 +11,7 @@ The owner's time is the scarce thing. A row is finished when its own work is don
 
 `.cursor/rules/open-ends.mdc` asks that a PR time its stages and explain its figures. That is about the code the row adds or changes. A finding about code the row did not change is another piece of work, however it was found:
 
-1. Write what was measured on a new Issue: the numbers, what was tried, what is known and what is not.
+1. Write what was measured on a new Issue: the numbers, what was tried, what is known and what is not. Before the Issue names a part as the cause, a bounded probe checks it (who calls the read that waits, which stage the time is in); a symptom alone is written as a symptom. Issue #328 named the engine's frames from a test that held a chunk on 15 workers, and a rule was written on it; the readers' stacks later showed the test storage holding the frame's own M4 read.
 2. Add a roadmap row that names it (`.cursor/rules/defer.mdc`). Say whether it blocks the rows after it.
 3. Go on with the row. The PR body points to the Issue; it does not carry the investigation. An investigation of a failure that `main` also has does not go into the row's PR comments and commits, with the code it needs; it goes to its own Issue and PR.
 
