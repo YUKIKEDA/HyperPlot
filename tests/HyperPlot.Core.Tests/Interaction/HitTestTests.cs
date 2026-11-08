@@ -1,0 +1,317 @@
+using System.Numerics;
+using HyperPlot.Interaction;
+
+namespace HyperPlot.Tests;
+
+/// <summary>
+/// The engine's hit test (design §6.3 "系列の最近傍", §10 "ヒットテスト（I2a）", requirement I-2, row I2a, Issue #337): each
+/// series' row nearest the cursor's x, or its point nearest the cursor within a radius, checked against every row mapped to
+/// the screen with <see cref="PlotEngine.ViewToPixel"/>.
+/// </summary>
+public sealed class HitTestTests
+{
+    private static readonly PanelId Panel = new(0, 0);
+
+    /// <summary>
+    /// <see cref="HitMode.X"/> gives each series the row whose x is nearest the cursor's, over a uniform and a stored x, and
+    /// passes the rows whose y is NaN; the radius is not used (Issue #337 Decision 6).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 2,000 rows; a line over a uniform x and one over an increasing stored x with uneven steps, both with a y that is NaN
+    ///   in rows 500 to 599.
+    ///
+    /// Steps:
+    /// - Draw with an engine that waits; hit test 40 cursors along the panel with a radius of 1 pixel.
+    ///
+    /// Expected:
+    /// - Each cursor gives 2 hits, layers 0 and 1, whose x pixel lies as near the cursor's x as the nearest row with a number
+    ///   does (every row mapped to the screen); their y is not NaN; the x and y are the row's values.
+    /// </remarks>
+    [Fact]
+    public void X_FindsTheRowNearestTheCursorsX()
+    {
+        const int Rows = 2000;
+        var stored = new double[Rows];
+        for (var i = 1; i < Rows; i++)
+        {
+            stored[i] = stored[i - 1] + 0.5 + ((i % 7) * 0.25);
+        }
+
+        var ys = Enumerable.Range(0, Rows).Select(i => i is >= 500 and < 600 ? double.NaN : Math.Sin(i * 0.01)).ToArray();
+        using var x = Column.Wrap(stored);
+        using var y = Column.Wrap(ys);
+        var table = DataTable.Create().Add("u", Column.Uniform(0, stored[^1] / (Rows - 1), Rows)).Add("x", x).Add("y", y).Build();
+        using var engine = Drawn(
+            new PlotSpec
+            {
+                Data = table,
+                Layers =
+                [
+                    new LineLayerSpec { X = table.Col<double>("u"), Y = table.Col<double>("y") },
+                    new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") },
+                ],
+            }
+        );
+        var hits = new SeriesHit[4];
+        var xOf = new Func<int, double>[] { i => i * (stored[^1] / (Rows - 1)), i => stored[i] };
+        for (var k = 0; k < 40; k++)
+        {
+            var cursor = Inside(engine, (k + 0.5) / 40, 0.5);
+            Assert.Equal(2, engine.HitTest(cursor, 1, HitMode.X, hits));
+            for (var layer = 0; layer < 2; layer++)
+            {
+                var hit = hits[layer];
+                Assert.Equal((0, 0, layer, 0), (hit.Plot, hit.Panel, hit.Layer, hit.Series));
+                Assert.False(double.IsNaN(hit.Y));
+                Assert.Equal(xOf[layer]((int)hit.Row), hit.X, 9);
+                Assert.Equal(ys[hit.Row], hit.Y);
+                var nearest = Enumerable.Range(0, Rows).Where(i => !double.IsNaN(ys[i])).Min(i => Math.Abs(PixelX(engine, xOf[layer](i)) - cursor.X));
+                Assert.Equal(nearest, Math.Abs(PixelX(engine, hit.X) - cursor.X), 3);
+            }
+        }
+    }
+
+    /// <summary>
+    /// <see cref="HitMode.XY"/> gives each series its point nearest the cursor within the radius, the same as every row's
+    /// distance on the screen gives, over the whole view and a zoomed one; outside the radius it answers nothing (Issue #337
+    /// Decision 6).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A line of 200,000 rows over a uniform x, y a random walk with a seed.
+    ///
+    /// Steps:
+    /// - Draw with an engine that waits; hit test 30 seeded cursors with a radius of 6 pixels, at the whole view and at a
+    ///   view of 1/100 of the x range.
+    ///
+    /// Expected:
+    /// - Where some row lies within 6 pixels, one hit whose distance is the least of every row's (within 1e-3 pixel) and
+    ///   whose row lies at that distance; where none does, no hit.
+    /// </remarks>
+    [Fact]
+    public void XY_FindsThePointNearestTheCursor()
+    {
+        const int Rows = 200_000;
+        var random = new Random(7);
+        var ys = new double[Rows];
+        for (var i = 1; i < Rows; i++)
+        {
+            ys[i] = ys[i - 1] + random.NextDouble() - 0.5;
+        }
+
+        using var y = Column.Wrap(ys);
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, Rows)).Add("y", y).Build();
+        using var engine = Drawn(
+            new PlotSpec { Data = table, Layers = [new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") }] }
+        );
+        var hits = new SeriesHit[2];
+        foreach (var zoomed in (ReadOnlySpan<bool>)[false, true])
+        {
+            if (zoomed)
+            {
+                var view = (PanelView2D)engine.CurrentView(Panel);
+                var (low, width) = (Rows * 0.4, Rows / 100.0);
+                engine.Views.SetView(Panel, view with { X = ViewRange.FromValues(low, low + width) });
+                engine.RenderFrame();
+            }
+
+            for (var k = 0; k < 30; k++)
+            {
+                var cursor = Inside(engine, random.NextDouble(), random.NextDouble());
+                var found = engine.HitTest(cursor, 6, HitMode.XY, hits);
+                var best = double.PositiveInfinity;
+                for (var i = 0; i < Rows; i++)
+                {
+                    best = Math.Min(best, Vector2.Distance(Pixel(engine, i, ys[i]), cursor));
+                }
+
+                if (best > 6)
+                {
+                    Assert.Equal(0, found);
+                    continue;
+                }
+
+                Assert.Equal(1, found);
+                Assert.Equal(best, hits[0].Distance, 3);
+                Assert.Equal(best, Vector2.Distance(Pixel(engine, hits[0].Row, ys[hits[0].Row]), cursor), 3);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A band answers for its low and high edges; outside a panel there is no hit; a short buffer takes as many hits as fit
+    /// and the count is all of them (Issue #337 Decisions 4, 7, 9).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A band and a line over 100 rows.
+    ///
+    /// Steps:
+    /// - Hit test the panel's middle with X into a buffer of 4 and of 1; hit test a pixel left of the panel.
+    ///
+    /// Expected:
+    /// - 3 hits: layer 0's series 0 and 1, then layer 1. Into 1: 3, and the first is layer 0's series 0. Left of the panel: 0.
+    /// </remarks>
+    [Fact]
+    public void BandsBuffersAndPanels()
+    {
+        using var low = Column.Wrap(Enumerable.Range(0, 100).Select(i => (double)i).ToArray());
+        using var high = Column.Wrap(Enumerable.Range(0, 100).Select(i => i + 10.0).ToArray());
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 100)).Add("low", low).Add("high", high).Build();
+        using var engine = Drawn(
+            new PlotSpec
+            {
+                Data = table,
+                Layers =
+                [
+                    new BandLayerSpec
+                    {
+                        X = table.Col<double>("x"),
+                        YMin = table.Col<double>("low"),
+                        YMax = table.Col<double>("high"),
+                    },
+                    new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("low") },
+                ],
+            }
+        );
+        var middle = Inside(engine, 0.5, 0.5);
+        var hits = new SeriesHit[4];
+        Assert.Equal(3, engine.HitTest(middle, 1, HitMode.X, hits));
+        Assert.Equal([(0, 0), (0, 1), (1, 0)], hits[..3].Select(h => (h.Layer, h.Series)));
+        Assert.Equal(hits[0].Row, hits[1].Row);
+        Assert.Equal(high.Values()[hits[1].Row], hits[1].Y);
+
+        var one = new SeriesHit[1];
+        Assert.Equal(3, engine.HitTest(middle, 1, HitMode.X, one));
+        Assert.Equal((0, 0), (one[0].Layer, one[0].Series));
+
+        Assert.Equal(0, engine.HitTest(new Vector2(1, middle.Y), 1, HitMode.X, hits));
+    }
+
+    /// <summary>
+    /// A hit test needs a frame, and refuses a radius or a mode out of range; once warm it allocates nothing (invariant 3,
+    /// design §6.3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A line of 100,000 rows; an engine with the plot set.
+    ///
+    /// Steps:
+    /// - Hit test before a frame. Draw; hit test with radius −1, NaN, +∞, and mode 2. Warm 10 hit tests of each mode; count the
+    ///   bytes this thread allocates over 100 more.
+    ///
+    /// Expected:
+    /// - InvalidOperationException before the frame; ArgumentOutOfRangeException for each bad argument; 0 bytes.
+    /// </remarks>
+    [Fact]
+    public void Arguments_AndNoAllocation()
+    {
+        using var y = Column.Wrap(Enumerable.Range(0, 100_000).Select(i => Math.Sin(i * 0.001)).ToArray());
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 100_000)).Add("y", y).Build();
+        using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(new PlotSpec { Data = table, Layers = [new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") }] });
+        var hits = new SeriesHit[2];
+        _ = Assert.Throws<InvalidOperationException>(() => engine.HitTest(new Vector2(300, 150), 4, HitMode.X, hits));
+
+        engine.RenderFrame();
+        var middle = Inside(engine, 0.5, 0.5);
+        foreach (var radius in (ReadOnlySpan<float>)[-1, float.NaN, float.PositiveInfinity])
+        {
+            _ = Assert.Throws<ArgumentOutOfRangeException>(() => engine.HitTest(middle, radius, HitMode.XY, hits));
+        }
+
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => engine.HitTest(middle, 4, (HitMode)2, hits));
+        for (var i = 0; i < 10; i++)
+        {
+            _ = engine.HitTest(middle, 4, HitMode.X, hits);
+            _ = engine.HitTest(middle, 4, HitMode.XY, hits);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 100; i++)
+        {
+            _ = engine.HitTest(middle with { X = middle.X + (i % 50) }, 4, i % 2 == 0 ? HitMode.X : HitMode.XY, hits);
+        }
+
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+    }
+
+    /// <summary>
+    /// A series whose pyramid is still being built answers without waiting, marked provisional (Issue #337 Decision 5).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread (`testing.mdc`); a line over a Y of two chunks whose chunk 1 is held on the worker.
+    ///
+    /// Steps:
+    /// - Draw once; hit test the panel's middle with XY and a radius as large as the panel. Release the chunk.
+    ///
+    /// Expected:
+    /// - The hit test returns; its hits are marked provisional.
+    /// </remarks>
+    [Fact]
+    public void BuildingPyramid_AnswersProvisionally()
+    {
+        const int Chunk = Column.ChunkLength;
+        using var pool = new PlotWorkerPool(1);
+        using var y = TestStorage<float>.MakeColumn([.. Enumerable.Range(0, 2 * Chunk).Select(i => MathF.Sin(i * 0.001f))], out var storage);
+        storage.Hold(1);
+        try
+        {
+            var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();
+            using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+            engine.SetPlot(new PlotSpec { Data = table, Layers = [new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<float>("y") }] });
+            engine.RenderFrame();
+            storage.WaitForWorker(1);
+            var hits = new SeriesHit[2];
+            var found = engine.HitTest(Inside(engine, 0.5, 0.5), 400, HitMode.XY, hits);
+            Assert.Equal(1, found);
+            Assert.True(hits[0].Provisional);
+        }
+        finally
+        {
+            storage.Release(1);
+        }
+    }
+
+    private static PlotEngine Drawn(PlotSpec spec)
+    {
+        var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(spec);
+        engine.RenderFrame();
+        return engine;
+    }
+
+    /// <summary>Returns a pixel inside the panel at fractions of its view's x and y ranges.</summary>
+    private static Vector2 Inside(PlotEngine engine, double fx, double fy)
+    {
+        var view = (PanelView2D)engine.CurrentView(Panel);
+        var x = view.X.LowValue + (fx * (view.X.HighValue - view.X.LowValue));
+        var y = view.Y.LowValue + (fy * (view.Y.HighValue - view.Y.LowValue));
+        return engine.ViewToPixel(Panel, ViewRange.FromValues(x, x), ViewRange.FromValues(y, y));
+    }
+
+    private static Vector2 Pixel(PlotEngine engine, double x, double y) =>
+        engine.ViewToPixel(Panel, ViewRange.FromValues(x, x), ViewRange.FromValues(y, y));
+
+    private static double PixelX(PlotEngine engine, double x)
+    {
+        var view = (PanelView2D)engine.CurrentView(Panel);
+        return Pixel(engine, x, view.Y.LowValue).X;
+    }
+}
+
+file static class ColumnValues
+{
+    public static double[] Values(this Column<double> column)
+    {
+        var values = new double[column.Length];
+        for (var i = 0L; i < column.Length; i++)
+        {
+            values[i] = column.GetValue(i);
+        }
+
+        return values;
+    }
+}

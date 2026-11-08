@@ -21,6 +21,8 @@ internal sealed class LinePlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
+    internal override void Hit(ref HitScan scan) => scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var line = (LineLayerSpec)Spec;
@@ -50,6 +52,8 @@ internal sealed class StepPlan : LayerPlan
     }
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
+
+    internal override void Hit(ref HitScan scan) => scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -112,6 +116,8 @@ internal sealed class AreaPlan : LayerPlan
     }
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
+
+    internal override void Hit(ref HitScan scan) => scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -203,6 +209,13 @@ internal sealed class BandPlan : LayerPlan
     }
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
+
+    /// <summary>Answers for the band's low (series 0) and high (series 1) edges.</summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
+        scan.Series(1, Columns[0], Columns[2], Rows, derived: false);
+    }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
