@@ -275,6 +275,238 @@ public sealed class HitTestTests
         }
     }
 
+    /// <summary>
+    /// A split layer's and a facet's hits name rows of the plot's table, gathered or in runs, of the series' category; a
+    /// stat's and a numeric stack's are marked derived (Issue #337 Decision 3, Issue #341 Decision 3).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 3,000 rows of an increasing x, a y, a category "g" of 3 values interleaved row by row and "s" of 3 values in runs.
+    ///
+    /// Steps:
+    /// - Hit test 20 cursors with XY and a radius of 30 pixels: a line split by g (gathered), split by s (runs), a line in a
+    ///   facet by g (gathered panels). Hit test the middle with X: a density of x, and an area stacked over x by s.
+    ///
+    /// Expected:
+    /// - The splits: each hit's row has the hit's x and y, and the category its series names. The facet: each hit's row has
+    ///   its x and y and the panel's category. The density and the stack: every hit is marked derived.
+    /// </remarks>
+    [Fact]
+    public void Rows_AreTheTablesOrMarkedDerived()
+    {
+        const int Rows = 3000;
+        var xs = Enumerable.Range(0, Rows).Select(i => i * 0.5).ToArray();
+        var ys = Enumerable.Range(0, Rows).Select(i => Math.Sin(i * 0.01) + (i % 3)).ToArray();
+        var g = Enumerable.Range(0, Rows).Select(i => "abc"[i % 3].ToString()).ToArray();
+        var runs = Enumerable.Range(0, Rows).Select(i => "uvw"[i * 3 / Rows].ToString()).ToArray();
+        using var x = Column.Wrap(xs);
+        using var y = Column.Wrap(ys);
+        var table = DataTable
+            .Create()
+            .Add("x", x)
+            .Add("y", y)
+            .Add("g", Column.Categorical(g, ["a", "b", "c"]))
+            .Add("s", Column.Categorical(runs, ["u", "v", "w"]))
+            .Build();
+        var (gx, gy, gg, gs) = (table.Col<double>("x"), table.Col<double>("y"), table.Cat("g"), table.Cat("s"));
+        var hits = new SeriesHit[16];
+        var random = new Random(3);
+        foreach (var (by, codes, names) in new[] { (gg, g, "abc"), (gs, runs, "uvw") })
+        {
+            using var engine = Drawn(
+                new PlotSpec
+                {
+                    Data = table,
+                    Layers =
+                    [
+                        new LineLayerSpec
+                        {
+                            X = gx,
+                            Y = gy,
+                            ColorBy = by.ToColumnRef(),
+                        },
+                    ],
+                }
+            );
+            var seen = 0;
+            for (var k = 0; k < 20; k++)
+            {
+                var found = Math.Min(engine.HitTest(Inside(engine, random.NextDouble(), random.NextDouble()), 30, HitMode.XY, hits), hits.Length);
+                foreach (var hit in hits[..found])
+                {
+                    Assert.Equal((xs[hit.Row], ys[hit.Row]), (hit.X, hit.Y));
+                    Assert.Equal(names[hit.Series].ToString(), codes[hit.Row]);
+                    Assert.False(hit.Derived);
+                    seen++;
+                }
+            }
+
+            Assert.True(seen > 0);
+        }
+
+        using (
+            var facet = Drawn(
+                new PlotSpec
+                {
+                    Data = table,
+                    Layers = [new LineLayerSpec { X = gx, Y = gy }],
+                    Facet = Facet.Wrap(gg),
+                }
+            )
+        )
+        {
+            var seen = 0;
+            for (var p = 0; p < 3; p++)
+            {
+                var panel = new PanelId(0, p);
+                var view = (PanelView2D)facet.CurrentView(panel);
+                for (var k = 0; k < 10; k++)
+                {
+                    var (fx, fy) = (random.NextDouble(), random.NextDouble());
+                    var vx = view.X.LowValue + (fx * (view.X.HighValue - view.X.LowValue));
+                    var vy = view.Y.LowValue + (fy * (view.Y.HighValue - view.Y.LowValue));
+                    var cursor = facet.ViewToPixel(panel, ViewRange.FromValues(vx, vx), ViewRange.FromValues(vy, vy));
+                    var found = Math.Min(facet.HitTest(cursor, 30, HitMode.XY, hits), hits.Length);
+                    foreach (var hit in hits[..found])
+                    {
+                        Assert.Equal(p, hit.Panel);
+                        Assert.Equal((xs[hit.Row], ys[hit.Row]), (hit.X, hit.Y));
+                        Assert.Equal("abc"[p].ToString(), g[hit.Row]);
+                        seen++;
+                    }
+                }
+            }
+
+            Assert.True(seen > 0);
+        }
+
+        var derivedLayers = new LayerSpec[]
+        {
+            new LineLayerSpec { X = gx, Stat = Stat.Density() },
+            new AreaLayerSpec
+            {
+                X = gx,
+                Y = gy,
+                ColorBy = gs.ToColumnRef(),
+                Position = Position.Stack,
+            },
+        };
+        foreach (var layer in derivedLayers)
+        {
+            using var engine = Drawn(new PlotSpec { Data = table, Layers = [layer] });
+            var found = Math.Min(engine.HitTest(Inside(engine, 0.5, 0.5), 1, HitMode.X, hits), hits.Length);
+            Assert.True(found > 0);
+            Assert.All(hits[..found], hit => Assert.True(hit.Derived));
+        }
+    }
+
+    /// <summary>
+    /// An image answers with the texel under the cursor, its center and its element's position; outside the image, nothing
+    /// (Issue #337 Decision 4).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A raster of 40 × 24 numbers with the lower origin, and an RGBA raster of 8 × 6 with the upper origin; default extents.
+    ///
+    /// Steps:
+    /// - Hit test the centers of 10 texels of each, and a pixel 3 pixels past the image's right edge.
+    ///
+    /// Expected:
+    /// - One hit each: its x and y the texel's center, its row (r · width + c) · channels, r counted from the raster's first
+    ///   row. Past the edge: none.
+    /// </remarks>
+    [Fact]
+    public void Image_AnswersWithTheTexelUnderTheCursor()
+    {
+        using var numbers = Column.Wrap(Enumerable.Range(0, 40 * 24).Select(i => (float)i).ToArray());
+        using var colors = Column.Wrap(new byte[8 * 6 * 4]);
+        var hits = new SeriesHit[2];
+        var cases = new (Raster Raster, RasterOrigin Origin)[]
+        {
+            (Raster.Of(numbers, 40), RasterOrigin.Lower),
+            (Raster.Rgba(colors, 8), RasterOrigin.Upper),
+        };
+        foreach (var (raster, origin) in cases)
+        {
+            var spec = new PlotSpec { Data = DataTable.Create().Build(), Layers = [new ImageLayerSpec { Raster = raster, Origin = origin }] };
+            using var engine = Drawn(spec);
+            var (w, h, channels) = (raster.Width, raster.Height, raster.IsRgba ? 4 : 1);
+            for (var k = 0; k < 10; k++)
+            {
+                var (c, r) = ((k * 7) % w, (k * 5) % h);
+                var cy = origin == RasterOrigin.Upper ? h - 1 - r : r;
+                Assert.Equal(1, engine.HitTest(Pixel(engine, c, cy), 2, HitMode.XY, hits));
+                Assert.Equal(((((long)r * w) + c) * channels, (double)c, (double)cy), (hits[0].Row, hits[0].X, hits[0].Y));
+            }
+
+            var edge = Pixel(engine, w - 0.5, 1);
+            Assert.Equal(0, engine.HitTest(edge with { X = edge.X + 3 }, 2, HitMode.X, hits));
+        }
+    }
+
+    /// <summary>
+    /// A layer on a secondary y answers in its own units; flipped, the x runs down the screen; a polar panel answers nothing
+    /// (Issue #337 Decision 8, Issue #341 Decision 1).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 500 rows: a line on y of i / 500 and one on a secondary y of 2 · i.
+    ///
+    /// Steps:
+    /// - Hit test the panel's middle with X; the same plot flipped; the first line in polar.
+    ///
+    /// Expected:
+    /// - Layer 1's y is 1,000 times layer 0's, of the same row. Flipped: the row's pixel lies within a pixel of the cursor's
+    ///   y. Polar: 0.
+    /// </remarks>
+    [Fact]
+    public void SecondaryFlipAndPolar()
+    {
+        using var y = Column.Wrap(Enumerable.Range(0, 500).Select(i => i / 500.0).ToArray());
+        using var big = Column.Wrap(Enumerable.Range(0, 500).Select(i => i * 2.0).ToArray());
+        var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 500)).Add("y", y).Add("big", big).Build();
+        var two = new PlotSpec
+        {
+            Data = table,
+            Layers =
+            [
+                new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") },
+                new LineLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("big"),
+                    SecondaryY = true,
+                },
+            ],
+            ScaleY2 = Scale.Linear(),
+        };
+        var hits = new SeriesHit[4];
+        using (var engine = Drawn(two))
+        {
+            Assert.Equal(2, engine.HitTest(Inside(engine, 0.5, 0.5), 1, HitMode.X, hits));
+            Assert.Equal(hits[0].Row, hits[1].Row);
+            Assert.Equal(hits[0].Y * 1000, hits[1].Y, 9);
+        }
+
+        using (var flipped = Drawn(two with { Coord = Coord.Cartesian(flip: true) }))
+        {
+            var cursor = Inside(flipped, 0.3, 0.5);
+            Assert.Equal(2, flipped.HitTest(cursor, 1, HitMode.X, hits));
+            var rowPixel = Pixel(flipped, hits[0].X, hits[0].Y);
+            Assert.True(Math.Abs(rowPixel.Y - cursor.Y) <= 1, $"{rowPixel} against {cursor}");
+        }
+
+        using var polar = Drawn(
+            new PlotSpec
+            {
+                Data = table,
+                Layers = [two.Layers[0]],
+                Coord = Coord.Polar(),
+            }
+        );
+        Assert.Equal(0, polar.HitTest(new Vector2(320, 180), 50, HitMode.XY, hits));
+    }
+
     private static PlotEngine Drawn(PlotSpec spec)
     {
         var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };

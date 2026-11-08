@@ -51,15 +51,53 @@ internal ref struct HitScan
     /// <summary>Gets or sets a value indicating whether the layer draws an older version while a newer one is made: its answers are provisional.</summary>
     public bool LayerProvisional { get; set; }
 
+    /// <summary>
+    /// Gets or sets the part of a split layer being asked (row I2a): its series are numbered from
+    /// <c>SeriesBase · SeriesWidth</c>, so that each category's series keep their own numbers.
+    /// </summary>
+    public int SeriesBase { get; set; }
+
+    /// <summary>Gets or sets the number of series a part of a split layer answers: 2 for a band, else 1.</summary>
+    public int SeriesWidth { get; set; } = 1;
+
+    /// <summary>Gets or sets a value indicating whether the rows asked are a derived table's: a stat's or a stack's.</summary>
+    public bool Derived { get; set; }
+
     /// <summary>Writes a hit when the buffer has room, and counts it either way.</summary>
     public void Add(int series, long row, double x, double y, double distance, bool derived, bool provisional)
     {
         if (Found < _results.Length)
         {
-            _results[Found] = new SeriesHit(Plot, Panel, Layer, series, row, x, y, (float)distance, derived, provisional || LayerProvisional);
+            _results[Found] = new SeriesHit(
+                Plot,
+                Panel,
+                Layer,
+                (SeriesBase * SeriesWidth) + series,
+                row,
+                x,
+                y,
+                (float)distance,
+                derived || Derived,
+                provisional || LayerProvisional
+            );
         }
 
         Found++;
+    }
+
+    /// <summary>
+    /// Takes the rows of the hits written from <paramref name="from"/> back through a gather (row I2a, Issue #337 Decision 3):
+    /// a split's or a facet's gathered rows to the rows they were gathered from. A derived row stays.
+    /// </summary>
+    public readonly void Remap(int from, ISourceRows rows, int key)
+    {
+        for (var i = from; i < Math.Min(Found, _results.Length); i++)
+        {
+            if (!_results[i].Derived)
+            {
+                _results[i] = _results[i] with { Row = rows.SourceRow(key, _results[i].Row) };
+            }
+        }
     }
 
     /// <summary>
@@ -258,4 +296,14 @@ internal ref struct HitScan
         Nearest(pyramid, x, y, start, middle, gap, ref best, ref bestRow, ref provisional);
         Nearest(pyramid, x, y, middle, end, gap, ref best, ref bestRow, ref provisional);
     }
+}
+
+/// <summary>A gather of rows by key (row I2a): a split's categories, a facet's panels; it takes a gathered row back.</summary>
+internal interface ISourceRows
+{
+    /// <summary>Returns the row a key's gathered row was gathered from.</summary>
+    /// <param name="key">The key: a category, a panel's.</param>
+    /// <param name="gathered">The row among the key's gathered rows.</param>
+    /// <returns>The row it was gathered from, or −1 past the key's rows.</returns>
+    long SourceRow(int key, long gathered);
 }

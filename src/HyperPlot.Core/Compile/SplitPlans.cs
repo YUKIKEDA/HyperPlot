@@ -302,7 +302,7 @@ internal abstract class GatherChannel : IDisposable
 /// (design §5.5.3, row G7c): each category is a plan of the layer's own geom, over the run of its rows when they lie in one,
 /// else over its rows gathered into columns of its own. Records each in its category's color; the plan sees one layer.
 /// </summary>
-internal sealed class SplitPlan : LayerPlan
+internal sealed class SplitPlan : LayerPlan, ISourceRows
 {
     private readonly List<Part> _parts = [];
     private readonly GatherChannel[] _gathers = [];
@@ -316,6 +316,9 @@ internal sealed class SplitPlan : LayerPlan
     // The gather of the sources' newer versions into the same columns, on the store's queue in a frame that does not wait
     // (row W1b2, Issue #297 Decision 4).
     private GatherMaking? _regather;
+
+    // The keys a hit test reads a chunk's categories through, made at the first (row I2a).
+    private ColumnKeys? _hitKeys;
 
     public SplitPlan(LayerSpec spec, PlanBuild build)
         : this(spec, build, RowRange.All) { }
@@ -516,6 +519,81 @@ internal sealed class SplitPlan : LayerPlan
         {
             part.Plan.AddRanges(sink, ofX, part.Table ?? data);
         }
+    }
+
+    /// <summary>
+    /// Answers for each category's part, numbered by its category (row I2a); a gathered part's rows are taken back to the rows
+    /// they were gathered from (Issue #337 Decision 3). The outline parts repeat the parts' series and do not answer.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var (base0, width) = (scan.SeriesBase, scan.SeriesWidth);
+        foreach (var part in _parts)
+        {
+            if (part.Category < 0)
+            {
+                continue;
+            }
+
+            (scan.SeriesBase, scan.SeriesWidth) = (part.Category, part.Plan.HitWidth);
+            var from = scan.Found;
+            part.Plan.Hit(ref scan);
+            if (part.Table is not null)
+            {
+                scan.Remap(from, this, part.Category);
+            }
+        }
+
+        (scan.SeriesBase, scan.SeriesWidth) = (base0, width);
+    }
+
+    /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
+    long ISourceRows.SourceRow(int key, long gathered)
+    {
+        _hitKeys ??= new ColumnKeys(_categories!);
+        return SourceRow(_hitKeys, _runs!, _starts, Rows, key, gathered);
+    }
+
+    /// <summary>
+    /// Returns the row a key's gathered row came from, or −1 (row I2a): the chunk where the key's gathered position lies, then
+    /// the key's codes counted in it, as <see cref="GatherRows(PlotWorkerPool, RowKeys, CategoryRuns, GatherChannel[], ref long[], RowRange)"/> wrote them. Reads one chunk's keys at most.
+    /// </summary>
+    internal static long SourceRow(RowKeys keys, CategoryRuns runs, long[] starts, RowRange rows, int key, long gathered)
+    {
+        var categories = keys.Column;
+        var n = keys.Count;
+        var (firstChunk, endChunk) = StatWork.ChunksOf(categories, rows);
+        for (var chunk = firstChunk; chunk < endChunk; chunk++)
+        {
+            var (start, count) = (starts[(chunk * n) + key], runs.ChunkCounts[(chunk * n) + key]);
+            if (gathered >= start + count)
+            {
+                continue;
+            }
+
+            var (lo, hi) = StatWork.PartOf(categories, chunk, rows);
+            var scratch = keys.Scratch();
+            try
+            {
+                var codes = keys.Codes(chunk, scratch)[lo..hi];
+                var left = gathered - start;
+                for (var i = 0; i < codes.Length; i++)
+                {
+                    if (codes[i] == key && left-- == 0)
+                    {
+                        return ((long)chunk << Column.ChunkShift) + lo + i;
+                    }
+                }
+            }
+            finally
+            {
+                keys.Return(scratch);
+            }
+
+            return -1;
+        }
+
+        return -1;
     }
 
     public override void Record(RecordContext context)

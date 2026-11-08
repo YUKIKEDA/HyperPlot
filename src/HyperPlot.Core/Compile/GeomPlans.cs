@@ -210,6 +210,8 @@ internal sealed class BandPlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
+    internal override int HitWidth => 2;
+
     /// <summary>Answers for the band's low (series 0) and high (series 1) edges.</summary>
     internal override void Hit(ref HitScan scan)
     {

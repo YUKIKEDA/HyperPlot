@@ -52,6 +52,35 @@ internal sealed class ImagePlan : LayerPlan
             : LayerReadiness.Ready;
     }
 
+    /// <summary>
+    /// Answers with the texel under the cursor, in either mode (row I2a, Issue #337 Decision 4): its center in data units, and
+    /// its element's position in the raster's column (the first channel's for RGBA), whose value the caller reads there.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var image = (ImageLayerSpec)Spec;
+        var raster = image.Raster;
+        var extent = image.ExtentOrDefault;
+        var (xo, xd) = HitScan.AtPixel(scan.X, scan.Along);
+        var (yo, yd) = HitScan.AtPixel(scan.Y, scan.Across);
+        var (x, y) = (xo + xd, yo + yd);
+        var (w, h) = (raster.Width, raster.Height);
+        var upper = image.Origin == RasterOrigin.Upper;
+        var column = Math.Floor((x - extent.Left) / (extent.Right - extent.Left) * w);
+        var row = Math.Floor((upper ? extent.Top - y : y - extent.Bottom) / (extent.Top - extent.Bottom) * h);
+        if (!(column >= 0 && column < w && row >= 0 && row < h))
+        {
+            return;
+        }
+
+        var cx = extent.Left + ((column + 0.5) * (extent.Right - extent.Left) / w);
+        var cy = upper
+            ? extent.Top - ((row + 0.5) * (extent.Top - extent.Bottom) / h)
+            : extent.Bottom + ((row + 0.5) * (extent.Top - extent.Bottom) / h);
+        var distance = scan.Distance(HitScan.PixelOfValue(scan.X, cx), HitScan.PixelOfValue(scan.Y, cy));
+        scan.Add(0, (((long)row * w) + (long)column) * raster.Channels, cx, cy, distance, derived: false, provisional: false);
+    }
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var extent = ((ImageLayerSpec)Spec).ExtentOrDefault;

@@ -35,7 +35,14 @@ internal sealed partial class PlotPlan
             scan.X = spec.Layers[i].SecondaryX ? frames.X2 : frames.X;
             scan.Y = spec.Layers[i].SecondaryY ? frames.Y2 : frames.Y;
             scan.LayerProvisional = layer.Readiness == LayerReadiness.Previous;
+            var from = scan.Found;
             layer.Hit(ref scan);
+
+            // A facet's gathered panel answers in its own rows: taken back to the plot's table (Issue #337 Decision 3).
+            if (target.Data is { Map: not null } data && _facet is { } facet)
+            {
+                scan.Remap(from, facet, data.Key);
+            }
         }
 
         return scan.Found;

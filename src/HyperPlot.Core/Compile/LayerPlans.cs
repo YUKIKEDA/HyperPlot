@@ -952,6 +952,9 @@ internal abstract class LayerPlan
     /// </summary>
     internal virtual void Hit(ref HitScan scan) { }
 
+    /// <summary>Gets the number of series the layer answers a hit test with: 2 for a band's two edges, else 1.</summary>
+    internal virtual int HitWidth => 1;
+
     /// <summary>
     /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
     /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer
