@@ -507,6 +507,153 @@ public sealed class HitTestTests
         Assert.Equal(0, polar.HitTest(new Vector2(320, 180), 50, HitMode.XY, hits));
     }
 
+    /// <summary>
+    /// An image in a gathered facet's panel keeps its element's position: a layer without rows is not taken back through the
+    /// facet's gather (PR #342 review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300 rows of x and y and a category of 3 values interleaved; a line and a 30 × 20 raster whose extent covers the
+    ///   rows with the lower origin, in a facet by the category.
+    ///
+    /// Steps:
+    /// - In panel 1, hit test the centers of 5 texels with XY and a radius of 1 pixel.
+    ///
+    /// Expected:
+    /// - The image's hit (layer 1) has the row (r · 30 + c) of the texel.
+    /// </remarks>
+    [Fact]
+    public void ImageInAFacet_KeepsItsElements()
+    {
+        const int Rows = 300;
+        using var x = Column.Wrap(Enumerable.Range(0, Rows).Select(i => i / 10.0).ToArray());
+        using var y = Column.Wrap(Enumerable.Range(0, Rows).Select(i => (i % 20) * 1.0).ToArray());
+        using var values = Column.Wrap(Enumerable.Range(0, 30 * 20).Select(i => (float)i).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", x)
+            .Add("y", y)
+            .Add("g", Column.Categorical([.. Enumerable.Range(0, Rows).Select(i => "abc"[i % 3].ToString())], ["a", "b", "c"]))
+            .Build();
+        using var engine = Drawn(
+            new PlotSpec
+            {
+                Data = table,
+                Layers =
+                [
+                    new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") },
+                    new ImageLayerSpec { Raster = Raster.Of(values, 30), Origin = RasterOrigin.Lower },
+                ],
+                Facet = Facet.Wrap(table.Cat("g")),
+            }
+        );
+        var panel = new PanelId(0, 1);
+        var hits = new SeriesHit[4];
+        for (var k = 0; k < 5; k++)
+        {
+            var (c, r) = ((k * 5) + 2, (k * 3) + 1);
+            var cursor = engine.ViewToPixel(panel, ViewRange.FromValues(c, c), ViewRange.FromValues(r, r));
+            var found = Math.Min(engine.HitTest(cursor, 1, HitMode.XY, hits), hits.Length);
+            var image = Assert.Single(hits[..found], h => h.Layer == 1);
+            Assert.Equal((long)((r * 30) + c), image.Row);
+        }
+    }
+
+    /// <summary>A figure answers in the plot under the cursor, with rows of that plot's table (design §6.3, Issue #337 Decision 7).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A figure of two plots side by side: a line over 100 rows of y = i, and a line over 200 rows of y = 1,000 + i.
+    ///
+    /// Steps:
+    /// - Hit test the middle of plot 1's panel with X.
+    ///
+    /// Expected:
+    /// - One hit of plot 1, whose y is 1,000 plus its row.
+    /// </remarks>
+    [Fact]
+    public void Figure_AnswersInThePlotUnderTheCursor()
+    {
+        using var small = Column.Wrap(Enumerable.Range(0, 100).Select(i => (double)i).ToArray());
+        using var large = Column.Wrap(Enumerable.Range(0, 200).Select(i => 1000.0 + i).ToArray());
+        var first = DataTable.Create().Add("x", Column.Uniform(0, 1, 100)).Add("y", small).Build();
+        var second = DataTable.Create().Add("x", Column.Uniform(0, 1, 200)).Add("y", large).Build();
+        using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
+        engine.SetFigure(
+            Figure.HConcat(
+                Plot.Create(first).Line(first.Col<double>("x"), first.Col<double>("y")).Build(),
+                Plot.Create(second).Line(second.Col<double>("x"), second.Col<double>("y")).Build()
+            )
+        );
+        engine.RenderFrame();
+        var panel = new PanelId(1, 0);
+        var view = (PanelView2D)engine.CurrentView(panel);
+        var (mx, my) = ((view.X.LowValue + view.X.HighValue) / 2, (view.Y.LowValue + view.Y.HighValue) / 2);
+        var hits = new SeriesHit[2];
+        Assert.Equal(1, engine.HitTest(engine.ViewToPixel(panel, ViewRange.FromValues(mx, mx), ViewRange.FromValues(my, my)), 1, HitMode.X, hits));
+        Assert.Equal(1, hits[0].Plot);
+        Assert.Equal(1000.0 + hits[0].Row, hits[0].Y);
+    }
+
+    /// <summary>
+    /// A layer not drawn yet, whose X statistics the workers have not made, answers nothing; once drawn it answers (Issue
+    /// #341 Decision 4).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread (`testing.mdc`); a line over a uniform x and y, and a line over a stored X of one chunk held on the
+    ///   worker, so that its statistics wait.
+    ///
+    /// Steps:
+    /// - Draw once; hit test the panel's middle with X. Release the chunk; draw until not provisional; hit test again.
+    ///
+    /// Expected:
+    /// - Held: one hit, of layer 0. Released: two hits, of layers 0 and 1.
+    /// </remarks>
+    [Fact]
+    public void PendingLayer_AnswersNothing()
+    {
+        const int Rows = 1000;
+        using var pool = new PlotWorkerPool(1);
+        using var x = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Rows).Select(i => (double)i)], out var storage);
+        using var y = Column.Wrap(Enumerable.Range(0, Rows).Select(i => Math.Sin(i * 0.01)).ToArray());
+        storage.Hold(0);
+        try
+        {
+            var table = DataTable.Create().Add("u", Column.Uniform(0, 1, Rows)).Add("x", x).Add("y", y).Build();
+            using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+            engine.SetPlot(
+                new PlotSpec
+                {
+                    Data = table,
+                    Layers =
+                    [
+                        new LineLayerSpec { X = table.Col<double>("u"), Y = table.Col<double>("y") },
+                        new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") },
+                    ],
+                }
+            );
+            engine.RenderFrame();
+            var hits = new SeriesHit[4];
+            Assert.Equal(1, engine.HitTest(Inside(engine, 0.5, 0.5), 1, HitMode.X, hits));
+            Assert.Equal(0, hits[0].Layer);
+
+            storage.Release(0);
+            Eventually.True(
+                () =>
+                {
+                    engine.RenderFrame();
+                    return !engine.IsProvisional;
+                },
+                "a frame that is not provisional"
+            );
+            Assert.Equal(2, engine.HitTest(Inside(engine, 0.5, 0.5), 1, HitMode.X, hits));
+        }
+        finally
+        {
+            storage.Release(0);
+        }
+    }
+
     private static PlotEngine Drawn(PlotSpec spec)
     {
         var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };

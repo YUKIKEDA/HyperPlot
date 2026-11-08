@@ -294,8 +294,8 @@ internal ref struct HitScan
             return;
         }
 
-        // A box within the tolerance both ways: its extremes stand for its points, as near as the tolerance.
-        if (right - left <= Tolerance && high - low <= Tolerance)
+        // A box whose diagonal is within the tolerance: its extremes stand for its points, as near as the tolerance.
+        if (((right - left) * (right - left)) + ((high - low) * (high - low)) <= Tolerance * Tolerance)
         {
             foreach (var row in (ReadOnlySpan<long>)[minRow, maxRow])
             {

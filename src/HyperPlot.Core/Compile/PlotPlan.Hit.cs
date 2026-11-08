@@ -38,8 +38,9 @@ internal sealed partial class PlotPlan
             var from = scan.Found;
             layer.Hit(ref scan);
 
-            // A facet's gathered panel answers in its own rows: taken back to the plot's table (Issue #337 Decision 3).
-            if (target.Data is { Map: not null } data && _facet is { } facet)
+            // A facet's gathered panel answers in its own rows: taken back to the plot's table (Issue #337 Decision 3). A layer
+            // without rows (an image's element, a user's geom) is drawn the same in every panel and keeps its answer.
+            if (target.Data is { Map: not null } data && _facet is { } facet && !FacetData.Rowless(spec.Layers[i]))
             {
                 scan.Remap(from, facet, data.Key);
             }

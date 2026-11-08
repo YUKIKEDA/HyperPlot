@@ -77,8 +77,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | W1b3 | ラスタのミップマップの更新を待たない（不変条件 7、§4.8、Issue #291 の決定 6、Issue #297 の決定 1）: 最初の構築の間は描かず、`Invalidate` の後は GPU にあるタイルだけを描き、更新が失敗した行を作り直す | done | [#297](https://github.com/YUKIKEDA/HyperPlot/issues/297)（決定）、[#314](https://github.com/YUKIKEDA/HyperPlot/issues/314)（設計）、[#318](https://github.com/YUKIKEDA/HyperPlot/issues/318) |
 | W1c | プロットの要約をアクセシビリティの API に渡す（要件 N-10、§7.1・§7.2）: `PlotEngine.Describe`、`HyperPlotView` の `AutomationPeer` | done | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計）、[#323](https://github.com/YUKIKEDA/HyperPlot/issues/323)（設計）、[#327](https://github.com/YUKIKEDA/HyperPlot/issues/327) |
 | I2a | ヒットテスト（要件 I-2・P-5、§6.3）: `PlotEngine.HitTest`・`SeriesHit`・`HitMode`、系列の層の X の最近傍と XY の最近傍（ピラミッド）、image のテクセル、分けた系列・ファセット・Stat の行 | done | [#337](https://github.com/YUKIKEDA/HyperPlot/issues/337)（設計）、[#341](https://github.com/YUKIKEDA/HyperPlot/issues/341) |
-| I2c | 要素の層（bar・error bar・rect。普通・カテゴリ・積み上げ・浮いた棒・並べた棒）のヒットテスト（要件 I-2、§6.3）。行 I2a から分けた（Issue #341 の決定 2） | not-started | [#341](https://github.com/YUKIKEDA/HyperPlot/issues/341)（決定） |
 | I2b | ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-6）、層のテクスチャでの合成（§5.4、要件 R-5。マウスを動かしただけのフレームでデータ層を描き直さない。行 W1 から移した、Issue #282） | not-started | [#337](https://github.com/YUKIKEDA/HyperPlot/issues/337)（決定） |
+| I2c | 要素の層（bar・error bar・rect。普通・カテゴリ・積み上げ・浮いた棒・並べた棒）のヒットテスト（要件 I-2、§6.3）。行 I2a から分けた（Issue #341 の決定 2） | not-started | [#341](https://github.com/YUKIKEDA/HyperPlot/issues/341)（決定） |
 | I3 | 選択とリンク、ファセットのパネルのビューのリンク（行 G6b）、図のプロットの間のリンク（行 G6c） | not-started | |
 | I4 | 注釈と計測、注記（要件 G-10、§4.6） | not-started | |
 | **D: 散布の大規模化とストリーミング** | | | |
