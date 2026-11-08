@@ -94,6 +94,8 @@ dotnet dotnet-trace collect --profile gc-verbose --output "$scratch\alloc.nettra
 
 The allocation tick fires about every 100 KB, so it shows who allocates most, not every allocation. To find a single allocation that the Zero-Alloc test reports, bisect the frame instead: wrap each stage in `GC.GetAllocatedBytesForCurrentThread()` in a scratch copy of the test, then read the code of the stage that moved.
 
+A probe put into `src` for a measurement (a timer or a counter at each stage) is taken out by writing the file back with a new modification time (`(Get-Item $file).LastWriteTime = Get-Date` after restoring it). A file restored with its old time is older than the build's outputs, so the next incremental build keeps the probe; PR #294 measured a published binary that still had it.
+
 ## What to report
 
 Inclusive shares of the process samples for the functions that own the time, the allocation and GC share, the sample count and rate, the build (NativeAOT or JIT), the data size and the viewport, and the commit. A leaf list alone hides a caller that spends its time in callees. A worker pass is reported on its own thread's samples, apart from the frame's.

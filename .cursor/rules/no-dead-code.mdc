@@ -11,6 +11,8 @@ When a path is removed, remove in the same change everything that only served it
 - Names and comments that carry the words of a removed mechanism change with it.
 - Before a test goes with a removed path, name the claims it was the only test of. A claim the design still states keeps a test.
 - A debug-only helper (`[Conditional("DEBUG")]`) stays only while something calls it.
+- Before a PR is called ready, each member it adds is searched for its callers outside its declaration (`grep` over `src` and `tests`). PR #294 added `LayerIndexes.Forget()` and called it nowhere, and the review found it.
+- What was added for a cause that turned out wrong goes in the push that corrects the cause. PR #294 added a test hook (`WorkersTakeJobs`) for a guessed cause of a Linux failure; the failure came back, the real cause was elsewhere, and the hook went with the guess.
 
 ```text
 # BAD — the CPU fallback of the aggregation is removed; its `useCpu` parameter stays on three callers, always false

@@ -8,7 +8,7 @@ alwaysApply: true
 When a problem is pointed out, do not fix only the cited spot and stop. Before fixing, check whether the same kind of gap exists elsewhere.
 
 - Look in the same file, in callees with the same contract, and in the paired code: the series path and the scatter path, the small-data path and the large-data path (§5.5), the pyramid build and the streaming append that extends it, the D3D11 backend and the GPU backends after it, the WPF host and the hosts after it, the JIT and NativeAOT builds.
-- Examples: an off-by-one at a chunk boundary in the min/max pyramid build and the same in the M4 readout; a texture view released before a resize on the swap-chain path and not on the shared-texture path of the WPF host; a `[DoesNotReturn]` throw helper used in one hot method while its sibling throws inline.
+- Examples: an off-by-one at a chunk boundary in the min/max pyramid build and the same in the M4 readout; a texture view released before a resize on the swap-chain path and not on the shared-texture path of the WPF host; a `[DoesNotReturn]` throw helper used in one hot method while its sibling throws inline. PR #288 made the WPF view poll until the newest read-back copy is read and left the shared-texture path taking an older copy; PR #294's WPF tests found it there.
 - If you find the same kind of problem, fix it together with the cited spot.
 - If you find none, say what you checked and that nothing remains.
 
