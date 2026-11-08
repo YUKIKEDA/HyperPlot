@@ -946,6 +946,13 @@ internal abstract class LayerPlan
     /// </summary>
     public virtual LayerReadiness Poll(LayerIndexes indexes) => LayerReadiness.Ready;
 
+    /// <summary>
+    /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
+    /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer
+    /// keeps none of its code.
+    /// </summary>
+    public virtual bool RecordedProvisional => false;
+
     /// <summary>Starts a learning of both domains, before the layer adds its ranges on each axis.</summary>
     public virtual void BeginLearning() { }
 

@@ -33,6 +33,9 @@ internal sealed class ImagePlan : LayerPlan
     /// <summary>Gets a value indicating whether the last recording drew a tile from an ancestor's part: a provisional image (invariant 4).</summary>
     public bool Provisional { get; private set; }
 
+    /// <inheritdoc />
+    public override bool RecordedProvisional => Provisional;
+
     /// <summary>
     /// Returns whether the image draws (row W1b3): not until its mipmap's first update ends, then the tiles on the GPU while
     /// it is updated again; a failed update fails the layer (Issue #314 Decisions 2 and 4).

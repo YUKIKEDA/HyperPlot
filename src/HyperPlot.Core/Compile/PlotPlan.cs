@@ -881,7 +881,7 @@ internal sealed partial class PlotPlan : IDisposable
 
             // An image that drew a tile from an ancestor waits for tiles the frame's budget left out (design §5.5.3, Issue
             // #319): the frame is provisional, so that the next one sends more.
-            if (!Waits && ImagesProvisional())
+            if (!Waits && RecordedProvisional())
             {
                 IsProvisional = true;
             }
@@ -2356,14 +2356,14 @@ internal sealed partial class PlotPlan : IDisposable
         return false;
     }
 
-    /// <summary>Returns whether an image layer of the last recording drew a tile from an ancestor's part (Issue #319).</summary>
-    private bool ImagesProvisional()
+    /// <summary>Returns whether a layer of the last recording drew a stand-in, an image's tile from an ancestor (Issue #319).</summary>
+    private bool RecordedProvisional()
     {
         foreach (var panel in _panels)
         {
             foreach (var layer in panel.Layers)
             {
-                if (layer is ImagePlan { Provisional: true })
+                if (layer.RecordedProvisional)
                 {
                     return true;
                 }
