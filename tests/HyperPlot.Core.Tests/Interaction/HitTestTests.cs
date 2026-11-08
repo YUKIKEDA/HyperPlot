@@ -600,11 +600,11 @@ public sealed class HitTestTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread (`testing.mdc`); a line over a uniform x and y, and a line over a stored X of one chunk held on the
-    ///   worker, so that its statistics wait.
+    /// - A pool of 1 thread (`testing.mdc`); a line over a uniform x and y, drawn until its pyramid is built; then a plot of
+    ///   it and a line over a stored X of one chunk held on the worker, so that the X statistics wait.
     ///
     /// Steps:
-    /// - Draw once; hit test the panel's middle with X. Release the chunk; draw until not provisional; hit test again.
+    /// - Draw the two lines once; hit test the panel's middle with X. Release the chunk; draw until not provisional; hit test again.
     ///
     /// Expected:
     /// - Held: one hit, of layer 0. Released: two hits, of layers 0 and 1.
@@ -616,21 +616,27 @@ public sealed class HitTestTests
         using var pool = new PlotWorkerPool(1);
         using var x = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Rows).Select(i => (double)i)], out var storage);
         using var y = Column.Wrap(Enumerable.Range(0, Rows).Select(i => Math.Sin(i * 0.01)).ToArray());
-        storage.Hold(0);
         try
         {
             var table = DataTable.Create().Add("u", Column.Uniform(0, 1, Rows)).Add("x", x).Add("y", y).Build();
             using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
-            engine.SetPlot(
-                new PlotSpec
+            var drawn = new LineLayerSpec { X = table.Col<double>("u"), Y = table.Col<double>("y") };
+
+            // Layer 0's pyramid is built first: on the pool's one worker, a held X statistics job taken before it would hold
+            // it too, and layer 0 would have nothing to answer with (Issue #345).
+            engine.SetPlot(new PlotSpec { Data = table, Layers = [drawn] });
+            Eventually.True(
+                () =>
                 {
-                    Data = table,
-                    Layers =
-                    [
-                        new LineLayerSpec { X = table.Col<double>("u"), Y = table.Col<double>("y") },
-                        new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") },
-                    ],
-                }
+                    engine.RenderFrame();
+                    return !engine.IsProvisional;
+                },
+                "layer 0's pyramid"
+            );
+
+            storage.Hold(0);
+            engine.SetPlot(
+                new PlotSpec { Data = table, Layers = [drawn, new LineLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") }] }
             );
             engine.RenderFrame();
             var hits = new SeriesHit[4];

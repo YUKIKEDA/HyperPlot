@@ -11,6 +11,7 @@ When a problem is pointed out, do not fix only the cited spot and stop. Before f
 - Examples: an off-by-one at a chunk boundary in the min/max pyramid build and the same in the M4 readout; a texture view released before a resize on the swap-chain path and not on the shared-texture path of the WPF host; a `[DoesNotReturn]` throw helper used in one hot method while its sibling throws inline. PR #288 made the WPF view poll until the newest read-back copy is read and left the shared-texture path taking an older copy; PR #294's WPF tests found it there.
 - If you find the same kind of problem, fix it together with the cited spot.
 - If you find none, say what you checked and that nothing remains.
+- A new path over data an older path already handles takes the older path's conditions with it. PR #342's hit test took a facet's gathered rows back to the plot's table for every layer, an image's element positions too; the drawing path (`TakeNodes`) already left the layers without rows (`FacetData.Rowless`) out, and the review found the difference.
 
 ```text
 # BAD — fixes the NaN skip in the min/max build of the pyramid; the reply says "fixed"
