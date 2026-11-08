@@ -2152,11 +2152,11 @@ internal sealed partial class PlotPlan : IDisposable
             }
         }
 
-        // The rasters' mipmaps: the rows of the chunks that changed, on the workers (design §3.7, row G9). The update waits in
-        // a frame that does not wait too: row W1b2 (invariant 7).
+        // The rasters' mipmaps: the rows of the chunks that changed, on the workers (design §3.7, row G9). A frame that does
+        // not wait starts the update and looks at it; its image layers draw what is on the GPU meanwhile (row W1b3).
         foreach (var mipmap in _rasters.Values)
         {
-            mipmap.Update(_pool);
+            mipmap.Update(_pool, Waits);
         }
 
         foreach (var panel in _panels)

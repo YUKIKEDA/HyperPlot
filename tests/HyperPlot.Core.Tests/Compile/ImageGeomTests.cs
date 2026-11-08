@@ -392,7 +392,7 @@ public sealed class ImageGeomTests : IDisposable
     {
         using var column = Column.Wrap(new float[300 * 300]);
         using var mipmap = Raster.Of(column, 300).MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         var cache = new ResidencyCache { Unbounded = true };
         cache.BeginFrame();
         ResidencyCache.TileKey Key(int column, long stamp = 1, double origin = 0) =>

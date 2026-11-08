@@ -79,7 +79,7 @@ public sealed class ImageTests : IDisposable
         var values = Enumerable.Range(0, Columns).Select(i => (double)i).ToArray();
         using var column = Column.Wrap(values.Select(v => (float)v).ToArray());
         using var mipmap = Raster.Of(column, Columns).MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         using var backend = D3D11Backend.Create(useWarp: true);
         const int Width = 120;
         using var target = backend.CreateRenderTarget(new RenderTargetDescription(Width, Height));
@@ -134,7 +134,7 @@ public sealed class ImageTests : IDisposable
 
         using var column = Column.Wrap(new byte[] { 200, 100, 50, 128 });
         using var mipmap = Raster.Rgba(column, 1).MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         using var backend = D3D11Backend.Create(useWarp: true);
         using var target = backend.CreateRenderTarget(new RenderTargetDescription(16, Height));
         backend.Images.BeginFrame();
@@ -175,7 +175,7 @@ public sealed class ImageTests : IDisposable
         double[] values = [0, 0.2, 0.5, 0.9, 1, 0.4];
         using var column = Column.Wrap(values.Select(v => (float)v).ToArray());
         using var mipmap = Raster.Of(column, values.Length).MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         using var backend = D3D11Backend.Create(useWarp: true);
         using var target = backend.CreateRenderTarget(new RenderTargetDescription(values.Length * 16, Height));
         var first = DrawAndRead();
@@ -225,7 +225,7 @@ public sealed class ImageTests : IDisposable
     {
         using var column = Column.Wrap(values.Select(v => (float)v).ToArray());
         using var mipmap = Raster.Of(column, values.Length).MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         using var backend = D3D11Backend.Create(useWarp: true);
         var width = values.Length * 16;
         using var target = backend.CreateRenderTarget(new RenderTargetDescription(width, Height));

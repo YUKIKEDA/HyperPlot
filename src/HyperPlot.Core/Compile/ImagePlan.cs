@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.ExceptionServices;
 using HyperPlot.Rendering;
 
 namespace HyperPlot;
@@ -31,6 +32,22 @@ internal sealed class ImagePlan : LayerPlan
 
     /// <summary>Gets a value indicating whether the last recording drew a tile from an ancestor's part: a provisional image (invariant 4).</summary>
     public bool Provisional { get; private set; }
+
+    /// <summary>
+    /// Returns whether the image draws (row W1b3): not until its mipmap's first update ends, then the tiles on the GPU while
+    /// it is updated again; a failed update fails the layer (Issue #314 Decisions 2 and 4).
+    /// </summary>
+    public override LayerReadiness Poll(LayerIndexes indexes)
+    {
+        if (_mipmap.Fault is { } fault)
+        {
+            ExceptionDispatchInfo.Throw(fault);
+        }
+
+        return !_mipmap.Built ? LayerReadiness.Pending
+            : _mipmap.Updating ? LayerReadiness.Previous
+            : LayerReadiness.Ready;
+    }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -216,19 +233,21 @@ internal sealed class ImagePlan : LayerPlan
         return (instance, origin);
     }
 
-    private int Slot(ResidencyCache cache, int level, int column, int row, double origin, bool rgba) =>
-        cache.Request(
-            new ResidencyCache.TileKey(
-                _mipmap,
-                rgba ? ResidencyCache.Format.Rgba : ResidencyCache.Format.Float,
-                level,
-                column,
-                row,
-                _mipmap.Stamp(level, row),
-                origin
-            ),
-            _mipmap
+    private int Slot(ResidencyCache cache, int level, int column, int row, double origin, bool rgba)
+    {
+        var key = new ResidencyCache.TileKey(
+            _mipmap,
+            rgba ? ResidencyCache.Format.Rgba : ResidencyCache.Format.Float,
+            level,
+            column,
+            row,
+            _mipmap.Stamp(level, row),
+            origin
         );
+
+        // A mipmap being updated sends nothing, its level 0 included (Issue #314 Decisions 2 and 3).
+        return _mipmap.Updating ? cache.Find(key) : cache.Request(key, _mipmap);
+    }
 
     /// <summary>A visible tile: its column and row at the drawn level, and its squared distance from the middle in tiles.</summary>
     private readonly record struct Tile(int Column, int Row, double Distance);

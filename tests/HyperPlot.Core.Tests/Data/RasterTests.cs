@@ -84,7 +84,7 @@ public sealed class RasterTests : IDisposable
         Check(Raster.Of(longColumn, Width), static a => (long)Rounded([.. a.Select(v => (Int128)v)]));
 
         using var image = (RasterPyramid<byte>)Raster.Rgba(byteColumn, Width).MakePyramid();
-        image.Update(_pool);
+        image.Update(_pool, wait: true);
         for (var level = 1; level < image.LevelCount; level++)
         {
             var (w, h) = image.Sizes[level];
@@ -134,19 +134,19 @@ public sealed class RasterTests : IDisposable
         using var column = Column.Wrap(values);
         var raster = Raster.Of(column, Width);
         using var mipmap = (RasterPyramid<float>)raster.MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         var all = mipmap.TilesWritten;
         var firstStamp = mipmap.Stamp(0, 0);
 
         values[(1500 * Width) + 7] = 5000;
         raster.Invalidate(1500, 1);
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         Assert.InRange(mipmap.TilesWritten, 1, (all / 2) + 4);
         Assert.Equal(firstStamp, mipmap.Stamp(0, 0));
         Assert.NotEqual(firstStamp, mipmap.Stamp(0, 1500 / 256));
 
         using var fresh = (RasterPyramid<float>)raster.MakePyramid();
-        fresh.Update(_pool);
+        fresh.Update(_pool, wait: true);
         for (var level = 1; level < mipmap.LevelCount; level++)
         {
             var (w, h) = mipmap.Sizes[level];
@@ -178,7 +178,7 @@ public sealed class RasterTests : IDisposable
         const int Height = 260;
         using var column = Column.Wrap(Enumerable.Range(0, Width * Height).Select(i => (float)i).ToArray());
         using var mipmap = Raster.Of(column, Width).MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         var face = new float[258 * 258];
         foreach (var (tx, ty) in new[] { (1, 0), (0, 1) })
         {
@@ -198,7 +198,7 @@ public sealed class RasterTests : IDisposable
         where T : unmanaged, System.Numerics.INumber<T>
     {
         using var mipmap = (RasterPyramid<T>)raster.MakePyramid();
-        mipmap.Update(_pool);
+        mipmap.Update(_pool, wait: true);
         Assert.True(mipmap.Sizes[^1].Width <= 256 && mipmap.Sizes[^1].Height <= 256);
         Assert.True(mipmap.Sizes[^2].Width > 256 || mipmap.Sizes[^2].Height > 256);
         var above = 0L;

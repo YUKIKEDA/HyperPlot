@@ -23,7 +23,7 @@ internal sealed unsafe class RasterPyramid<T> : RasterPyramid
         }
     }
 
-    public override void Dispose()
+    private protected override void FreeLevels()
     {
         for (var level = 1; level < _levels.Length; level++)
         {
