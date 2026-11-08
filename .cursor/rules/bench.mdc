@@ -105,6 +105,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 - Named baselines: one per milestone, recorded with the commit, the command, and the data generator's seed. A measurement quoted in an ADR, a comment, or a PR is recorded once and quoted from there.
 - Do not add SIMD, caching, pooling, or unsafe code for speed unless a measurement shows the path is the bottleneck.
 - A cache measures with every caller that reads it, on a change of one item in a large set (one appended chunk, one moved series), not only on a full rebuild. Two callers that evict each other's entries make a one-item change cost a full rebuild.
+- A search is measured on the inputs that make it work hardest, not only on uniform ones: PR #342's hit test was first timed at cursors spread over the panel, mostly far from the lines, and the costly case of a hover, a cursor on a line, was added after. An approximation's bound is checked by the formula it rests on: the same PR stood a box in for its points when its width and height were each within half a pixel, a bound of 0.71 pixels by its diagonal, while the design said half a pixel.
 
 ```text
 # BAD — "M4 readout: 0.4 ms" (no data size, no viewport, no build, no baseline)
