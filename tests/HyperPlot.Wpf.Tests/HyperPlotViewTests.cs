@@ -48,7 +48,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var image = Assert.IsType<D3DImage>(view.Shown);
             Assert.Equal((view.Engine.Width, view.Engine.Height), (image.PixelWidth, image.PixelHeight));
             using var d3d9 = new D3D9Reader();
-            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, d3d9);
         });
 
     /// <summary>
@@ -161,7 +161,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             view.Backend.RemovedReason = null;
             DrawUntilShown(view);
             using var d3d9 = new D3D9Reader();
-            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, d3d9);
 
             var asked = 0;
             view.Host.D3D9!.DeviceState = () => asked++ == 0 ? unchecked((int)0x88760868) : 0;
@@ -177,7 +177,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
 
             Assert.True(asked >= 1);
             Assert.NotEqual(0, view.ShownHandle);
-            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, d3d9);
         });
 
     /// <summary>
@@ -226,7 +226,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(d3d9.HasDevice);
             _ = Assert.IsType<D3DImage>(view.Shown);
             using var reader = new D3D9Reader();
-            Assert.Equal(Target(view), Rgba(reader.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, reader);
         });
 
     /// <summary>
@@ -275,7 +275,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
                 (view.Engine.Width, view.Engine.Height)
             );
             using var d3d9 = new D3D9Reader();
-            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, d3d9);
         });
 
     /// <summary>
@@ -324,7 +324,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(view.Hooked);
             DrawUntilShown(view);
             using var d3d9 = new D3D9Reader();
-            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, d3d9);
         });
 
     /// <summary>
@@ -374,7 +374,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(view.Hooked);
             DrawUntilShown(view);
             using var d3d9 = new D3D9Reader();
-            Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
+            AssertShown(view, d3d9);
 
             static void AssertSize(HyperPlotView view)
             {
@@ -736,6 +736,35 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(scene.View.Focusable);
             Assert.True(KeyboardNavigation.GetIsTabStop(scene.View));
         });
+
+    /// <summary>
+    /// Asserts that the shared texture the view shows holds the engine's target, made straight (design §7.2). On a mismatch the
+    /// message says what Issue #299 needs to tell an unfinished copy from another texture: the surface's textures and copies,
+    /// whether a read after 200 ms, and one after those 200 ms and a pump of the dispatcher, match, whether the frame was provisional, and
+    /// whether the view uses the shared textures and what decides it (the backend's adapter, Direct3D 9Ex's adapter and device,
+    /// the front buffer), and whether it waits for the tick. The pause is on the failure's path only.
+    /// </summary>
+    private static void AssertShown(HyperPlotView view, D3D9Reader reader)
+    {
+        var (width, height) = (view.Engine.Width, view.Engine.Height);
+        var expected = Target(view);
+        var shown = view.ShownHandle;
+        var first = Rgba(reader.Read(shown, width, height));
+        if (expected.AsSpan().SequenceEqual(first))
+        {
+            return;
+        }
+
+        var state = view.SharedSurface?.Describe() ?? "no surface";
+        var zeros = first.All(b => b == 0);
+        Thread.Sleep(200);
+        var again = Rgba(reader.Read(shown, width, height)).AsSpan().SequenceEqual(expected);
+        WpfThread.Pump();
+        var afterPump = Rgba(reader.Read(shown, width, height)).AsSpan().SequenceEqual(expected);
+        Assert.Fail(
+            $"The shown texture {shown} does not hold the target's pixels (Issue #299): {state}; all 0 {zeros}; equal after 200 ms {again}; equal after 200 ms and a pump {afterPump}; provisional {view.Engine.IsProvisional}; shared textures {view.UsesSharedTextures} (backend WARP {view.Backend.IsWarp}, adapter {view.Backend.AdapterLuid}, Direct3D 9Ex's {view.Host.D3D9?.AdapterLuid}, its device {view.Host.D3D9?.HasDevice}, front buffer {view.FrontBufferAvailable}, the test's {view.FrontBuffer?.ToString() ?? "none"}); waits for the tick {view.Hooked}."
+        );
+    }
 
     private static void DrawUntilShown(HyperPlotView view)
     {
