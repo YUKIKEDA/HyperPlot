@@ -10,7 +10,7 @@ namespace HyperPlot;
 public sealed class PlotWorkerPool : IDisposable
 {
     private static readonly Lazy<PlotWorkerPool> _shared = new(
-        () => new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1), isShared: true),
+        () => new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1), isShared: true, WarmsGate),
         LazyThreadSafetyMode.ExecutionAndPublication
     );
 
@@ -29,9 +29,16 @@ public sealed class PlotWorkerPool : IDisposable
     /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
     /// <param name="threadCount">The number of threads, at least 1.</param>
     public PlotWorkerPool(int threadCount)
-        : this(threadCount, isShared: false) { }
+        : this(threadCount, isShared: false, WarmsGate) { }
 
-    private PlotWorkerPool(int threadCount, bool isShared)
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PlotWorkerPool"/> class that makes its lock's wait event when it is made, or
+    /// not (Issue #304). Tests only: the test of the warm-up makes a pool of each kind.
+    /// </summary>
+    internal PlotWorkerPool(int threadCount, bool warmGate)
+        : this(threadCount, isShared: false, warmGate) { }
+
+    private PlotWorkerPool(int threadCount, bool isShared, bool warmGate)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(threadCount);
         _isShared = isShared;
@@ -63,9 +70,13 @@ public sealed class PlotWorkerPool : IDisposable
             throw;
         }
 
-        if (WarmsGate)
+        if (warmGate)
         {
-            WarmGate();
+            // This thread waits on the lock while another holds it: the runtime makes the lock's wait event now.
+            var holder = HoldGate(TimeSpan.FromMilliseconds(20));
+            lock (_gate) { }
+
+            holder.Join();
         }
     }
 
@@ -407,17 +418,21 @@ public sealed class PlotWorkerPool : IDisposable
     /// </summary>
     internal Action<bool>? TestTook { get; set; }
 
-    /// <summary>Makes the lock's wait event now (<see cref="WarmsGate"/>): this thread waits on the lock while a helper holds it.</summary>
-    private void WarmGate()
+    /// <summary>
+    /// Holds the pool's lock on a new thread for a time, and returns that thread once it holds it (Issue #304). Tests only, and
+    /// the warm-up of <see cref="WarmsGate"/>: a thread that takes the lock meanwhile waits on it.
+    /// </summary>
+    internal Thread HoldGate(TimeSpan duration)
     {
         using var held = new ManualResetEventSlim();
-        using var release = new ManualResetEventSlim();
         var holder = new Thread(() =>
         {
+            // A wait on an event no one sets ends after the time: the holder keeps the lock that long.
+            using var never = new ManualResetEventSlim();
             lock (_gate)
             {
                 held.Set();
-                _ = release.Wait(TimeSpan.FromSeconds(10));
+                _ = never.Wait(duration);
             }
         })
         {
@@ -425,10 +440,7 @@ public sealed class PlotWorkerPool : IDisposable
         };
         holder.Start();
         held.Wait();
-        using var timer = TimeProvider.System.CreateTimer(_ => release.Set(), null, TimeSpan.FromMilliseconds(20), Timeout.InfiniteTimeSpan);
-        lock (_gate) { }
-
-        holder.Join();
+        return holder;
     }
 
     /// <summary>Wakes the threads to look for work. Neither allocates nor waits (design §3.3).</summary>
