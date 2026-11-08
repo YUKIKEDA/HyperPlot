@@ -120,8 +120,8 @@ public sealed class HeadlessRenderer : IDisposable
         _plan!.SetViews(views);
 
         // A headless image is the same whenever it is drawn: every visible tile of an image is sent, past a frame's budget
-        // (design §4.8, row G9).
-        _backend.Images.Unbounded = true;
+        // (design §4.8, row G9). An engine's frame, which does not wait, keeps the budget (Issue #319).
+        _backend.Images.Unbounded = Waits;
         try
         {
             var list = _plan.Render(plot);
@@ -249,7 +249,7 @@ public sealed class HeadlessRenderer : IDisposable
         _plan?.Dispose();
         _plan = null;
         _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
-        _backend.Images.Unbounded = true;
+        _backend.Images.Unbounded = Waits;
         try
         {
             _figure.Render(figure, views);

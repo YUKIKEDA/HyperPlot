@@ -1,4 +1,5 @@
 using HyperPlot.Interaction;
+using HyperPlot.Rendering;
 
 namespace HyperPlot.Tests;
 
@@ -331,6 +332,53 @@ public sealed class MipmapUpdateTests
         data.Raster.Invalidate(0, Height);
         engine.RenderFrame();
         Eventually.True(() => mipmap.Freed, "the levels to be freed");
+    }
+
+    /// <summary>
+    /// An engine's frames send an image's tiles within a frame's budget, and stay provisional until every visible tile is
+    /// sent (design §5.5.3, Issue #319); an engine that waits sends them all at its first frame.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread; the raster on a 1,920 × 1,080 target, whose visible tiles are more than a frame's budget holds.
+    ///
+    /// Steps:
+    /// - Draw until a frame is not provisional, saying the last frame's tiles were sent before each (the null backend sends
+    ///   nothing), and keep the most bytes a frame sends and the number of frames that send. Draw the plot with an engine
+    ///   that waits, once.
+    ///
+    /// Expected:
+    /// - No frame sends more than the budget (4 MB), more than one frame sends, and the last frame draws no tile from an
+    ///   ancestor. The waiting engine's first frame sends more than the budget.
+    /// </remarks>
+    [Fact]
+    public void Frames_SendWithinTheBudget()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var data = new Data();
+        using var engine = new PlotEngine(new NullBackend(), 1920, 1080, 1, pool);
+        engine.SetPlot(data.Spec);
+        var (most, sending) = (0L, 0);
+        Eventually.True(
+            () =>
+            {
+                engine.Plan?.Images.Sent();
+                engine.RenderFrame();
+                var bytes = engine.Plan!.Images.BytesThisFrame;
+                (most, sending) = (Math.Max(most, bytes), sending + (bytes > 0 ? 1 : 0));
+                return !engine.IsProvisional;
+            },
+            "a frame that is not provisional"
+        );
+
+        Assert.True(most <= ResidencyCache.FrameUpload, $"{most} bytes in a frame");
+        Assert.True(sending > 1, $"{sending} frames sent");
+        Assert.False(((ImagePlan)engine.Plan!.Layers[0]).Provisional);
+
+        using var waiting = new PlotEngine(new NullBackend(), 1920, 1080, 1, pool) { WaitsForIndexes = true };
+        waiting.SetPlot(data.Spec);
+        waiting.RenderFrame();
+        Assert.True(waiting.Plan!.Images.BytesThisFrame > ResidencyCache.FrameUpload);
     }
 
     /// <summary>A provisional frame during an update allocates nothing once warm (invariant 3, design §4.8).</summary>
