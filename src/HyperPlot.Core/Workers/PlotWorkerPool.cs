@@ -389,12 +389,6 @@ public sealed class PlotWorkerPool : IDisposable
     internal bool CallerTakesJobs { get; set; } = true;
 
     /// <summary>
-    /// Gets or sets a value indicating whether the workers take a frame's jobs. Tests only: a test that holds a chunk on the
-    /// workers turns it off, so that an M4 job's reads, which a frame may wait for (design §8.1), stay on the caller.
-    /// </summary>
-    internal bool WorkersTakeJobs { get; set; } = true;
-
-    /// <summary>
     /// Gets or sets a test hook called on a worker after it ran a job it took: true for a frame job, false for a chunk. A
     /// chunk's call comes after the chunk is built, so after a completion that chunk ends.
     /// </summary>
@@ -475,7 +469,7 @@ public sealed class PlotWorkerPool : IDisposable
         // The jobs of a frame come before pyramid chunks (design §8.1). With no batch, the build path takes no lock; a batch
         // linked just after this read wakes the threads, so it is not missed.
         M4Batch? batch = null;
-        if (WorkersTakeJobs && Volatile.Read(ref _batches) is not null)
+        if (Volatile.Read(ref _batches) is not null)
         {
             lock (_gate)
             {

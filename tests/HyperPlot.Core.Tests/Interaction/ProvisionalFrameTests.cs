@@ -5,8 +5,7 @@ namespace HyperPlot.Tests;
 /// <summary>
 /// The engine's frames that do not wait (design §4.8 "`PlotEngine` の待たない描き方", §7.1, §10 "暫定の表示（W1b1）", row W1b1):
 /// what a frame draws while the workers build, that it is provisional and asks for the next, and how a layer's failed work is
-/// told and tried again. The workers are held with <see cref="TestStorage{T}"/>; they take no frame job, so that M4's reads of
-/// a held chunk's ends, a frame's own work that it may wait for (design §8.1), stay on the test's thread.
+/// told and tried again. The workers are held with <see cref="TestStorage{T}"/>.
 /// </summary>
 public sealed class ProvisionalFrameTests
 {
@@ -37,7 +36,7 @@ public sealed class ProvisionalFrameTests
     [InlineData(true)]
     public void Pyramid_Building_DrawsProvisionalAndLearnsAsItFills(bool zoomed)
     {
-        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var pool = new PlotWorkerPool(1);
         using var y = TestStorage<float>.MakeColumn(TwoChunks(), out var storage);
         storage.Hold(1);
         var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();
@@ -114,7 +113,7 @@ public sealed class ProvisionalFrameTests
     public void XWithoutStatistics_DrawsOnceTheyAreThere()
     {
         const int Length = 1000;
-        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var pool = new PlotWorkerPool(1);
         using var x = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Length).Select(i => (double)i)], out var storage);
         using var y = Column.Wrap(Enumerable.Range(0, Length).Select(i => MathF.Sin(i * 0.02f)).ToArray());
         storage.Hold(0);
@@ -170,7 +169,7 @@ public sealed class ProvisionalFrameTests
         ];
         foreach (var make in plots)
         {
-            using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+            using var pool = new PlotWorkerPool(1);
             using var y = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Length).Select(i => 1.0 + (i % 7))], out var storage);
             storage.Hold(0);
             var table = DataTable
@@ -269,7 +268,7 @@ public sealed class ProvisionalFrameTests
         };
         foreach (var (name, make, decreasing, error) in cases)
         {
-            using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+            using var pool = new PlotWorkerPool(1);
             var values = Enumerable.Range(0, Length).Select(i => decreasing ? (double)(Length - i) : i).ToArray();
             using var bad = TestStorage<double>.MakeColumn(values, out var storage);
             using var y = Column.Wrap(Enumerable.Range(0, Length).Select(i => 1.0 + (i % 7)).ToArray());
@@ -343,7 +342,7 @@ public sealed class ProvisionalFrameTests
     public void Failure_TriedAgainWhenTheLayersAreMadeAgain()
     {
         const int Length = 1000;
-        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var pool = new PlotWorkerPool(1);
         using var bad = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Length).Select(i => (double)i)], out var storage);
         using var y = Column.Wrap(Enumerable.Range(0, Length).Select(i => 1.0 + (i % 7)).ToArray());
         storage.FailOn(0, fail: true);
@@ -397,7 +396,7 @@ public sealed class ProvisionalFrameTests
         var codes = Enumerable.Range(0, Length).Select(i => names[i % 4]).ToArray();
         foreach (var categorical in (ReadOnlySpan<bool>)[true, false])
         {
-            using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+            using var pool = new PlotWorkerPool(1);
             using var x = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Length).Select(i => (double)i)], out var storage);
             storage.Hold(0);
             using var blocker = categorical ? pool.BuildPyramid(x) : null;
@@ -444,7 +443,7 @@ public sealed class ProvisionalFrameTests
     [Fact]
     public void Failure_InAFigure_NamesThePlot()
     {
-        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var pool = new PlotWorkerPool(1);
         using var good = Column.Wrap(Enumerable.Range(0, 100).Select(i => (double)i).ToArray());
         using var bad = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, 100).Select(i => (double)i)], out var storage);
         storage.FailOn(0, fail: true);
@@ -479,44 +478,48 @@ public sealed class ProvisionalFrameTests
     ///   reads it, and 10 frames more.
     ///
     /// Steps:
-    /// - Count the bytes this thread allocates over 20 frames, each zooming the view by a pixel.
+    /// - Count the bytes this thread allocates over 20 frames. Each provisional frame learns, lays out, extracts, and records
+    ///   again; the view is not moved, so that no new tick label comes, whose shaping is a cache's first entry (row I1c).
+    ///   Release chunk 1 at the end, so that the pyramid's disposal does not wait for the hold's watchdog.
     ///
     /// Expected:
-    /// - 0 bytes, and each frame is provisional.
+    /// - 0 bytes, and each frame is provisional and learned again.
     /// </remarks>
     [Fact]
     public void ProvisionalFrames_AllocateNothingOnceWarm()
     {
-        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var pool = new PlotWorkerPool(1);
         using var y = TestStorage<float>.MakeColumn(TwoChunks(), out var storage);
         storage.Hold(1);
         var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();
         using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
-        engine.Options.ZoomAnimation = TimeSpan.Zero;
-        engine.SetPlot(Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build());
-        engine.RenderFrame();
-        storage.WaitForWorker(1);
-        for (var i = 0; i < 10; i++)
+        try
         {
-            Frame(engine);
-        }
-
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        var provisional = true;
-        for (var i = 0; i < 20; i++)
-        {
-            Frame(engine);
-            provisional &= engine.IsProvisional;
-        }
-
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        Assert.True(provisional);
-        Assert.Equal(0, allocated);
-
-        static void Frame(PlotEngine engine)
-        {
-            engine.Views.ZoomAt(Panel, new System.Numerics.Vector2(320, 180), 1.001, animate: false);
+            engine.SetPlot(Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build());
             engine.RenderFrame();
+            storage.WaitForWorker(1);
+            for (var i = 0; i < 10; i++)
+            {
+                engine.RenderFrame();
+            }
+
+            var learnings = engine.Plan!.Learnings;
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            var provisional = true;
+            for (var i = 0; i < 20; i++)
+            {
+                engine.RenderFrame();
+                provisional &= engine.IsProvisional;
+            }
+
+            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+            Assert.True(provisional);
+            Assert.Equal(learnings + 20, engine.Plan.Learnings);
+            Assert.Equal(0, allocated);
+        }
+        finally
+        {
+            storage.Release(1);
         }
     }
 
