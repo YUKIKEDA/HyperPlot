@@ -30,13 +30,19 @@ public sealed partial class HyperPlotView
 
     /// <summary>
     /// Returns the view's name for the accessibility API: the application's <see cref="AutomationProperties.NameProperty"/>,
-    /// or the engine's summary of the last frame; empty before the first frame.
+    /// or the engine's summary of the last frame; empty before the first frame and while <see cref="Spec"/> is null, which
+    /// shows nothing.
     /// </summary>
     internal string AccessibleName()
     {
         if (AutomationProperties.GetName(this) is { Length: > 0 } name)
         {
             return name;
+        }
+
+        if (Spec is null)
+        {
+            return string.Empty;
         }
 
         try
@@ -60,8 +66,18 @@ public sealed partial class HyperPlotView
         Engine.ProvisionalChanged += Settle;
     }
 
-    /// <summary>Marks the spec's change, told once the frame that draws it is drawn (Issue #323 Decision 1).</summary>
-    private void SpecChangedForSummary() => _specToTell = true;
+    /// <summary>
+    /// Marks the spec's change, told once the frame that draws it is drawn (Issue #327 Decision 4); a null spec, which draws
+    /// no frame, is told now, as an empty name (PR #329 review).
+    /// </summary>
+    private void SpecChangedForSummary()
+    {
+        _specToTell = Spec is not null;
+        if (Spec is null)
+        {
+            TellName();
+        }
+    }
 
     /// <summary>Tells a new spec's summary after the frame that drew it.</summary>
     private void FrameDrawnForSummary()

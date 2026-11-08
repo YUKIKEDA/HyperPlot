@@ -55,11 +55,13 @@ public sealed class AccessibilityTests(WpfThread wpf)
     ///
     /// Steps:
     /// - Draw. Set the view twice, 300 ms apart, drawing after each; move the clock 499 ms and pump; move it 1 ms more and
-    ///   pump. Take the listener away; set the view; move the clock 500 ms and pump.
+    ///   pump. Set a null spec; set the plot again and draw. Take the listener away; set the view; move the clock 500 ms and
+    ///   pump.
     ///
     /// Expected:
     /// - 1 change told after the first frame. None more after the views, the frames, and the first 499 ms; a second once
-    ///   500 ms passed since the last view. None more without a listener.
+    ///   500 ms passed since the last view. The null spec tells a third at once, with an empty name; the plot again a
+    ///   fourth after its frame. None more without a listener.
     /// </remarks>
     [Fact]
     public void Changes_AreToldOnceSettled() =>
@@ -84,12 +86,20 @@ public sealed class AccessibilityTests(WpfThread wpf)
             WpfThread.Pump();
             Assert.Equal(2, scene.View.NameChangesTold);
 
+            scene.View.Spec = null;
+            Assert.Equal(3, scene.View.NameChangesTold);
+            Assert.Equal(string.Empty, scene.View.AccessibleName());
+
+            scene.View.Spec = scene.Plot;
+            scene.Draw();
+            Assert.Equal(4, scene.View.NameChangesTold);
+
             scene.View.ListenerExists = () => false;
             scene.SetView(200, 300);
             scene.Draw();
             clock.Advance(HyperPlotView.SettleTime);
             WpfThread.Pump();
-            Assert.Equal(2, scene.View.NameChangesTold);
+            Assert.Equal(4, scene.View.NameChangesTold);
         });
 
     /// <summary>
@@ -158,7 +168,8 @@ public sealed class AccessibilityTests(WpfThread wpf)
             // The dispatcher's backend, as the views of HyperPlotViewTests take: a backend of its own each made the device-loss
             // and shared-texture tests that follow fail in most runs (Issue #299).
             View = new HyperPlotView(HostResources.ForCurrentThread().Backend, clock, _pool) { ListenerExists = () => listener };
-            View.Spec = HyperPlot.Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build();
+            Plot = HyperPlot.Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build();
+            View.Spec = Plot;
             Window = new Window
             {
                 Width = 320,
@@ -174,6 +185,8 @@ public sealed class AccessibilityTests(WpfThread wpf)
         }
 
         public HyperPlotView View { get; }
+
+        public PlotSpec Plot { get; }
 
         public Window Window { get; }
 

@@ -73,14 +73,15 @@ public sealed class DescribeTests
     /// <remarks>
     /// Preconditions:
     /// - Bars over 4 categories "a" to "d" on a band x. A line over a time x of 2026-01-01 to 2026-01-08 in seconds. The bars in
-    ///   polar with theta = x. A line with x titled "across", flipped.
+    ///   polar with theta = x. A line with x titled "across", flipped. Two lines, one on a secondary y titled "humidity" over [0, 50].
     ///
     /// Steps:
     /// - Draw each and describe.
     ///
     /// Expected:
     /// - "X axis: 4 categories, from "a" to "d"."; the time ends are the label the time format writes for 2026-01-01 and
-    ///   2026-01-08 at the axis's finest tick boundary; "Angle axis" and "Radius axis"; "X axis "across"".
+    ///   2026-01-08 at the axis's finest tick boundary; "Angle axis" and "Radius axis"; "X axis "across""; "Secondary Y axis
+    ///   "humidity": from 0 to 50".
     /// </remarks>
     [Fact]
     public void Axes_AreWrittenAsTheyAreRead()
@@ -118,6 +119,24 @@ public sealed class DescribeTests
             Coord = Coord.Cartesian(flip: true),
         };
         Assert.Contains("X axis \"across\": from", Describe(flipped), StringComparison.Ordinal);
+
+        var secondary = new PlotSpec
+        {
+            Data = t,
+            Layers =
+            [
+                new LineLayerSpec { X = t.Col<double>("x"), Y = t.Col<double>("y") },
+                new LineLayerSpec
+                {
+                    X = t.Col<double>("x"),
+                    Y = t.Col<double>("y"),
+                    SecondaryY = true,
+                },
+            ],
+            ScaleY = Scale.Linear().WithDomain(-1.5, 2.5),
+            ScaleY2 = Scale.Linear().WithDomain(0, 50) with { Title = "humidity" },
+        };
+        Assert.Contains(" Secondary Y axis \"humidity\": from 0 to 50.", Describe(secondary), StringComparison.Ordinal);
 
         // The finest boundary of the axis's ticks: days, here.
         static string TimeLabel(DateTime at)
