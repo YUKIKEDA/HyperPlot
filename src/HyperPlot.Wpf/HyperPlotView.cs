@@ -122,8 +122,8 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     internal bool Hooked => _hooked;
 
     /// <summary>
-    /// Gets the number of frames the view has drawn (Issue #305). Tests only: a test that pumps the dispatcher may see WPF's
-    /// own tick draw a frame it waited for.
+    /// Gets the number of frames the view has drawn and copied, not counting one a device loss stopped (Issue #305). Tests
+    /// only: a test that pumps the dispatcher may see WPF's own tick draw a frame it waited for.
     /// </summary>
     internal int FramesDrawn { get; private set; }
 
@@ -189,7 +189,6 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
             if (_wanted)
             {
                 _wanted = false;
-                FramesDrawn++;
                 using (_backend.BeginFrame())
                 {
                     if (_resizing)
@@ -210,6 +209,9 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                         Readback().Present(Engine.Target);
                     }
                 }
+
+                // Counted once drawn and copied: a frame that a device loss stopped is not one.
+                FramesDrawn++;
 
                 (_polling, _pollingShared) = (true, shared);
             }
