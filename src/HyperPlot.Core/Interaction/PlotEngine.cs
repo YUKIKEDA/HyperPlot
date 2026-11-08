@@ -391,6 +391,42 @@ public sealed class PlotEngine : IDisposable
         return text.ToString();
     }
 
+    /// <summary>
+    /// Answers a hit test at a pixel (design §6.3, requirement I-2, row I2a): in the panel under the pixel, each series' row
+    /// nearest the cursor's x (<see cref="HitMode.X"/>), or its point nearest the cursor within the radius
+    /// (<see cref="HitMode.XY"/>). The hits are written in the spec's layer order; outside a panel there are none. Waits for no
+    /// worker: a series whose index is being built answers provisionally. Allocates nothing.
+    /// </summary>
+    /// <param name="pixel">The cursor, in device pixels.</param>
+    /// <param name="radius">The radius of <see cref="HitMode.XY"/>, in device pixels; 0 or more.</param>
+    /// <param name="mode">What each series looks for.</param>
+    /// <param name="results">Where the hits go: as many as fit.</param>
+    /// <returns>The number of hits found: more than <paramref name="results"/> holds when it was too short.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="radius"/> is negative, NaN, or infinite, or <paramref name="mode"/> is not a named value.</exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame, or the call comes from another thread.</exception>
+    /// <exception cref="ObjectDisposedException">The engine was disposed.</exception>
+    public int HitTest(Vector2 pixel, float radius, HitMode mode, Span<SeriesHit> results)
+    {
+        CheckThread();
+        if (PlotCount == 0)
+        {
+            throw new InvalidOperationException("The engine has drawn no frame of its plot yet: a hit test needs the plot's layout.");
+        }
+
+        if (!(radius >= 0) || float.IsInfinity(radius))
+        {
+            throw new ArgumentOutOfRangeException(nameof(radius), radius, "The radius is 0 or more pixels, and finite.");
+        }
+
+        if (mode is not (HitMode.X or HitMode.XY))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode, "The mode is a named HitMode value.");
+        }
+
+        var area = Hit(pixel, out _);
+        return area.Kind == HitAreaKind.Panel ? PlanOf(area.Panel.Plot).HitTest(area.Panel.Plot, area.Panel.Panel, pixel, radius, mode, results) : 0;
+    }
+
     /// <summary>Returns a panel's current view: the one drawn, mid-animation included.</summary>
     /// <param name="panel">The panel.</param>
     /// <returns>The view, as a new object.</returns>

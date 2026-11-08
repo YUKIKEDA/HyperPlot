@@ -130,6 +130,28 @@ internal sealed class StackedSeriesPlan : LayerPlan
         }
     }
 
+    /// <summary>
+    /// Answers for each group's part, numbered by its group (row I2a): the rows are the stack's table's, of each group's x
+    /// joined (Issue #341 Decision 3). The outline lines repeat the parts and do not answer; the bars are row I2c's.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var (base0, width, derived) = (scan.SeriesBase, scan.SeriesWidth, scan.Derived);
+        scan.Derived = true;
+        for (var k = 0; k < _parts.Count; k++)
+        {
+            if (_parts[k].Plan is LinePlan)
+            {
+                continue;
+            }
+
+            (scan.SeriesBase, scan.SeriesWidth) = (Math.Max(_parts[k].Category, 0), _parts[k].Plan.HitWidth);
+            _parts[k].Plan.Hit(ref scan);
+        }
+
+        (scan.SeriesBase, scan.SeriesWidth, scan.Derived) = (base0, width, derived);
+    }
+
     public override LayerReadiness Poll(LayerIndexes indexes)
     {
         var readiness = LayerReadiness.Ready;

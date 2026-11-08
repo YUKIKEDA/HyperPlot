@@ -38,6 +38,19 @@ internal abstract class PlotPyramid : IDisposable
     /// <summary>Gets the least and the greatest value of a range of rows (design §3.3, row I1a: the y of the visible x).</summary>
     public abstract bool TryRange(long start, long length, out double min, out double max);
 
+    /// <summary>
+    /// Returns the first (or last) row of [start, end) whose value is a number, −1 when there is none, or
+    /// <see cref="PyramidSearch.Unknown"/> when a chunk on the way is not built (row I2a); sets <paramref name="provisional"/>
+    /// then. Does not allocate.
+    /// </summary>
+    public abstract long FindNumber(long start, long end, bool fromEnd, ref bool provisional);
+
+    /// <summary>
+    /// Gets the least and the greatest value of [start, end) and the rows of their first occurrences (row I2a); false when the
+    /// range has no number. Sets <paramref name="provisional"/> when a chunk is not built. Does not allocate.
+    /// </summary>
+    public abstract bool TryExtremes(long start, long end, out double min, out long minRow, out double max, out long maxRow, ref bool provisional);
+
     /// <inheritdoc />
     public abstract void Dispose();
 }
@@ -74,6 +87,19 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
         var range = pyramid.GetMinMax(start, length);
         (min, max) = (double.CreateTruncating(range.Min), double.CreateTruncating(range.Max));
         return range.Count > 0;
+    }
+
+    /// <inheritdoc />
+    public override long FindNumber(long start, long end, bool fromEnd, ref bool provisional) =>
+        pyramid.FindNumber(start, end, fromEnd, ref provisional);
+
+    /// <inheritdoc />
+    public override bool TryExtremes(long start, long end, out double min, out long minRow, out double max, out long maxRow, ref bool provisional)
+    {
+        pyramid.Query(start, end, wantCount: false, out var result);
+        provisional |= result.IsProvisional;
+        (min, minRow, max, maxRow) = (double.CreateTruncating(result.Min), result.MinIndex, double.CreateTruncating(result.Max), result.MaxIndex);
+        return result.Found;
     }
 
     /// <inheritdoc />

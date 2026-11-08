@@ -947,6 +947,15 @@ internal abstract class LayerPlan
     public virtual LayerReadiness Poll(LayerIndexes indexes) => LayerReadiness.Ready;
 
     /// <summary>
+    /// Answers a hit test for the layer's series or elements (design §6.3, row I2a): adds each series' hit to the scan. A layer
+    /// that does not answer (rule, segment, text, a user's geom, Issue #337 Decision 4) adds nothing. Allocates nothing.
+    /// </summary>
+    internal virtual void Hit(ref HitScan scan) { }
+
+    /// <summary>Gets the number of series the layer answers a hit test with: 2 for a band's two edges, else 1.</summary>
+    internal virtual int HitWidth => 1;
+
+    /// <summary>
     /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
     /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer
     /// keeps none of its code.

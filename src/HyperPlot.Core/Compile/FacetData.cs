@@ -91,7 +91,7 @@ internal sealed class FacetArrangement(
 /// rows, a run of the plot's table or its rows gathered into a table of its own, which the layers are remapped onto.
 /// </summary>
 /// <remarks>Made when the facet or the layers' columns change; a new version of a gathered column is gathered again by <see cref="Refresh"/>.</remarks>
-internal sealed class FacetData : IDisposable
+internal sealed class FacetData : IDisposable, ISourceRows
 {
     // The makings that hold the columns, and whether a disposal was asked and done (row W1b2).
     private int _holds;
@@ -372,6 +372,9 @@ internal sealed class FacetData : IDisposable
     }
 
     /// <summary>Writes the gathered panels' rows from the sources' values, on a making's task (row W1b2).</summary>
+    /// <summary>Returns the row of the plot's table a panel's gathered row came from (row I2a, Issue #337 Decision 3).</summary>
+    long ISourceRows.SourceRow(int key, long gathered) => SplitPlan.SourceRow(_keys!, _runs!, _starts, RowRange.All, key, gathered);
+
     public void GatherMarked(PlotWorkerPool pool) => SplitPlan.GatherRows(pool, _keys!, _runs!, _gathers, ref _starts, RowRange.All);
 
     /// <summary>Tells the gathered columns that their values changed, so that their pyramids and statistics follow.</summary>

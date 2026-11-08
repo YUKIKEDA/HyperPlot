@@ -102,6 +102,17 @@ internal sealed class StatPlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) => _inner.Poll(indexes);
 
+    /// <summary>Answers through the layer over the derived table: its rows are the derived table's (Issue #337 Decision 3).</summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var derived = scan.Derived;
+        scan.Derived = true;
+        _inner.Hit(ref scan);
+        scan.Derived = derived;
+    }
+
+    internal override int HitWidth => _inner.HitWidth;
+
     public override void BeginLearning() => _inner.BeginLearning();
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
