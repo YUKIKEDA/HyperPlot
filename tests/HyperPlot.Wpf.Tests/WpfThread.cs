@@ -11,6 +11,13 @@ namespace HyperPlot.Wpf.Tests;
 /// </summary>
 public sealed class WpfThread : IDisposable
 {
+    /// <summary>
+    /// The collection of a test class that runs alone, after the others (row W1c): a test that pumps the dispatcher would
+    /// otherwise run another class's work posted meanwhile. <c>HyperPlotViewTests</c> stays in its own collection: put into
+    /// this one, its device-loss test failed in most runs (Issue #299).
+    /// </summary>
+    public const string Collection = "WPF thread, alone";
+
     private readonly Thread _thread;
     private readonly Dispatcher _dispatcher;
 
@@ -79,3 +86,7 @@ public sealed class WpfThread : IDisposable
         _ = _thread.Join(TimeSpan.FromSeconds(10));
     }
 }
+
+/// <summary>The collection of <see cref="WpfThread.Collection"/>: its classes run with no other test running.</summary>
+[CollectionDefinition(WpfThread.Collection, DisableParallelization = true)]
+public sealed class AloneOnTheWpfThread;

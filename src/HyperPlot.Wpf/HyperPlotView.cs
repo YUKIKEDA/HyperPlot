@@ -22,7 +22,7 @@ namespace HyperPlot.Wpf;
 /// A view is used from its dispatcher's thread. The views of a dispatcher share a backend, released when the dispatcher shuts
 /// down; <see cref="Dispose"/> releases a view's own resources earlier.
 /// </remarks>
-public sealed class HyperPlotView : FrameworkElement, IDisposable
+public sealed partial class HyperPlotView : FrameworkElement, IDisposable
 {
     /// <summary>Identifies the <see cref="Spec"/> dependency property.</summary>
     public static readonly DependencyProperty SpecProperty = DependencyProperty.Register(
@@ -71,7 +71,8 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
         _host = HostResources.ForCurrentThread();
         _backend = _host.Backend;
         _onRendering = OnRendering;
-        Engine = Initialize();
+        Engine = Initialize(null, null);
+        WatchSummary();
     }
 
     /// <summary>
@@ -81,12 +82,20 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     /// <param name="backend">The backend; used from this thread only.</param>
     /// <exception cref="ArgumentNullException"><paramref name="backend"/> is null.</exception>
     public HyperPlotView(D3D11Backend backend)
+        : this(backend, null, null) { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="HyperPlotView"/> class with a backend, the engine's clock, and its workers.
+    /// Tests only.
+    /// </summary>
+    internal HyperPlotView(D3D11Backend backend, TimeProvider? time, PlotWorkerPool? pool)
     {
         ArgumentNullException.ThrowIfNull(backend);
         _host = HostResources.ForCurrentThread();
         _backend = backend;
         _onRendering = OnRendering;
-        Engine = Initialize();
+        Engine = Initialize(time, pool);
+        WatchSummary();
     }
 
     /// <summary>
@@ -153,6 +162,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
 
         _disposed = true;
         Unhook();
+        StopSummary();
         ReleaseOpened();
         _shared?.Dispose();
         _readback?.Dispose();
@@ -218,6 +228,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
 
                 // Counted once drawn and copied: a frame that a device loss stopped is not one.
                 FramesDrawn++;
+                FrameDrawnForSummary();
 
                 (_polling, _pollingShared) = (true, shared);
             }
@@ -539,9 +550,9 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
 
     private static Interaction.ModifierKeys Modifiers() => InputTranslator.Modifiers(Keyboard.Modifiers);
 
-    private PlotEngine Initialize()
+    private PlotEngine Initialize(TimeProvider? time, PlotWorkerPool? pool)
     {
-        var engine = new PlotEngine(_backend, 1, 1);
+        var engine = new PlotEngine(_backend, 1, 1, pool: pool, time: time);
         engine.FrameRequested += () =>
         {
             _wanted = true;
@@ -572,6 +583,8 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                 _image.Source = null;
                 break;
         }
+
+        SpecChangedForSummary();
 
         // A frame wanted before a null spec left the tick: the engine asks once until it draws, so a new spec asks nothing.
         if (_wanted || _polling)
@@ -606,6 +619,7 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     private void OnUnloaded()
     {
         Unhook();
+        StopSummary();
         _source?.RemoveHook(WndProc);
         _source = null;
     }
