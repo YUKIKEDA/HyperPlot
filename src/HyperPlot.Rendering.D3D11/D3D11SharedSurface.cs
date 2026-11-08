@@ -240,6 +240,10 @@ public sealed unsafe class D3D11SharedSurface : IDisposable, IDeviceResource
     }
 
     /// <summary>A shared texture, its handle, its event query, and the number of the copy it holds (0 for none).</summary>
+    /// <summary>Returns the textures' shared handles and copy numbers and the one the host holds, for a failed test's message (Issue #299). Tests only.</summary>
+    internal string Describe() =>
+        $"held {_held}, copies {_copies}, slot0 handle {_slots[0].Handle} copy {_slots[0].Copy}, slot1 handle {_slots[1].Handle} copy {_slots[1].Copy}";
+
     private struct Slot
     {
         public ID3D11Texture2D* Texture;

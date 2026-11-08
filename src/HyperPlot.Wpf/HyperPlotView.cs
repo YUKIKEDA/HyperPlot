@@ -109,6 +109,12 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     /// <summary>Gets the resources the view's dispatcher shares.</summary>
     internal HostResources Host => _host;
 
+    /// <summary>Gets a value indicating whether <c>D3DImage</c> has its front buffer, whatever <see cref="FrontBuffer"/> says. Tests only (Issue #299).</summary>
+    internal bool FrontBufferAvailable => _d3dImage.IsFrontBufferAvailable;
+
+    /// <summary>Gets the shared surface the frames are copied to, or null. Tests only (Issue #299).</summary>
+    internal D3D11SharedSurface? SharedSurface => _shared;
+
     /// <summary>Gets the shared texture <c>D3DImage</c> shows, or 0. Tests only.</summary>
     internal nint ShownHandle => _shown;
 
