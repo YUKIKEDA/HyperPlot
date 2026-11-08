@@ -3,7 +3,7 @@ using HyperPlot.Interaction;
 namespace HyperPlot.Tests;
 
 /// <summary>
-/// The engine's frames that do not wait (design §4.8 "`PlotEngine` の待たない描き方", §7.1, §10 "暫定の表示（W1b）", row W1b1):
+/// The engine's frames that do not wait (design §4.8 "`PlotEngine` の待たない描き方", §7.1, §10 "暫定の表示（W1b1）", row W1b1):
 /// what a frame draws while the workers build, that it is provisional and asks for the next, and how a layer's failed work is
 /// told and tried again. The workers are held with <see cref="TestStorage{T}"/>; they take no frame job, so that M4's reads of
 /// a held chunk's ends, a frame's own work that it may wait for (design §8.1), stay on the test's thread.
@@ -220,7 +220,7 @@ public sealed class ProvisionalFrameTests
     /// Preconditions:
     /// - A pool of 1 thread. Plots of two layers of a kind, layer 0 over healthy columns, layer 1 over a column that fails:
     ///   a pyramid's chunk (line), the X statistics (line over an X column), the extremes over categories (bars), the sums
-    ///   of a stack (stacked bars), and an X that decreases (line; the data's error).
+    ///   of a stack (stacked bars), and an X that decreases (line, and a vertical rule; the data's error).
     ///
     /// Steps:
     /// - For each: draw until WorkFailed came; draw until not provisional, and twice more. Make the column read again (stop
@@ -260,6 +260,12 @@ public sealed class ProvisionalFrameTests
                 typeof(IOException)
             ),
             ("decreasing x", t => Lines(t, "u", "bad"), true, typeof(InvalidOperationException)),
+            (
+                "decreasing rule",
+                t => Plot.Create(t).VRule(t.Col<double>("u")).VRule(t.Col<double>("bad")).Build(),
+                true,
+                typeof(InvalidOperationException)
+            ),
         };
         foreach (var (name, make, decreasing, error) in cases)
         {
@@ -316,6 +322,112 @@ public sealed class ProvisionalFrameTests
             failingX == "bad"
                 ? Plot.Create(t).Line(t.Col<double>("u"), t.Col<double>("y")).Line(t.Col<double>("bad"), t.Col<double>("y")).Build()
                 : Plot.Create(t).Line(t.Col<double>("u"), t.Col<double>("y")).Line(t.Col<double>("u"), t.Col<double>("bad")).Build();
+    }
+
+    /// <summary>
+    /// A layer made again for another cause than its columns' versions tries again too (design §4.8, Issue #291 Decision 8):
+    /// the failed pass of its X statistics is forgotten with the layers.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread; two lines, layer 1 over an X column whose chunk fails on the worker; a 640 × 360 target.
+    ///
+    /// Steps:
+    /// - Draw until WorkFailed came. Stop the failure; resize the target to 1,920 × 1,080, past the M4 output's room, so
+    ///   that the layers are made again; draw until not provisional.
+    ///
+    /// Expected:
+    /// - Still one WorkFailed; layer 1 is ready and drawn (two layers recorded).
+    /// </remarks>
+    [Fact]
+    public void Failure_TriedAgainWhenTheLayersAreMadeAgain()
+    {
+        const int Length = 1000;
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var bad = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Length).Select(i => (double)i)], out var storage);
+        using var y = Column.Wrap(Enumerable.Range(0, Length).Select(i => 1.0 + (i % 7)).ToArray());
+        storage.FailOn(0, fail: true);
+        var table = DataTable.Create().Add("u", Column.Uniform(0, 1, Length)).Add("y", y).Add("bad", bad).Build();
+        using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+        var failures = new List<WorkFailure>();
+        engine.WorkFailed += (in WorkFailure failure) => failures.Add(failure);
+        engine.SetPlot(
+            Plot.Create(table).Line(table.Col<double>("u"), table.Col<double>("y")).Line(table.Col<double>("bad"), table.Col<double>("y")).Build()
+        );
+        Eventually.True(
+            () =>
+            {
+                engine.RenderFrame();
+                return failures.Count > 0;
+            },
+            "the failure"
+        );
+
+        storage.FailOn(0, fail: false);
+        engine.Resize(1920, 1080, 1);
+        Settle(engine);
+
+        _ = Assert.Single(failures);
+        Assert.Equal(LayerReadiness.Ready, engine.Plan!.Layers[1].Readiness);
+        Assert.Equal(2, engine.Plan.LayersRecorded);
+    }
+
+    /// <summary>
+    /// A rule draws once the workers' results it reads are there (design §4.8): a vertical rule over categories its count
+    /// of each category's rows, and one over a numeric x the statistics its order is checked from.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread. Over categories: the worker held on another column's pyramid first, so that the count waits
+    ///   behind it; a vertical rule over 4 categories. Over a numeric x: a vertical rule over an increasing X column held on
+    ///   the worker.
+    ///
+    /// Steps:
+    /// - For each: draw; release the worker; draw until not provisional.
+    ///
+    /// Expected:
+    /// - Held: the rule is pending and not drawn, and the frame is provisional. Released: the rule is ready and drawn, with
+    ///   as many elements as a frame that waits draws of the same plot.
+    /// </remarks>
+    [Fact]
+    public void Rules_DrawOnceTheirResultsAreThere()
+    {
+        const int Length = 1000;
+        var names = new[] { "a", "b", "c", "d" };
+        var codes = Enumerable.Range(0, Length).Select(i => names[i % 4]).ToArray();
+        foreach (var categorical in (ReadOnlySpan<bool>)[true, false])
+        {
+            using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+            using var x = TestStorage<double>.MakeColumn([.. Enumerable.Range(0, Length).Select(i => (double)i)], out var storage);
+            storage.Hold(0);
+            using var blocker = categorical ? pool.BuildPyramid(x) : null;
+            if (categorical)
+            {
+                storage.WaitForWorker(0);
+            }
+
+            var table = DataTable.Create().Add("c", Column.Categorical(codes, names)).Add("x", x).Build();
+            var spec = categorical
+                ? Plot.Create(table).VRule(table.Cat("c")).ScaleX(Scale.Band()).Build()
+                : Plot.Create(table).VRule(table.Col<double>("x")).Build();
+            using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+            engine.SetPlot(spec);
+
+            engine.RenderFrame();
+            Assert.Equal(LayerReadiness.Pending, engine.Plan!.Layers[0].Readiness);
+            Assert.Equal(0, engine.Plan.LayersRecorded);
+            Assert.True(engine.IsProvisional);
+
+            storage.Release(0);
+            Settle(engine);
+            Assert.Equal(LayerReadiness.Ready, engine.Plan.Layers[0].Readiness);
+            Assert.Equal(1, engine.Plan.LayersRecorded);
+
+            using var waiting = new PlotEngine(new NullBackend(), 640, 360, 1, pool) { WaitsForIndexes = true };
+            waiting.SetPlot(spec);
+            waiting.RenderFrame();
+            Assert.Equal(Elements(waiting), Elements(engine));
+        }
     }
 
     /// <summary>A failure in a figure names the plot it is in (design §7.1).</summary>

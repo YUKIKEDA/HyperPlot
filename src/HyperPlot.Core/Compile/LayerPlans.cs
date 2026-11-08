@@ -99,7 +99,7 @@ internal abstract class LayerPlan
     /// </summary>
     public LayerReadiness Readiness { get; set; }
 
-    /// <summary>Gets the versions of <see cref="Columns"/> this Render read before its wait.</summary>
+    /// <summary>Gets the versions of <see cref="Columns"/> this Render read before it reached the indexes.</summary>
     public long[] Seen { get; private set; } = [];
 
     /// <summary>Gets the versions of <see cref="Columns"/> at the last extraction.</summary>

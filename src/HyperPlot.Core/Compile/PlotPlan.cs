@@ -1947,6 +1947,8 @@ internal sealed class PlotPlan : IDisposable
             _learned = new PanelDomains[count];
         }
 
+        // Layers made again try again (row W1b1): the passes of statistics a failed one started are forgotten too.
+        _indexes.Forget();
         var shared = SharedSources(spec);
         for (var p = 0; p < count; p++)
         {
