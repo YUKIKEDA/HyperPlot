@@ -73,9 +73,9 @@ public sealed class HitTestTests
     }
 
     /// <summary>
-    /// <see cref="HitMode.XY"/> gives each series its point nearest the cursor within the radius, the same as every row's
-    /// distance on the screen gives, over the whole view and a zoomed one; outside the radius it answers nothing (Issue #337
-    /// Decision 6).
+    /// <see cref="HitMode.XY"/> gives each series its point nearest the cursor within the radius, within half a pixel of the
+    /// nearest that every row's distance on the screen gives, over the whole view and a zoomed one; outside the radius it
+    /// answers nothing (Issue #337 Decision 6, Issue #341 Decision 5).
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -86,8 +86,8 @@ public sealed class HitTestTests
     ///   view of 1/100 of the x range.
     ///
     /// Expected:
-    /// - Where some row lies within 6 pixels, one hit whose distance is the least of every row's (within 1e-3 pixel) and
-    ///   whose row lies at that distance; where none does, no hit.
+    /// - Where some row lies within 6 pixels, one hit whose distance is at most half a pixel more than the least of every
+    ///   row's, and whose row lies at that distance; where none does, no hit.
     /// </remarks>
     [Fact]
     public void XY_FindsThePointNearestTheCursor()
@@ -133,8 +133,8 @@ public sealed class HitTestTests
                 }
 
                 Assert.Equal(1, found);
-                Assert.Equal(best, hits[0].Distance, 3);
-                Assert.Equal(best, Vector2.Distance(Pixel(engine, hits[0].Row, ys[hits[0].Row]), cursor), 3);
+                Assert.InRange(hits[0].Distance, best - 1e-3, best + 0.5 + 1e-3);
+                Assert.Equal(hits[0].Distance, Vector2.Distance(Pixel(engine, hits[0].Row, ys[hits[0].Row]), cursor), 3);
             }
         }
     }

@@ -12,6 +12,11 @@ internal ref struct HitScan
     // A range of rows this short is read row by row; a longer one is split by its extremes from the pyramid.
     private const int ScanRows = 64;
 
+    // How much nearer than the best found a range must be able to come to be descended, in pixels (Issue #341 Decision 5): a
+    // dense series crosses the cursor's y many times in a pixel column, and finding the nearest of those crossings exactly
+    // reads them all (66 ms at 1e9 points), while a hover cannot tell them apart.
+    private const double Tolerance = 0.5;
+
     private readonly Span<SeriesHit> _results;
     private readonly PyramidStore _store;
 
@@ -242,7 +247,8 @@ internal ref struct HitScan
     /// <summary>
     /// Finds the point of [start, end) nearest the cursor, closer than <paramref name="best"/> (design §6.3: the buckets of the
     /// pyramid that hold the cursor's y are descended). A range whose extremes on the screen, with the column's gap along,
-    /// cannot come closer is skipped; a short one is read row by row.
+    /// cannot come closer by more than half a pixel is skipped, so the point found is within half a pixel of the nearest; a
+    /// short range is read row by row.
     /// </summary>
     private readonly void Nearest(
         PlotPyramid pyramid,
@@ -256,19 +262,50 @@ internal ref struct HitScan
         ref bool provisional
     )
     {
-        if (start >= end || gap >= best || !pyramid.TryExtremes(start, end, out var min, out _, out var max, out _, ref provisional))
+        if (
+            start >= end
+            || gap >= best
+            || !pyramid.TryExtremes(start, end, out var min, out var minRow, out var max, out var maxRow, ref provisional)
+        )
         {
             return;
         }
 
+        // The range's box on the screen: its x from its first and last rows (the x does not decrease), its y from its
+        // extremes. A box that cannot come nearer than the best by more than the tolerance is skipped.
+        var (x0, x1) = (PixelOfRow(X, x, start), PixelOfRow(X, x, end - 1));
+        var (left, right) = (Math.Min(x0, x1), Math.Max(x0, x1));
         var (p0, p1) = (PixelOfValue(Y, min), PixelOfValue(Y, max));
         var (low, high) = (Math.Min(p0, p1), Math.Max(p0, p1));
+        var inside =
+            Along < left ? left - Along
+            : Along > right ? Along - right
+            : 0;
+        var along = Math.Max(gap, inside);
         var across =
             Across < low ? low - Across
             : Across > high ? Across - high
             : 0;
-        if (Math.Sqrt((gap * gap) + (across * across)) >= best)
+
+        // Until a point is found, the radius bounds the search as it is: a point just inside it is still an answer.
+        var bound = bestRow >= 0 ? best - Tolerance : best;
+        if (Math.Sqrt((along * along) + (across * across)) >= bound)
         {
+            return;
+        }
+
+        // A box within the tolerance both ways: its extremes stand for its points, as near as the tolerance.
+        if (right - left <= Tolerance && high - low <= Tolerance)
+        {
+            foreach (var row in (ReadOnlySpan<long>)[minRow, maxRow])
+            {
+                var distance = Distance(PixelOfRow(X, x, row), PixelOfValue(Y, y.DifferenceAt(row, 0)));
+                if (distance < best)
+                {
+                    (best, bestRow) = (distance, row);
+                }
+            }
+
             return;
         }
 
