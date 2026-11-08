@@ -12,9 +12,16 @@ internal sealed partial class PlotPlan
     private LayersMaking? _whole;
     private LayersMaking?[] _remakes = [];
     private LayerPlan[]?[] _standby = [];
+    private long[] _standbyVersions = [];
 
     // The facet's gather of its sources' newer versions into the same columns (row W1b2, Issue #297 Decision 4).
     private FacetGather? _facetGather;
+
+    /// <summary>Gets or sets an action a making runs on its task before it reserves a pyramid. Tests only.</summary>
+    internal Action? BeforeReserve { get; set; }
+
+    /// <summary>Returns whether new plans of the layer at a position stand by beside the drawn ones. Tests only.</summary>
+    internal bool StandsBy(int layer) => layer < _standby.Length && _standby[layer] is not null;
 
     /// <summary>Gets a value indicating whether a making runs or stands by: the frame is provisional.</summary>
     private bool Making
@@ -96,7 +103,9 @@ internal sealed partial class PlotPlan
     /// <summary>Starts making again the layer at a position, beside the one drawn, unless it is made for these versions already (row W1b2).</summary>
     private void StartRemake(PlotSpec spec, int layer)
     {
-        if (_remakes[layer] is { } running && running.Versions == VersionsOf(layer))
+        // The drawn layer stays stale until the new one replaces it: a making or a standby of these versions is not made again.
+        var versions = VersionsOf(layer);
+        if ((_remakes[layer] is { } running && running.Versions == versions) || (_standby[layer] is not null && _standbyVersions[layer] == versions))
         {
             return;
         }
@@ -134,6 +143,7 @@ internal sealed partial class PlotPlan
                 }
 
                 _standby[i] = remake.Take(i);
+                _standbyVersions[i] = remake.Versions;
                 Hold(remake);
             }
 
@@ -153,7 +163,10 @@ internal sealed partial class PlotPlan
         return changed;
     }
 
-    /// <summary>Returns whether every panel's new layer is ready, polling them as the frame polls the drawn ones.</summary>
+    /// <summary>
+    /// Returns whether every panel's new layer is ready, polling them as the frame polls the drawn ones, and its pyramids
+    /// are built (Issue #297 Decision 7): a new layer over coarse pyramids would draw coarser than the one it replaces.
+    /// </summary>
     private bool Ready(LayerPlan[] standby)
     {
         var ready = true;
@@ -163,6 +176,10 @@ internal sealed partial class PlotPlan
             {
                 ThrowFault(layer);
                 ready &= layer.Poll(_indexes) == LayerReadiness.Ready;
+                foreach (var column in layer.PyramidColumns)
+                {
+                    ready &= _store.Find(column)?.RequestStale() ?? true;
+                }
             }
             catch (Exception)
             {
@@ -178,12 +195,15 @@ internal sealed partial class PlotPlan
     private void Swap(int layer, LayerPlan[] standby)
     {
         _standby[layer] = null;
-        for (var p = 0; p < _panels.Length && p < standby.Length; p++)
+        var olds = new LayerPlan[Math.Min(_panels.Length, standby.Length)];
+        for (var p = 0; p < olds.Length; p++)
         {
-            _panels[p].Layers[layer].Release();
+            olds[p] = _panels[p].Layers[layer];
             standby[p].Readiness = LayerReadiness.Ready;
             _panels[p].Layers[layer] = standby[p];
         }
+
+        ReleaseBefore(olds, null);
 
         if (layer < _failures.Length)
         {
@@ -236,15 +256,7 @@ internal sealed partial class PlotPlan
         }
 
         Hold(whole);
-        foreach (var old in olds)
-        {
-            old.Release();
-        }
-
-        if (!ReferenceEquals(oldFacet, _facet))
-        {
-            oldFacet?.Dispose();
-        }
+        ReleaseBefore(olds, ReferenceEquals(oldFacet, _facet) ? null : oldFacet);
     }
 
     /// <summary>
@@ -253,23 +265,36 @@ internal sealed partial class PlotPlan
     /// </summary>
     private void FailFacet(PlotSpec spec, Exception error)
     {
-        foreach (var panel in _panels)
-        {
-            panel.Release();
-        }
-
+        var olds = _panels.SelectMany(p => p.Layers).ToArray();
+        var facet = _facet;
         _panels = [new PlotPanel { Table = spec.Data, Layers = [.. spec.Layers.Select(l => (LayerPlan)EmptyPlan.Failed(l, spec.Facet))] }];
         _learned = new PanelDomains[1];
         _indexes.Forget();
         _facetGather?.Abandon();
         _facetGather = null;
-        _facet?.Dispose();
         _facet = null;
+        ReleaseBefore(olds, facet);
         for (var i = 0; i < spec.Layers.Count; i++)
         {
             _failures[i] = null;
             Fail(i, error);
         }
+    }
+
+    /// <summary>
+    /// Releases the layers no panel or standby holds any more, and a facet they read (PR #311 review): first the pyramids
+    /// and the mipmaps no drawn or standing layer reads, whose disposal waits for their chunks in flight, then the layers and
+    /// the facet, which free their columns, gathered ones in native memory among them.
+    /// </summary>
+    private void ReleaseBefore(IEnumerable<LayerPlan> olds, FacetData? facet)
+    {
+        ReleaseUnused();
+        foreach (var old in olds)
+        {
+            old.Release();
+        }
+
+        facet?.Dispose();
     }
 
     /// <summary>Takes the pyramids and the mipmaps a making reserved and made into the plan's holds (row W1b2).</summary>
@@ -343,12 +368,7 @@ internal sealed partial class PlotPlan
         if (layer < _standby.Length && _standby[layer] is { } standby)
         {
             _standby[layer] = null;
-            foreach (var plan in standby)
-            {
-                plan.Release();
-            }
-
-            ReleaseUnused();
+            ReleaseBefore(standby, null);
         }
     }
 
@@ -409,7 +429,11 @@ internal sealed partial class PlotPlan
         if (_remakes.Length != spec.Layers.Count)
         {
             AbandonRemakes();
-            (_remakes, _standby) = (new LayersMaking?[spec.Layers.Count], new LayerPlan[]?[spec.Layers.Count]);
+            (_remakes, _standby, _standbyVersions) = (
+                new LayersMaking?[spec.Layers.Count],
+                new LayerPlan[]?[spec.Layers.Count],
+                new long[spec.Layers.Count]
+            );
         }
     }
 
@@ -602,6 +626,7 @@ internal sealed partial class PlotPlan
                 columns.Add(y);
                 if (reserved.Add(y))
                 {
+                    _plan.BeforeReserve?.Invoke();
                     Reserved.Add(y);
                     return _plan._store.Reserve(y, pool);
                 }
@@ -618,6 +643,13 @@ internal sealed partial class PlotPlan
 
         protected override void Free()
         {
+            // The reserved pyramids go before the layers that free the columns they read (PR #311 review).
+            foreach (var column in Reserved)
+            {
+                _plan._store.Unreserve(column);
+            }
+
+            Reserved.Clear();
             foreach (var panel in Panels ?? [])
             {
                 foreach (var layer in panel.Layers)
@@ -627,12 +659,6 @@ internal sealed partial class PlotPlan
             }
 
             Panels = null;
-            foreach (var column in Reserved)
-            {
-                _plan._store.Unreserve(column);
-            }
-
-            Reserved.Clear();
             if (_buildFacet && Facet is not null && !ReferenceEquals(Facet, _plan._facet))
             {
                 Facet.Dispose();

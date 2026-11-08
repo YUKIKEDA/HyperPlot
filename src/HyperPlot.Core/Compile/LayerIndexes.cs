@@ -141,6 +141,9 @@ internal sealed class LayerIndexes(PlotWorkerPool pool, Func<Column, PlotPyramid
     /// <summary>Returns the readiness of a layer of parts: the least ready part's.</summary>
     public static LayerReadiness Join(LayerReadiness a, LayerReadiness b) => a > b ? a : b;
 
+    /// <summary>Gets the columns whose statistics the frames asked the workers for. Tests only.</summary>
+    public Column[] Requested => [.. _requests.Keys];
+
     /// <summary>Forgets the passes of columns the plan may no longer read (its layers were made again).</summary>
     public void Forget() => _requests.Clear();
 

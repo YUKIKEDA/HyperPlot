@@ -304,9 +304,127 @@ public sealed class LayerMakingTests
     }
 
     /// <summary>
-    /// An engine disposed while a making runs does not wait for it, and what the making made is freed once it ends (design
-    /// §4.8, Issue #297 Decision 8).
+    /// A new layer stands beside the one drawn until its pyramids are built, not only its making (Issue #297 Decision 7): a
+    /// layer over coarse pyramids would draw coarser than the one it replaces.
     /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread; an area stacked over a numeric x by a category, drawn until not provisional.
+    ///
+    /// Steps:
+    /// - Have the making hold the worker on another column's chunk before it reserves a pyramid, so that the pyramids of its
+    ///   stacked columns are not built. Invalidate the y; draw until the new layer stands by. Compute the statistics the
+    ///   frames asked for on a second pool, so that the new layer's Poll is ready and only its pyramids are missing; draw 5
+    ///   frames more. Release the worker; draw until not provisional.
+    ///
+    /// Expected:
+    /// - Held: the drawn layer is the one before, the new one still stands by, and the frames are provisional. Released: the
+    ///   new layer is drawn.
+    /// </remarks>
+    [Fact]
+    public void Standby_WaitsForItsPyramids()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var data = new Data();
+        using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+        Blocker? blocker = null;
+        try
+        {
+            engine.SetPlot(Make("numeric stack", data.Table));
+            Settle(engine);
+            var old = engine.Plan!.Layers[0];
+
+            engine.Plan.BeforeReserve = () => blocker ??= new Blocker(pool);
+            data.YColumn.Invalidate();
+            Eventually.True(
+                () =>
+                {
+                    engine.RenderFrame();
+                    return engine.Plan.StandsBy(0);
+                },
+                "the new layer to stand by"
+            );
+            using (var other = new PlotWorkerPool(1))
+            {
+                foreach (var column in engine.Plan.StatsRequested)
+                {
+                    if (column.PrecomputeStatsIfMissing(other) is { } task)
+                    {
+                        Eventually.Completes(task);
+                    }
+                }
+            }
+
+            for (var i = 0; i < 5; i++)
+            {
+                engine.RenderFrame();
+                Assert.True(engine.IsProvisional);
+            }
+
+            Assert.Same(old, engine.Plan.Layers[0]);
+            Assert.True(engine.Plan.StandsBy(0));
+
+            blocker!.Dispose();
+            Settle(engine);
+            Assert.NotSame(old, engine.Plan.Layers[0]);
+        }
+        finally
+        {
+            blocker?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A making given up gives back the pyramids it reserved once it ends (design §4.8, Issue #297 Decision 8): a new spec
+    /// replaces the one being made.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread, held on another column's chunk; a line over y and a bin over x, so that the making reserves the
+    ///   y's pyramid and then waits for the bin.
+    ///
+    /// Steps:
+    /// - Draw until the store holds the y's pyramid; set a spec of a bin over x only, and draw; release the worker; draw
+    ///   until not provisional, and wait until the store's makings are idle.
+    ///
+    /// Expected:
+    /// - The store holds no pyramid: the bin reads none, and the given-up making gave back its reservation.
+    /// </remarks>
+    [Fact]
+    public void Abandoned_GivesBackItsReservations()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var data = new Data();
+        var t = data.Table;
+        using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+        using (var blocker = new Blocker(pool))
+        {
+            engine.SetPlot(
+                Spec(
+                    t,
+                    Scale.Linear(),
+                    new LineLayerSpec { X = t.Col<double>("x"), Y = t.Col<double>("y") },
+                    new BarLayerSpec { X = t.Col<double>("x"), Stat = Stat.Bin() }
+                )
+            );
+            Eventually.True(
+                () =>
+                {
+                    engine.RenderFrame();
+                    return engine.Plan!.PyramidsInStore == 1;
+                },
+                "the making to reserve the y's pyramid"
+            );
+            engine.SetPlot(Spec(t, Scale.Linear(), new BarLayerSpec { X = t.Col<double>("x"), Stat = Stat.Bin() }));
+            engine.RenderFrame();
+        }
+
+        Settle(engine);
+        Eventually.True(() => engine.Plan!.MakingsIdle, "the makings to end");
+        Assert.Equal(0, engine.Plan!.PyramidsInStore);
+    }
+
+    /// <summary>An engine disposed while a making runs does not wait for it (design §4.8, Issue #297 Decision 8).</summary>
     /// <remarks>
     /// Preconditions:
     /// - A pool of 1 thread, held on another column's chunk; a line in a facet by a category, drawn once.
@@ -315,8 +433,7 @@ public sealed class LayerMakingTests
     /// - Dispose the engine; release the worker; wait until the store's makings are idle.
     ///
     /// Expected:
-    /// - Dispose returns while the worker is held: the making has not read the y yet. Once idle, the store holds no
-    ///   pyramid.
+    /// - Dispose returns while the worker is held: the making has not read the y yet. The making ends.
     /// </remarks>
     [Fact]
     public void Dispose_DoesNotWaitForAMaking()
@@ -335,7 +452,6 @@ public sealed class LayerMakingTests
         }
 
         Eventually.True(() => plan.MakingsIdle, "the makings to end");
-        Assert.Equal(0, plan.PyramidsInStore);
     }
 
     /// <summary>
@@ -562,12 +678,13 @@ public sealed class LayerMakingTests
         }
     }
 
-    /// <summary>Holds a pool's only worker on another column's chunk, so that every job waits behind it, until disposed.</summary>
+    /// <summary>Holds a pool's only worker on another column's chunk, so that every job waits behind it, until disposed (once).</summary>
     private sealed class Blocker : IDisposable
     {
         private readonly Column<double> _column;
         private readonly TestStorage<double> _storage;
         private readonly MinMaxPyramid<double> _pyramid;
+        private bool _disposed;
 
         public Blocker(PlotWorkerPool pool)
         {
@@ -579,6 +696,12 @@ public sealed class LayerMakingTests
 
         public void Dispose()
         {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
             _storage.Release(0);
             _pyramid.Dispose();
             _column.Dispose();

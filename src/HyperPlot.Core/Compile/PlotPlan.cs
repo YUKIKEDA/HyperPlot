@@ -146,6 +146,9 @@ internal sealed partial class PlotPlan : IDisposable
     /// <summary>Gets the number of pyramids the plan's store holds or its makings reserved (row W1b2). Tests only.</summary>
     internal int PyramidsInStore => _store.Count;
 
+    /// <summary>Gets the columns whose statistics the frames asked the workers for (row W1b1). Tests only.</summary>
+    internal Column[] StatsRequested => _indexes.Requested;
+
     /// <summary>Gets a value indicating whether no making of the plan's store runs or waits to (row W1b2). Tests only.</summary>
     internal bool MakingsIdle => _store.Makings.Idle;
 
@@ -902,6 +905,18 @@ internal sealed partial class PlotPlan : IDisposable
         }
 
         _rasters.Clear();
+
+        // The mipmaps the makings made and the plan never took: an abandoned making leaves its own for the next (row W1b2).
+        lock (_mipmapGate)
+        {
+            foreach (var mipmap in _madeMipmaps.Values)
+            {
+                mipmap.Dispose();
+            }
+
+            _madeMipmaps.Clear();
+        }
+
         foreach (var panel in _panels)
         {
             panel.Release();
@@ -2074,12 +2089,13 @@ internal sealed partial class PlotPlan : IDisposable
             panel.Layers = layers;
         }
 
+        // The pyramids over the old layers' columns go first, waiting for their chunks in flight; then the columns, gathered
+        // ones in native memory among them (PR #311 review).
+        ReleaseUnused();
         foreach (var old in olds)
         {
             old.Release();
         }
-
-        ReleaseUnused();
 
         if (!ReferenceEquals(oldFacet, _facet))
         {
