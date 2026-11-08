@@ -303,6 +303,36 @@ public sealed class MipmapUpdateTests
         Eventually.True(() => mipmap.Freed, "the levels to be freed");
     }
 
+    /// <summary>
+    /// A mipmap disposed as its update ends, after the update has looked whether it was disposed and before its task
+    /// completes, is still freed (PR #320 review): one of the two frees the levels.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread; the raster drawn until not provisional; an update's end that disposes the engine.
+    ///
+    /// Steps:
+    /// - Invalidate the raster and draw, so that an update runs; wait until the levels are freed.
+    ///
+    /// Expected:
+    /// - The levels are freed.
+    /// </remarks>
+    [Fact]
+    public void DisposeAsTheUpdateEnds_StillFrees()
+    {
+        using var pool = new PlotWorkerPool(1);
+        using var data = new Data();
+        var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+        engine.SetPlot(data.Spec);
+        Settle(engine);
+        var mipmap = Mipmap(engine);
+        mipmap.OnEnding = engine.Dispose;
+
+        data.Raster.Invalidate(0, Height);
+        engine.RenderFrame();
+        Eventually.True(() => mipmap.Freed, "the levels to be freed");
+    }
+
     /// <summary>A provisional frame during an update allocates nothing once warm (invariant 3, design §4.8).</summary>
     /// <remarks>
     /// Preconditions:

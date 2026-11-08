@@ -31,6 +31,8 @@ internal abstract class RasterPyramid : IDisposable
     private (int Low, int High) _rows;
     private long _faultVersion;
     private bool _disposed;
+    private bool _ended;
+    private int _freeing;
     private bool _freed;
 
     private protected RasterPyramid(Raster raster)
@@ -68,6 +70,12 @@ internal abstract class RasterPyramid : IDisposable
 
     /// <summary>Gets a value indicating whether the levels' memory has been freed. Tests only.</summary>
     public bool Freed => Volatile.Read(ref _freed);
+
+    /// <summary>
+    /// Gets or sets an action an update runs as it ends, after it has looked whether the mipmap was disposed and before its
+    /// task completes. Tests only.
+    /// </summary>
+    public Action? OnEnding { get; set; }
 
     /// <summary>Gets the number of updates started. Tests only.</summary>
     public int UpdatesStarted { get; private set; }
@@ -114,7 +122,8 @@ internal abstract class RasterPyramid : IDisposable
             }
             catch (Exception)
             {
-                // Taken below, as the frames take it.
+                // Taken below, as the frames take it: a failure, or a cancellation if one is ever added, becomes the
+                // mipmap's fault.
             }
 
             Take();
@@ -148,8 +157,10 @@ internal abstract class RasterPyramid : IDisposable
                 return;
             }
 
+            // An update that has not ended frees the levels itself; one that has ended, its task complete or not, leaves them
+            // here (PR #320 review: the task completes after its finally has looked).
             _disposed = true;
-            if (_running is { IsCompleted: false })
+            if (_running is not null && !_ended)
             {
                 return;
             }
@@ -198,6 +209,11 @@ internal abstract class RasterPyramid : IDisposable
         }
 
         (_rows, _faultVersion, Fault) = ((low, high), column.Version, null);
+        lock (_gate)
+        {
+            _ended = false;
+        }
+
         UpdatesStarted++;
         _running = Run(pool, low, high);
     }
@@ -229,9 +245,11 @@ internal abstract class RasterPyramid : IDisposable
             bool free;
             lock (_gate)
             {
+                _ended = true;
                 free = _disposed;
             }
 
+            OnEnding?.Invoke();
             if (free)
             {
                 Free();
@@ -274,8 +292,11 @@ internal abstract class RasterPyramid : IDisposable
 
     private void Free()
     {
-        FreeLevels();
-        Volatile.Write(ref _freed, true);
+        if (Interlocked.Exchange(ref _freeing, 1) == 0)
+        {
+            FreeLevels();
+            Volatile.Write(ref _freed, true);
+        }
     }
 
     private void Touch(int level, int low, int high)
