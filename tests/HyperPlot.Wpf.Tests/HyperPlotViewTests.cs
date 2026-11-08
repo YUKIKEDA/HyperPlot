@@ -740,7 +740,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// <summary>
     /// Asserts that the shared texture the view shows holds the engine's target, made straight (design §7.2). On a mismatch the
     /// message says what Issue #299 needs to tell an unfinished copy from another texture: the surface's textures and copies,
-    /// whether a read after 200 ms and a read after a pump of the dispatcher match, whether the frame was provisional, and
+    /// whether a read after 200 ms, and one after those 200 ms and a pump of the dispatcher, match, whether the frame was provisional, and
     /// whether the view uses the shared textures and what decides it (the backend's adapter, Direct3D 9Ex's adapter and device,
     /// the front buffer), and whether it waits for the tick. The pause is on the failure's path only.
     /// </summary>
@@ -762,7 +762,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         WpfThread.Pump();
         var afterPump = Rgba(reader.Read(shown, width, height)).AsSpan().SequenceEqual(expected);
         Assert.Fail(
-            $"The shown texture {shown} does not hold the target's pixels (Issue #299): {state}; all 0 {zeros}; equal after 200 ms {again}; equal after a pump {afterPump}; provisional {view.Engine.IsProvisional}; shared textures {view.UsesSharedTextures} (backend WARP {view.Backend.IsWarp}, adapter {view.Backend.AdapterLuid}, Direct3D 9Ex's {view.Host.D3D9?.AdapterLuid}, its device {view.Host.D3D9?.HasDevice}, front buffer {view.FrontBufferAvailable}, the test's {view.FrontBuffer?.ToString() ?? "none"}); waits for the tick {view.Hooked}."
+            $"The shown texture {shown} does not hold the target's pixels (Issue #299): {state}; all 0 {zeros}; equal after 200 ms {again}; equal after 200 ms and a pump {afterPump}; provisional {view.Engine.IsProvisional}; shared textures {view.UsesSharedTextures} (backend WARP {view.Backend.IsWarp}, adapter {view.Backend.AdapterLuid}, Direct3D 9Ex's {view.Host.D3D9?.AdapterLuid}, its device {view.Host.D3D9?.HasDevice}, front buffer {view.FrontBufferAvailable}, the test's {view.FrontBuffer?.ToString() ?? "none"}); waits for the tick {view.Hooked}."
         );
     }
 
