@@ -488,9 +488,13 @@ internal sealed partial class PlotPlan : IDisposable
         // Bins, densities, and moving averages are made in the x scale's space, 2D bins in the y scale's too (rows G5b and
         // G5c): another space (not another domain) makes the layers again.
         // A gathered panel's rows follow their columns' new versions before the layers check whether they are stale (row G6b).
-        if (!data)
+        if (!data && Waits)
         {
             _ = _facet?.Refresh(_pool);
+        }
+        else if (!data && _facet is { } facet)
+        {
+            RefreshOffFrame(facet);
         }
 
         // A facet's new arrangement (its columns' count or its scales) keeps its panels' rows; new scales change where a stat's

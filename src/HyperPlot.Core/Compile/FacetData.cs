@@ -93,6 +93,11 @@ internal sealed class FacetArrangement(
 /// <remarks>Made when the facet or the layers' columns change; a new version of a gathered column is gathered again by <see cref="Refresh"/>.</remarks>
 internal sealed class FacetData : IDisposable
 {
+    // The makings that hold the columns, and whether a disposal was asked and done (row W1b2).
+    private int _holds;
+    private int _disposed;
+    private int _freed;
+
     /// <summary>The most panels a plot has (design §4.5): a 16 × 16 grid leaves panels of about 100 × 50 pixels at 1,920 × 1,080.</summary>
     public const int MaxPanels = 256;
 
@@ -327,33 +332,86 @@ internal sealed class FacetData : IDisposable
     /// <returns>Whether the rows were gathered again.</returns>
     public bool Refresh(PlotWorkerPool pool)
     {
-        if (_gathers.Length == 0)
-        {
-            return false;
-        }
-
-        var changed = false;
-        for (var s = 0; s < _sources.Length; s++)
-        {
-            changed |= _sources[s].Version != _versions[s];
-        }
-
-        if (!changed)
+        if (!Stale)
         {
             return false;
         }
 
         Gather(pool);
+        InvalidateGathers();
+        return true;
+    }
+
+    /// <summary>Gets a value indicating whether a source column has a new version that the gathered panels do not hold yet.</summary>
+    public bool Stale
+    {
+        get
+        {
+            for (var s = 0; s < _sources.Length && _gathers.Length > 0; s++)
+            {
+                if (_sources[s].Version != _versions[s])
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Marks the sources' current versions as gathered (row W1b2): the gather that writes them runs off the frame next
+    /// (<see cref="GatherMarked"/>), and the frames draw what the columns hold meanwhile (Issue #297 Decision 4).
+    /// </summary>
+    public void MarkGathered()
+    {
+        for (var s = 0; s < _sources.Length; s++)
+        {
+            _versions[s] = _sources[s].Version;
+        }
+    }
+
+    /// <summary>Writes the gathered panels' rows from the sources' values, on a making's task (row W1b2).</summary>
+    public void GatherMarked(PlotWorkerPool pool) => SplitPlan.GatherRows(pool, _keys!, _runs!, _gathers, ref _starts, RowRange.All);
+
+    /// <summary>Tells the gathered columns that their values changed, so that their pyramids and statistics follow.</summary>
+    public void InvalidateGathers()
+    {
         foreach (var gather in _gathers)
         {
             gather.Invalidate();
         }
-
-        return true;
     }
 
+    /// <summary>Holds the facet's columns for a making that reads or writes them (row W1b2): a disposal waits for the last hold.</summary>
+    public void Retain() => Interlocked.Increment(ref _holds);
+
+    /// <summary>Lets a making's hold go, and frees the columns when the facet was disposed meanwhile.</summary>
+    public void Unretain()
+    {
+        if (Interlocked.Decrement(ref _holds) == 0 && Volatile.Read(ref _disposed) != 0)
+        {
+            Free();
+        }
+    }
+
+    /// <summary>Frees the gathered columns now, or when the last making that holds them ends (row W1b2).</summary>
     public void Dispose()
     {
+        Volatile.Write(ref _disposed, 1);
+        if (Volatile.Read(ref _holds) == 0)
+        {
+            Free();
+        }
+    }
+
+    private void Free()
+    {
+        if (Interlocked.Exchange(ref _freed, 1) != 0)
+        {
+            return;
+        }
+
         foreach (var gather in _gathers)
         {
             gather.Dispose();

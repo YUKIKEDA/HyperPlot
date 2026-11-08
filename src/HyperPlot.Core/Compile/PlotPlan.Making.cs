@@ -13,12 +13,15 @@ internal sealed partial class PlotPlan
     private LayersMaking?[] _remakes = [];
     private LayerPlan[]?[] _standby = [];
 
+    // The facet's gather of its sources' newer versions into the same columns (row W1b2, Issue #297 Decision 4).
+    private FacetGather? _facetGather;
+
     /// <summary>Gets a value indicating whether a making runs or stands by: the frame is provisional.</summary>
     private bool Making
     {
         get
         {
-            if (_whole is not null)
+            if (_whole is not null || _facetGather is not null)
             {
                 return true;
             }
@@ -76,6 +79,10 @@ internal sealed partial class PlotPlan
     {
         _whole?.Abandon();
         AbandonRemakes();
+
+        // A gather of the facet the whole making may replace is given up with it; the new facet is gathered when it is found.
+        _facetGather?.Abandon();
+        _facetGather = null;
         _whole = new LayersMaking(this, spec, spec.Facet is not null && (data || _facet is null), -1);
         _store.Makings.Post(_whole);
     }
@@ -334,7 +341,39 @@ internal sealed partial class PlotPlan
     {
         _whole?.Abandon();
         _whole = null;
+        _facetGather?.Abandon();
+        _facetGather = null;
         AbandonRemakes();
+    }
+
+    /// <summary>
+    /// Gathers the facet's panels again off the frame when a source column has a new version (row W1b2): the frames draw what
+    /// the columns hold until it ends; then the columns are invalidated, and the layers over them are made again.
+    /// </summary>
+    private void RefreshOffFrame(FacetData facet)
+    {
+        if (_facetGather is { IsDone: true } done)
+        {
+            _facetGather = null;
+            if (done.Error is { } error)
+            {
+                for (var i = 0; i < _failures.Length; i++)
+                {
+                    Fail(i, error);
+                }
+            }
+            else
+            {
+                facet.InvalidateGathers();
+            }
+        }
+
+        if (_facetGather is null && facet.Stale)
+        {
+            facet.MarkGathered();
+            _facetGather = new FacetGather(facet, _pool);
+            _store.Makings.Post(_facetGather);
+        }
     }
 
     /// <summary>Sizes the single layers' makings and standing plans to a spec's layers.</summary>
@@ -368,6 +407,33 @@ internal sealed partial class PlotPlan
         return mipmap;
     }
 
+    /// <summary>A facet's gather into its own columns on the store's queue (row W1b2); it holds the facet while it runs.</summary>
+    private sealed class FacetGather : Making
+    {
+        private readonly FacetData _facet;
+        private readonly PlotWorkerPool _pool;
+
+        public FacetGather(FacetData facet, PlotWorkerPool pool)
+        {
+            (_facet, _pool) = (facet, pool);
+            facet.Retain();
+        }
+
+        protected override void Work()
+        {
+            try
+            {
+                _facet.GatherMarked(_pool);
+            }
+            finally
+            {
+                _facet.Unretain();
+            }
+        }
+
+        protected override void Free() { }
+    }
+
     /// <summary>
     /// The making of a plot's layers on the store's queue (row W1b2): every layer and the facet, or one layer in every panel.
     /// It reads the spec, the plan's facet and panels' data as they were when it was made, and reserves the pyramids it needs;
@@ -384,12 +450,15 @@ internal sealed partial class PlotPlan
         private readonly (IScale? X, IScale? Y, IScale? X2, IScale? Y2) _transforms;
         private readonly int _capacity;
         private readonly Dictionary<Raster, RasterPyramid> _rasters;
+        private readonly FacetData? _held;
         private Exception?[] _failures = [];
 
         public LayersMaking(PlotPlan plan, PlotSpec spec, bool buildFacet, int layer)
         {
             (_plan, _spec, _buildFacet, _layer) = (plan, spec, buildFacet, layer);
             _facet = buildFacet || spec.Facet is null ? null : plan._facet;
+            _held = plan._facet;
+            _held?.Retain();
             _panelData = [.. plan._panels.Select(p => (p.Data, p.Table ?? spec.Data))];
             _transforms = (plan._xTransform, plan._yTransform, plan._xTransform2, plan._yTransform2);
             _capacity = plan._capacity;
@@ -423,6 +492,19 @@ internal sealed partial class PlotPlan
         }
 
         protected override void Work()
+        {
+            try
+            {
+                Make();
+            }
+            finally
+            {
+                // The plan's facet, whose panels' rows the making read, may go now.
+                _held?.Unretain();
+            }
+        }
+
+        private void Make()
         {
             var spec = _spec;
             var pool = _plan._pool;

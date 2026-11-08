@@ -313,6 +313,10 @@ internal sealed class SplitPlan : LayerPlan
     private readonly CategoricalColumn? _categories;
     private long[] _starts = [];
 
+    // The gather of the sources' newer versions into the same columns, on the store's queue in a frame that does not wait
+    // (row W1b2, Issue #297 Decision 4).
+    private GatherMaking? _regather;
+
     public SplitPlan(LayerSpec spec, PlanBuild build)
         : this(spec, build, RowRange.All) { }
 
@@ -446,14 +450,40 @@ internal sealed class SplitPlan : LayerPlan
                 changed |= _sources[s].Version != _gatheredVersions[s];
             }
 
-            if (changed)
+            if (_regather is { IsDone: true } done)
             {
-                // The gather waits for its workers even in a frame that does not wait: row W1b2 (invariant 7).
+                // The gather ended: the columns hold the new values, and their pyramids are built for them.
+                _regather = null;
+                if (done.Error is { } error)
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(error);
+                }
+
+                foreach (var gather in _gathers)
+                {
+                    gather.Invalidate();
+                }
+            }
+
+            if (changed && _regather is null && (indexes.Waits || indexes.Makings is null))
+            {
                 Gather(indexes.Pool);
                 foreach (var gather in _gathers)
                 {
                     gather.Invalidate();
                 }
+            }
+            else if (changed && _regather is null)
+            {
+                // Gathered into the same columns off the frame (Issue #297 Decision 4): until it ends the parts draw what the
+                // columns hold, the frame provisional.
+                for (var s = 0; s < _sources.Length; s++)
+                {
+                    _gatheredVersions[s] = _sources[s].Version;
+                }
+
+                _regather = new GatherMaking(this, indexes.Pool);
+                indexes.Makings!.Post(_regather);
             }
 
             // The gathered series' pyramids: built while M4 reads what is there (row W1b1).
@@ -463,7 +493,7 @@ internal sealed class SplitPlan : LayerPlan
             }
         }
 
-        var readiness = LayerReadiness.Ready;
+        var readiness = _regather is null ? LayerReadiness.Ready : LayerReadiness.Previous;
         foreach (var part in _parts)
         {
             readiness = LayerIndexes.Join(readiness, part.Plan.Poll(indexes));
@@ -515,6 +545,18 @@ internal sealed class SplitPlan : LayerPlan
             part.Plan.Release();
         }
 
+        // A gather that still writes the columns frees them when it ends (row W1b2): nothing waits for it.
+        if (_regather is { } regather)
+        {
+            regather.Abandon();
+            return;
+        }
+
+        DisposeGathers();
+    }
+
+    private void DisposeGathers()
+    {
         foreach (var gather in _gathers)
         {
             gather.Dispose();
@@ -679,6 +721,15 @@ internal sealed class SplitPlan : LayerPlan
     }
 
     /// <summary>Writes the gathered categories' rows from the sources' current values: a pass of the workers over the chunks.</summary>
+    /// <summary>A split's gather of its sources' newer versions into the same columns, on the store's queue (row W1b2).</summary>
+    private sealed class GatherMaking(SplitPlan plan, PlotWorkerPool pool) : Making
+    {
+        protected override void Work() => GatherRows(pool, plan._categories!, plan._runs!, plan._gathers, ref plan._starts, plan.Rows);
+
+        // An abandoned gather's split was released: the columns go once it no longer writes them.
+        protected override void Free() => plan.DisposeGathers();
+    }
+
     private void Gather(PlotWorkerPool pool)
     {
         for (var s = 0; s < _sources.Length; s++)
