@@ -62,7 +62,20 @@ public sealed class PlotWorkerPool : IDisposable
 
             throw;
         }
+
+        if (WarmsGate)
+        {
+            WarmGate();
+        }
     }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether a new pool waits once on its lock while another thread holds it (Issue #304).
+    /// Tests only: the runtime makes a lock's wait event the first time a thread waits on it (56 bytes, and 240 the first
+    /// time in a process, under the JIT), so a Zero-Alloc test whose caller first waits on the pool's lock inside its window
+    /// would count it. The test assemblies turn it on in a module initializer.
+    /// </summary>
+    internal static bool WarmsGate { get; set; }
 
     /// <summary>
     /// Gets the pool that every plot shares, made when first read with <see cref="Environment.ProcessorCount"/> − 1 threads
@@ -393,6 +406,30 @@ public sealed class PlotWorkerPool : IDisposable
     /// chunk's call comes after the chunk is built, so after a completion that chunk ends.
     /// </summary>
     internal Action<bool>? TestTook { get; set; }
+
+    /// <summary>Makes the lock's wait event now (<see cref="WarmsGate"/>): this thread waits on the lock while a helper holds it.</summary>
+    private void WarmGate()
+    {
+        using var held = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = new Thread(() =>
+        {
+            lock (_gate)
+            {
+                held.Set();
+                _ = release.Wait(TimeSpan.FromSeconds(10));
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        holder.Start();
+        held.Wait();
+        using var timer = TimeProvider.System.CreateTimer(_ => release.Set(), null, TimeSpan.FromMilliseconds(20), Timeout.InfiniteTimeSpan);
+        lock (_gate) { }
+
+        holder.Join();
+    }
 
     /// <summary>Wakes the threads to look for work. Neither allocates nor waits (design §3.3).</summary>
     internal void Wake()
