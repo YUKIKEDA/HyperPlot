@@ -92,7 +92,7 @@ For allocations, collect the GC allocation-tick events and read the stacks of th
 dotnet dotnet-trace collect --profile gc-verbose --output "$scratch\alloc.nettrace" -- $exe $args
 ```
 
-The allocation tick fires about every 100 KB, so it shows who allocates most, not every allocation. To find a single allocation that the Zero-Alloc test reports, bisect the frame instead: wrap each stage in `GC.GetAllocatedBytesForCurrentThread()` in a scratch copy of the test, then read the code of the stage that moved.
+The allocation tick fires about every 100 KB, so it shows who allocates most, not every allocation. To find a single allocation that the Zero-Alloc test reports, bisect the frame instead: wrap each stage in `GC.GetAllocatedBytesForCurrentThread()` in a scratch copy of the test, then read the code of the stage that moved. An allocation that comes with timing hides from a probe that writes a file or a line in the window: PR #307's went away for 60 runs that way. Write each frame's and each stage's bytes into an array made before the window, and read it in the test's failure message; the allocation came back in 135 and 13 runs, in one frame's extraction.
 
 A probe put into `src` for a measurement (a timer or a counter at each stage) is taken out by writing the file back with a new modification time (`(Get-Item $file).LastWriteTime = Get-Date` after restoring it). A file restored with its old time is older than the build's outputs, so the next incremental build keeps the probe; PR #294 measured a published binary that still had it.
 
