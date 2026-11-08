@@ -80,6 +80,8 @@ public void Build_ChunkBoundaryInsideBucket_KeepsMinimumAndMaximumOfBothChunks()
 
 ## What a test checks
 
+- A test that holds a worker on a chunk (`TestStorage.Hold`) releases it before the engine, the plan, or the pyramid is disposed: a pyramid's disposal waits for the chunk being built (design §8.1), so the test stops until the hold's watchdog. Release it in a `finally` that runs before the `using` of the engine ends. PR #294's allocation test lasted 30 s on Linux this way.
+
 - A test stands for the whole design statement (`.cursor/rules/spec-checks.mdc`).
 - A test of values outside a domain covers both ends, below and above, and so does the design statement it checks. PR #150 drew a polar line past the outer circle and left the inner side undecided: a radius below 0 was drawn across the center, on the opposite side; the review found it, and the owner set the inner edge as the cut.
 - The expected value of a subtle result (which points M4 keeps, a tick set, an interpolated color, a density cell's count) comes from an independent reference, not from reasoning: the raw data drawn or counted on the CPU, a reference implementation's output (the paper's algorithm, a library the design names), a golden image produced by an earlier reviewed run. Do not compare a function with a re-implementation of itself. An expected value written with the code's own formula copies its errors: the band ticks' test computed their pixels as the code did and missed the domain's origin both times (Issue #190); it now compares them with the middles of the bars as drawn. The reference computes in a type that holds the exact result: PR #201's reference for the mean of `long` values summed in `double`, lost the low digits, and failed the correct code; it sums in `Int128`.

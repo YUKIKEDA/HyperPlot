@@ -31,9 +31,12 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 - A hypothesis written off is written with the conditions of the experiment that ruled it out, so that a later one under other conditions can take it up again.
 - Before measuring what a cache saves, count its hits: a cache whose slot two callers overwrite in turn never hits, and every mutant of its key survives.
 - A Zero-Alloc test runs each kind that takes the path (each scale, each column type), not one kind for the mechanism. PR #100 measured linear and log; symlog and pow made a transform on every render of the same spec, and the review found it.
+- A Zero-Alloc test of frames does not move the view into new tick labels: a new label's shaping is the shaping cache's first entry for it, an allocation once (row I1c). Keep the view still, or fill the cache first as the I1a and I1c measurements do. PR #294's provisional frames zoomed by 0.1 % a frame, and the frame where a new label came allocated 13,576 B on Linux only.
 - A Zero-Alloc failure is an allocation to find, and blocks the merge. It is not run again until it passes.
 
 ## Rules
+
+- A frame's time is measured after the process's first frames: they load the fonts, shape the texts, and make the GPU's pipelines (about 300 ms on the reference machine). Warm the engine on a small plot of the same titles and theme before the plot measured. In PR #294 a build of 1e9 points ended inside that first frame, and the frame looked as if it had waited for the build.
 
 - Performance acceptance is judged on a NativeAOT Release build. JIT numbers include tiering and are only for finding where time goes.
 - A measurement names the data size (points, series, chunks), the viewport size in pixels, the GPU (or WARP), and the build. A speed claim on large data holds at the sizes `docs/requirements.ja.md` §5 names, on the reference machine `docs/requirements.ja.md` §5 fixes.
