@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** C（インタラクションと WPF）
-- **作業中:** I2（W1c は #327 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** I2a（W1c は #327 の PR で済み）
+- **ブランチ:** `docs/337-i2a-hittest`（設計）
+- **Issue:** #337（設計）
 
 ## ツールチェーン
 
@@ -76,7 +76,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | W1b2 | 層を作る段の待ちをなくす（不変条件 7、§4.8、Issue #291 の決定 1・5、Issue #297）: Stat の派生の表、数の x の積み上げ、`ColorBy`・`FillBy` で分けた系列の集め、ファセットのパネルと集めを、計画ごとのスレッドプールのタスクで作り、層ごとの M4 の一括で差し替える。作り直しの間は前の版、作る段の失敗は `WorkFailed` | done | [#291](https://github.com/YUKIKEDA/HyperPlot/issues/291)（決定）、[#297](https://github.com/YUKIKEDA/HyperPlot/issues/297)（設計）、[#308](https://github.com/YUKIKEDA/HyperPlot/issues/308) |
 | W1b3 | ラスタのミップマップの更新を待たない（不変条件 7、§4.8、Issue #291 の決定 6、Issue #297 の決定 1）: 最初の構築の間は描かず、`Invalidate` の後は GPU にあるタイルだけを描き、更新が失敗した行を作り直す | done | [#297](https://github.com/YUKIKEDA/HyperPlot/issues/297)（決定）、[#314](https://github.com/YUKIKEDA/HyperPlot/issues/314)（設計）、[#318](https://github.com/YUKIKEDA/HyperPlot/issues/318) |
 | W1c | プロットの要約をアクセシビリティの API に渡す（要件 N-10、§7.1・§7.2）: `PlotEngine.Describe`、`HyperPlotView` の `AutomationPeer` | done | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計）、[#323](https://github.com/YUKIKEDA/HyperPlot/issues/323)（設計）、[#327](https://github.com/YUKIKEDA/HyperPlot/issues/327) |
-| I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6）、層のテクスチャでの合成（§5.4、要件 R-5。マウスを動かしただけのフレームでデータ層を描き直さない。行 W1 から移した、Issue #282） | not-started | |
+| I2a | ヒットテスト（要件 I-2・P-5、§6.3）: `PlotEngine.HitTest`・`SeriesHit`・`HitMode`、X の最近傍と XY の最近傍（ピラミッド）、棒・矩形の要素、image のテクセル | in-progress | [#337](https://github.com/YUKIKEDA/HyperPlot/issues/337)（設計） |
+| I2b | ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-6）、層のテクスチャでの合成（§5.4、要件 R-5。マウスを動かしただけのフレームでデータ層を描き直さない。行 W1 から移した、Issue #282） | not-started | [#337](https://github.com/YUKIKEDA/HyperPlot/issues/337)（決定） |
 | I3 | 選択とリンク、ファセットのパネルのビューのリンク（行 G6b）、図のプロットの間のリンク（行 G6c） | not-started | |
 | I4 | 注釈と計測、注記（要件 G-10、§4.6） | not-started | |
 | **D: 散布の大規模化とストリーミング** | | | |
