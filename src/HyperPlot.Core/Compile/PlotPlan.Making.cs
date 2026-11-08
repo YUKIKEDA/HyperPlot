@@ -80,10 +80,16 @@ internal sealed partial class PlotPlan
         _whole?.Abandon();
         AbandonRemakes();
 
-        // A gather of the facet the whole making may replace is given up with it; the new facet is gathered when it is found.
-        _facetGather?.Abandon();
-        _facetGather = null;
-        _whole = new LayersMaking(this, spec, spec.Facet is not null && (data || _facet is null), -1);
+        // A gather of a facet the whole making replaces is given up with it; the new facet is gathered when it is found. One
+        // the making keeps goes on, and its layers are made again when it ends.
+        var buildFacet = spec.Facet is not null && (data || _facet is null);
+        if (buildFacet)
+        {
+            _facetGather?.Abandon();
+            _facetGather = null;
+        }
+
+        _whole = new LayersMaking(this, spec, buildFacet, -1);
         _store.Makings.Post(_whole);
     }
 
@@ -195,14 +201,10 @@ internal sealed partial class PlotPlan
 
         if (whole.Error is { } facetError)
         {
-            // Without panels no layer draws (Issue #297 Decision 11): each layer fails with the facet.
+            // Without panels no layer draws (Issue #297 Decision 11): each layer fails with the facet, and is made again,
+            // with a facet found again, when its columns or the facet's move.
             whole.Abandon();
-            for (var i = 0; i < spec.Layers.Count; i++)
-            {
-                _failures[i] = null;
-                Fail(i, facetError);
-            }
-
+            FailFacet(spec, facetError);
             return;
         }
 
@@ -242,6 +244,31 @@ internal sealed partial class PlotPlan
         if (!ReferenceEquals(oldFacet, _facet))
         {
             oldFacet?.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// Fails every layer with the facet (Issue #297 Decision 11): one panel of layers that draw nothing in place of the
+    /// panels, and no facet, so that the next whole making finds it again.
+    /// </summary>
+    private void FailFacet(PlotSpec spec, Exception error)
+    {
+        foreach (var panel in _panels)
+        {
+            panel.Release();
+        }
+
+        _panels = [new PlotPanel { Table = spec.Data, Layers = [.. spec.Layers.Select(l => (LayerPlan)EmptyPlan.Failed(l, spec.Facet))] }];
+        _learned = new PanelDomains[1];
+        _indexes.Forget();
+        _facetGather?.Abandon();
+        _facetGather = null;
+        _facet?.Dispose();
+        _facet = null;
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            _failures[i] = null;
+            Fail(i, error);
         }
     }
 
@@ -559,7 +586,7 @@ internal sealed partial class PlotPlan
                     {
                         // A layer whose making fails is not drawn, and fails once (Issue #297 Decision 5).
                         _failures[i] ??= exception;
-                        layers[i] = new EmptyPlan(layer);
+                        layers[i] = EmptyPlan.Failed(layer, null);
                     }
 
                     (layers[i].Batch, layers[i].PyramidColumns, layers[i].Rasters) = (batch, columns, rasters);

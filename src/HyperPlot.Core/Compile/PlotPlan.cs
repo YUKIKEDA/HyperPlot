@@ -143,6 +143,12 @@ internal sealed partial class PlotPlan : IDisposable
     /// <summary>Gets the number of layers the last recording drew, over every panel (row W1b1). Tests only.</summary>
     internal int LayersRecorded { get; private set; }
 
+    /// <summary>Gets the number of pyramids the plan's store holds or its makings reserved (row W1b2). Tests only.</summary>
+    internal int PyramidsInStore => _store.Count;
+
+    /// <summary>Gets a value indicating whether no making of the plan's store runs or waits to (row W1b2). Tests only.</summary>
+    internal bool MakingsIdle => _store.Makings.Idle;
+
     /// <summary>Gets the color scale of the last spec drawn, or null when no layer has a color channel. Tests only.</summary>
     internal ColorScale? Color { get; private set; }
 
@@ -623,6 +629,7 @@ internal sealed partial class PlotPlan : IDisposable
             // Every layer is being made (row W1b2): the background and the title only (Issue #291 Decision 5).
             _list.Clear();
             _guides.RecordTitle(_list, spec);
+            LayersRecorded = 0;
             return false;
         }
 
@@ -2236,7 +2243,10 @@ internal sealed partial class PlotPlan : IDisposable
                 continue;
             }
 
+            // The failure stands for the versions it is tried again for: a making off the frame (row W1b2) that the next
+            // frame does not start again; the new layers, made or failed again, replace it.
             retry = true;
+            _failures[i] = failure with { Versions = VersionsOf(i) };
             foreach (var panel in _panels)
             {
                 foreach (var column in panel.Layers[i].Columns)

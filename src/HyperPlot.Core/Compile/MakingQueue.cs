@@ -11,6 +11,18 @@ internal sealed class MakingQueue
     private readonly Queue<Making> _queue = new();
     private bool _running;
 
+    /// <summary>Gets a value indicating whether no making runs or waits to. Tests only.</summary>
+    public bool Idle
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return !_running;
+            }
+        }
+    }
+
     /// <summary>Queues a making, and starts the runner when none runs.</summary>
     public void Post(Making making)
     {

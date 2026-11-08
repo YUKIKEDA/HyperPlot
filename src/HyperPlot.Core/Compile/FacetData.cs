@@ -608,12 +608,42 @@ internal sealed record PanelData(int Key, RowRange Rows, DataTable Data, Func<Co
 
 /// <summary>
 /// A layer in an empty cell of a facet grid (design §4.5, row G6b): no rows, so it learns and draws nothing; the panel keeps
-/// its background, grid, and axes.
+/// its background, grid, and axes. Also a layer whose making failed (row W1b2), which reads its columns' versions only.
 /// </summary>
 internal sealed class EmptyPlan : LayerPlan
 {
-    public EmptyPlan(LayerSpec spec)
-        : base(spec) => SetColumns();
+    public EmptyPlan(LayerSpec spec, params Column[] columns)
+        : base(spec) => SetColumns(columns);
+
+    /// <summary>
+    /// Returns the plan of a layer whose making failed (row W1b2, Issue #297 Decision 5): it draws nothing, and its columns,
+    /// and the facet's when the facet failed, are the ones whose new version makes it again (row W1b1).
+    /// </summary>
+    public static EmptyPlan Failed(LayerSpec spec, FacetSpec? facet)
+    {
+        var columns = new List<Column>();
+        _ = FacetData.Remap(
+            spec,
+            r =>
+            {
+                columns.Add(r.Column);
+                return r;
+            }
+        );
+        foreach (
+            var by in facet switch
+            {
+                FacetWrapSpec wrap => [wrap.By],
+                FacetGridSpec grid => new[] { grid.Rows, grid.Columns }.OfType<ColumnRef>(),
+                _ => [],
+            }
+        )
+        {
+            columns.Add(by.Column);
+        }
+
+        return new EmptyPlan(spec, [.. columns.Distinct()]);
+    }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data) { }
 
