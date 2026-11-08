@@ -161,6 +161,7 @@ alwaysApply: true
 - A value a later stage needs that an earlier stage resolves by rules that differ case by case is kept from that stage's result and read, not resolved again.
 - An acceptance that a change allocates nothing is checked against each API that makes the change.
 - A design that stops a propagation with a comparison decides two things in the design itself: everything the propagation carried, and what happens when a value to compare is gone.
+- A design PR that splits a row or renames it searches the whole design for the old ID and points each mention to the new rows. A design PR that changes a behavior searches the design for the words of the old behavior ("waits", "待って") and changes or dates each sentence. PR #298 split W1b into W1b1 and W1b2 and left "行 W1b" in four places, and §4.8's index texts of rows G5a to G5c still said that a layer waits for its stat's passes while it is made; the review found both.
 
 ## Judge the current optimum
 
