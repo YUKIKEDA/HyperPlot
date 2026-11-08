@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** C（インタラクションと WPF）
-- **作業中:** W1b3（W1b2 は #308 の PR で済み）
-- **ブランチ:** `docs/314-w1b3-mipmap`（設計）
-- **Issue:** #314（設計）
+- **作業中:** W1c（W1b3 は #318 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -74,7 +74,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | W1a | WPF のホストの土台（要件 H-1・H-2・H-3、§7.2）: `HyperPlot.Wpf` の `HyperPlotView`（`Spec`・`Engine`）、`D3D11SharedSurface` で共有テクスチャ 2 枚へ写して D3DImage へ渡す道、アダプタの LUID、`Dispatcher` ごとのバックエンド、`D3D11ReadbackSurface` で待たない読み出しの経路（ソフトウェア描画、フロントバッファの喪失、アダプタの不一致）、デバイスの喪失、DPI と大きさ（`PlotEngine.Resize`）、入力の変換とキャプチャとフォーカス（§6.1）、図の表示、`samples/WpfPlot`、写す時間の計測（§9） | done | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計）、[#286](https://github.com/YUKIKEDA/HyperPlot/issues/286) |
 | W1b1 | 索引ができる前の暫定の表示とホストへの通知（要件 P-2、不変条件 4・7、§4.8 の「`PlotEngine` の待たない描き方」）: フレームの中で待たない `RenderFrame`（ピラミッドの M4 の暫定の結果、統計のあるチャンクからの学習、カテゴリの最小と最大・積み上げの和・X の統計は、できるまで描かず作り直しの間は前の版）、`IsProvisional`・`ProvisionalChanged`・`WorkFailed`、失敗した層の作り直し。計測: 1e9 点の構築中の暫定の `RenderFrame` の CPU 時間（NativeAOT） | done | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計）、[#291](https://github.com/YUKIKEDA/HyperPlot/issues/291) |
 | W1b2 | 層を作る段の待ちをなくす（不変条件 7、§4.8、Issue #291 の決定 1・5、Issue #297）: Stat の派生の表、数の x の積み上げ、`ColorBy`・`FillBy` で分けた系列の集め、ファセットのパネルと集めを、計画ごとのスレッドプールのタスクで作り、層ごとの M4 の一括で差し替える。作り直しの間は前の版、作る段の失敗は `WorkFailed` | done | [#291](https://github.com/YUKIKEDA/HyperPlot/issues/291)（決定）、[#297](https://github.com/YUKIKEDA/HyperPlot/issues/297)（設計）、[#308](https://github.com/YUKIKEDA/HyperPlot/issues/308) |
-| W1b3 | ラスタのミップマップの更新を待たない（不変条件 7、§4.8、Issue #291 の決定 6、Issue #297 の決定 1）: 最初の構築の間は描かず、`Invalidate` の後は GPU にあるタイルだけを描き、更新が失敗した行を作り直す | in-progress | [#297](https://github.com/YUKIKEDA/HyperPlot/issues/297)（決定）、[#314](https://github.com/YUKIKEDA/HyperPlot/issues/314)（設計） |
+| W1b3 | ラスタのミップマップの更新を待たない（不変条件 7、§4.8、Issue #291 の決定 6、Issue #297 の決定 1）: 最初の構築の間は描かず、`Invalidate` の後は GPU にあるタイルだけを描き、更新が失敗した行を作り直す | done | [#297](https://github.com/YUKIKEDA/HyperPlot/issues/297)（決定）、[#314](https://github.com/YUKIKEDA/HyperPlot/issues/314)（設計）、[#318](https://github.com/YUKIKEDA/HyperPlot/issues/318) |
 | W1c | プロットの要約をアクセシビリティの API に渡す（要件 N-10、§7.1・§7.2）: `PlotEngine.Describe`、`HyperPlotView` の `AutomationPeer` | not-started | [#282](https://github.com/YUKIKEDA/HyperPlot/issues/282)（設計） |
 | I2 | ヒットテスト、ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-5・P-6）、層のテクスチャでの合成（§5.4、要件 R-5。マウスを動かしただけのフレームでデータ層を描き直さない。行 W1 から移した、Issue #282） | not-started | |
 | I3 | 選択とリンク、ファセットのパネルのビューのリンク（行 G6b）、図のプロットの間のリンク（行 G6c） | not-started | |

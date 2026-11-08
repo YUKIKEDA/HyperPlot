@@ -148,6 +148,22 @@ public sealed class ResidencyCache
         return slot;
     }
 
+    /// <summary>
+    /// Returns the slot of a tile that is there, or −1, sending nothing (row W1b3): a mipmap being updated is written over,
+    /// so that only the tiles already sent are drawn (design §5.5.3, Issue #314 Decision 2).
+    /// </summary>
+    internal int Find(in TileKey key)
+    {
+        var pool = _pools[(int)key.Format];
+        if (pool.Slots.TryGetValue(key, out var slot))
+        {
+            pool.LastUsed[slot] = _frame;
+            return slot;
+        }
+
+        return -1;
+    }
+
     /// <summary>Returns the row of a color map's table, staging it the first time; −1 when the table texture is full.</summary>
     internal int Table(ColorMap map)
     {
