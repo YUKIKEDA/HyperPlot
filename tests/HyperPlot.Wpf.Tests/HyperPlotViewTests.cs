@@ -242,7 +242,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     ///   lay it out; remove the seams; draw until shown.
     ///
     /// Expected:
-    /// - The layout throws nothing and the view waits for the tick. After the draw, the engine's size is the view's new size
+    /// - The layout throws nothing and the view waits for the tick (or WPF's own tick in the pump drew the frame, Issue #305). After the draw, the engine's size is the view's new size
     ///   in pixels, and the shown texture has the target's pixels.
     /// </remarks>
     [Fact]
@@ -259,8 +259,9 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             {
                 scene.Window.Width = 400;
                 scene.Window.Height = 260;
+                var drawn = view.FramesDrawn;
                 WpfThread.Pump();
-                Assert.True(view.Hooked);
+                AssertWaitsOrDrew(view, drawn);
             }
             finally
             {
@@ -342,7 +343,8 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// Expected:
     /// - Each time, the engine's size and scale are the view's DIPs times the DPI, rounded, and the DPI's scale. Collapsed,
     ///   a draw keeps the size and the image as it was, and a wanted frame leaves WPF's tick after one tick. Shown again,
-    ///   it waits for the tick, and the shown texture has the zoomed target's pixels.
+    ///   it waits for the tick (or WPF's own tick in the pump drew the frame, Issue #305), and the shown texture has the
+    ///   zoomed target's pixels.
     /// </remarks>
     [Fact]
     public void Size_FollowsTheViewAndItsDpi() =>
@@ -369,9 +371,10 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.False(view.Hooked);
 
             view.Visibility = Visibility.Visible;
+            var drawn = view.FramesDrawn;
             WpfThread.Pump();
             Assert.Equal(size, (view.Engine.Width, view.Engine.Height));
-            Assert.True(view.Hooked);
+            AssertWaitsOrDrew(view, drawn);
             DrawUntilShown(view);
             using var d3d9 = new D3D9Reader();
             Assert.Equal(Target(view), Rgba(d3d9.Read(view.ShownHandle, view.Engine.Width, view.Engine.Height)));
@@ -400,7 +403,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// Expected:
     /// - After the zoom it waits, and still after the tick that drew it and another zoom and tick (frames that keep coming
     ///   keep the subscription, design §7.2); after the copy is shown it does not; out of the window it does not wait though a frame is
-    ///   wanted; back in, it waits.
+    ///   wanted; back in, it waits (or WPF's own tick in the pump drew the frame, Issue #305).
     /// </remarks>
     [Fact]
     public void Frames_WaitForTheTickWhileWantedAndLoaded() =>
@@ -425,8 +428,9 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Zoom(view);
             Assert.False(view.Hooked);
             scene.Window.Content = view;
+            var drawn = view.FramesDrawn;
             WpfThread.Pump();
-            Assert.True(view.Hooked);
+            AssertWaitsOrDrew(view, drawn);
         });
 
     /// <summary>
@@ -736,6 +740,16 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(scene.View.Focusable);
             Assert.True(KeyboardNavigation.GetIsTabStop(scene.View));
         });
+
+    /// <summary>
+    /// Asserts that the view waits for WPF's rendering tick, or that the tick already drew a frame since <paramref name="drawn"/>
+    /// (Issue #305): a pump of the dispatcher may run WPF's own tick, which draws the frame the view waited for.
+    /// </summary>
+    private static void AssertWaitsOrDrew(HyperPlotView view, int drawn) =>
+        Assert.True(
+            view.Hooked || view.FramesDrawn > drawn,
+            $"The view neither waits for the tick nor drew a frame ({view.FramesDrawn} drawn, {drawn} before)."
+        );
 
     private static void DrawUntilShown(HyperPlotView view)
     {
