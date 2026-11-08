@@ -30,6 +30,9 @@ internal sealed class LayerIndexes(PlotWorkerPool pool, Func<Column, PlotPyramid
     /// <summary>Gets the pool the workers' passes run on.</summary>
     public PlotWorkerPool Pool => pool;
 
+    /// <summary>Gets or initializes the queue a layer's work that waits for the workers runs on in a frame that does not wait (row W1b2).</summary>
+    public MakingQueue? Makings { get; init; }
+
     /// <summary>Gets or sets a value indicating whether a call waits for what it reads (a headless render) or not (the engine's frame).</summary>
     public bool Waits { get; set; } = true;
 
@@ -137,6 +140,9 @@ internal sealed class LayerIndexes(PlotWorkerPool pool, Func<Column, PlotPyramid
 
     /// <summary>Returns the readiness of a layer of parts: the least ready part's.</summary>
     public static LayerReadiness Join(LayerReadiness a, LayerReadiness b) => a > b ? a : b;
+
+    /// <summary>Gets the columns whose statistics the frames asked the workers for. Tests only.</summary>
+    public Column[] Requested => [.. _requests.Keys];
 
     /// <summary>Forgets the passes of columns the plan may no longer read (its layers were made again).</summary>
     public void Forget() => _requests.Clear();

@@ -55,7 +55,7 @@ public sealed class ProvisionalFrameTests
         Assert.Equal(1, changes);
         Assert.Equal(asked + 1, requests);
         Assert.NotEmpty(engine.Plan!.List.Polylines.ToArray());
-        Assert.True(engine.Plan.Panels[0].Batches[0].GetResult(0).IsProvisional);
+        Assert.True(engine.Plan.Layers[0].Batch.GetResult(0).IsProvisional);
         var held = View(engine);
         Assert.InRange(held.Y.LowValue, -2, 2);
         Assert.InRange(held.Y.HighValue, -2, 2);
@@ -124,7 +124,7 @@ public sealed class ProvisionalFrameTests
         engine.RenderFrame();
         Assert.Equal(LayerReadiness.Pending, engine.Plan!.Layers[0].Readiness);
         Assert.Equal(0, engine.Plan.LayersRecorded);
-        Assert.Equal(0, engine.Plan.Panels[0].Batches[0].GetResult(0).Count);
+        Assert.Equal(0, engine.Plan.Layers[0].Batch.GetResult(0).Count);
         Assert.True(engine.IsProvisional);
 
         storage.Release(0);

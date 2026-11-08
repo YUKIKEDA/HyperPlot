@@ -161,6 +161,30 @@ internal sealed class PlotGuides
     /// </summary>
     internal void Place(int left, int top, int width, int height) => (_left, _top, _width, _height) = (left, top, width, height);
 
+    /// <summary>
+    /// Records the plot's title alone, centered at the top of its rectangle (row W1b2): what a frame draws over the background
+    /// while the layers are made and no panel is laid out (Issue #291 Decision 5).
+    /// </summary>
+    internal void RecordTitle(RenderList list, PlotSpec spec)
+    {
+        if (!HasText(spec.Title))
+        {
+            return;
+        }
+
+        var theme = spec.Theme;
+        var style = Style(theme, theme.TitleSize);
+        list.DrawText(
+            spec.Title!,
+            new Vector2(_left + (_width / 2f) - (_text.Measure(spec.Title!, style).Width / 2), _top + (theme.Padding * _scale)),
+            style with
+            {
+                Horizontal = TextAlign.Left,
+                Vertical = TextBaseline.Top,
+            }
+        );
+    }
+
     /// <summary>Takes a new scale and fills a target of a new size (row W1a), until a figure places the plot.</summary>
     internal void SetTarget(float scale, int width, int height)
     {

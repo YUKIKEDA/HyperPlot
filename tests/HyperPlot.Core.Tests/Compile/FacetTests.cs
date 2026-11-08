@@ -277,7 +277,7 @@ public sealed class FacetTests : IDisposable
                 await _pool.PrecomputeStats(x);
                 var expected = new M4Point[M4.MaxPointCount(panel.Boundaries.Length - 1)];
                 var count = M4.Extract(x, pyramid, new ScaleOrigin(panel.X.Origin, panel.Y.Origin), panel.Boundaries, expected).Count;
-                Assert.Equal(Values(expected.AsSpan(0, count)), Values(((LinePlan)panel.Layers[0]).Points(panel.Batches[0])));
+                Assert.Equal(Values(expected.AsSpan(0, count)), Values(((LinePlan)panel.Layers[0]).Points(panel.Layers[0].Batch)));
             }
         }
     }

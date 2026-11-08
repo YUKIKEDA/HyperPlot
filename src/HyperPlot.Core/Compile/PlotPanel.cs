@@ -10,17 +10,6 @@ internal sealed class PlotPanel
     // The buffers of the boundaries of the last four lengths, so that drawing domains seen before allocates nothing (§4.6).
     private readonly (double[] Data, double[] Scale)[] _widths = new (double[], double[])[4];
 
-    public PlotPanel()
-    {
-        Batches = [new M4Batch(), new M4Batch(), new M4Batch(), new M4Batch()];
-    }
-
-    /// <summary>
-    /// Gets the M4 batches of the pairs of scales a layer may lie on (row G6a): at (secondary x ? 1 : 0) + (secondary y ? 2 :
-    /// 0). The first is the primary pair's; the others hold series only when a layer lies on a secondary scale.
-    /// </summary>
-    public M4Batch[] Batches { get; }
-
     /// <summary>
     /// Gets or sets the panel's rows (row G6b): a run of the plot's table, or a table of its gathered rows; null without a
     /// facet.
@@ -109,7 +98,7 @@ internal sealed class PlotPanel
         X2 = domain;
     }
 
-    /// <summary>Releases the layers' plans and the batches' series.</summary>
+    /// <summary>Releases the layers' plans, and their batches' series with them.</summary>
     public void Release()
     {
         foreach (var layer in Layers)
@@ -118,10 +107,6 @@ internal sealed class PlotPanel
         }
 
         Layers = [];
-        foreach (var batch in Batches)
-        {
-            batch.Clear();
-        }
     }
 
     /// <summary>

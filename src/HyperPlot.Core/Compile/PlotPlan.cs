@@ -10,7 +10,7 @@ namespace HyperPlot;
 /// <see cref="Render(PlotSpec)"/> compares the spec with the last one drawn and does again only the stages that changed.
 /// </summary>
 /// <remarks>One thread at a time uses a plan. It owns its pyramids; the columns stay with their owner, who disposes them after the plan.</remarks>
-internal sealed class PlotPlan : IDisposable
+internal sealed partial class PlotPlan : IDisposable
 {
     /// <summary>The name a raster's range goes by in messages: it has no name in the table.</summary>
     private const string RasterName = "an image's raster";
@@ -109,10 +109,10 @@ internal sealed class PlotPlan : IDisposable
     {
         (_store, _ownStore, _inFigure) = (store ?? new PyramidStore(), store is null, store is not null);
         _pool = pool;
-        _indexes = new LayerIndexes(pool, column => _held.Contains(column) ? _store.Find(column) : null);
+        _indexes = new LayerIndexes(pool, column => _held.Contains(column) ? _store.Find(column) : null) { Makings = _store.Makings };
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
-        _context = new RecordContext(_guides, _panels[0].Batches[0], _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
+        _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
         _ownImages = images is null;
         GatherBatches();
 
@@ -142,6 +142,15 @@ internal sealed class PlotPlan : IDisposable
 
     /// <summary>Gets the number of layers the last recording drew, over every panel (row W1b1). Tests only.</summary>
     internal int LayersRecorded { get; private set; }
+
+    /// <summary>Gets the number of pyramids the plan's store holds or its makings reserved (row W1b2). Tests only.</summary>
+    internal int PyramidsInStore => _store.Count;
+
+    /// <summary>Gets the columns whose statistics the frames asked the workers for (row W1b1). Tests only.</summary>
+    internal Column[] StatsRequested => _indexes.Requested;
+
+    /// <summary>Gets a value indicating whether no making of the plan's store runs or waits to (row W1b2). Tests only.</summary>
+    internal bool MakingsIdle => _store.Makings.Idle;
 
     /// <summary>Gets the color scale of the last spec drawn, or null when no layer has a color channel. Tests only.</summary>
     internal ColorScale? Color { get; private set; }
@@ -488,9 +497,13 @@ internal sealed class PlotPlan : IDisposable
         // Bins, densities, and moving averages are made in the x scale's space, 2D bins in the y scale's too (rows G5b and
         // G5c): another space (not another domain) makes the layers again.
         // A gathered panel's rows follow their columns' new versions before the layers check whether they are stale (row G6b).
-        if (!data)
+        if (!data && Waits)
         {
             _ = _facet?.Refresh(_pool);
+        }
+        else if (!data && _facet is { } facet)
+        {
+            RefreshOffFrame(facet);
         }
 
         // A facet's new arrangement (its columns' count or its scales) keeps its panels' rows; new scales change where a stat's
@@ -508,37 +521,48 @@ internal sealed class PlotPlan : IDisposable
         var grown = _grown;
         _grown = false;
         var retry = Retry(spec);
-        if (
+        var offFrame = MakesOffFrame(spec);
+        SizeRemakes(spec);
+        var whole =
             data
             || grown
             || retry
-            || StaleLayers()
+            || (!offFrame && StaleLayers())
             || (previous is not null && previous.Facet?.Scales != spec.Facet?.Scales && HasStat(spec))
             || (previous is not null && !SameSpace(previous.ScaleX, spec.ScaleX) && SpaceLayers(spec, ofX: true, secondary: false))
             || (previous is not null && !SameSpace(previous.ScaleY, spec.ScaleY) && SpaceLayers(spec, ofX: false, secondary: false))
             || (previous is not null && !SameSpace(previous.ScaleX2, spec.ScaleX2) && SpaceLayers(spec, ofX: true, secondary: true))
-            || (previous is not null && !SameSpace(previous.ScaleY2, spec.ScaleY2) && SpaceLayers(spec, ofX: false, secondary: true))
-        )
+            || (previous is not null && !SameSpace(previous.ScaleY2, spec.ScaleY2) && SpaceLayers(spec, ofX: false, secondary: true));
+        if (whole && offFrame)
         {
+            // A layer whose making waits for the workers is made off the frame (row W1b2); the frames draw the background and
+            // the title until every layer is made.
+            StartWhole(spec, data);
+        }
+        else if (whole)
+        {
+            _whole?.Abandon();
+            _whole = null;
+            AbandonRemakes();
             BuildLayers(spec, data);
         }
-        else
+
+        // What the makings made comes in at the start of a frame: a whole making's layers, and a single layer that stood by and
+        // is ready (row W1b2).
+        var made = TakeMade(spec);
+        if (_whole is null && (!whole || made))
         {
-            // The layers name the same columns; take the new nodes for their looks, baselines, and widths. A gathered panel's
-            // layers read its own table: a new node of other looks is remapped onto it (row G6b).
-            foreach (var panel in _panels)
+            TakeNodes(spec, previous);
+        }
+
+        // A layer of an off-frame spec whose columns moved is made again alone, beside the one drawn (Issue #297 Decision 3).
+        if (offFrame && _whole is null)
+        {
+            for (var i = 0; i < spec.Layers.Count; i++)
             {
-                for (var i = 0; i < panel.Layers.Length; i++)
+                if (LayerStale(i))
                 {
-                    var layer = spec.Layers[i];
-                    if (panel.Data is not { Map: { } map } || FacetData.Rowless(layer))
-                    {
-                        panel.Layers[i].Take(layer);
-                    }
-                    else if (previous is null || !(ReferenceEquals(previous.Layers[i], layer) || SplitPlan.SameLooks(previous.Layers[i], layer)))
-                    {
-                        panel.Layers[i].Take(FacetData.Remap(layer, map));
-                    }
+                    StartRemake(spec, i);
                 }
             }
         }
@@ -557,6 +581,45 @@ internal sealed class PlotPlan : IDisposable
         (_pendingExtract, _pendingRecord) = (false, false);
     }
 
+    /// <summary>Returns whether the layer at a position is stale in any panel (row W1b2).</summary>
+    private bool LayerStale(int layer)
+    {
+        foreach (var panel in _panels)
+        {
+            if (layer < panel.Layers.Length && panel.Layers[layer].Stale)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The layers name the same columns; takes the new nodes for their looks, baselines, and widths. A gathered panel's layers
+    /// read its own table: a new node of other looks is remapped onto it (row G6b).
+    /// </summary>
+    private void TakeNodes(PlotSpec spec, PlotSpec? previous)
+    {
+        {
+            foreach (var panel in _panels)
+            {
+                for (var i = 0; i < panel.Layers.Length; i++)
+                {
+                    var layer = spec.Layers[i];
+                    if (panel.Data is not { Map: { } map } || FacetData.Rowless(layer))
+                    {
+                        panel.Layers[i].Take(layer);
+                    }
+                    else if (previous is null || !(ReferenceEquals(previous.Layers[i], layer) || SplitPlan.SameLooks(previous.Layers[i], layer)))
+                    {
+                        panel.Layers[i].Take(FacetData.Remap(layer, map));
+                    }
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// The second stage (row G6c): waits for the indexes, learns, lays the guides out, and makes the boundaries. Returns
     /// whether the batches of <see cref="Extraction"/> are to be extracted before <see cref="Finish"/>.
@@ -564,6 +627,15 @@ internal sealed class PlotPlan : IDisposable
     internal bool Prepare()
     {
         var (spec, scales, ranges, looks, flipped) = (_pendingSpec!, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped);
+        if (_whole is not null)
+        {
+            // Every layer is being made (row W1b2): the background and the title only (Issue #291 Decision 5).
+            _list.Clear();
+            _guides.RecordTitle(_list, spec);
+            LayersRecorded = 0;
+            return false;
+        }
+
         PollIndexes();
         ViewsDropped = false;
         if ((scales || _views.Length != _panels.Length) && AnyView())
@@ -747,18 +819,17 @@ internal sealed class PlotPlan : IDisposable
 
             if (extract || boundaries)
             {
-                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A pair
-                // with a secondary scale runs over its own x boundaries and origins, beside the primary pair (row G6a). Every
-                // panel's pairs run together (row G6b).
-                for (var p = 0; p < _panels.Length; p++)
+                // A transformed axis reads its data in the origin 0; its origin is one of the scale space (design §4.2). A layer
+                // on a secondary scale runs over its pair's x boundaries and origins (row G6a). Every panel's layers run
+                // together (row G6b), each in a batch of its own (row W1b2).
+                var at = 0;
+                foreach (var panel in _panels)
                 {
-                    var panel = _panels[p];
-                    for (var pair = 0; pair < 4; pair++)
+                    foreach (var layer in panel.Layers)
                     {
-                        (_allOrigins[(p * 4) + pair], _allBoundaries[(p * 4) + pair]) = (
-                            OriginOf(panel, pair),
-                            (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries
-                        );
+                        var pair = Pair(layer.Spec);
+                        (_allOrigins[at], _allBoundaries[at]) = (OriginOf(panel, pair), (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries);
+                        at++;
                     }
                 }
 
@@ -813,9 +884,10 @@ internal sealed class PlotPlan : IDisposable
         (_pendingSpec, _pendingExtract, _pendingRecord) = (null, false, false);
     }
 
-    /// <summary>Releases the pyramids.</summary>
+    /// <summary>Releases the pyramids, and gives up the makings without waiting for them (Issue #297 Decision 8).</summary>
     public void Dispose()
     {
+        AbandonMakings();
         foreach (var column in _held)
         {
             _store.Release(column);
@@ -833,6 +905,18 @@ internal sealed class PlotPlan : IDisposable
         }
 
         _rasters.Clear();
+
+        // The mipmaps the makings made and the plan never took: an abandoned making leaves its own for the next (row W1b2).
+        lock (_mipmapGate)
+        {
+            foreach (var mipmap in _madeMipmaps.Values)
+            {
+                mipmap.Dispose();
+            }
+
+            _madeMipmaps.Clear();
+        }
+
         foreach (var panel in _panels)
         {
             panel.Release();
@@ -1831,10 +1915,10 @@ internal sealed class PlotPlan : IDisposable
     /// rows, a run or a gathered table each, made once a layer so that its panels read it once. Rows in no panel are left
     /// out. Null along a free direction, and for a layer without a stat or a plot without a facet.
     /// </summary>
-    private (StatRange? X, StatRange? Y)[] SharedSources(PlotSpec spec)
+    private static (StatRange? X, StatRange? Y)[] SharedSources(PlotSpec spec, FacetData? facet)
     {
         var shared = new (StatRange?, StatRange?)[spec.Layers.Count];
-        if (_facet is not { } facet)
+        if (facet is null)
         {
             return shared;
         }
@@ -1900,20 +1984,29 @@ internal sealed class PlotPlan : IDisposable
                     _ => true,
                 };
 
-    /// <summary>Gathers every panel's batches into the arrays M4 extracts together, made when the panels change.</summary>
+    /// <summary>
+    /// Gathers every panel's layers' batches into the arrays M4 extracts together (row W1b2: a batch a layer, so that a layer
+    /// is replaced alone), made again when the layers change.
+    /// </summary>
     private void GatherBatches()
     {
-        var count = _panels.Length * 4;
+        var count = 0;
+        foreach (var panel in _panels)
+        {
+            count += panel.Layers.Length;
+        }
+
         if (_allBatches.Length != count)
         {
             (_allBatches, _allOrigins, _allBoundaries) = (new M4Batch[count], new ScaleOrigin[count], new double[count][]);
         }
 
-        for (var p = 0; p < _panels.Length; p++)
+        var at = 0;
+        foreach (var panel in _panels)
         {
-            for (var pair = 0; pair < 4; pair++)
+            foreach (var layer in panel.Layers)
             {
-                _allBatches[(p * 4) + pair] = _panels[p].Batches[pair];
+                _allBatches[at++] = layer.Batch;
             }
         }
     }
@@ -1924,8 +2017,8 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private void BuildLayers(PlotSpec spec, bool data)
     {
-        var used = new HashSet<Column>();
-        var rasters = new HashSet<Raster>();
+        List<Column> columns = [];
+        List<Raster> rasters = [];
         var olds = new List<LayerPlan>();
 
         // The facet's panels and their rows (row G6b): found again when the facet or the layers' columns changed.
@@ -1949,20 +2042,15 @@ internal sealed class PlotPlan : IDisposable
 
         // Layers made again try again (row W1b1): the passes of statistics a failed one started are forgotten too.
         _indexes.Forget();
-        var shared = SharedSources(spec);
+        var shared = SharedSources(spec, _facet);
         for (var p = 0; p < count; p++)
         {
             var panel = _panels[p];
             (panel.Data, panel.Table) = _facet is null ? (null, spec.Data) : (_facet.Panels[p], _facet.Panels[p].Data);
-            foreach (var batch in panel.Batches)
-            {
-                batch.Clear();
-            }
-
             var build = new PlanBuild(
                 Pyramid,
                 _store.Find,
-                panel.Batches[0],
+                new M4Batch(),
                 _capacity,
                 _pool,
                 Mipmap,
@@ -1980,41 +2068,30 @@ internal sealed class PlotPlan : IDisposable
                     _failures[i] = null;
                 }
 
-                // A layer's series go into the batch of its pair of scales, and its stat reads those scales (row G6a).
+                // A layer's series go into a batch of its own (row W1b2), extracted over its pair of scales, and its stat
+                // reads those scales (row G6a).
                 var layer = spec.Layers[i];
+                var batch = new M4Batch();
                 build.Layer = i;
                 build.Use(
-                    panel.Batches[Pair(layer)],
+                    batch,
                     layer.SecondaryX ? spec.ScaleX2 : spec.ScaleX,
                     layer.SecondaryX ? _xTransform2 : _xTransform,
                     layer.SecondaryY ? spec.ScaleY2 : spec.ScaleY,
                     layer.SecondaryY ? _yTransform2 : _yTransform
                 );
+                (columns, rasters) = ([], []);
                 layers[i] = PanelLayer(layer, panel.Data, build, shared[i]);
+                (layers[i].Batch, layers[i].PyramidColumns, layers[i].Rasters) = (batch, columns, rasters);
             }
 
             olds.AddRange(panel.Layers);
             panel.Layers = layers;
         }
 
-        foreach (var column in _held.ToArray())
-        {
-            if (!used.Contains(column))
-            {
-                _store.Release(column);
-                _ = _held.Remove(column);
-            }
-        }
-
-        foreach (var raster in _rasters.Keys.ToArray())
-        {
-            if (!rasters.Contains(raster))
-            {
-                _rasters[raster].Dispose();
-                _ = _rasters.Remove(raster);
-            }
-        }
-
+        // The pyramids over the old layers' columns go first, waiting for their chunks in flight; then the columns, gathered
+        // ones in native memory among them (PR #311 review).
+        ReleaseUnused();
         foreach (var old in olds)
         {
             old.Release();
@@ -2029,7 +2106,7 @@ internal sealed class PlotPlan : IDisposable
 
         RasterPyramid Mipmap(Raster raster)
         {
-            _ = rasters.Add(raster);
+            rasters.Add(raster);
             if (!_rasters.TryGetValue(raster, out var mipmap))
             {
                 mipmap = raster.MakePyramid();
@@ -2041,7 +2118,7 @@ internal sealed class PlotPlan : IDisposable
 
         PlotPyramid Pyramid(Column y)
         {
-            _ = used.Add(y);
+            columns.Add(y);
             if (_held.Add(y))
             {
                 _ = _store.Acquire(y, _pool, out var built);
@@ -2182,7 +2259,10 @@ internal sealed class PlotPlan : IDisposable
                 continue;
             }
 
+            // The failure stands for the versions it is tried again for: a making off the frame (row W1b2) that the next
+            // frame does not start again; the new layers, made or failed again, replace it.
             retry = true;
+            _failures[i] = failure with { Versions = VersionsOf(i) };
             foreach (var panel in _panels)
             {
                 foreach (var column in panel.Layers[i].Columns)
@@ -2200,12 +2280,13 @@ internal sealed class PlotPlan : IDisposable
     {
         foreach (var panel in _panels)
         {
-            foreach (var batch in panel.Batches)
+            for (var i = 0; i < panel.Layers.Length; i++)
             {
+                var batch = panel.Layers[i].Batch;
+                var skipped = !Drawn(i, panel.Layers[i]);
                 for (var s = 0; s < batch.Count; s++)
                 {
-                    var layer = batch.TagOf(s);
-                    batch.SetSkipped(s, layer >= 0 && !Drawn(layer, panel.Layers[layer]));
+                    batch.SetSkipped(s, skipped);
                 }
             }
         }
@@ -2220,14 +2301,14 @@ internal sealed class PlotPlan : IDisposable
         _extractProvisional = false;
         foreach (var panel in _panels)
         {
-            foreach (var batch in panel.Batches)
+            for (var layer = 0; layer < panel.Layers.Length; layer++)
             {
+                var batch = panel.Layers[layer].Batch;
                 for (var s = 0; s < batch.Count; s++)
                 {
-                    var layer = batch.TagOf(s);
-                    if (layer < 0 || Failed(layer))
+                    if (Failed(layer))
                     {
-                        continue;
+                        break;
                     }
 
                     if (batch.GetError(s) is { } error)
@@ -2249,7 +2330,7 @@ internal sealed class PlotPlan : IDisposable
     /// </summary>
     private bool Provisional()
     {
-        if (_indexes.Incomplete || _extractProvisional)
+        if (_indexes.Incomplete || _extractProvisional || Making)
         {
             return true;
         }
@@ -2327,7 +2408,6 @@ internal sealed class PlotPlan : IDisposable
             ContinuousScaleSpec c => (c.Reverse, c.Clamp, null),
             _ => (false, false, null),
         };
-        _context.Use(panel.Batches[0]);
         var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
         if (guide.Polar is { } polar)
         {
@@ -2381,7 +2461,8 @@ internal sealed class PlotPlan : IDisposable
             // The series color of the layer's position (design §4.1, row G7a).
             var layer = layers[i];
 
-            // A layer on a secondary scale is mapped by its pair's axes and reads its pair's batch (row G6a). Polar has none.
+            // A layer on a secondary scale is mapped by its pair's axes (row G6a); polar has none. A layer reads its own batch
+            // (row W1b2).
             var pair = Pair(layer.Spec);
             if (pair != current)
             {
@@ -2395,9 +2476,10 @@ internal sealed class PlotPlan : IDisposable
                     _context.Panel,
                     null
                 );
-                _context.Use(panel.Batches[pair]);
                 current = pair;
             }
+
+            _context.Use(layer.Batch);
 
             layer.SeriesColor = palette.Series(i);
             layer.Index = i;

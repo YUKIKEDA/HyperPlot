@@ -2,7 +2,7 @@ namespace HyperPlot.Tests;
 
 /// <summary>
 /// A managed storage whose reads on a pool's worker threads a test can hold, fail, and record, chunk by chunk. Reads on any
-/// other thread (the test's own queries) pass straight through.
+/// other thread (the test's own queries) pass straight through; those on a watched thread are counted (row W1b2).
 /// </summary>
 internal sealed class TestStorage<T> : ColumnStorage<T>
     where T : unmanaged, System.Numerics.INumber<T>
@@ -16,6 +16,7 @@ internal sealed class TestStorage<T> : ColumnStorage<T>
     private readonly int[] _workerReads;
     private readonly List<int> _order = [];
     private readonly Lock _lock = new();
+    private int _watchedReads;
 
     public TestStorage(T[] values)
     {
@@ -61,11 +62,22 @@ internal sealed class TestStorage<T> : ColumnStorage<T>
     public void WaitForWorker(int chunk) =>
         Assert.True(_entered[chunk].Wait(WatchdogMilliseconds), $"No worker read chunk {chunk} within the watchdog.");
 
+    /// <summary>Gets or sets a thread whose reads are counted: one that must not read the column, a frame's (row W1b2).</summary>
+    public Thread? Watched { get; set; }
+
+    /// <summary>Gets the number of reads on the <see cref="Watched"/> thread.</summary>
+    public int WatchedReads => Volatile.Read(ref _watchedReads);
+
     /// <summary>Gets or sets an action run on the worker thread as it reads a chunk, before the hold.</summary>
     public Action? OnWorkerRead { get; set; }
 
     public override ReadOnlySpan<T> GetChunk(int chunkIndex, int length)
     {
+        if (ReferenceEquals(Thread.CurrentThread, Watched))
+        {
+            Interlocked.Increment(ref _watchedReads);
+        }
+
         if (Thread.CurrentThread.Name?.StartsWith("HyperPlot worker", StringComparison.Ordinal) == true)
         {
             OnWorkerRead?.Invoke();
