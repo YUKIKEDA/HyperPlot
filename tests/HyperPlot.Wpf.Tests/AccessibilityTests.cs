@@ -2,7 +2,6 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using HyperPlot.Interaction;
-using HyperPlot.Rendering.D3D11;
 
 namespace HyperPlot.Wpf.Tests;
 
@@ -135,11 +134,10 @@ public sealed class AccessibilityTests(WpfThread wpf)
             Assert.DoesNotContain("(provisional)", scene.View.AccessibleName(), StringComparison.Ordinal);
         });
 
-    /// <summary>A window with a view of a line plot, shown, with the view's own WARP backend, the given clock, and a listener or none.</summary>
+    /// <summary>A window with a view of a line plot, shown, with the dispatcher's backend, the given clock, and a listener or none.</summary>
     private sealed class Scene : IDisposable
     {
         private readonly Column<float> _y;
-        private readonly D3D11Backend _backend = D3D11Backend.Create(useWarp: true);
         private readonly HeldStorage? _held;
 
         // A held Y's view runs on a pool of 1 thread, as the engine's tests of row W1b1 do: with many workers, a frame waits
@@ -157,7 +155,9 @@ public sealed class AccessibilityTests(WpfThread wpf)
             var table = DataTable.Create().Add("x", Column.Uniform(0, 1, points)).Add("y", _y).Build();
 
             // The listener is there before the window is shown: WPF's own tick may draw the first frame as it shows.
-            View = new HyperPlotView(_backend, clock, _pool) { ListenerExists = () => listener };
+            // The dispatcher's backend, as the views of HyperPlotViewTests take: a backend of its own each made the device-loss
+            // and shared-texture tests that follow fail in most runs (Issue #299).
+            View = new HyperPlotView(HostResources.ForCurrentThread().Backend, clock, _pool) { ListenerExists = () => listener };
             View.Spec = HyperPlot.Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build();
             Window = new Window
             {
@@ -205,7 +205,6 @@ public sealed class AccessibilityTests(WpfThread wpf)
             Window.Close();
             View.Dispose();
             _pool?.Dispose();
-            _backend.Dispose();
             _y.Dispose();
         }
     }
