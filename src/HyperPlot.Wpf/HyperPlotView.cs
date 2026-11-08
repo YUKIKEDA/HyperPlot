@@ -127,6 +127,12 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
     /// <summary>Gets a value indicating whether the view waits for <c>CompositionTarget.Rendering</c>. Tests only.</summary>
     internal bool Hooked => _hooked;
 
+    /// <summary>
+    /// Gets the number of frames the view has drawn and copied, not counting one a device loss stopped (Issue #305). Tests
+    /// only: a test that pumps the dispatcher may see WPF's own tick draw a frame it waited for.
+    /// </summary>
+    internal int FramesDrawn { get; private set; }
+
     /// <summary>Gets or sets whether the front buffer is there, in place of <c>D3DImage</c>'s; null reads it. Tests only.</summary>
     internal bool? FrontBuffer { get; set; }
 
@@ -209,6 +215,9 @@ public sealed class HyperPlotView : FrameworkElement, IDisposable
                         Readback().Present(Engine.Target);
                     }
                 }
+
+                // Counted once drawn and copied: a frame that a device loss stopped is not one.
+                FramesDrawn++;
 
                 (_polling, _pollingShared) = (true, shared);
             }
