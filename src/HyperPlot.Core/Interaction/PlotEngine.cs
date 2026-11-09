@@ -1357,10 +1357,13 @@ public sealed class PlotEngine : IDisposable
                     {
                         Notify(k, p, ViewChangeReason.Spec);
                     }
-
-                    // A new mapping: the selection's predicate meant the old one (Issue #364 Decision 8).
-                    SetSelection(k, null);
                 }
+            }
+
+            // A new mapping: the selection's predicate meant the old one (Issue #364 Decision 8).
+            if (plan.MappingChanged)
+            {
+                SetSelection(k, null);
             }
 
             animating |= state.Animating;
