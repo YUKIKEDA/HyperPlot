@@ -151,6 +151,19 @@ internal sealed class StackedSeriesPlan : LayerPlan
         return SeriesColor;
     }
 
+    internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit)
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Plan is not LinePlan && Math.Max(part.Category, 0) == hit.Series / GroupWidth)
+            {
+                return part.Plan.HitAlong(x, hit);
+            }
+        }
+
+        return HitScan.PixelOfValue(x, hit.X);
+    }
+
     internal override void Hit(ref HitScan scan)
     {
         var (base0, width, derived) = (scan.SeriesBase, scan.SeriesWidth, scan.Derived);
@@ -364,6 +377,15 @@ internal sealed class FloatingBarPlan : LayerPlan
     }
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
+
+    /// <summary>Answers for its group's pieces, from the inner end to the outer one (row I2c, Issue #355 Decision 4).</summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var bar = (BarLayerSpec)Spec;
+        scan.Bars(0, bar.X.Column, _low?.Column, bar.Y.Column, RowRange.All, 0, 0, bar.Width!.Value / 2, derived: true);
+    }
+
+    internal override Color HitColor(int series) => SeriesColor with { A = 255 };
 
     // The stacked layer adds the ranges (design §4.2).
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data) { }

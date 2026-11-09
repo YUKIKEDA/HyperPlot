@@ -959,6 +959,27 @@ internal abstract class LayerPlan
     internal virtual Color HitColor(int series) => SeriesColor;
 
     /// <summary>
+    /// Returns the pixel along a hit's x is drawn at (row I2c): where a hover marks it. The x's pixel by default; a dodged bar
+    /// adds its place, and a layer over categories takes its category's band (Issue #355 Decision 5).
+    /// </summary>
+    internal virtual double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) => HitScan.PixelOfValue(x, hit.X);
+
+    /// <summary>Returns the middle of a category's band along, in its dodged place (row I2c): the hit's x is the category's number.</summary>
+    protected double BandAlong(in GeomFrame.Axis x, int category)
+    {
+        if (x.Band is not { } band)
+        {
+            return double.NaN;
+        }
+
+        var b = HitScan.PixelOf(x, 0 - x.Domain.Origin);
+        var a = HitScan.PixelOf(x, 1 - x.Domain.Origin) - b;
+        var j = band.Position(category);
+        var (from, to) = Place((a * j) + b, (a * (j + band.Width)) + b);
+        return (from + to) / 2;
+    }
+
+    /// <summary>
     /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
     /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer
     /// keeps none of its code.
@@ -1651,6 +1672,19 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// Maps all the elements of a column to pixels on one axis into one of four buffers kept from frame to frame, a chunk
     /// read at a time and the transform applied to a span (a segment's and a rect's columns, design §5.5.3).
     /// </summary>
+    /// <summary>Maps an element column's values to pixels into a buffer the layer keeps (row I2c): its hit test reads them after.</summary>
+    public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels)
+    {
+        var length = (int)column.Length;
+        Ensure(ref pixels, length);
+        Ensure(ref _values, length);
+        var values = _values.AsSpan(0, length);
+        var mapped = pixels.AsSpan(0, length);
+        column.ReadDifferences(values, ofX ? XOrigin : YOrigin);
+        MapAxis(Transform, ofX ? X : Y, values, mapped, ofX);
+        return mapped;
+    }
+
     public ReadOnlySpan<double> ElementPixels(Column column, bool ofX, int slot)
     {
         var length = (int)column.Length;

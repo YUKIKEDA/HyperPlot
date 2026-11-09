@@ -69,13 +69,21 @@ internal sealed partial class TickAxis
     /// <summary>
     /// Writes a data value in the format of the axis's tick labels, for a hover's tooltip (design §6.5, row I2b): a numeric
     /// axis's value at the ticks' decimals and up to three more (log and symlog at three significant digits), a time axis's at
-    /// the finest boundary of its ticks; the user's format when the scale has one. A band axis carries no series a hover hits
-    /// (row I2c adds its elements). Returns the characters written, as many as fit. Allocates nothing.
+    /// the finest boundary of its ticks; the user's format when the scale has one; a band axis's category name, the value
+    /// being the category's number (row I2c, Issue #355 Decision 8). Returns the characters written, as many as fit. Allocates
+    /// nothing.
     /// </summary>
     internal int WriteValue(double value, Span<char> destination)
     {
         var written = 0;
-        if (Band is null && double.IsFinite(value) && Scale is TimeScaleSpec time)
+        if (Band is not null)
+        {
+            if (Categories is { } categories && value >= 0 && value < categories.CategoryCount)
+            {
+                return Copy(categories.Categories[(int)value], destination);
+            }
+        }
+        else if (double.IsFinite(value) && Scale is TimeScaleSpec time)
         {
             if (WriteTime(value, time, out written))
             {

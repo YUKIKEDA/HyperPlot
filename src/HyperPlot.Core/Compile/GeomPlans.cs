@@ -1,4 +1,5 @@
 using System.Numerics;
+using HyperPlot.Interaction;
 using HyperPlot.Rendering;
 
 namespace HyperPlot;
@@ -342,6 +343,25 @@ internal sealed class BarPlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
+    /// <summary>Answers as its bars are drawn (row I2c, Issue #355 Decisions 1, 2, 5): a dodged part in its place.</summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var bar = (BarLayerSpec)Spec;
+        var (shift, half) = Slot(bar);
+        scan.Bars(0, Columns[0], null, Columns[1], Rows, bar.Baseline, shift, half, derived: false);
+    }
+
+    internal override Color HitColor(int series) => (((BarLayerSpec)Spec).Fill ?? SeriesColor) with { A = 255 };
+
+    internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) =>
+        HitScan.PixelOfValue(x, hit.X + Slot((BarLayerSpec)Spec).Shift);
+
+    /// <summary>Returns a bar's shift and half width in data units: a dodged part's place of the width (row G5a), else the whole.</summary>
+    private (double Shift, double Half) Slot(BarLayerSpec bar) =>
+        DodgeSlot is { } slot
+            ? (Width * (((slot.Index + 0.5) / slot.Count) - 0.5), Width / slot.Count * (1 - DodgePadding(bar)) / 2)
+            : (0.0, Width / 2);
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var bar = (BarLayerSpec)Spec;
@@ -397,9 +417,7 @@ internal sealed class BarPlan : LayerPlan
         if (end - first <= 4L * context.X.Size)
         {
             // A dodged part (row G5a): its place of the width, in data units, x + Width · ((k + 0.5) / n − 0.5).
-            var (shift, drawn) = DodgeSlot is { } slot
-                ? (Width * (((slot.Index + 0.5) / slot.Count) - 0.5), Width / slot.Count * (1 - DodgePadding(bar)) / 2)
-                : (0.0, half);
+            var (shift, drawn) = Slot(bar);
             for (var i = first; i < end; i++)
             {
                 var d = x.DifferenceAt(i, context.XOrigin) + shift;
@@ -452,6 +470,90 @@ internal sealed class CategoryBarPlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) =>
         CategoryEnvelope.Step(ref _done, ref _making, Columns[1], Columns[1], Categories, Rows, indexes);
+
+    /// <summary>
+    /// Answers with a category's bar as drawn (row I2c, Issue #355 Decisions 3 and 10): the end on the cursor's side of the
+    /// baseline and the row it came from; bands under a pixel, the pixel column's category of that extreme. The hit's x is the
+    /// category's number.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        if (_done is not { } envelope || scan.X.Band is not { Count: > 0 } band)
+        {
+            return;
+        }
+
+        var baseline = ((BarLayerSpec)Spec).Baseline;
+        var basePixel = HitScan.PixelOfValue(scan.Y, baseline);
+        var above = scan.CursorValue(scan.Y) >= baseline;
+        var (a, b) = CategoryHits.Line(scan.X);
+        var (best, bestRow, bestCategory, bestValue) = (scan.Mode == HitMode.X ? double.PositiveInfinity : scan.Radius, -1L, -1L, double.NaN);
+        var provisional = false;
+        if (CategoryHits.Wide(a, band))
+        {
+            var (from, to) =
+                scan.Mode == HitMode.X
+                    ? (CategoryHits.PositionAt(scan.Along, a, b, band), CategoryHits.PositionAt(scan.Along, a, b, band))
+                    : CategoryHits.Reach(scan.Along, scan.Radius, a, b, band);
+            for (var j = from; j <= to; j++)
+            {
+                var (left, right) = Place((a * j) + b, (a * (j + band.Width)) + b);
+                Consider(ref scan, band.Position(j), left, right);
+            }
+        }
+        else
+        {
+            var (first, last) =
+                scan.Mode == HitMode.X
+                    ? (Math.Floor(scan.Along), Math.Floor(scan.Along))
+                    : (Math.Floor(scan.Along - scan.Radius), Math.Floor(scan.Along + scan.Radius));
+            for (var column = first; column <= last; column++)
+            {
+                var (from, to) = CategoryHits.InColumn(column, a, b, band);
+                if (from > to)
+                {
+                    continue;
+                }
+
+                var start = CategoryHits.FirstCategory(from, to, band);
+                var category = CategoryHits.Extreme(
+                    above ? envelope.MaxPyramid! : envelope.MinPyramid!,
+                    start,
+                    to - from + 1,
+                    above,
+                    ref provisional
+                );
+                if (category >= 0)
+                {
+                    Consider(ref scan, category, column, column + 1);
+                }
+            }
+        }
+
+        if (bestRow >= 0)
+        {
+            scan.Add(0, bestRow, bestCategory, bestValue, best, derived: false, provisional);
+        }
+
+        void Consider(ref HitScan scan, long category, double left, double right)
+        {
+            var (value, row) = CategoryHits.Side(envelope.Low, category, above, baseline);
+            if (row < 0)
+            {
+                return;
+            }
+
+            var distance = scan.Box(left, right, basePixel, HitScan.PixelOfValue(scan.Y, value));
+            if (distance <= best && (bestRow < 0 || distance < best || scan.Mode == HitMode.X))
+            {
+                (best, bestRow, bestCategory, bestValue) = (distance, row, category, value);
+            }
+        }
+    }
+
+    internal override Color HitColor(int series) => (((BarLayerSpec)Spec).Fill ?? SeriesColor) with { A = 255 };
+
+    internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) => BandAlong(x, (int)hit.X);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -585,6 +687,9 @@ internal sealed class ErrorBarPlan : LayerPlan
     private readonly ColumnEnvelope _low = new();
     private readonly ColumnEnvelope _high = new();
 
+    // The caps' half width in pixels at the last recording: the hit test measures the caps as drawn.
+    private double _cap;
+
     public ErrorBarPlan(ErrorBarLayerSpec spec, PlanBuild build, RowRange rows)
         : base(spec, rows)
     {
@@ -594,6 +699,13 @@ internal sealed class ErrorBarPlan : LayerPlan
     }
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
+
+    internal override int HitWidth => 2;
+
+    /// <summary>Answers with each row's low end (series 0) and high end (series 1), as drawn (row I2c, Issue #355 Decisions 6 and 11).</summary>
+    internal override void Hit(ref HitScan scan) => scan.ErrorBars(Columns[0], Columns[1], Columns[2], Rows, _cap);
+
+    internal override Color HitColor(int series) => Stroke(((ErrorBarLayerSpec)Spec).Style).Color;
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -614,9 +726,11 @@ internal sealed class ErrorBarPlan : LayerPlan
         var x = bars.X.Column;
         var first = x.LowerBound(context.Boundaries[0], context.XOrigin, Rows);
         var end = x.LowerBound(context.Boundaries[^1], context.XOrigin, Rows);
+        _cap = 0;
         if (end - first <= 4L * context.X.Size)
         {
             var half = bars.CapWidth * context.Scale / 2;
+            _cap = half;
             var buffer = context.Points(9 * (int)(end - first));
             var count = 0;
             for (var i = first; i < end; i++)
@@ -778,8 +892,28 @@ internal sealed class RulePlan : LayerPlan
 /// <summary>Rectangles: every element, up to 131,072 (design §5.5.3).</summary>
 internal sealed class RectPlan : LayerPlan
 {
+    // The corners' pixels of the last recording, kept for the hit test (row I2c, Issue #355 Decision 7).
+    private double[] _x0 = [];
+    private double[] _x1 = [];
+    private double[] _y0 = [];
+    private double[] _y1 = [];
+    private Column[] _corners = [];
+    private long _mapped;
+
     public RectPlan(RectLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(AndColors(spec.XMin.Column, spec.XMax.Column, spec.YMin.Column, spec.YMax.Column));
+
+    /// <summary>Answers from the pixels the last recording mapped: every rectangle, up to 131,072 (row I2c).</summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var end = Math.Min(Rows.EndIn(_mapped), _mapped);
+        if (end > Rows.Start)
+        {
+            scan.Rects(_x0, _x1, _y0, _y1, Rows.Start, end, _corners);
+        }
+    }
+
+    internal override Color HitColor(int series) => (((RectLayerSpec)Spec).Fill ?? SeriesColor) with { A = 255 };
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -792,10 +926,16 @@ internal sealed class RectPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var rect = (RectLayerSpec)Spec;
-        var xs0 = context.ElementPixels(rect.XMin.Column, ofX: true, 0);
-        var xs1 = context.ElementPixels(rect.XMax.Column, ofX: true, 1);
-        var ys0 = context.ElementPixels(rect.YMin.Column, ofX: false, 2);
-        var ys1 = context.ElementPixels(rect.YMax.Column, ofX: false, 3);
+        var xs0 = context.ElementPixelsInto(rect.XMin.Column, ofX: true, ref _x0);
+        var xs1 = context.ElementPixelsInto(rect.XMax.Column, ofX: true, ref _x1);
+        var ys0 = context.ElementPixelsInto(rect.YMin.Column, ofX: false, ref _y0);
+        var ys1 = context.ElementPixelsInto(rect.YMax.Column, ofX: false, ref _y1);
+        if (_corners.Length == 0)
+        {
+            _corners = [rect.XMin.Column, rect.XMax.Column, rect.YMin.Column, rect.YMax.Column];
+        }
+
+        _mapped = Math.Min(Math.Min(xs0.Length, xs1.Length), Math.Min(ys0.Length, ys1.Length));
         for (var i = (int)Rows.Start; i < Rows.EndIn(xs0.Length); i++)
         {
             // Corners mapped one by one: the smaller is the top left whatever the scales' directions. A corner that does
