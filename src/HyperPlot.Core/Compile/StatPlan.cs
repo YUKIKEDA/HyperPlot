@@ -115,6 +115,8 @@ internal sealed class StatPlan : LayerPlan
 
     internal override Color HitColor(int series) => _inner.HitColor(series);
 
+    internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) => _inner.HitAlong(x, hit);
+
     public override void BeginLearning() => _inner.BeginLearning();
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)

@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics;
+using HyperPlot.Interaction;
 using HyperPlot.Rendering;
 
 namespace HyperPlot;
@@ -186,6 +187,124 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 
     /// <summary>Returns the lower end of group k's piece in a category: the next group's sum, or 0 under the last.</summary>
     private double Lower(double[][] sums, int k, int category) => k + 1 < _groupCount ? sums[k + 1][category] : 0;
+
+    internal override Color HitColor(int series) => ColorOf((BarLayerSpec)Spec, series / 2) with { A = 255 };
+
+    internal override double HitAlong(in GeomFrame.Axis x, in SeriesHit hit) => BandAlong(x, (int)(hit.Row % _x.CategoryCount));
+
+    /// <summary>
+    /// Answers with each group's pieces as drawn (row I2c, Issue #355 Decision 4): its positive piece as series 2 · group, its
+    /// negative one as 2 · group + 1, at the outer end; the row is the cell, group · categories + category, marked derived.
+    /// Bands under a pixel answer with the pixel column's category of each array's extreme.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        if (_done is not { } done || scan.X.Band is not { Count: > 0 } band)
+        {
+            return;
+        }
+
+        var (a, b) = CategoryHits.Line(scan.X);
+        var wide = CategoryHits.Wide(a, band);
+        var provisional = false;
+        for (var k = 0; k < _groupCount; k++)
+        {
+            for (var sign = 0; sign < (done.AnyNegative ? 2 : 1); sign++)
+            {
+                var (best, bestCategory, bestValue) = (scan.Mode == HitMode.X ? double.PositiveInfinity : scan.Radius, -1L, double.NaN);
+                if (wide)
+                {
+                    var (from, to) =
+                        scan.Mode == HitMode.X
+                            ? (CategoryHits.PositionAt(scan.Along, a, b, band), CategoryHits.PositionAt(scan.Along, a, b, band))
+                            : CategoryHits.Reach(scan.Along, scan.Radius, a, b, band);
+                    for (var j = from; j <= to; j++)
+                    {
+                        var category = band.Position(j);
+                        var (inner, outer) =
+                            sign == 0
+                                ? (Lower(done.Positive, k, category), done.Positive[k][category])
+                                : (Lower(done.Negative, k, category), done.Negative[k][category]);
+                        Consider(
+                            ref scan,
+                            (a * j) + b,
+                            (a * (j + band.Width)) + b,
+                            category,
+                            inner,
+                            outer,
+                            ref best,
+                            ref bestCategory,
+                            ref bestValue
+                        );
+                    }
+                }
+                else
+                {
+                    var (first, last) =
+                        scan.Mode == HitMode.X
+                            ? (Math.Floor(scan.Along), Math.Floor(scan.Along))
+                            : (Math.Floor(scan.Along - scan.Radius), Math.Floor(scan.Along + scan.Radius));
+                    for (var column = first; column <= last; column++)
+                    {
+                        var (from, to) = CategoryHits.InColumn(column, a, b, band);
+                        if (from > to)
+                        {
+                            continue;
+                        }
+
+                        // The piece as the recording joins it: this group's array's extreme and the next group's other one.
+                        var (start, count) = (CategoryHits.FirstCategory(from, to, band), to - from + 1);
+                        var array = sign == 0 ? k : _groupCount + k;
+                        var category = CategoryHits.Extreme(done.Pyramids[array], start, count, greatest: sign == 0, ref provisional);
+                        if (category < 0)
+                        {
+                            continue;
+                        }
+
+                        var outer = sign == 0 ? done.Positive[k][category] : done.Negative[k][category];
+                        var next =
+                            k + 1 < _groupCount
+                                ? CategoryHits.Extreme(done.Pyramids[array + 1], start, count, greatest: sign != 0, ref provisional)
+                                : -1;
+                        var inner =
+                            next < 0 ? 0
+                            : sign == 0 ? done.Positive[k + 1][next]
+                            : done.Negative[k + 1][next];
+                        Consider(ref scan, column, column + 1, category, inner, outer, ref best, ref bestCategory, ref bestValue);
+                    }
+                }
+
+                if (bestCategory >= 0)
+                {
+                    scan.Add((2 * k) + sign, (k * (long)_x.CategoryCount) + bestCategory, bestCategory, bestValue, best, derived: true, provisional);
+                }
+            }
+        }
+
+        static void Consider(
+            ref HitScan scan,
+            double left,
+            double right,
+            long category,
+            double inner,
+            double outer,
+            ref double best,
+            ref long bestCategory,
+            ref double bestValue
+        )
+        {
+            if (double.IsNaN(outer) || outer == inner)
+            {
+                return;
+            }
+
+            var distance = scan.Box(left, right, HitScan.PixelOfValue(scan.Y, inner), HitScan.PixelOfValue(scan.Y, outer));
+            if (distance < best || (scan.Mode == HitMode.X && bestCategory < 0))
+            {
+                (best, bestCategory, bestValue) = (distance, category, outer);
+            }
+        }
+    }
 
     /// <summary>Records a piece from one sum to another between two x pixels, unless the two are the same.</summary>
     private static void Piece(RecordContext context, double left, double right, double lower, double upper, Color fill)
@@ -401,6 +520,9 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
     private CategoryEnvelope? _done;
     private CategoryEnvelope? _making;
 
+    // The caps' half width in pixels at the last recording: the hit test measures the caps as drawn.
+    private double _cap;
+
     public CategoryErrorBarPlan(ErrorBarLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(spec.X.Column, spec.YMin.Column, spec.YMax.Column);
 
@@ -408,6 +530,102 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) =>
         CategoryEnvelope.Step(ref _done, ref _making, Columns[1], Columns[2], Categories, Rows, indexes);
+
+    internal override int HitWidth => 2;
+
+    internal override Color HitColor(int series) => Stroke(((ErrorBarLayerSpec)Spec).Style).Color;
+
+    internal override double HitAlong(in GeomFrame.Axis x, in SeriesHit hit) => BandAlong(x, (int)hit.X);
+
+    /// <summary>
+    /// Answers with a category's line as drawn (row I2c, Issue #355 Decisions 6 and 10): its least YMin (series 0) and its
+    /// greatest YMax (series 1) and the rows they came from; bands under a pixel, the pixel column's categories of those.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        if (_done is not { } envelope || scan.X.Band is not { Count: > 0 } band)
+        {
+            return;
+        }
+
+        var (low, high) = (envelope.Low, envelope.High);
+        var (a, b) = CategoryHits.Line(scan.X);
+        var (best, bestLow, bestHigh, bestAlong) = (scan.Mode == HitMode.X ? double.PositiveInfinity : scan.Radius, -1L, -1L, 0.0);
+        var provisional = false;
+        if (CategoryHits.Wide(a, band))
+        {
+            var (from, to) =
+                scan.Mode == HitMode.X
+                    ? (CategoryHits.PositionAt(scan.Along, a, b, band), CategoryHits.PositionAt(scan.Along, a, b, band))
+                    : CategoryHits.Reach(scan.Along, scan.Radius + _cap, a, b, band);
+            for (var j = from; j <= to; j++)
+            {
+                var (left, right) = Place((a * j) + b, (a * (j + band.Width)) + b);
+                var category = band.Position(j);
+                Consider(ref scan, category, category, (left + right) / 2, _cap);
+            }
+        }
+        else
+        {
+            var (first, last) =
+                scan.Mode == HitMode.X
+                    ? (Math.Floor(scan.Along), Math.Floor(scan.Along))
+                    : (Math.Floor(scan.Along - scan.Radius), Math.Floor(scan.Along + scan.Radius));
+            for (var column = first; column <= last; column++)
+            {
+                var (from, to) = CategoryHits.InColumn(column, a, b, band);
+                if (from > to)
+                {
+                    continue;
+                }
+
+                var start = CategoryHits.FirstCategory(from, to, band);
+                var least = CategoryHits.Extreme(envelope.MinPyramid!, start, to - from + 1, greatest: false, ref provisional);
+                var greatest = CategoryHits.Extreme(envelope.MaxPyramid!, start, to - from + 1, greatest: true, ref provisional);
+                if (least >= 0 && greatest >= 0)
+                {
+                    Consider(ref scan, least, greatest, column + 0.5, 0);
+                }
+            }
+        }
+
+        if (bestLow >= 0)
+        {
+            scan.Add(0, low.MinRow[bestLow], bestLow, low.Min[bestLow], Point(ref scan, bestAlong, low.Min[bestLow]), derived: false, provisional);
+            scan.Add(
+                1,
+                high.MaxRow[bestHigh],
+                bestHigh,
+                high.Max[bestHigh],
+                Point(ref scan, bestAlong, high.Max[bestHigh]),
+                derived: false,
+                provisional
+            );
+        }
+
+        static double Point(ref HitScan scan, double along, double value) => scan.Distance(along, HitScan.PixelOfValue(scan.Y, value));
+
+        void Consider(ref HitScan scan, long least, long greatest, double along, double cap)
+        {
+            var (min, max) = (low.Min[least], high.Max[greatest]);
+            if (double.IsNaN(min) || double.IsNaN(max) || low.MinRow[least] < 0 || high.MaxRow[greatest] < 0)
+            {
+                return;
+            }
+
+            var (p0, p1) = (HitScan.PixelOfValue(scan.Y, min), HitScan.PixelOfValue(scan.Y, max));
+            var distance = scan.Box(along, along, p0, p1);
+            if (cap > 0)
+            {
+                distance = Math.Min(distance, Math.Min(scan.Box(along - cap, along + cap, p0, p0), scan.Box(along - cap, along + cap, p1, p1)));
+            }
+
+            if (distance < best || (scan.Mode == HitMode.X && bestLow < 0))
+            {
+                (best, bestLow, bestHigh, bestAlong) = (distance, least, greatest, along);
+            }
+        }
+    }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -434,9 +652,11 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
         var origin = context.XOrigin;
         var b = context.PixelX(0 - origin);
         var a = context.PixelX(1 - origin) - b;
+        _cap = 0;
         if (Math.Abs(a * band.Width) >= 1)
         {
             var half = bars.CapWidth * context.Scale / 2;
+            _cap = half;
             var (first, last) = band.Visible(a, b, context.X.Offset, context.X.Size);
             var buffer = context.Points(9 * Math.Max(last - first + 1, 0));
             var count = 0;

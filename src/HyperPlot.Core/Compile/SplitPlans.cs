@@ -561,6 +561,19 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         return SeriesColor;
     }
 
+    internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit)
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Category >= 0 && part.Category == hit.Series / part.Plan.HitWidth)
+            {
+                return part.Plan.HitAlong(x, hit);
+            }
+        }
+
+        return HitScan.PixelOfValue(x, hit.X);
+    }
+
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered)
     {

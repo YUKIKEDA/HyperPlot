@@ -126,7 +126,7 @@ internal ref struct HitScan
         var provisional = false;
         if (Mode == HitMode.X)
         {
-            var row = NearestInX(pyramid, x, y, start, end, ref provisional);
+            var row = NearestInX(pyramid, x, y, start, end, 0, ref provisional);
             if (row >= 0)
             {
                 var (px, py) = (PixelOfRow(X, x, row), PixelOfValue(Y, y.DifferenceAt(row, 0)));
@@ -150,7 +150,274 @@ internal ref struct HitScan
         }
     }
 
-    /// <summary>Returns the pixel distance from the cursor to a point given along and across.</summary>
+    /// <summary>
+    /// Answers for one series of bars over a numeric x (design §6.3 "要素の層", row I2c, Issue #355 Decisions 1, 2, 4, 5): in
+    /// <see cref="HitMode.X"/> the bar whose x is nearest the cursor's, whatever its distance, as a series answers; in
+    /// <see cref="HitMode.XY"/> the bar whose rectangle lies nearest the cursor within the radius, a pixel column's run of rows
+    /// longer than <see cref="ScanRows"/> standing in by its bar that reaches furthest to the cursor's side of the baseline.
+    /// A bar spans x + shift ± half, in data units, from its low end (the baseline when <paramref name="low"/> is null) to its
+    /// value. Never waits for the workers.
+    /// </summary>
+    public void Bars(int series, Column x, Column? low, Column high, RowRange rows, double baseline, double shift, double half, bool derived)
+    {
+        if (_store.Find(high) is not { } pyramid)
+        {
+            return;
+        }
+
+        var (start, end) = (rows.Start, rows.EndIn(Math.Min(x.Length, high.Length)));
+        if (start >= end)
+        {
+            return;
+        }
+
+        var provisional = false;
+        var bar = new Bar(x, low, high, baseline, shift, half);
+        if (Mode == HitMode.X)
+        {
+            var row = NearestInX(pyramid, x, high, start, end, shift, ref provisional);
+            if (row >= 0 && BarDistance(bar, row) is var distance && double.IsFinite(distance))
+            {
+                Add(series, row, ValueOf(X, x, row), high.DifferenceAt(row, 0), distance, derived, provisional);
+            }
+
+            return;
+        }
+
+        // The columns whose bars' centers can lie within the radius and a bar's half width of the cursor.
+        var (_, d) = AtPixel(X, Along);
+        var reach = Math.Abs(PixelOf(X, d + half) - PixelOf(X, d)) + Radius;
+        var above = CursorValue(Y) >= baseline;
+        var (best, bestRow) = ((double)Radius, -1L);
+        for (var column = Math.Floor(Along - reach); column <= Math.Ceiling(Along + reach); column++)
+        {
+            var (from, to) = (RowAt(x, column, start, end, shift), RowAt(x, column + 1, start, end, shift));
+            (from, to) = (Math.Min(from, to), Math.Max(from, to));
+            if (from >= to)
+            {
+                continue;
+            }
+
+            if (to - from <= ScanRows)
+            {
+                for (var row = from; row < to; row++)
+                {
+                    Closer(BarDistance(bar, row), row, ref best, ref bestRow);
+                }
+            }
+            else if (pyramid.TryExtremes(from, to, out _, out var minRow, out _, out var maxRow, ref provisional))
+            {
+                // Rows past the pixels: the bar that reaches furthest toward the cursor stands for them (Issue #355 Decision 2).
+                Closer(BarDistance(bar, above ? maxRow : minRow), above ? maxRow : minRow, ref best, ref bestRow);
+            }
+        }
+
+        if (bestRow >= 0)
+        {
+            Add(series, bestRow, ValueOf(X, x, bestRow), high.DifferenceAt(bestRow, 0), best, derived, provisional);
+        }
+    }
+
+    /// <summary>
+    /// Answers for a layer of error bars over a numeric x (row I2c, Issue #355 Decisions 6 and 11): the row's low end as series
+    /// 0 and its high end as series 1. <see cref="HitMode.X"/> takes the row whose x is nearest the cursor's;
+    /// <see cref="HitMode.XY"/> the row whose line and caps lie nearest within the radius, a long run of a pixel column standing
+    /// in by its greatest high end when the cursor is above it, its least low end when below, and its row nearest along between.
+    /// </summary>
+    public void ErrorBars(Column x, Column low, Column high, RowRange rows, double cap)
+    {
+        if (_store.Find(high) is not { } highs || _store.Find(low) is not { } lows)
+        {
+            return;
+        }
+
+        var (start, end) = (rows.Start, rows.EndIn(Math.Min(x.Length, Math.Min(low.Length, high.Length))));
+        if (start >= end)
+        {
+            return;
+        }
+
+        var provisional = false;
+        if (Mode == HitMode.X)
+        {
+            var row = NearestInX(highs, x, high, start, end, 0, ref provisional);
+            if (row >= 0)
+            {
+                var along = PixelOfRow(X, x, row);
+                var (lowValue, highValue) = (low.DifferenceAt(row, 0), high.DifferenceAt(row, 0));
+                Add(0, row, ValueOf(X, x, row), lowValue, Distance(along, PixelOfValue(Y, lowValue)), derived: false, provisional);
+                Add(1, row, ValueOf(X, x, row), highValue, Distance(along, PixelOfValue(Y, highValue)), derived: false, provisional);
+            }
+
+            return;
+        }
+
+        var value = CursorValue(Y);
+        var (best, bestRow) = ((double)Radius, -1L);
+        var reach = cap + Radius;
+        for (var column = Math.Floor(Along - reach); column <= Math.Ceiling(Along + reach); column++)
+        {
+            var (from, to) = (RowAt(x, column, start, end, 0), RowAt(x, column + 1, start, end, 0));
+            (from, to) = (Math.Min(from, to), Math.Max(from, to));
+            if (from >= to)
+            {
+                continue;
+            }
+
+            if (to - from <= ScanRows)
+            {
+                for (var row = from; row < to; row++)
+                {
+                    Closer(ErrorBarDistance(x, low, high, row, cap), row, ref best, ref bestRow);
+                }
+
+                continue;
+            }
+
+            // A long run (Issue #355 Decision 11): above its greatest high end, that row; below its least low end, that row;
+            // between, a line passes the cursor's y, and the row nearest along stands for the run.
+            if (
+                !highs.TryExtremes(from, to, out _, out _, out var max, out var maxRow, ref provisional)
+                || !lows.TryExtremes(from, to, out var min, out var minRow, out _, out _, ref provisional)
+            )
+            {
+                continue;
+            }
+
+            var row0 =
+                value > max ? maxRow
+                : value < min ? minRow
+                : Covering(lows, highs, low, high, from, to, value, ref provisional);
+            if (row0 >= 0)
+            {
+                Closer(ErrorBarDistance(x, low, high, row0, cap), row0, ref best, ref bestRow);
+            }
+        }
+
+        if (bestRow >= 0)
+        {
+            var xValue = ValueOf(X, x, bestRow);
+            Add(0, bestRow, xValue, low.DifferenceAt(bestRow, 0), best, derived: false, provisional);
+            Add(1, bestRow, xValue, high.DifferenceAt(bestRow, 0), best, derived: false, provisional);
+        }
+    }
+
+    /// <summary>
+    /// Answers for a layer of rectangles from the pixels its last recording mapped (row I2c, Issue #355 Decision 7):
+    /// <see cref="HitMode.X"/> takes, of the rectangles whose x span holds the cursor's, one whose y span holds it too, else
+    /// the nearest across; <see cref="HitMode.XY"/> the nearest of those the radius reaches. Of equal distances the later row
+    /// stays: it is drawn over. The x and y are the rectangle's center, in data units.
+    /// </summary>
+    public void Rects(
+        ReadOnlySpan<double> x0,
+        ReadOnlySpan<double> x1,
+        ReadOnlySpan<double> y0,
+        ReadOnlySpan<double> y1,
+        long start,
+        long end,
+        Column[] columns
+    )
+    {
+        // Squared distances and plain comparisons: 131,072 rectangles a call (design §9, P-5). A rectangle with a corner
+        // that does not map (NaN) fails each "lower ≤ upper" test and is passed, as the recording draws nothing for it.
+        var (along, across, xMode) = (Along, Across, Mode == HitMode.X);
+        var reach = xMode ? double.PositiveInfinity : (double)Radius;
+        var (best, bestRow) = (xMode ? double.PositiveInfinity : reach * reach, -1L);
+        var (first, last) = ((int)start, (int)Math.Min(end, Math.Min(Math.Min(x0.Length, x1.Length), Math.Min(y0.Length, y1.Length))));
+
+        // Most rectangles lie away from the cursor along: a vector of them at a time is passed when none comes within reach.
+        var lanes = System.Numerics.Vector<double>.Count;
+        var window = xMode ? 0 : reach;
+        var (low, high) = (new System.Numerics.Vector<double>(along - window), new System.Numerics.Vector<double>(along + window));
+        for (var i = first; i < last; i++)
+        {
+            if (i + lanes <= last && (i - first) % lanes == 0)
+            {
+                var (a, b) = (new System.Numerics.Vector<double>(x0.Slice(i, lanes)), new System.Numerics.Vector<double>(x1.Slice(i, lanes)));
+                var near =
+                    System.Numerics.Vector.GreaterThanOrEqual(System.Numerics.Vector.Max(a, b), low)
+                    & System.Numerics.Vector.LessThanOrEqual(System.Numerics.Vector.Min(a, b), high);
+                if (near == System.Numerics.Vector<long>.Zero)
+                {
+                    i += lanes - 1;
+                    continue;
+                }
+            }
+
+            var (left, right) = (x0[i], x1[i]);
+            if (left > right)
+            {
+                (left, right) = (right, left);
+            }
+
+            if (!(left <= right))
+            {
+                continue;
+            }
+
+            var gap =
+                along < left ? left - along
+                : along > right ? along - right
+                : 0;
+            if (gap > reach || (xMode && gap > 0))
+            {
+                continue;
+            }
+
+            var (top, bottom) = (y0[i], y1[i]);
+            if (top > bottom)
+            {
+                (top, bottom) = (bottom, top);
+            }
+
+            if (!(top <= bottom))
+            {
+                continue;
+            }
+
+            var height =
+                across < top ? top - across
+                : across > bottom ? across - bottom
+                : 0;
+            var squared = (gap * gap) + (height * height);
+            if (squared <= best && (xMode || squared < reach * reach))
+            {
+                (best, bestRow) = (squared, i);
+            }
+        }
+
+        if (bestRow >= 0)
+        {
+            var x = (ValueOf(X, columns[0], bestRow) + ValueOf(X, columns[1], bestRow)) / 2;
+            var y = (columns[2].DifferenceAt(bestRow, 0) + columns[3].DifferenceAt(bestRow, 0)) / 2;
+            Add(0, bestRow, x, y, Math.Sqrt(best), derived: false, provisional: false);
+        }
+    }
+
+    /// <summary>Returns the pixel distance from the cursor to a box given along and across: 0 inside it.</summary>
+    public readonly double Box(double left, double right, double low, double high)
+    {
+        var (a, b) = (Math.Min(left, right), Math.Max(left, right));
+        var (c, e) = (Math.Min(low, high), Math.Max(low, high));
+        var along =
+            Along < a ? a - Along
+            : Along > b ? Along - b
+            : 0;
+        var across =
+            Across < c ? c - Across
+            : Across > e ? Across - e
+            : 0;
+        return Math.Sqrt((along * along) + (across * across));
+    }
+
+    /// <summary>Returns the data value of the y axis at the cursor's pixel across.</summary>
+    public readonly double CursorValue(in GeomFrame.Axis axis)
+    {
+        var (origin, d) = AtPixel(axis, Across);
+        return axis.Transform is null ? origin + d : d;
+    }
+
+    /// <summary>Returns the pixel distance from the cursor to the point given along and across.</summary>
     public readonly double Distance(double along, double across) =>
         Math.Sqrt(((along - Along) * (along - Along)) + ((across - Across) * (across - Across)));
 
@@ -200,11 +467,99 @@ internal ref struct HitScan
     public static double PixelOfRow(in GeomFrame.Axis axis, Column column, long row) =>
         PixelOf(axis, column.DifferenceAt(row, axis.Transform is null ? axis.Domain.Origin : 0));
 
-    /// <summary>Returns the first row of [start, end) whose x reaches the x axis's value at a pixel.</summary>
-    private readonly long RowAt(Column x, double pixel, long start, long end)
+    /// <summary>Returns the first row of [start, end) whose x, moved by a shift in data units, reaches the x axis's value at a pixel.</summary>
+    private readonly long RowAt(Column x, double pixel, long start, long end, double shift = 0)
     {
         var (origin, d) = AtPixel(X, pixel);
-        return x.LowerBound(d, origin, new RowRange(start, end));
+        return x.LowerBound(d - shift, origin, new RowRange(start, end));
+    }
+
+    private static void Closer(double distance, long row, ref double best, ref long bestRow)
+    {
+        if (distance < best)
+        {
+            (best, bestRow) = (distance, row);
+        }
+    }
+
+    /// <summary>Returns the pixel distance from the cursor to a bar's rectangle: x + shift ± half, from its low end to its value.</summary>
+    private readonly double BarDistance(in Bar bar, long row)
+    {
+        var value = bar.High.DifferenceAt(row, 0);
+        var bottom = bar.Low is { } low ? low.DifferenceAt(row, 0) : bar.Baseline;
+
+        // A bar of no height draws nothing and answers nothing: a stack's side where the value is 0 (PR #360's review).
+        if (double.IsNaN(value) || double.IsNaN(bottom) || value == bottom)
+        {
+            return double.PositiveInfinity;
+        }
+
+        var d = bar.X.DifferenceAt(row, X.Transform is null ? X.Domain.Origin : 0) + bar.Shift;
+        return Box(PixelOf(X, d - bar.Half), PixelOf(X, d + bar.Half), PixelOfValue(Y, bottom), PixelOfValue(Y, value));
+    }
+
+    /// <summary>
+    /// Returns a row of [start, end) whose line from its low end to its high end holds a value, or −1 (Issue #355 Decision 11):
+    /// the pyramids' extremes pass the ranges whose least low end lies above the value or whose greatest high end below it, and
+    /// a short range is read row by row.
+    /// </summary>
+    private static long Covering(
+        PlotPyramid lows,
+        PlotPyramid highs,
+        Column low,
+        Column high,
+        long start,
+        long end,
+        double value,
+        ref bool provisional
+    )
+    {
+        if (start >= end)
+        {
+            return -1;
+        }
+
+        if (end - start <= ScanRows)
+        {
+            for (var row = start; row < end; row++)
+            {
+                if (low.DifferenceAt(row, 0) <= value && high.DifferenceAt(row, 0) >= value)
+                {
+                    return row;
+                }
+            }
+
+            return -1;
+        }
+
+        if (
+            !lows.TryExtremes(start, end, out var min, out _, out _, out _, ref provisional)
+            || !highs.TryExtremes(start, end, out _, out _, out var max, out _, ref provisional)
+            || min > value
+            || max < value
+        )
+        {
+            return -1;
+        }
+
+        var middle = start + ((end - start) / 2);
+        var found = Covering(lows, highs, low, high, start, middle, value, ref provisional);
+        return found >= 0 ? found : Covering(lows, highs, low, high, middle, end, value, ref provisional);
+    }
+
+    /// <summary>Returns the pixel distance from the cursor to an error bar's line and its caps, a cap half wide in pixels.</summary>
+    private readonly double ErrorBarDistance(Column x, Column low, Column high, long row, double cap)
+    {
+        var (lowValue, highValue) = (low.DifferenceAt(row, 0), high.DifferenceAt(row, 0));
+        if (double.IsNaN(lowValue) || double.IsNaN(highValue))
+        {
+            return double.PositiveInfinity;
+        }
+
+        var along = PixelOfRow(X, x, row);
+        var (a, b) = (PixelOfValue(Y, lowValue), PixelOfValue(Y, highValue));
+        var line = Box(along, along, a, b);
+        return cap > 0 ? Math.Min(line, Math.Min(Box(along - cap, along + cap, a, a), Box(along - cap, along + cap, b, b))) : line;
     }
 
     /// <summary>Returns how far the cursor lies from a column of pixels [column, column + 1) along: 0 inside it.</summary>
@@ -217,10 +572,10 @@ internal ref struct HitScan
     /// Returns the row whose x is nearest the cursor's, skipping rows whose y is NaN (§10: "NaN の欠けを飛ばす"), or −1. The
     /// rows around the cursor's x are found by the column's search; a NaN is passed through the pyramid's search for numbers.
     /// </summary>
-    private readonly long NearestInX(PlotPyramid pyramid, Column x, Column y, long start, long end, ref bool provisional)
+    private readonly long NearestInX(PlotPyramid pyramid, Column x, Column y, long start, long end, double shift, ref bool provisional)
     {
         var (origin, d) = AtPixel(X, Along);
-        var after = x.LowerBound(d, origin, new RowRange(start, end));
+        var after = x.LowerBound(d - shift, origin, new RowRange(start, end));
         var before = after - 1;
         if (after < end)
         {
@@ -241,7 +596,9 @@ internal ref struct HitScan
         }
 
         var cursor = Along;
-        return Math.Abs(PixelOfRow(X, x, after) - cursor) < Math.Abs(PixelOfRow(X, x, before) - cursor) ? after : before;
+        var o = X.Transform is null ? X.Domain.Origin : 0;
+        var (afterPixel, beforePixel) = (PixelOf(X, x.DifferenceAt(after, o) + shift), PixelOf(X, x.DifferenceAt(before, o) + shift));
+        return Math.Abs(afterPixel - cursor) < Math.Abs(beforePixel - cursor) ? after : before;
     }
 
     /// <summary>
@@ -334,6 +691,9 @@ internal ref struct HitScan
         Nearest(pyramid, x, y, middle, end, gap, ref best, ref bestRow, ref provisional);
     }
 }
+
+/// <summary>A bar series' columns and placing for a hit test (row I2c): its x, its low end or none, its value, and its span.</summary>
+internal readonly record struct Bar(Column X, Column? Low, Column High, double Baseline, double Shift, double Half);
 
 /// <summary>A gather of rows by key (row I2a): a split's categories, a facet's panels; it takes a gathered row back.</summary>
 internal interface ISourceRows

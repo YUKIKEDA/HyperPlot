@@ -46,7 +46,11 @@ internal sealed partial class PlotPlan
 
         var frames = _panels[hit.Panel].Frames;
         var layer = spec.Layers[hit.Layer];
-        var along = HitScan.PixelOfValue(layer.SecondaryX ? frames.X2 : frames.X, hit.X);
+        var plans = _panels[hit.Panel].Layers;
+        var x = layer.SecondaryX ? frames.X2 : frames.X;
+
+        // A layer places its own: a dodged bar in its place, a category's in its band (row I2c).
+        var along = hit.Layer < plans.Length ? plans[hit.Layer].HitAlong(x, hit) : HitScan.PixelOfValue(x, hit.X);
         var across = HitScan.PixelOfValue(layer.SecondaryY ? frames.Y2 : frames.Y, hit.Y);
         pixel = _guides.Flipped ? new Vector2((float)across, (float)along) : new Vector2((float)along, (float)across);
         return float.IsFinite(pixel.X) && float.IsFinite(pixel.Y);
