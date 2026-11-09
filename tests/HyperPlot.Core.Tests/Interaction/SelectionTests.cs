@@ -106,7 +106,7 @@ public sealed class SelectionTests
     ///
     /// Expected:
     /// - An XRange whose y is the panel's current y range. A Lasso of 3 to 1,024 vertices, each share in [0, 1]. Points: one
-    ///   point of row about 300, then two points.
+    ///   point of row about 300, then two points; each click told once.
     /// </remarks>
     [Fact]
     public void Tools_SelectAnXRangeALassoAndPoints()
@@ -139,12 +139,15 @@ public sealed class SelectionTests
         Assert.InRange(lasso.Polygon.Length, 3, 1024);
         Assert.All(lasso.Polygon.ToArray(), v => Assert.True(v.X is >= 0 and <= 1 && v.Y is >= 0 and <= 1));
 
+        var told = 0;
+        f.Engine.SelectionChanged += _ => told++;
         Click(f, LinePoint(f, 300));
         var one = Assert.IsType<Selection2D>(f.Engine.Selection(0));
         Assert.Equal(SelectionKind.Points, one.Kind);
         Assert.InRange(Assert.Single(one.Points.ToArray()).Row, 295, 305);
         Click(f, LinePoint(f, 600));
         Assert.Equal(2, f.Engine.Selection(0)!.Points.Length);
+        Assert.Equal(2, told);
     }
 
     /// <summary>
@@ -375,6 +378,71 @@ public sealed class SelectionTests
         engine.ClearSelection();
         Assert.Null(engine.Selection(0));
         Assert.Equal(1, told);
+
+        static RowSelection RowsOf(PlotSpec spec, Selection2D selection)
+        {
+            using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
+            engine.SetPlot(spec);
+            engine.RenderFrame();
+            engine.Select(selection);
+            return SelectedRows(engine);
+        }
+    }
+
+    /// <summary>
+    /// The layers over categories answer by the bands' middles (Issue #368 Decisions 2 and 3): an x range over category bars
+    /// and error bars is a bit a row, a category in when its band's middle is; a stack over categories answers with the cells
+    /// whose piece meets a rectangle, derived (PR #369's review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 20 rows over 5 categories k0 to k4 (row % 5), y = 1 + row % 3, and a group g alternating a and b; band padding 0.1,
+    ///   so category c's middle is c + 0.45.
+    ///
+    /// Steps:
+    /// - Select the x range [1.5, 2.5] over category bars and over category error bars from 0 to y. Over bars stacked by g,
+    ///   select over category 1's band ([0.9, 1.9]) the rectangle of y [0, 100], then of y [7.5, 9].
+    ///
+    /// Expected:
+    /// - The bars and the error bars: exactly the rows of k2 (2.45 is in, 1.45 is out). The stack: category 1's cells sum to
+    ///   3 (a) and 5 (b), stacked to 8 with a outermost: y [0, 100] gives both cells, 0 · 5 + 1 and 1 · 5 + 1, derived; y
+    ///   [7.5, 9] meets a's piece [5, 8] only, one cell.
+    /// </remarks>
+    [Fact]
+    public void SelectedRows_OfLayersOverCategories()
+    {
+        using var y = Column.Wrap(Enumerable.Range(0, 20).Select(i => 1.0 + (i % 3)).ToArray());
+        using var zero = Column.Wrap(new double[20]);
+        var table = DataTable
+            .Create()
+            .Add("c", Column.Categorical([.. Enumerable.Range(0, 20).Select(i => $"k{i % 5}")]))
+            .Add("g", Column.Categorical([.. Enumerable.Range(0, 20).Select(i => i % 2 == 0 ? "a" : "b")]))
+            .Add("y", y)
+            .Add("zero", zero)
+            .Build();
+        var ty = table.Col<double>("y");
+        var range = Selection2D.XRange(Panel, ViewRange.FromValues(1.5, 2.5));
+        var k2 = Enumerable.Range(0, 20).Where(i => i % 5 == 2).ToArray();
+
+        var bars = RowsOf(Plot.Create(table).Bar(table.Cat("c"), ty).ScaleX(Scale.Band()).Build(), range);
+        Assert.Equal(k2.Length, bars.Count);
+        Assert.All(k2, i => Assert.True(bars.Contains(i)));
+
+        var errors = RowsOf(Plot.Create(table).ErrorBar(table.Cat("c"), table.Col<double>("zero"), ty).ScaleX(Scale.Band()).Build(), range);
+        Assert.Equal(k2.Length, errors.Count);
+        Assert.All(k2, i => Assert.True(errors.Contains(i)));
+
+        // Category 1's rows: 1, 6, 11, 16 with y 2, 1, 3, 2; a holds rows 6 and 16 (1 + 2 = 3), b rows 1 and 11 (2 + 3 = 5).
+        // The cells are numbered group · 5 + category: a's is 1, b's is 6.
+        var stackSpec = Plot.Create(table)
+            .Bar(table.Cat("c"), ty, configure: b => b.ColorBy(table.Cat("g")).Position(Position.Stack))
+            .ScaleX(Scale.Band())
+            .Build();
+        var whole = RowsOf(stackSpec, Selection2D.Rectangle(Panel, ViewRange.FromValues(0.9, 1.9), ViewRange.FromValues(0.0, 100.0)));
+        Assert.Equal([1L, 6L], whole.Ranges().SelectMany(r => Enumerable.Range((int)r.Start, (int)(r.End - r.Start)).Select(i => (long)i)));
+        Assert.True(whole.Derived);
+        var top = RowsOf(stackSpec, Selection2D.Rectangle(Panel, ViewRange.FromValues(0.9, 1.9), ViewRange.FromValues(7.5, 9.0)));
+        Assert.Equal(1, top.Count);
 
         static RowSelection RowsOf(PlotSpec spec, Selection2D selection)
         {
