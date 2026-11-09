@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** C（インタラクションと WPF）
-- **作業中:** I4a（I3b は #377 の PR で済み）
-- **ブランチ:** `docs/382-i4a-annotations`（設計）
-- **Issue:** #382（設計）
+- **作業中:** I4b（I4a は #386 の PR で済み）
+- **ブランチ:** —
+- **Issue:** —
 
 ## ツールチェーン
 
@@ -81,7 +81,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | I2c | 要素の層（bar・error bar・rect。普通・カテゴリ・積み上げ・浮いた棒・並べた棒）のヒットテスト（要件 I-2、§6.3）と、ホバーのツールチップのカテゴリの軸の値（カテゴリ名、§6.5）。行 I2a から分けた（Issue #341 の決定 2） | done | [#341](https://github.com/YUKIKEDA/HyperPlot/issues/341)（決定）、[#355](https://github.com/YUKIKEDA/HyperPlot/issues/355)（設計）、[#359](https://github.com/YUKIKEDA/HyperPlot/issues/359) |
 | I3a | 選択（要件 I-3・I-7、§6.4）: 矩形・X の範囲・投げ縄・クリックの点、`Selection`・`SelectionTool`・`RowSelection`、行の集合の API（区間とビット列）、強調、`Escape` で消す。行 I3 から分けた（Issue #364 の決定 1） | done | [#364](https://github.com/YUKIKEDA/HyperPlot/issues/364)（設計）、[#368](https://github.com/YUKIKEDA/HyperPlot/issues/368) |
 | I3b | リンク（要件 I-4、§6.4）: `LinkGroup` で、図のプロットの間とファセットのパネルの間のビュー（x・y・両方）・カーソル・選択の共有、ファセットのパネルも入れられる形（行 G6b・G6c。共有する軸の既定の動きは行 I1b のまま、Issue #364 の決定 2）。行 I3 から分けた | done | [#364](https://github.com/YUKIKEDA/HyperPlot/issues/364)（分け方）、[#373](https://github.com/YUKIKEDA/HyperPlot/issues/373)（設計）、[#377](https://github.com/YUKIKEDA/HyperPlot/issues/377) |
-| I4a | 注記と注釈（要件 G-10・I-5、§4.6・§6.5）: `Subtitle`・`Caption`、線・矩形・テキスト・マーカーの注釈（データの座標かパネルの割合に軸ごとに固定）、`AnnotationTool` のドラッグと `AnnotationChanged`。行 I4 から分けた（Issue #382 の決定 1） | not-started | [#382](https://github.com/YUKIKEDA/HyperPlot/issues/382)（設計） |
+| I4a | 注記と注釈（要件 G-10・I-5、§4.6・§6.5）: `Subtitle`・`Caption`、線・矩形・テキスト・マーカーの注釈（データの座標かパネルの割合に軸ごとに固定）、`AnnotationTool` のドラッグと `AnnotationChanged`。行 I4 から分けた（Issue #382 の決定 1） | done | [#382](https://github.com/YUKIKEDA/HyperPlot/issues/382)（設計）、[#386](https://github.com/YUKIKEDA/HyperPlot/issues/386) |
 | I4b | 計測（要件 I-6、§6.5）: 2 点の差（Δx・Δy・傾き）、範囲の統計（件数・平均・最小・最大）。行 I4 から分けた（Issue #382 の決定 1）。形は行 I4b の grill で決める | not-started | |
 | **D: 散布の大規模化とストリーミング** | | | |
 | C3 | 空間タイル索引（Morton 順の並べ直し、四分木の表） | not-started | |
