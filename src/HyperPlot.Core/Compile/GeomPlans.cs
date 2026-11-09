@@ -26,6 +26,8 @@ internal sealed class LinePlan : LayerPlan
 
     internal override Color HitColor(int series) => Stroke(((LineLayerSpec)Spec).Style).Color;
 
+    internal override SelectionShape? Shape => new(ShapeKind.Point, Columns[0], null, Columns[1], Rows, Sorted: true);
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var line = (LineLayerSpec)Spec;
@@ -61,6 +63,8 @@ internal sealed class StepPlan : LayerPlan
     internal override void Hit(ref HitScan scan) => scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
 
     internal override Color HitColor(int series) => Stroke(((StepLayerSpec)Spec).Style).Color;
+
+    internal override SelectionShape? Shape => new(ShapeKind.Point, Columns[0], null, Columns[1], Rows, Sorted: true);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -128,6 +132,8 @@ internal sealed class AreaPlan : LayerPlan
     internal override void Hit(ref HitScan scan) => scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
 
     internal override Color HitColor(int series) => (((AreaLayerSpec)Spec).Fill ?? SeriesColor) with { A = 255 };
+
+    internal override SelectionShape? Shape => new(ShapeKind.Point, Columns[0], null, Columns[1], Rows, Sorted: true);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -231,6 +237,8 @@ internal sealed class BandPlan : LayerPlan
         scan.Series(0, Columns[0], Columns[1], Rows, derived: false);
         scan.Series(1, Columns[0], Columns[2], Rows, derived: false);
     }
+
+    internal override SelectionShape? Shape => new(ShapeKind.Span, Columns[0], Columns[1], Columns[2], Rows, Sorted: true);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -365,6 +373,8 @@ internal sealed class BarPlan : LayerPlan
         DodgeSlot is { } slot
             ? (Width * (((slot.Index + 0.5) / slot.Count) - 0.5), Width / slot.Count * (1 - DodgePadding(bar)) / 2)
             : (0.0, Width / 2);
+
+    internal override SelectionShape? Shape => new(ShapeKind.Span, Columns[0], null, Columns[1], Rows, Sorted: true, ((BarLayerSpec)Spec).Baseline);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -559,6 +569,8 @@ internal sealed class CategoryBarPlan : LayerPlan
 
     internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) => BandAlong(x, (int)hit.X);
 
+    internal override SelectionShape? Shape => new(ShapeKind.Span, Columns[0], null, Columns[1], Rows, Sorted: false, ((BarLayerSpec)Spec).Baseline);
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         // x is the band's: its domain comes from the categories (design §4.2).
@@ -710,6 +722,8 @@ internal sealed class ErrorBarPlan : LayerPlan
     internal override void Hit(ref HitScan scan) => scan.ErrorBars(Columns[0], Columns[1], Columns[2], Rows, _cap);
 
     internal override Color HitColor(int series) => Stroke(((ErrorBarLayerSpec)Spec).Style).Color;
+
+    internal override SelectionShape? Shape => new(ShapeKind.Span, Columns[0], Columns[1], Columns[2], Rows, Sorted: true);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -918,6 +932,8 @@ internal sealed class RectPlan : LayerPlan
     }
 
     internal override Color HitColor(int series) => (((RectLayerSpec)Spec).Fill ?? SeriesColor) with { A = 255 };
+
+    internal override SelectionShape? Shape => new(ShapeKind.Box, Columns[0], null, Columns[2], Rows, Sorted: false, X1: Columns[1], Y1: Columns[3]);
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {

@@ -1010,6 +1010,16 @@ internal abstract class LayerPlan
         }
     }
 
+    /// <summary>Gets the layer's elements as a selection reads them (row I3a), or null for a layer that answers none.</summary>
+    internal virtual SelectionShape? Shape => null;
+
+    /// <summary>
+    /// Returns the rows of the layer a selection holds (design §6.4 "行の集合", row I3a): from <see cref="Shape"/>, or empty.
+    /// A layer of parts joins its parts' rows.
+    /// </summary>
+    internal virtual ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query) =>
+        Shape is { } shape ? query.Select(shape) : ValueTask.FromResult(Interaction.RowSelection.Empty);
+
     /// <summary>Returns the color a series of the layer's hits is drawn in (row I2b): where a hover marks it. The series color by default.</summary>
     internal virtual Color HitColor(int series) => SeriesColor;
 

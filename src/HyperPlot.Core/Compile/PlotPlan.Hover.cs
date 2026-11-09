@@ -58,6 +58,46 @@ internal sealed partial class PlotPlan
     }
 
     /// <summary>
+    /// Returns the rows of a layer a selection holds (design §6.4 "行の集合", row I3a): the rows of its points for points, else
+    /// the layer's answer on its pair of axes; a facet's gathered panel's rows taken back to the plot's table.
+    /// </summary>
+    internal ValueTask<RowSelection> SelectRows(int panel, int layer, Selection2D selection, PlotWorkerPool pool)
+    {
+        if (_spec is not { } spec || panel >= _panels.Length || layer >= _panels[panel].Layers.Length)
+        {
+            return ValueTask.FromResult(RowSelection.Empty);
+        }
+
+        if (selection.Kind == SelectionKind.Points)
+        {
+            var (rows, derived) = (new List<long>(), false);
+            foreach (var point in selection.Points.Span)
+            {
+                if (point.Layer == layer)
+                {
+                    rows.Add(point.Row);
+                    derived |= point.Derived;
+                }
+            }
+
+            return ValueTask.FromResult(RowSelection.OfRows(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows), derived));
+        }
+
+        var frames = _panels[panel].Frames;
+        var layerSpec = spec.Layers[layer];
+        var query = new SelectionQuery(selection, layerSpec.SecondaryX ? frames.X2 : frames.X, layerSpec.SecondaryY ? frames.Y2 : frames.Y, pool);
+        var answer = _panels[panel].Layers[layer].SelectRows(query);
+        if (_panels[panel].Data is { Map: not null } data && _facet is { } facet && !FacetData.Rowless(layerSpec))
+        {
+            ISourceRows rows = facet;
+            var key = data.Key;
+            return SelectionQuery.Union([(answer.AsTask(), row => rows.SourceRow(key, row))], query.Derived);
+        }
+
+        return answer;
+    }
+
+    /// <summary>
     /// Records a panel's lines again over the plot, twice as wide and clipped to a rectangle, for a selection's highlight
     /// (design §6.4, row I3a): a line, a step, and an area's outline as they were drawn last.
     /// </summary>

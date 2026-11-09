@@ -501,6 +501,39 @@ public sealed class PlotEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns the rows of a layer a plot's selection holds (design §6.4 "行の集合", row I3a, Issue #364 Decisions 4, 9, 10):
+    /// for an x range over a layer whose x does not decrease, a run of rows found at once; for a rectangle or a lasso, a bit a
+    /// row the workers set, made only now; for points, the rows they hit. A split layer's and a facet's rows are the plot's
+    /// table's; a stat's and a stack's are their derived table's (<see cref="RowSelection.Derived"/>). A rule, a segment, a
+    /// text, and a user's geom answer an empty set, as does a plot without a selection.
+    /// </summary>
+    /// <param name="plot">The plot: 0 for a plot alone, its number in a figure.</param>
+    /// <param name="layer">The layer's position in the plot's spec.</param>
+    /// <returns>
+    /// The rows: at once for a run or points, else when the workers are done, which may complete on a worker's thread. The
+    /// result does not change, so any thread may read it.
+    /// </returns>
+    /// <exception cref="ArgumentOutOfRangeException">The plot or the layer is not drawn.</exception>
+    /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
+    public ValueTask<RowSelection> SelectedRowsAsync(int plot, int layer)
+    {
+        CheckThread();
+        if (plot < 0 || plot >= PlotCount)
+        {
+            throw new ArgumentOutOfRangeException(nameof(plot), plot, "The plot is drawn.");
+        }
+
+        if (layer < 0 || layer >= SpecOf(plot).Layers.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(layer), layer, "The layer is in the plot's spec.");
+        }
+
+        return _selections[plot] is { } selection
+            ? PlanOf(plot).SelectRows(selection.Panel.Panel, layer, selection, _renderer.Pool)
+            : ValueTask.FromResult(RowSelection.Empty);
+    }
+
     /// <summary>Clears every plot's selection (design §6.4, row I3a): tells <see cref="SelectionChanged"/> for each plot that had one.</summary>
     /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
     public void ClearSelection()

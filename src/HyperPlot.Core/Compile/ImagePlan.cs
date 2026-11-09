@@ -81,6 +81,35 @@ internal sealed class ImagePlan : LayerPlan
         scan.Add(0, (((long)row * w) + (long)column) * raster.Channels, cx, cy, distance, derived: false, provisional: false);
     }
 
+    /// <summary>
+    /// Answers with the elements of the texels whose middles the selection holds (row I3a): the first channel's position in the
+    /// raster's column for each, as the hit test numbers them. Reads the texels of the selection's bounds only.
+    /// </summary>
+    internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
+    {
+        var image = (ImageLayerSpec)Spec;
+        var (raster, extent) = (image.Raster, image.ExtentOrDefault);
+        var (w, h) = (raster.Width, raster.Height);
+        var upper = image.Origin == RasterOrigin.Upper;
+        var rows = new List<long>();
+        for (var row = 0; row < h; row++)
+        {
+            var cy = upper
+                ? extent.Top - ((row + 0.5) * (extent.Top - extent.Bottom) / h)
+                : extent.Bottom + ((row + 0.5) * (extent.Top - extent.Bottom) / h);
+            for (var column = 0; column < w; column++)
+            {
+                var cx = extent.Left + ((column + 0.5) * (extent.Right - extent.Left) / w);
+                if (query.HoldsData(cx, cy) || (query.Selection.Kind == Interaction.SelectionKind.XRange && query.SpanHolds(cx, cy, cy)))
+                {
+                    rows.Add((((long)row * w) + column) * raster.Channels);
+                }
+            }
+        }
+
+        return ValueTask.FromResult(Interaction.RowSelection.OfRows(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows), derived: false));
+    }
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var extent = ((ImageLayerSpec)Spec).ExtentOrDefault;
