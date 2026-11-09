@@ -32,6 +32,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 - Before measuring what a cache saves, count its hits: a cache whose slot two callers overwrite in turn never hits, and every mutant of its key survives.
 - A Zero-Alloc test runs each kind that takes the path (each scale, each column type), not one kind for the mechanism. PR #100 measured linear and log; symlog and pow made a transform on every render of the same spec, and the review found it.
 - A Zero-Alloc test of frames does not move the view into new tick labels: a new label's shaping is the shaping cache's first entry for it, an allocation once (row I1c). Keep the view still, or fill the cache first as the I1a and I1c measurements do. PR #294's provisional frames zoomed by 0.1 % a frame, and the frame where a new label came allocated 13,576 B on Linux only.
+- An End-to-end scene of the hover runs its script once before the frames it counts: each tooltip's text is new the first time, and the shaping cache's entry for it is an allocation once. PR #379's cursor scene swept once and counted 624 B a frame, with and without links, until it swept twice.
 - A Zero-Alloc failure is an allocation to find, and blocks the merge. It is not run again until it passes.
 
 ## Rules
