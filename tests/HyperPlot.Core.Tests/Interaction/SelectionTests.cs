@@ -312,6 +312,81 @@ public sealed class SelectionTests
     }
 
     /// <summary>
+    /// An image answers with its texels' elements, a facet's panel with the plot's table's rows, and a stack with its derived
+    /// table's rows (Issue #364 Decision 10); <see cref="PlotEngine.ClearSelection"/> clears and tells (Issue #364 Decision 7).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A raster of 10 × 6 values (texel centers at whole x and y, origin lower); 40 rows with x = row, y = row % 5, a
+    ///   category "g" alternating "a" and "b".
+    ///
+    /// Steps:
+    /// - Select [2, 4] × [1, 2] over the image. Over a line faceted by g, select [10, 20] × [2, 3] in panel 1. Over an area
+    ///   stacked over x by g, select the x range [10, 20]. Clear.
+    ///
+    /// Expected:
+    /// - The image: the 6 texels of columns 2 to 4 and rows 1 to 2, numbered row · 10 + column. The facet: the rows of b (odd)
+    ///   from 10 to 20 with y in [2, 3], as table rows. The stack: some rows, derived. The clear: no selection, told once.
+    /// </remarks>
+    [Fact]
+    public void SelectedRows_OfImagesFacetsAndStacks()
+    {
+        using var values = Column.Wrap(Enumerable.Range(0, 60).Select(i => (double)i).ToArray());
+        var image = new PlotSpec
+        {
+            Data = DataTable.Create().Build(),
+            Layers = [new ImageLayerSpec { Raster = Raster.Of(values, 10), Origin = RasterOrigin.Lower }],
+        };
+        var texels = RowsOf(image, Selection2D.Rectangle(Panel, ViewRange.FromValues(2.0, 4.0), ViewRange.FromValues(1.0, 2.0)));
+        long[] expected = [12, 13, 14, 22, 23, 24];
+        Assert.Equal(expected.Length, texels.Count);
+        Assert.All(expected, e => Assert.True(texels.Contains(e)));
+
+        using var x = Column.Wrap(Enumerable.Range(0, 40).Select(i => (double)i).ToArray());
+        using var y = Column.Wrap(Enumerable.Range(0, 40).Select(i => (double)(i % 5)).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", x)
+            .Add("y", y)
+            .Add("g", Column.Categorical([.. Enumerable.Range(0, 40).Select(i => i % 2 == 0 ? "a" : "b")]))
+            .Build();
+        var (tx, ty) = (table.Col<double>("x"), table.Col<double>("y"));
+        var faceted = RowsOf(
+            Plot.Create(table).Line(tx, ty).FacetWrap(table.Cat("g")).Build(),
+            Selection2D.Rectangle(new PanelId(0, 1), ViewRange.FromValues(10.0, 20.0), ViewRange.FromValues(2.0, 3.0))
+        );
+        var odd = Enumerable.Range(10, 11).Where(i => i % 2 == 1 && i % 5 is >= 2 and <= 3).ToArray();
+        Assert.Equal(odd.Length, faceted.Count);
+        Assert.All(odd, i => Assert.True(faceted.Contains(i)));
+
+        var stacked = RowsOf(
+            Plot.Create(table).Area(tx, ty, configure: a => a.ColorBy(table.Cat("g")).Position(Position.Stack)).Build(),
+            Selection2D.XRange(Panel, ViewRange.FromValues(10.0, 20.0))
+        );
+        Assert.True(stacked.Count > 0);
+        Assert.True(stacked.Derived);
+
+        using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(Plot.Create(table).Line(tx, ty).Build());
+        engine.RenderFrame();
+        engine.Select(Selection2D.XRange(Panel, ViewRange.FromValues(10.0, 20.0)));
+        var told = 0;
+        engine.SelectionChanged += _ => told++;
+        engine.ClearSelection();
+        Assert.Null(engine.Selection(0));
+        Assert.Equal(1, told);
+
+        static RowSelection RowsOf(PlotSpec spec, Selection2D selection)
+        {
+            using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
+            engine.SetPlot(spec);
+            engine.RenderFrame();
+            engine.Select(selection);
+            return SelectedRows(engine);
+        }
+    }
+
+    /// <summary>
     /// The highlight (Issue #364 Decision 5): the selection's range in 15 % of the foreground, the line again twice as wide
     /// clipped to the range, points marked; changing the selection records no layer again.
     /// </summary>
