@@ -89,7 +89,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
                 var side = up ? _stack.Positive : _stack.Negative;
                 var (outer, inner) = (side[k]!, side[k + 1]);
                 var make = Piece(Ref(data, _stack.X), Ref(data, outer), inner is null ? null : Ref(data, inner), up);
-                _parts.Add(new Part(categories[k], MakePlan(make(spec), inner is null ? null : Ref(data, inner), build), make));
+                _parts.Add(new Part(categories[k], MakePlan(make(spec), inner is null ? null : Ref(data, inner), up, build), make, up));
             }
         }
 
@@ -133,16 +133,12 @@ internal sealed class StackedSeriesPlan : LayerPlan
         }
     }
 
-    /// <summary>
-    /// Answers for each group's part, numbered by its group (row I2a): the rows are the stack's table's, of each group's x
-    /// joined (Issue #341 Decision 3). The outline lines repeat the parts and do not answer; the bars are row I2c's.
-    /// </summary>
     /// <summary>Returns the color of a group's part (row I2b): its series are numbered by its group, as <see cref="Hit"/> does.</summary>
     internal override Color HitColor(int series)
     {
         foreach (var part in _parts)
         {
-            if (part.Plan is not LinePlan && Math.Max(part.Category, 0) == series / GroupWidth)
+            if (Answers(part, series))
             {
                 return part.Plan.HitColor(series % GroupWidth);
             }
@@ -155,7 +151,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
     {
         foreach (var part in _parts)
         {
-            if (part.Plan is not LinePlan && Math.Max(part.Category, 0) == hit.Series / GroupWidth)
+            if (Answers(part, hit.Series))
             {
                 return part.Plan.HitAlong(x, hit);
             }
@@ -164,6 +160,11 @@ internal sealed class StackedSeriesPlan : LayerPlan
         return HitScan.PixelOfValue(x, hit.X);
     }
 
+    /// <summary>
+    /// Answers for each group's part, numbered by its group (rows I2a, I2c): the rows are the stack's table's, of each group's
+    /// x joined (Issue #341 Decision 3). A group's bars answer for their positive piece as series 2 · group and their negative
+    /// one as 2 · group + 1. The outline lines repeat the parts and do not answer.
+    /// </summary>
     internal override void Hit(ref HitScan scan)
     {
         var (base0, width, derived) = (scan.SeriesBase, scan.SeriesWidth, scan.Derived);
@@ -302,8 +303,8 @@ internal sealed class StackedSeriesPlan : LayerPlan
             };
 
     /// <summary>Makes a piece's plan: a floating bar from its inner end or 0, or an area's or a band's own plan.</summary>
-    private static LayerPlan MakePlan(LayerSpec piece, ColumnRef? inner, PlanBuild build) =>
-        piece is BarLayerSpec bar ? new FloatingBarPlan(bar, inner, build) : CreateGeom(piece, build, RowRange.All);
+    private static LayerPlan MakePlan(LayerSpec piece, ColumnRef? inner, bool up, PlanBuild build) =>
+        piece is BarLayerSpec bar ? new FloatingBarPlan(bar, inner, up, build) : CreateGeom(piece, build, RowRange.All);
 
     /// <summary>
     /// Returns each group's rows, and its category (−1 for a layer that is not split): a category's run of the layer's own
@@ -349,7 +350,17 @@ internal sealed class StackedSeriesPlan : LayerPlan
     }
 
     /// <summary>One piece: its category (−1 for the layer's own color), its plan, and how its node is made from the layer's.</summary>
-    private readonly record struct Part(int Category, LayerPlan Plan, Func<LayerSpec, LayerSpec> Make);
+    /// <summary>A group's piece: its category (−1 for a layer that is not split), its plan, how it is made, and its side.</summary>
+    private readonly record struct Part(int Category, LayerPlan Plan, Func<LayerSpec, LayerSpec> Make, bool Up = true);
+
+    /// <summary>
+    /// Returns whether a part answers for a series (rows I2b, I2c): its group's, and for a bar its side's, the positive piece
+    /// 2 · group and the negative one 2 · group + 1.
+    /// </summary>
+    private static bool Answers(in Part part, int series) =>
+        part.Plan is not LinePlan
+        && Math.Max(part.Category, 0) == series / GroupWidth
+        && (part.Plan is not FloatingBarPlan || part.Up == (series % GroupWidth == 0));
 }
 
 /// <summary>
@@ -360,6 +371,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
 internal sealed class FloatingBarPlan : LayerPlan
 {
     private readonly ColumnRef? _low;
+    private readonly bool _up;
     private readonly int _lowSeries;
     private readonly int _highSeries;
     private readonly M4Point[] _lowOutput;
@@ -367,10 +379,10 @@ internal sealed class FloatingBarPlan : LayerPlan
     private readonly ColumnEnvelope _lows = new();
     private readonly ColumnEnvelope _highs = new();
 
-    public FloatingBarPlan(BarLayerSpec spec, ColumnRef? low, PlanBuild build)
+    public FloatingBarPlan(BarLayerSpec spec, ColumnRef? low, bool up, PlanBuild build)
         : base(spec)
     {
-        _low = low;
+        (_low, _up) = (low, up);
         SetColumns(low is { } lower ? [spec.X.Column, lower.Column, spec.Y.Column] : [spec.X.Column, spec.Y.Column]);
         (_lowSeries, _lowOutput) = low is { } from ? build.AddSeries(spec.X.Column, from.Column) : (-1, []);
         (_highSeries, _highOutput) = build.AddSeries(spec.X.Column, spec.Y.Column);
@@ -378,11 +390,14 @@ internal sealed class FloatingBarPlan : LayerPlan
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
 
-    /// <summary>Answers for its group's pieces, from the inner end to the outer one (row I2c, Issue #355 Decision 4).</summary>
+    /// <summary>
+    /// Answers for its group's pieces, from the inner end to the outer one (row I2c, Issue #355 Decision 4): series 0 for the
+    /// positive side, 1 for the negative one, so that a group's two sides keep their own numbers (PR #360's review).
+    /// </summary>
     internal override void Hit(ref HitScan scan)
     {
         var bar = (BarLayerSpec)Spec;
-        scan.Bars(0, bar.X.Column, _low?.Column, bar.Y.Column, RowRange.All, 0, 0, bar.Width!.Value / 2, derived: true);
+        scan.Bars(_up ? 0 : 1, bar.X.Column, _low?.Column, bar.Y.Column, RowRange.All, 0, 0, bar.Width!.Value / 2, derived: true);
     }
 
     internal override Color HitColor(int series) => SeriesColor with { A = 255 };

@@ -1668,10 +1668,6 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Returns the pixel of a column's element on the y axis.</summary>
     public double ElementY(Column column, long index) => PixelY(column.DifferenceAt(index, YOrigin));
 
-    /// <summary>
-    /// Maps all the elements of a column to pixels on one axis into one of four buffers kept from frame to frame, a chunk
-    /// read at a time and the transform applied to a span (a segment's and a rect's columns, design §5.5.3).
-    /// </summary>
     /// <summary>Maps an element column's values to pixels into a buffer the layer keeps (row I2c): its hit test reads them after.</summary>
     public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels)
     {
@@ -1685,6 +1681,10 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         return mapped;
     }
 
+    /// <summary>
+    /// Maps all the elements of a column to pixels on one axis into one of four buffers kept from frame to frame, a chunk
+    /// read at a time and the transform applied to a span (a segment's and a rect's columns, design §5.5.3).
+    /// </summary>
     public ReadOnlySpan<double> ElementPixels(Column column, bool ofX, int slot)
     {
         var length = (int)column.Length;

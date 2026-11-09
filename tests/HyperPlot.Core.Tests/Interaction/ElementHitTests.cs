@@ -159,10 +159,12 @@ public sealed class ElementHitTests
     /// - Bars over 3,000 categories (more than the panel's pixels), one row each, of seeded values in [−5, 5].
     ///
     /// Steps:
-    /// - Hit test in X mode above the panel's middle row at 20 columns, and below it.
+    /// - Hit test in X mode above the panel's middle row at 20 columns, and below it; and in XY with a radius of 0.4 pixels at
+    ///   the middle of the same columns, halfway up the expected bar.
     ///
     /// Expected:
     /// - Above: the row of the greatest of the categories whose bands start in the cursor's pixel column; below: the least.
+    ///   XY: the column's extreme on the side of the baseline the cursor lies on, halfway up the bar.
     /// </remarks>
     [Fact]
     public void CategoryBars_UnderAPixel_TakeTheColumnsExtreme()
@@ -191,6 +193,11 @@ public sealed class ElementHitTests
                 var hit = Assert.Single(hits[..engine.HitTest(cursor, 0, HitMode.X, hits)]);
                 Assert.Equal(expected, hit.Row);
                 Assert.Equal(values[expected], hit.Y);
+
+                // XY with a radius of 0.4 pixels inside the bar, halfway up: the cursor's column alone, the same category.
+                var inside = new Vector2(MathF.Floor(cursor.X) + 0.5f, Pixel(engine, 0, values[expected] / 2).Y);
+                var close = Assert.Single(hits[..engine.HitTest(inside, 0.4f, HitMode.XY, hits)]);
+                Assert.Equal(values[expected] / 2 >= 0 ? inColumn.MaxBy(c => values[c]) : inColumn.MinBy(c => values[c]), close.Row);
             }
         }
     }
@@ -251,6 +258,51 @@ public sealed class ElementHitTests
         Assert.Equal([1L, 4L], answer.Select(h => h.Row));
         Assert.All(answer, h => Assert.True(h.Derived));
         Assert.All(answer, h => Assert.Equal(1.0, h.X));
+    }
+
+    /// <summary>
+    /// A numeric stack's group with a positive and a negative side answers for each with its own number, 2 · group and
+    /// 2 · group + 1, and a side of no height answers nothing (PR #360's review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 100 x values, 2 groups "a" and "b": "a" is 1 everywhere, "b" is 2 at even x and −2 at odd x; bars stacked.
+    ///
+    /// Steps:
+    /// - Hit test in X mode at an even x and at an odd x; in XY with a radius of 400 pixels at the panel's middle.
+    ///
+    /// Expected:
+    /// - Even x: series 0 and 2 (both positive). Odd x: series 0 (a, positive) and 3 (b, negative). No answer holds the same
+    ///   series twice, and none is of no height.
+    /// </remarks>
+    [Fact]
+    public void StackedBars_KeepEachSidesNumber()
+    {
+        using var x = Column.Wrap(Enumerable.Range(0, 200).Select(i => (double)(i / 2)).ToArray());
+        using var y = Column.Wrap(
+            Enumerable
+                .Range(0, 200)
+                .Select(i =>
+                    i % 2 == 0 ? 1.0
+                    : (i / 2) % 2 == 0 ? 2
+                    : -2
+                )
+                .ToArray()
+        );
+        var groups = Column.Categorical([.. Enumerable.Range(0, 200).Select(i => i % 2 == 0 ? "a" : "b")]);
+        var table = DataTable.Create().Add("x", x).Add("y", y).Add("g", groups).Build();
+        using var engine = Drawn(
+            Plot.Create(table)
+                .Bar(table.Col<double>("x"), table.Col<double>("y"), configure: b => b.ColorBy(table.Cat("g")).Position(Position.Stack))
+                .Build()
+        );
+        var hits = new SeriesHit[8];
+        var even = hits[..engine.HitTest(Pixel(engine, 40, 0.5), 0, HitMode.X, hits)].Select(h => h.Series).Order().ToArray();
+        Assert.Equal([0, 2], even);
+        var odd = hits[..engine.HitTest(Pixel(engine, 41, 0.5), 0, HitMode.X, hits)].Select(h => h.Series).Order().ToArray();
+        Assert.Equal([0, 3], odd);
+        var near = hits[..engine.HitTest(Inside(engine, 0.5, 0.5), 400, HitMode.XY, hits)];
+        Assert.Equal(near.Length, near.Select(h => h.Series).Distinct().Count());
     }
 
     /// <summary>
@@ -545,6 +597,48 @@ public sealed class ElementHitTests
         Assert.Equal(Premultiplied(green with { A = 255 }), discs[1].Color);
         Assert.Equal(Premultiplied(red), discs[3].Color);
         Assert.Equal(Premultiplied(red), discs[5].Color);
+    }
+
+    /// <summary>A rectangle's marker takes its fill made opaque (row I2b's markers, PR #360's review).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One rectangle [0, 4] × [0, 4] filled half-transparent orange; the default hover.
+    ///
+    /// Steps:
+    /// - Hover at (2, 2) and draw.
+    ///
+    /// Expected:
+    /// - The disc is the orange made opaque.
+    /// </remarks>
+    [Fact]
+    public void Hover_MarksARectInItsFill()
+    {
+        using var low = Column.Wrap(Enumerable.Repeat(0.0, 1).ToArray());
+        using var high = Column.Wrap(Enumerable.Repeat(4.0, 1).ToArray());
+        var table = DataTable.Create().Add("lo", low).Add("hi", high).Build();
+        var orange = new Color(240, 140, 20, 100);
+        var backend = new NullBackend();
+        using var engine = Drawn(
+            Plot.Create(table)
+                .Rect(table.Col<double>("lo"), table.Col<double>("hi"), table.Col<double>("lo"), table.Col<double>("hi"), r => r.Fill(orange))
+                .ScaleX(Scale.Linear().WithDomain(-1, 5))
+                .ScaleY(Scale.Linear().WithDomain(-1, 5))
+                .Build(),
+            backend
+        );
+        engine.OnPointer(
+            new PointerEvent(
+                PointerEventKind.Move,
+                Pixel(engine, 2, 2),
+                PointerButtons.None,
+                PointerButtons.None,
+                ModifierKeys.None,
+                PointerKind.Mouse,
+                0
+            )
+        );
+        engine.RenderFrame();
+        Assert.Equal(Premultiplied(orange with { A = 255 }), backend.LastList!.SectorCalls[1].Color);
     }
 
     /// <summary>A warm hit test over each element layer allocates nothing (invariant 3).</summary>

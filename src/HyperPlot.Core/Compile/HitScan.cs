@@ -176,9 +176,9 @@ internal ref struct HitScan
         if (Mode == HitMode.X)
         {
             var row = NearestInX(pyramid, x, high, start, end, shift, ref provisional);
-            if (row >= 0)
+            if (row >= 0 && BarDistance(bar, row) is var distance && double.IsFinite(distance))
             {
-                Add(series, row, ValueOf(X, x, row), high.DifferenceAt(row, 0), BarDistance(bar, row), derived, provisional);
+                Add(series, row, ValueOf(X, x, row), high.DifferenceAt(row, 0), distance, derived, provisional);
             }
 
             return;
@@ -380,7 +380,7 @@ internal ref struct HitScan
                 : across > bottom ? across - bottom
                 : 0;
             var squared = (gap * gap) + (height * height);
-            if (squared <= best)
+            if (squared <= best && (xMode || squared < reach * reach))
             {
                 (best, bestRow) = (squared, i);
             }
@@ -487,7 +487,9 @@ internal ref struct HitScan
     {
         var value = bar.High.DifferenceAt(row, 0);
         var bottom = bar.Low is { } low ? low.DifferenceAt(row, 0) : bar.Baseline;
-        if (double.IsNaN(value) || double.IsNaN(bottom))
+
+        // A bar of no height draws nothing and answers nothing: a stack's side where the value is 0 (PR #360's review).
+        if (double.IsNaN(value) || double.IsNaN(bottom) || value == bottom)
         {
             return double.PositiveInfinity;
         }
