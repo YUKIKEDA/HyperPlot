@@ -361,6 +361,52 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     }
 
     /// <summary>
+    /// Returns the count, the sum, the least, and the greatest of the numbers of [start, end) in one pass over its chunks
+    /// (design §6.5 "計測", row I4b): a whole chunk from its statistics already computed (no descent of its block), a part of a
+    /// chunk from the pyramid's extremes and the buckets' sums. A chunk not built adds nothing and sets
+    /// <paramref name="provisional"/>. Allocates nothing.
+    /// </summary>
+    internal void Summary(long start, long end, out long count, out double sum, out T min, out T max, out bool found, ref bool provisional)
+    {
+        (count, sum, min, max, found) = (0, 0, default, default, false);
+        if (start >= end)
+        {
+            return;
+        }
+
+        var firstChunk = (int)(start >> HyperPlot.Column.ChunkShift);
+        var lastChunk = (int)((end - 1) >> HyperPlot.Column.ChunkShift);
+        for (var chunk = firstChunk; chunk <= lastChunk; chunk++)
+        {
+            var chunkStart = (long)chunk << HyperPlot.Column.ChunkShift;
+            var layout = LayoutOf(chunk);
+            var (lo, hi) = (Math.Max(start, chunkStart), Math.Min(end, chunkStart + layout.ChunkLength));
+            if (lo == chunkStart && hi == chunkStart + layout.ChunkLength && Column.TryGetStoredStats(chunk, out var stats))
+            {
+                (count, sum) = (count + stats.Count, sum + stats.Sum);
+                if (stats.Count > 0)
+                {
+                    (min, max) = found ? (T.Min(min, stats.Min), T.Max(max, stats.Max)) : (stats.Min, stats.Max);
+                    found = true;
+                }
+
+                continue;
+            }
+
+            Query(lo, hi, wantCount: false, out var part);
+            provisional |= part.IsProvisional;
+            if (part.Found)
+            {
+                (min, max) = found ? (T.Min(min, part.Min), T.Max(max, part.Max)) : (part.Min, part.Max);
+                found = true;
+            }
+
+            Summarize(lo, hi, out var partCount, out var partSum, ref provisional);
+            (count, sum) = (count + partCount, sum + partSum);
+        }
+    }
+
+    /// <summary>
     /// Adds up the values of [start, end) that are not NaN, and counts them (design §6.5 "計測", row I4b): a whole chunk from
     /// its statistics already computed, a whole bucket of sums from its sum and count, and at most 4,095 raw values at each
     /// end of a chunk. A chunk whose block is not built, or changed under the read, adds nothing and sets

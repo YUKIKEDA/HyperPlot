@@ -112,10 +112,8 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
     /// <inheritdoc />
     public override void Summarize(long start, long end, out long count, out double sum, out double min, out double max, ref bool provisional)
     {
-        pyramid.Query(start, end, wantCount: false, out var result);
-        provisional |= result.IsProvisional;
-        (min, max) = result.Found ? (double.CreateTruncating(result.Min), double.CreateTruncating(result.Max)) : (double.NaN, double.NaN);
-        pyramid.Summarize(start, end, out count, out sum, ref provisional);
+        pyramid.Summary(start, end, out count, out sum, out var low, out var high, out var found, ref provisional);
+        (min, max) = found ? (double.CreateTruncating(low), double.CreateTruncating(high)) : (double.NaN, double.NaN);
     }
 
     /// <inheritdoc />
