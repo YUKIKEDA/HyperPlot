@@ -582,7 +582,7 @@ public sealed partial class PlotEngine : IDisposable
     public HitArea HitArea(Vector2 pixel)
     {
         CheckThread();
-        return Hit(pixel, out _);
+        return Place(pixel, out _);
     }
 
     /// <summary>
@@ -651,7 +651,7 @@ public sealed partial class PlotEngine : IDisposable
         _reason = ViewChangeReason.Input;
         try
         {
-            var area = Hit(e.Position, out var inPlot);
+            var area = Place(e.Position, out var inPlot);
             _context.Hit = area;
             if (inPlot)
             {
@@ -733,7 +733,7 @@ public sealed partial class PlotEngine : IDisposable
         _reason = ViewChangeReason.Input;
         try
         {
-            var area = Hit(e.Position, out var inPlot);
+            var area = Place(e.Position, out var inPlot);
             _context.Hit = area;
             if (inPlot)
             {
@@ -1239,6 +1239,22 @@ public sealed partial class PlotEngine : IDisposable
         return new HitArea(HitAreaKind.Figure, new PanelId(0, 0));
     }
 
+    /// <summary>
+    /// Returns what lies at a pixel for the bindings and <see cref="HitArea"/> (design §6.3, row I4a): what <see cref="Hit"/>
+    /// returns, and over a draggable annotation of a panel <c>Panel | Annotation</c> with its number (Issue #382 Decision 17).
+    /// </summary>
+    private HitArea Place(Vector2 pixel, out bool inPlot)
+    {
+        var area = Hit(pixel, out inPlot);
+        if (area.Kind != HitAreaKind.Panel)
+        {
+            return area;
+        }
+
+        var index = PlanOf(area.Panel.Plot).HitAnnotation(area.Panel.Panel, pixel, AnnotationRadius * Scale);
+        return index < 0 ? area : new HitArea(HitAreaKind.Panel | HitAreaKind.Annotation, area.Panel, index);
+    }
+
     private HitArea HitInPlot(int plot, PlotGuides guides, float x, float y)
     {
         var panels = guides.PanelCount;
@@ -1349,6 +1365,7 @@ public sealed partial class PlotEngine : IDisposable
     /// </summary>
     private void DrawPlot()
     {
+        KeepAnnotationShifts();
         _kept = false;
         ClearLassos();
         if (_plot is not null)
@@ -1581,7 +1598,7 @@ public sealed partial class PlotEngine : IDisposable
         var used = false;
         if (e.Buttons == PointerButtons.None)
         {
-            var area = Hit(e.Position, out _);
+            var area = Place(e.Position, out _);
             _context.Hit = area;
             foreach (var binding in Bindings)
             {
@@ -1961,7 +1978,7 @@ public sealed partial class PlotEngine : IDisposable
         switch (e.Kind)
         {
             case PointerEventKind.Down:
-                (_press, _pressArea, _dragging) = (e, Hit(e.Position, out var inPlot), false);
+                (_press, _pressArea, _dragging) = (e, Place(e.Position, out var inPlot), false);
                 if (inPlot)
                 {
                     _active = _pressArea.Panel;
@@ -2430,6 +2447,7 @@ public sealed partial class PlotEngine : IDisposable
 
         _shownViews = new PanelDomains[count][];
         (_active, _inGesture) = (default, false);
+        (_shifts, _sources, _dragPlot) = (new AnnotationShift[count][], new AnnotationSpec[count][], -1);
     }
 
     private PlotState? Active() => _active.Plot < PlotCount && _states[_active.Plot].Panels > 0 ? _states[_active.Plot] : null;

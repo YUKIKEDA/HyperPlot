@@ -47,4 +47,16 @@ public sealed record PlotSpec : SpecNode
     /// <see cref="FacetGridSpec"/>. Null for one panel.
     /// </summary>
     public FacetSpec? Facet { get; init; }
+
+    /// <summary>Gets the subtitle below the title (design §4.6, row I4a); null or empty for none.</summary>
+    public string? Subtitle { get; init; }
+
+    /// <summary>Gets the caption at the plot's lower right (design §4.6, row I4a); null or empty for none.</summary>
+    public string? Caption { get; init; }
+
+    /// <summary>
+    /// Gets the annotations, drawn in order over the data layers inside the panels (design §4.1, §5.4, requirement I-5, row
+    /// I4a): at most 1,024. None by default.
+    /// </summary>
+    public IReadOnlyList<AnnotationSpec> Annotations { get; init; } = [];
 }

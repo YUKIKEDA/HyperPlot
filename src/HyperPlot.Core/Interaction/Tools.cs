@@ -34,17 +34,39 @@ public enum HitAreaKind
     /// <summary>A figure's padding or the space between its cells (row G6c).</summary>
     Figure = 128,
 
+    /// <summary>
+    /// A draggable annotation on a panel (design §6.3, row I4a): its place is <c>Panel | Annotation</c>, so that the entries of
+    /// a panel match there too, and those of an annotation there alone.
+    /// </summary>
+    Annotation = 256,
+
     /// <summary>Every axis band.</summary>
     Axes = AxisX | AxisY | AxisX2 | AxisY2,
 
     /// <summary>Every kind but <see cref="None"/>.</summary>
-    All = Panel | Axes | Legend | Title | Figure,
+    All = Panel | Axes | Legend | Title | Figure | Annotation,
 }
 
-/// <summary>What lies at a pixel (design §6.3, row I1a): its kind and the panel it belongs to.</summary>
-/// <param name="Kind">The kind, one flag of <see cref="HitAreaKind"/>.</param>
+/// <summary>
+/// What lies at a pixel (design §6.3, row I1a): its kind, the panel it belongs to, and the annotation there (row I4a).
+/// </summary>
+/// <param name="Kind">The kind: one flag of <see cref="HitAreaKind"/>, or <c>Panel | Annotation</c> over a draggable annotation.</param>
 /// <param name="Panel">The panel the place belongs to: a panel, or the panel an axis band runs along.</param>
-public readonly record struct HitArea(HitAreaKind Kind, PanelId Panel);
+public readonly record struct HitArea(HitAreaKind Kind, PanelId Panel)
+{
+    // The annotation's number plus 1, so that a default place has none (−1).
+    private readonly int _annotation;
+
+    /// <summary>Initializes a new instance of the <see cref="HitArea"/> struct over an annotation (row I4a).</summary>
+    /// <param name="kind">The kind.</param>
+    /// <param name="panel">The panel.</param>
+    /// <param name="annotation">The annotation's number in the plot's spec, or −1 for none.</param>
+    public HitArea(HitAreaKind kind, PanelId panel, int annotation)
+        : this(kind, panel) => _annotation = annotation + 1;
+
+    /// <summary>Gets the draggable annotation's number in the plot's spec (design §6.3, row I4a), or −1 when the place has none.</summary>
+    public int Annotation => _annotation - 1;
+}
 
 /// <summary>What a tool did with an event (design §6.5).</summary>
 public enum ToolResult
@@ -159,6 +181,15 @@ public sealed class ToolContext
 
     /// <summary>Sets a plot's selection (row I3a): the engine's checks, its notice, and the frame.</summary>
     internal void Select(Selection2D selection) => _engine.Select(selection);
+
+    /// <summary>Takes hold of the annotation at a place for a drag from a pixel (row I4a); false when there is none.</summary>
+    internal bool BeginAnnotationDrag(HitArea area, Vector2 pixel) => _engine.BeginAnnotationDrag(area, pixel);
+
+    /// <summary>Moves the held annotation by the pointer's move since the drag began (row I4a).</summary>
+    internal void DragAnnotation(Vector2 pixel) => _engine.DragAnnotation(pixel);
+
+    /// <summary>Lets the held annotation go (row I4a): keeps its place and tells it, or puts it back.</summary>
+    internal void EndAnnotationDrag(bool keep) => _engine.EndAnnotationDrag(keep);
 
     /// <summary>Answers a hit test at a pixel (row I3a's points).</summary>
     internal int HitTest(Vector2 pixel, float radius, Span<SeriesHit> results) => _engine.HitTest(pixel, radius, HitMode.XY, results);
@@ -352,6 +383,7 @@ public sealed class InputBindings : List<InputBinding>
             ),
             new(InputGesture.Click(PointerButtons.Left), ModifierKeys.Shift, HitAreaKind.Panel, new SelectionTool(SelectionKind.Points)),
             new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.Control, HitAreaKind.Panel, rectangle),
+            new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.None, HitAreaKind.Annotation, new AnnotationTool()),
             new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.None, PanelOrAxes, pan),
             new(InputGesture.Drag(PointerButtons.Right), ModifierKeys.None, HitAreaKind.Panel, rectangle),
             new(InputGesture.Wheel, ModifierKeys.None, PanelOrAxes, wheel),
