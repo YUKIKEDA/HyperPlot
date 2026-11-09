@@ -190,6 +190,41 @@ internal sealed class StackedCategoryBarPlan : LayerPlan
 
     internal override Color HitColor(int series) => ColorOf((BarLayerSpec)Spec, series / 2) with { A = 255 };
 
+    /// <summary>
+    /// Returns the cells whose pieces the selection holds (row I3a): a piece is a span at its category's band middle, from its
+    /// inner end to its outer one; the row is the cell, group · categories + category, derived (Issue #355 Decision 4).
+    /// </summary>
+    internal override ValueTask<RowSelection> SelectRows(SelectionQuery query)
+    {
+        if (_done is not { } done || query.X.Band is not { Count: > 0 } band)
+        {
+            return ValueTask.FromResult(RowSelection.Empty);
+        }
+
+        var rows = new List<long>();
+        for (var k = 0; k < _groupCount; k++)
+        {
+            for (var category = 0; category < band.Count; category++)
+            {
+                var middle = band.Position(category) + (band.Width / 2);
+                for (var sign = 0; sign < (done.AnyNegative ? 2 : 1); sign++)
+                {
+                    var (inner, outer) =
+                        sign == 0
+                            ? (Lower(done.Positive, k, category), done.Positive[k][category])
+                            : (Lower(done.Negative, k, category), done.Negative[k][category]);
+                    if (outer != inner && query.SpanHolds(middle, inner, outer))
+                    {
+                        rows.Add((k * (long)_x.CategoryCount) + category);
+                        break;
+                    }
+                }
+            }
+        }
+
+        return ValueTask.FromResult(RowSelection.OfRows(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows), derived: true));
+    }
+
     internal override double HitAlong(in GeomFrame.Axis x, in SeriesHit hit) => BandAlong(x, (int)(hit.Row % _x.CategoryCount));
 
     /// <summary>
@@ -532,6 +567,8 @@ internal sealed class CategoryErrorBarPlan : LayerPlan
         CategoryEnvelope.Step(ref _done, ref _making, Columns[1], Columns[2], Categories, Rows, indexes);
 
     internal override int HitWidth => 2;
+
+    internal override SelectionShape? Shape => new(ShapeKind.Span, Columns[0], Columns[1], Columns[2], Rows, Sorted: false);
 
     internal override Color HitColor(int series) => Stroke(((ErrorBarLayerSpec)Spec).Style).Color;
 

@@ -141,6 +141,9 @@ public sealed class HeadlessRenderer : IDisposable
         }
     }
 
+    /// <summary>Gets the pool the plans' work runs on (row I3a's selected rows).</summary>
+    internal PlotWorkerPool Pool => _pool ?? PlotWorkerPool.Shared;
+
     /// <summary>Gets the backend's text, which measures what the engine draws over the plot (row I2b).</summary>
     internal TextEngine Text => _backend.Text;
 

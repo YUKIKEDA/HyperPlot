@@ -180,3 +180,208 @@ public sealed class WheelZoomTool : IPlotTool
         return ToolResult.Handled;
     }
 }
+
+/// <summary>
+/// Selects (design §6.4, row I3a, Issue #364): a drag makes a rectangle, an x range (on an x axis), or a lasso; a click adds
+/// the points the hit test finds within 8 DIPs. While a drag goes on, the tool draws its frame or its line over the plot.
+/// </summary>
+public sealed class SelectionTool : IPlotTool
+{
+    private readonly List<Vector2> _path = [];
+    private PanelId _panel;
+    private Vector2 _start;
+    private Vector2 _end;
+
+    /// <summary>Initializes a new instance of the <see cref="SelectionTool"/> class.</summary>
+    /// <param name="kind">What the tool selects.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a named <see cref="SelectionKind"/>.</exception>
+    public SelectionTool(SelectionKind kind) =>
+        Kind = Enum.IsDefined(kind) ? kind : throw new ArgumentOutOfRangeException(nameof(kind), kind, "The kind is a named SelectionKind value.");
+
+    /// <summary>Gets what the tool selects.</summary>
+    public SelectionKind Kind { get; }
+
+    /// <inheritdoc />
+    public ToolResult OnPointer(in PointerEvent e, ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (Kind == SelectionKind.Points)
+        {
+            return e.Kind == PointerEventKind.Up ? AddPoints(e.Position, context) : ToolResult.Ignored;
+        }
+
+        switch (e.Kind)
+        {
+            case PointerEventKind.Down:
+                var area = context.Hit.Kind;
+                var fits = Kind == SelectionKind.XRange ? area is HitAreaKind.AxisX or HitAreaKind.Panel : area == HitAreaKind.Panel;
+                if (!fits || context.IsPolar(context.Hit.Panel))
+                {
+                    return ToolResult.Ignored;
+                }
+
+                (_panel, _start, _end) = (context.Hit.Panel, e.Position, e.Position);
+                _path.Clear();
+                _path.Add(e.Position);
+                context.RequestFrame();
+                return ToolResult.Capture;
+            case PointerEventKind.Move:
+                Extend(e.Position, context);
+                context.RequestFrame();
+                return ToolResult.Handled;
+            case PointerEventKind.Up:
+                Extend(e.Position, context);
+                Finish(context);
+                return ToolResult.Release;
+            default:
+                return ToolResult.Handled;
+        }
+    }
+
+    /// <inheritdoc />
+    public void Cancel(ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        _path.Clear();
+        context.RequestFrame();
+    }
+
+    /// <inheritdoc />
+    public void Overlay(RenderList list, ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(list);
+        ArgumentNullException.ThrowIfNull(context);
+        var color = context.Theme.Foreground;
+        var line = MathF.Max(1, MathF.Round(context.Scale));
+        if (Kind == SelectionKind.Lasso)
+        {
+            if (_path.Count > 1)
+            {
+                list.DrawPolyline(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(_path), new LineStyle(color, line));
+            }
+
+            return;
+        }
+
+        var (left, top, width, height) = Bounds(context);
+        list.DrawRect(left, top, width, height, color with { A = (byte)Math.Round(color.A * 0.15) });
+    }
+
+    /// <summary>Returns the frame the drag spans, clamped to the panel: an x range runs the panel's height.</summary>
+    private (float Left, float Top, float Width, float Height) Bounds(ToolContext context)
+    {
+        var (left, top, width, height) = context.PanelRectangle(_panel);
+        var (a, b) = (Clamp(_start, left, top, width, height), Clamp(_end, left, top, width, height));
+        if (Kind == SelectionKind.XRange)
+        {
+            return context.Flipped(_panel)
+                ? (left, MathF.Min(a.Y, b.Y), width, MathF.Abs(b.Y - a.Y))
+                : (MathF.Min(a.X, b.X), top, MathF.Abs(b.X - a.X), height);
+        }
+
+        return (MathF.Min(a.X, b.X), MathF.Min(a.Y, b.Y), MathF.Abs(b.X - a.X), MathF.Abs(b.Y - a.Y));
+    }
+
+    /// <summary>Follows the drag: a lasso keeps the points 1 DIP or more from the last (Issue #364 Decision 11).</summary>
+    private void Extend(Vector2 at, ToolContext context)
+    {
+        _end = at;
+        if (Kind == SelectionKind.Lasso && Vector2.Distance(_path[^1], at) >= context.Scale)
+        {
+            _path.Add(at);
+        }
+    }
+
+    /// <summary>Makes the selection the drag spans, and gives it to the engine.</summary>
+    private void Finish(ToolContext context)
+    {
+        var (left, top, width, height) = context.PanelRectangle(_panel);
+        if (Kind != SelectionKind.Lasso)
+        {
+            var (a, b) = (Clamp(_start, left, top, width, height), Clamp(_end, left, top, width, height));
+            var (from, to) = (context.PixelToView(_panel, a), context.PixelToView(_panel, b));
+            var x = Span(from.X, to.X);
+            context.Select(Kind == SelectionKind.XRange ? Selection2D.XRange(_panel, x) : Selection2D.Rectangle(_panel, x, Span(from.Y, to.Y)));
+            _path.Clear();
+            return;
+        }
+
+        // A lasso: its vertices in the scale space, then as shares of the ranges they span; past 1,024, every other one goes.
+        while (_path.Count > 1024)
+        {
+            for (var i = _path.Count - 2; i > 0; i -= 2)
+            {
+                _path.RemoveAt(i);
+            }
+        }
+
+        if (_path.Count < 3)
+        {
+            _path.Clear();
+            return;
+        }
+
+        var views = new (ViewRange X, ViewRange Y)[_path.Count];
+        for (var i = 0; i < views.Length; i++)
+        {
+            views[i] = context.PixelToView(_panel, Clamp(_path[i], left, top, width, height));
+        }
+
+        var (xs, ys) = (views[0].X, views[0].Y);
+        foreach (var (vx, vy) in views)
+        {
+            (xs, ys) = (Span(xs, vx), Span(ys, vy));
+        }
+
+        var shares = new Vector2[views.Length];
+        for (var i = 0; i < shares.Length; i++)
+        {
+            shares[i] = new Vector2((float)Share(views[i].X.Lower, xs), (float)Share(views[i].Y.Lower, ys));
+        }
+
+        context.Select(Selection2D.Lasso(_panel, xs, ys, shares));
+        _path.Clear();
+    }
+
+    /// <summary>Adds the points a click hits to the plot's selection of points, or starts one.</summary>
+    private static ToolResult AddPoints(Vector2 at, ToolContext context)
+    {
+        if (context.Hit.Kind != HitAreaKind.Panel || context.IsPolar(context.Hit.Panel))
+        {
+            return ToolResult.Ignored;
+        }
+
+        Span<SeriesHit> hits = stackalloc SeriesHit[64];
+        var found = Math.Min(context.HitTest(at, 8 * context.Scale, hits), hits.Length);
+        if (found == 0)
+        {
+            return ToolResult.Handled;
+        }
+
+        var panel = context.Hit.Panel;
+        var points = new List<SeriesHit>();
+        if (context.Selection(panel.Plot) is { Kind: SelectionKind.Points } before && before.Panel == panel)
+        {
+            points.AddRange(before.Points.Span);
+        }
+
+        foreach (var hit in hits[..found])
+        {
+            if (!points.Exists(p => (p.Layer, p.Series, p.Row) == (hit.Layer, hit.Series, hit.Row)))
+            {
+                points.Add(hit);
+            }
+        }
+
+        context.Select(Selection2D.OfPoints(panel, System.Runtime.InteropServices.CollectionsMarshal.AsSpan(points)));
+        return ToolResult.Handled;
+    }
+
+    private static ViewRange Span(in ViewRange a, in ViewRange b) => new(a.Origin, Math.Min(a.Lower, b.Lower), Math.Max(a.Upper, b.Upper));
+
+    private static double Share(double value, in ViewRange range) =>
+        range.Upper > range.Lower ? (value - range.Lower) / (range.Upper - range.Lower) : 0;
+
+    private static Vector2 Clamp(Vector2 point, int left, int top, int width, int height) =>
+        new(Math.Clamp(point.X, left, left + width), Math.Clamp(point.Y, top, top + height));
+}

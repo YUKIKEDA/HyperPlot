@@ -147,6 +147,30 @@ internal sealed class StackedSeriesPlan : LayerPlan
         return SeriesColor;
     }
 
+    internal override void Highlight(RenderList list)
+    {
+        foreach (var part in _parts)
+        {
+            part.Plan.Highlight(list);
+        }
+    }
+
+    /// <summary>Answers with the stack's table's rows any group's piece holds (row I3a): marked derived.</summary>
+    internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
+    {
+        query.Derived = true;
+        var parts = new List<(Task<Interaction.RowSelection>, Func<long, long>?)>();
+        foreach (var part in _parts)
+        {
+            if (part.Plan is not LinePlan)
+            {
+                parts.Add((part.Plan.SelectRows(query).AsTask(), null));
+            }
+        }
+
+        return SelectionQuery.Union(parts, derived: true);
+    }
+
     internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit)
     {
         foreach (var part in _parts)
@@ -389,6 +413,15 @@ internal sealed class FloatingBarPlan : LayerPlan
     }
 
     public override LayerReadiness Poll(LayerIndexes indexes) => indexes.XStats(Columns[0]);
+
+    internal override SelectionShape? Shape
+    {
+        get
+        {
+            var bar = (BarLayerSpec)Spec;
+            return new(ShapeKind.Span, bar.X.Column, _low?.Column, bar.Y.Column, RowRange.All, Sorted: true);
+        }
+    }
 
     /// <summary>
     /// Answers for its group's pieces, from the inner end to the outer one (row I2c, Issue #355 Decision 4): series 0 for the

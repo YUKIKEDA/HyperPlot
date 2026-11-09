@@ -276,6 +276,12 @@ internal sealed partial class PlotPlan : IDisposable
     internal bool ViewsDropped { get; private set; }
 
     /// <summary>
+    /// Gets a value indicating whether the last render changed what the scale space means, views or not (row I3a): the
+    /// condition under which views are dropped, so that a selection, a predicate in that space, goes with them.
+    /// </summary>
+    internal bool MappingChanged { get; private set; }
+
+    /// <summary>
     /// Gets each panel's domains with no view, after nice (rows I1a, I1b): the full view of design §6.2. An axis's is updated
     /// by each <see cref="Prepare"/> that draws it with no view; <see cref="FullStale"/> tells when the learned domains moved
     /// since.
@@ -638,7 +644,8 @@ internal sealed partial class PlotPlan : IDisposable
 
         PollIndexes();
         ViewsDropped = false;
-        if ((scales || _views.Length != _panels.Length) && AnyView())
+        MappingChanged = scales || _views.Length != _panels.Length;
+        if (MappingChanged && AnyView())
         {
             // A view over the old mapping, or of other panels, no longer means the same values: the full view (design §6.2).
             (_views, ViewsDropped) = ([], true);

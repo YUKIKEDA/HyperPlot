@@ -115,6 +115,15 @@ internal sealed class StatPlan : LayerPlan
 
     internal override Color HitColor(int series) => _inner.HitColor(series);
 
+    /// <summary>Answers with the derived table's rows the inner layer finds (row I3a): marked derived.</summary>
+    internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
+    {
+        query.Derived = true;
+        return _inner.SelectRows(query);
+    }
+
+    internal override void Highlight(RenderList list) => _inner.Highlight(list);
+
     internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) => _inner.HitAlong(x, hit);
 
     public override void BeginLearning() => _inner.BeginLearning();

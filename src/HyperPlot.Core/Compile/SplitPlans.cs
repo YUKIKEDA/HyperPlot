@@ -574,6 +574,35 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         return HitScan.PixelOfValue(x, hit.X);
     }
 
+    /// <summary>
+    /// Answers with the layer's rows its categories' parts hold (row I3a): a gathered part's rows taken back to the rows they
+    /// were gathered from (Issue #337 Decision 3).
+    /// </summary>
+    internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
+    {
+        var parts = new List<(Task<Interaction.RowSelection>, Func<long, long>?)>();
+        foreach (var part in _parts)
+        {
+            if (part.Category < 0)
+            {
+                continue;
+            }
+
+            var category = part.Category;
+            parts.Add((part.Plan.SelectRows(query).AsTask(), part.Table is null ? null : row => ((ISourceRows)this).SourceRow(category, row)));
+        }
+
+        return SelectionQuery.Union(parts, query.Derived);
+    }
+
+    internal override void Highlight(RenderList list)
+    {
+        foreach (var part in _parts)
+        {
+            part.Plan.Highlight(list);
+        }
+    }
+
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered)
     {

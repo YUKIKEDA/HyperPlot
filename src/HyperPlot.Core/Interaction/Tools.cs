@@ -154,6 +154,21 @@ public sealed class ToolContext
     /// <summary>Asks for a frame: a tool that changes what it draws over the plot calls it.</summary>
     public void RequestFrame() => _engine.RequestFrame();
 
+    /// <summary>Returns a plot's selection (row I3a).</summary>
+    internal Selection2D? Selection(int plot) => _engine.Selection(plot) as Selection2D;
+
+    /// <summary>Sets a plot's selection (row I3a): the engine's checks, its notice, and the frame.</summary>
+    internal void Select(Selection2D selection) => _engine.Select(selection);
+
+    /// <summary>Answers a hit test at a pixel (row I3a's points).</summary>
+    internal int HitTest(Vector2 pixel, float radius, Span<SeriesHit> results) => _engine.HitTest(pixel, radius, HitMode.XY, results);
+
+    /// <summary>Returns whether a panel's x runs along the screen's vertical (row I3a): an x range's frame then runs across.</summary>
+    internal bool Flipped(PanelId panel) => _engine.Flipped(panel);
+
+    /// <summary>Returns whether a panel is polar (row I3a): it takes no selection.</summary>
+    internal bool IsPolar(PanelId panel) => _engine.IsPolar(panel);
+
     /// <summary>Hovers at a pixel with a tool's settings (row I2b): the engine's hit test, its hits, and the frame.</summary>
     internal void Hover(HoverTool tool, Vector2 pixel) => _engine.HoverAt(tool, pixel);
 }
@@ -190,6 +205,9 @@ public enum ViewCommand
 
     /// <summary>Cancels the tool that holds the pointer.</summary>
     CancelTool,
+
+    /// <summary>Clears every plot's selection (row I3a): Escape's entry after <see cref="CancelTool"/>.</summary>
+    ClearSelection,
 }
 
 /// <summary>What shape of input a binding matches (design §6.5).</summary>
@@ -311,7 +329,8 @@ public sealed class InputBindings : List<InputBinding>
     /// right drag or a Control left drag zooms to a rectangle, the wheel and a pinch zoom at the pointer (one axis on an
     /// axis), a two-finger scroll pans, a double click shows the full view; the arrows pan, Plus and Minus zoom, Home shows the
     /// full view, the browser's keys, Alt and an arrow, and the extra buttons go back and forward, and Escape cancels a tool;
-    /// a move over a panel hovers (row I2b).
+    /// a move over a panel hovers (row I2b); Shift and a left drag select a rectangle on a panel or an x range on an x axis,
+    /// Shift and Alt a lasso, Shift and a click points, and Escape with no tool to cancel clears the selections (row I3a).
     /// </summary>
     /// <returns>A new list of the default bindings, with new built-in tools.</returns>
     public static InputBindings CreateDefault()
@@ -323,6 +342,15 @@ public sealed class InputBindings : List<InputBinding>
         return
         [
             new(InputGesture.Move, ModifierKeys.None, HitAreaKind.Panel, new HoverTool()),
+            new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.Shift, HitAreaKind.Panel, new SelectionTool(SelectionKind.Rectangle)),
+            new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.Shift, HitAreaKind.AxisX, new SelectionTool(SelectionKind.XRange)),
+            new(
+                InputGesture.Drag(PointerButtons.Left),
+                ModifierKeys.Shift | ModifierKeys.Alt,
+                HitAreaKind.Panel,
+                new SelectionTool(SelectionKind.Lasso)
+            ),
+            new(InputGesture.Click(PointerButtons.Left), ModifierKeys.Shift, HitAreaKind.Panel, new SelectionTool(SelectionKind.Points)),
             new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.Control, HitAreaKind.Panel, rectangle),
             new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.None, PanelOrAxes, pan),
             new(InputGesture.Drag(PointerButtons.Right), ModifierKeys.None, HitAreaKind.Panel, rectangle),
@@ -344,6 +372,7 @@ public sealed class InputBindings : List<InputBinding>
             new(InputGesture.KeyDown(PlotKey.Minus), ModifierKeys.None, HitAreaKind.All, ViewCommand.ZoomOut),
             new(InputGesture.KeyDown(PlotKey.Home), ModifierKeys.None, HitAreaKind.All, ViewCommand.Reset),
             new(InputGesture.KeyDown(PlotKey.Escape), ModifierKeys.None, HitAreaKind.All, ViewCommand.CancelTool),
+            new(InputGesture.KeyDown(PlotKey.Escape), ModifierKeys.None, HitAreaKind.All, ViewCommand.ClearSelection),
         ];
     }
 }
