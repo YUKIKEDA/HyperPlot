@@ -1608,6 +1608,12 @@ internal sealed partial class PlotPlan : IDisposable
     }
 
     /// <summary>
+    /// Returns the categories of the band x scale of the spec compiled last (row I3b): what a link compares, so that a band's
+    /// view, cursor, and selection go only to a band of the same categories in the same order. Null without a band x.
+    /// </summary>
+    internal CategoricalColumn? BandCategories() => _spec is { ScaleX: BandScaleSpec } spec ? BandColumn(spec) : null;
+
+    /// <summary>
     /// Returns the categorical column of the plot's x, the first layer's on the primary x that has one; null when no such layer
     /// reads x. A layer on ScaleX2 is not the band's (row G6a).
     /// </summary>
@@ -1653,7 +1659,7 @@ internal sealed partial class PlotPlan : IDisposable
     /// Returns whether two scales map to the same space, whatever their domains (row G5b): the same kind and transform. Bins
     /// are chosen in that space, so a zoom or a domain given anew keeps them.
     /// </summary>
-    private static bool SameSpace(ScaleSpec? before, ScaleSpec? after) =>
+    internal static bool SameSpace(ScaleSpec? before, ScaleSpec? after) =>
         before is null || after is null
             ? before is null && after is null
             : before.Id == after.Id

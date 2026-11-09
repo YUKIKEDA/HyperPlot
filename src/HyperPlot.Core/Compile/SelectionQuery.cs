@@ -103,7 +103,8 @@ internal sealed class SelectionQuery(Selection2D selection, GeomFrame.Axis x, Ge
 
     /// <summary>
     /// Returns the union of the rows several parts answered, each row taken through a map (a gathered part's rows back to
-    /// the layer's), or as it is when the map is null (row I3a).
+    /// the layer's), or as it is when the map is null (row I3a): a facet's panels a link stands a selection on too (row I3b).
+    /// Derived when the argument says so or a part is.
     /// </summary>
     public static async ValueTask<RowSelection> Union(List<(Task<RowSelection> Rows, Func<long, long>? Map)> parts, bool derived)
     {
@@ -111,6 +112,7 @@ internal sealed class SelectionQuery(Selection2D selection, GeomFrame.Axis x, Ge
         foreach (var (pending, map) in parts)
         {
             var part = await pending.ConfigureAwait(false);
+            derived |= part.Derived;
             foreach (var (start, end) in part.Ranges())
             {
                 for (var row = start; row < end; row++)
