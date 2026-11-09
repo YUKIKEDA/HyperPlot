@@ -33,6 +33,7 @@ A check or a test that stands for a statement in `docs/design.ja.md` implements 
 - Before a PR says "every X does Y" (every mark kind has a large-data path, every GPU resource is released on device loss), search the whole solution for X. The PR's test plan names the search and the exceptions.
 - A statement a PR adds to a row of design §10 is a test in the same PR. PR #342 added "a layer not drawn yet answers nothing" and "a figure answers in the plot under the cursor" to row I2a and went to review without a test of either.
 - A number composed across parts (a base times a width plus an index) is tested with parts of different widths side by side. Row I2a numbered a stack's groups by each part's own width, an area of 1 below bands of 2, and the band's high edge and the next group's area met; its tests had parts of one width only, and PR #352's review of the markers' colors found it.
+- That test also lists every key that tells two parts apart (a group, a side, an edge), and includes a pair of parts that differ in one key alone. PR #360 numbered a numeric stack's bars by their group, and a group's positive and negative pieces took the same number; the review found it.
 
 ```text
 BAD:  "M4 keeps the first, last, minimum, and maximum point of each pixel column"
