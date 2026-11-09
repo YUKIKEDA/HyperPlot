@@ -97,6 +97,9 @@ public sealed class Selection2D : Selection
     /// <summary>Returns the same selection over another y range: an x range's, once the engine knows the panel's.</summary>
     internal Selection2D WithY(ViewRange y) => new(Kind, Panel, X, y, Polygon, Points);
 
+    /// <summary>Returns the same predicate on another panel: a link's copy (row I3b).</summary>
+    internal Selection2D WithPanel(PanelId panel) => new(Kind, panel, X, Y, Polygon, Points);
+
     /// <summary>Returns whether a point of the scale space, as differences from the ranges' origins, lies in the selection.</summary>
     internal bool Holds(double x, double y)
     {

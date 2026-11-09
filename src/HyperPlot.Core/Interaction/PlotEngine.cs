@@ -27,7 +27,7 @@ namespace HyperPlot.Interaction;
 /// there and tells the host instead. The size of the target and its scale are fixed (row W1 changes them).
 /// </para>
 /// </remarks>
-public sealed class PlotEngine : IDisposable
+public sealed partial class PlotEngine : IDisposable
 {
     private readonly HeadlessRenderer _renderer;
     private readonly int _thread;
@@ -36,6 +36,7 @@ public sealed class PlotEngine : IDisposable
     private readonly RenderList _overlay = new();
     private readonly char[] _tooltip = new char[HoverTool.TooltipLength];
     private readonly List<(float X, float Y, float Width, float Height)> _lassoFill = [];
+    private readonly List<(PanelId Panel, Selection2D Selection, int Start, int Count)> _lassoKeys = [];
     private PlotState[] _states = [];
     private PanelDomains[][] _shownViews = [];
     private PlotSpec? _plot;
@@ -55,6 +56,7 @@ public sealed class PlotEngine : IDisposable
     private TextWriter? _recording;
     private long _lastRecorded;
     private bool _disposed;
+    private bool _quietLinks;
 
     // The hover (design §6.5, row I2b): the tool that hovers, where, and the hits; a buffer for the next hits and the tooltip.
     private SeriesHit[] _hover = new SeriesHit[16];
@@ -64,9 +66,8 @@ public sealed class PlotEngine : IDisposable
     private Vector2 _hoverPixel;
     private bool _hovered;
 
-    // The selections (design §6.4, row I3a): one a plot, and a lasso's fill as rects of the last layout.
+    // The selections (design §6.4, row I3a): one a plot, and each lasso's fill as rects of the last layout, a panel's run.
     private Selection2D?[] _selections = [];
-    private int _lassoPlot = -1;
 
     // The kept layer (design §5.4, row I2b): what the plot drew last, kept by the renderer, and what it was drawn from.
     private bool _kept;
@@ -92,6 +93,7 @@ public sealed class PlotEngine : IDisposable
         _thread = Environment.CurrentManagedThreadId;
         _context = new ToolContext(this);
         Views = new ViewOperations(this);
+        Links = new LinkGroups(this);
     }
 
     /// <summary>Occurs when the engine needs a frame: once until <see cref="RenderFrame"/> draws it.</summary>
@@ -529,9 +531,25 @@ public sealed class PlotEngine : IDisposable
             throw new ArgumentOutOfRangeException(nameof(layer), layer, "The layer is in the plot's spec.");
         }
 
-        return _selections[plot] is { } selection
-            ? PlanOf(plot).SelectRows(selection.Panel.Panel, layer, selection, _renderer.Pool)
-            : ValueTask.FromResult(RowSelection.Empty);
+        if (_selections[plot] is not { } selection)
+        {
+            return ValueTask.FromResult(RowSelection.Empty);
+        }
+
+        // A link that also stands the selection on more of the plot's panels (a facet's) adds their rows (row I3b).
+        var (plan, origin) = (PlanOf(plot), selection.Panel.Panel);
+        var answer = plan.SelectRows(origin, layer, selection, _renderer.Pool);
+        List<Task<RowSelection>>? parts = null;
+        for (var p = 0; p < plan.PanelCount; p++)
+        {
+            if (p != origin && selection.Kind != SelectionKind.Points && Applied(plot, p))
+            {
+                parts ??= [answer.AsTask()];
+                parts.Add(plan.SelectRows(p, layer, selection, _renderer.Pool).AsTask());
+            }
+        }
+
+        return parts is null ? answer : SelectionQuery.UnionOf(parts);
     }
 
     /// <summary>Clears every plot's selection (design §6.4, row I3a): tells <see cref="SelectionChanged"/> for each plot that had one.</summary>
@@ -971,10 +989,19 @@ public sealed class PlotEngine : IDisposable
             throw new InvalidOperationException("The engine has drawn no frame yet: a view needs the plot's layout.");
         }
 
-        for (var k = 0; k < PlotCount; k++)
+        // Each plot goes to its own full view: a link copies none of them to the others (row I3b).
+        _quietLinks = true;
+        try
         {
-            _states[k].Work.AsSpan().Fill(PanelDomains.None);
-            Apply(k, animate && !PlanOf(k).FullStale, HistoryMode.Push);
+            for (var k = 0; k < PlotCount; k++)
+            {
+                _states[k].Work.AsSpan().Fill(PanelDomains.None);
+                Apply(k, animate && !PlanOf(k).FullStale, HistoryMode.Push);
+            }
+        }
+        finally
+        {
+            _quietLinks = false;
         }
     }
 
@@ -1323,7 +1350,7 @@ public sealed class PlotEngine : IDisposable
     private void DrawPlot()
     {
         _kept = false;
-        _lassoPlot = -1;
+        ClearLassos();
         if (_plot is not null)
         {
             _renderer.Render(_plot, _states[0].Shown, null);
@@ -1360,14 +1387,17 @@ public sealed class PlotEngine : IDisposable
                 }
             }
 
-            // A new mapping: the selection's predicate meant the old one (Issue #364 Decision 8).
+            // A new mapping: the selection's predicate meant the old one (Issue #364 Decision 8). It is not copied: the
+            // members keep theirs until the next change (Issue #373 Decision 15).
             if (plan.MappingChanged)
             {
-                SetSelection(k, null);
+                SetSelection(k, null, linked: true);
             }
 
             animating |= state.Animating;
         }
+
+        CheckLinkLayout();
 
         if (dropped)
         {
@@ -1469,8 +1499,11 @@ public sealed class PlotEngine : IDisposable
         (_kept, _keptSpec, _keptScale, _keptVersions) = (true, (object?)_plot ?? _figure, Scale, versions);
     }
 
-    /// <summary>Sets a plot's selection, tells it, and asks for a frame (row I3a).</summary>
-    internal void SetSelection(int plot, Selection2D? selection)
+    /// <summary>
+    /// Sets a plot's selection, tells it, and asks for a frame (row I3a); a selection made here, not a link's copy or a drop,
+    /// is then copied to the panels its selection groups join (row I3b).
+    /// </summary>
+    internal void SetSelection(int plot, Selection2D? selection, bool linked = false)
     {
         if (plot < 0 || plot >= _selections.Length || ReferenceEquals(_selections[plot], selection))
         {
@@ -1478,13 +1511,40 @@ public sealed class PlotEngine : IDisposable
         }
 
         _selections[plot] = selection;
-        if (_lassoPlot == plot)
+        ClearApplied(plot);
+        ClearLassos();
+        RequestFrame();
+        if (linked || selection is null)
         {
-            _lassoPlot = -1;
+            SelectionChanged?.Invoke(plot);
+            return;
         }
 
-        RequestFrame();
-        SelectionChanged?.Invoke(plot);
+        QueueSelection(plot);
+        var outer = !_draining;
+        _draining = true;
+        try
+        {
+            SelectionChanged?.Invoke(plot);
+            if (outer)
+            {
+                Drain();
+            }
+        }
+        finally
+        {
+            if (outer)
+            {
+                _draining = false;
+            }
+        }
+    }
+
+    /// <summary>Forgets the lassos' fills: a selection or the layout changed.</summary>
+    private void ClearLassos()
+    {
+        _lassoKeys.Clear();
+        _lassoFill.Clear();
     }
 
     /// <summary>Clears every plot's selection; returns whether one had any.</summary>
@@ -1652,77 +1712,103 @@ public sealed class PlotEngine : IDisposable
         {
             DrawTooltip(list, tool, plan, theme, (left, top, width, height), line);
         }
+
+        DrawLinkedCursor(list, tool, area.Panel);
     }
 
     /// <summary>
     /// Records each plot's selection over the plot (design §6.4, row I3a, Issue #364 Decision 5): its range, or its lasso's
     /// polygon, in 15 % of the foreground; the lines of its panel within its x range again, twice as wide; and a marker at each
-    /// of a selection's points. Allocates nothing once warm: a lasso's fill is made again only when it or the layout changes.
+    /// of a selection's points. A link that stands it on more of the plot's panels draws it there too (row I3b). Allocates
+    /// nothing once warm: a lasso's fill is made again only when a selection or the layout changes.
     /// </summary>
     private void DrawSelections(RenderList list)
     {
         var count = PlotCount;
         for (var k = 0; k < count && k < _selections.Length; k++)
         {
-            if (_selections[k] is not { } selection || selection.Panel.Panel >= PlanOf(k).PanelCount)
+            var panels = PlanOf(k).PanelCount;
+            if (_selections[k] is not { } selection || selection.Panel.Panel >= panels)
             {
                 continue;
             }
 
-            var (guide, theme, plan) = (PanelOf(selection.Panel), SpecOf(k).Theme, PlanOf(k));
-            var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
-            var faint = theme.Foreground with { A = (byte)Math.Round(theme.Foreground.A * 0.15) };
-            if (selection.Kind == SelectionKind.Points)
+            DrawSelection(list, k, selection, selection.Panel);
+            for (var p = 0; p < panels && selection.Kind != SelectionKind.Points; p++)
             {
-                foreach (var point in selection.Points.Span)
+                if (p != selection.Panel.Panel && Applied(k, p))
                 {
-                    if (point.Panel == selection.Panel.Panel && plan.HitPixel(point, out var at))
-                    {
-                        Marker(list, at, plan.HitColor(point), theme);
-                    }
+                    DrawSelection(list, k, selection, new PanelId(k, p));
                 }
-
-                continue;
             }
-
-            // The x range's span along, and its frame clamped to the panel; an x range runs the panel across.
-            var flipped = plan.Guides.Flipped;
-            var low = ViewToPixel(selection.Panel, selection.X with { Upper = selection.X.Lower }, selection.Y with { Upper = selection.Y.Lower });
-            var high = ViewToPixel(selection.Panel, selection.X with { Lower = selection.X.Upper }, selection.Y with { Lower = selection.Y.Upper });
-            var (x0, x1) = (Math.Clamp(MathF.Min(low.X, high.X), left, left + width), Math.Clamp(MathF.Max(low.X, high.X), left, left + width));
-            var (y0, y1) = (Math.Clamp(MathF.Min(low.Y, high.Y), top, top + height), Math.Clamp(MathF.Max(low.Y, high.Y), top, top + height));
-            if (selection.Kind == SelectionKind.XRange)
-            {
-                (x0, x1, y0, y1) = flipped ? ((float)left, (float)(left + width), y0, y1) : (x0, x1, (float)top, (float)(top + height));
-            }
-
-            if (selection.Kind == SelectionKind.Lasso)
-            {
-                FillLasso(list, k, selection, faint, (left, top, width, height));
-            }
-            else
-            {
-                list.DrawRect(x0, y0, x1 - x0, y1 - y0, faint);
-            }
-
-            var (alongFrom, alongTo) = flipped ? (y0, y1) : (x0, x1);
-            var (clipLeft, clipTop, clipWidth, clipHeight) = flipped
-                ? (left, (int)MathF.Floor(alongFrom), width, (int)MathF.Ceiling(alongTo - MathF.Floor(alongFrom)))
-                : ((int)MathF.Floor(alongFrom), top, (int)MathF.Ceiling(alongTo - MathF.Floor(alongFrom)), height);
-            plan.Highlight(selection.Panel.Panel, list, clipLeft, clipTop, clipWidth, clipHeight);
         }
     }
 
-    /// <summary>
-    /// Records a lasso's polygon filled by the even-odd rule, a rect a pixel row a run, from rects made again when the lasso or
-    /// the layout changes (the frames of the mouse alone reuse them).
-    /// </summary>
-    private void FillLasso(RenderList list, int plot, Selection2D selection, Color color, (int Left, int Top, int Width, int Height) panel)
+    /// <summary>Records a plot's selection on one of its panels: the one it was made on, or one a link stands it on.</summary>
+    private void DrawSelection(RenderList list, int k, Selection2D selection, PanelId panel)
     {
-        if (_lassoPlot != plot)
+        var (guide, theme, plan) = (PanelOf(panel), SpecOf(k).Theme, PlanOf(k));
+        var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
+        var faint = theme.Foreground with { A = (byte)Math.Round(theme.Foreground.A * 0.15) };
+        if (selection.Kind == SelectionKind.Points)
         {
-            _lassoFill.Clear();
-            _lassoPlot = plot;
+            foreach (var point in selection.Points.Span)
+            {
+                if (point.Panel == panel.Panel && plan.HitPixel(point, out var at))
+                {
+                    Marker(list, at, plan.HitColor(point), theme);
+                }
+            }
+
+            return;
+        }
+
+        // The x range's span along, and its frame clamped to the panel; an x range runs the panel across.
+        var flipped = plan.Guides.Flipped;
+        var low = ViewToPixel(panel, selection.X with { Upper = selection.X.Lower }, selection.Y with { Upper = selection.Y.Lower });
+        var high = ViewToPixel(panel, selection.X with { Lower = selection.X.Upper }, selection.Y with { Lower = selection.Y.Upper });
+        var (x0, x1) = (Math.Clamp(MathF.Min(low.X, high.X), left, left + width), Math.Clamp(MathF.Max(low.X, high.X), left, left + width));
+        var (y0, y1) = (Math.Clamp(MathF.Min(low.Y, high.Y), top, top + height), Math.Clamp(MathF.Max(low.Y, high.Y), top, top + height));
+        if (selection.Kind == SelectionKind.XRange)
+        {
+            (x0, x1, y0, y1) = flipped ? ((float)left, (float)(left + width), y0, y1) : (x0, x1, (float)top, (float)(top + height));
+        }
+
+        if (selection.Kind == SelectionKind.Lasso)
+        {
+            FillLasso(list, panel, selection, faint, (left, top, width, height));
+        }
+        else
+        {
+            list.DrawRect(x0, y0, x1 - x0, y1 - y0, faint);
+        }
+
+        var (alongFrom, alongTo) = flipped ? (y0, y1) : (x0, x1);
+        var (clipLeft, clipTop, clipWidth, clipHeight) = flipped
+            ? (left, (int)MathF.Floor(alongFrom), width, (int)MathF.Ceiling(alongTo - MathF.Floor(alongFrom)))
+            : ((int)MathF.Floor(alongFrom), top, (int)MathF.Ceiling(alongTo - MathF.Floor(alongFrom)), height);
+        plan.Highlight(panel.Panel, list, clipLeft, clipTop, clipWidth, clipHeight);
+    }
+
+    /// <summary>
+    /// Records a lasso's polygon on a panel filled by the even-odd rule, a rect a pixel row a run, from rects made again when a
+    /// selection or the layout changes (the frames of the mouse alone reuse them).
+    /// </summary>
+    private void FillLasso(RenderList list, PanelId on, Selection2D selection, Color color, (int Left, int Top, int Width, int Height) panel)
+    {
+        var (start, count) = (-1, 0);
+        foreach (var key in _lassoKeys)
+        {
+            if (key.Panel == on && ReferenceEquals(key.Selection, selection))
+            {
+                (start, count) = (key.Start, key.Count);
+                break;
+            }
+        }
+
+        if (start < 0)
+        {
+            start = _lassoFill.Count;
             var shares = selection.Polygon.Span;
             Span<Vector2> pixels = shares.Length <= 1024 ? stackalloc Vector2[shares.Length] : new Vector2[shares.Length];
             var (top, bottom) = (float.PositiveInfinity, float.NegativeInfinity);
@@ -1730,7 +1816,7 @@ public sealed class PlotEngine : IDisposable
             {
                 var x = selection.X.Lower + (shares[i].X * (selection.X.Upper - selection.X.Lower));
                 var y = selection.Y.Lower + (shares[i].Y * (selection.Y.Upper - selection.Y.Lower));
-                pixels[i] = ViewToPixel(selection.Panel, new ViewRange(selection.X.Origin, x, x), new ViewRange(selection.Y.Origin, y, y));
+                pixels[i] = ViewToPixel(on, new ViewRange(selection.X.Origin, x, x), new ViewRange(selection.Y.Origin, y, y));
                 (top, bottom) = (MathF.Min(top, pixels[i].Y), MathF.Max(bottom, pixels[i].Y));
             }
 
@@ -1760,10 +1846,14 @@ public sealed class PlotEngine : IDisposable
                     }
                 }
             }
+
+            count = _lassoFill.Count - start;
+            _lassoKeys.Add((on, selection, start, count));
         }
 
-        foreach (var (x, y, width, height) in _lassoFill)
+        for (var i = start; i < start + count; i++)
         {
+            var (x, y, width, height) = _lassoFill[i];
             list.DrawRect(x, y, width, height, color);
         }
     }
@@ -2223,15 +2313,56 @@ public sealed class PlotEngine : IDisposable
             state.LastWasGroup = false;
         }
 
-        for (var p = 0; p < state.Panels; p++)
+        RequestFrame();
+
+        // A link's commit tells its changes after it, in the order of the panels (row I3b, Issue #373 Decision 10).
+        if (_linkCommit)
         {
-            if (!Same(state.Work[p], state.Target[p]))
+            for (var p = 0; p < state.Panels; p++)
             {
-                Notify(plot, p, _reason);
+                if (!Same(state.Work[p], state.Target[p]))
+                {
+                    _linkNotices.Add(new PanelId(plot, p));
+                }
             }
+
+            return;
         }
 
-        RequestFrame();
+        // The panels that moved wait to be copied before anyone is told, so that a handler's change is copied after them.
+        for (var p = 0; p < state.Panels && !_quietLinks; p++)
+        {
+            var (before, after) = (state.Work[p], state.Target[p]);
+            var axes =
+                (SameRange(before.X, after.X) && SameRange(before.X2, after.X2) ? ViewAxes.None : ViewAxes.X)
+                | (SameRange(before.Y, after.Y) && SameRange(before.Y2, after.Y2) ? ViewAxes.None : ViewAxes.Y);
+            QueueView(plot, p, axes, animate);
+        }
+
+        var outer = !_draining;
+        _draining = true;
+        try
+        {
+            for (var p = 0; p < state.Panels; p++)
+            {
+                if (!Same(state.Work[p], state.Target[p]))
+                {
+                    Notify(plot, p, _reason);
+                }
+            }
+
+            if (outer)
+            {
+                Drain();
+            }
+        }
+        finally
+        {
+            if (outer)
+            {
+                _draining = false;
+            }
+        }
     }
 
     private void Push(PlotState state)
@@ -2291,9 +2422,11 @@ public sealed class PlotEngine : IDisposable
             _states[k] = new PlotState();
         }
 
-        // Another number of plots: the selections of the plots before go (row I3a).
+        // Another number of plots: the selections of the plots before go (row I3a), and the links' slots are built again.
         _ = ClearSelections();
         _selections = new Selection2D?[count];
+        _applied = [];
+        _linksDirty = true;
 
         _shownViews = new PanelDomains[count][];
         (_active, _inGesture) = (default, false);
