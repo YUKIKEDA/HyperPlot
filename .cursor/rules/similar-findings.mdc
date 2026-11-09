@@ -12,6 +12,7 @@ When a problem is pointed out, do not fix only the cited spot and stop. Before f
 - If you find the same kind of problem, fix it together with the cited spot.
 - If you find none, say what you checked and that nothing remains.
 - A new path over data an older path already handles takes the older path's conditions with it. PR #342's hit test took a facet's gathered rows back to the plot's table for every layer, an image's element positions too; the drawing path (`TakeNodes`) already left the layers without rows (`FacetData.Rowless`) out, and the review found the difference.
+- A member added beside an existing virtual one (a color beside a hit test) is overridden by every class that overrides the existing one: list them with a search for the existing member's overrides, and write a PR body's "every" from that list. PR #352 added `HitColor` to `SplitPlan` alone; `StatPlan` and `StackedSeriesPlan`, which delegate `Hit` to their parts, kept the layer's one color, and the PR body called that the series color.
 
 ```text
 # BAD — fixes the NaN skip in the min/max build of the pyramid; the reply says "fixed"
