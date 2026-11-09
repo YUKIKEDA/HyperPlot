@@ -419,19 +419,21 @@ public sealed class AnnotationTests
     }
 
     /// <summary>
-    /// Over an annotation the panel's bindings still match (Issue #382 Decision 17): the hover hits the data and the wheel
-    /// zooms; a left drag there moves the annotation, not the view, being bound before the pan.
+    /// Over an annotation the panel's bindings still match (Issue #382 Decision 17): the hover hits the data, the wheel
+    /// zooms, and a Shift drag selects; a left drag there moves the annotation, not the view, being bound before the pan.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - The fixture's line; a draggable marker on the line's point of row 300; animations off.
     ///
     /// Steps:
-    /// - Move over the marker; turn the wheel there; read the bindings; drag the marker by (40, 0).
+    /// - Move over the marker; turn the wheel there; read the bindings; drag the marker by (40, 0); drag with Shift from the
+    ///   marker by (60, 40).
     ///
     /// Expected:
     /// - The hover holds a hit; the wheel narrows the view; the AnnotationTool's binding comes before the pan's; after the
-    ///   drag the view is as the wheel left it and the marker's x moved.
+    ///   drag the view is as the wheel left it and the marker's x moved; the Shift drag makes a rectangle selection, and the
+    ///   marker stays where the drag left it.
     /// </remarks>
     [Fact]
     public void PanelBindings_StillMatchOverAnAnnotation()
@@ -463,7 +465,14 @@ public sealed class AnnotationTests
         f.Drag(at, at + new Vector2(40, 0));
         f.Engine.RenderFrame();
         Assert.Equal(zoomed, f.View());
-        Assert.True(((MarkerAnnotationSpec)f.Engine.Annotation(0, 0)).At.X.Offset > 300 - Math.Floor(300.0));
+        var dragged = ((MarkerAnnotationSpec)f.Engine.Annotation(0, 0)).At;
+        Assert.True(dragged.X.Offset > 300 - Math.Floor(300.0));
+
+        var marker = Assert.Single(Centers(f));
+        Assert.Equal(0, f.Engine.HitArea(marker).Annotation);
+        f.Drag(marker, marker + new Vector2(60, 40), modifiers: ModifierKeys.Shift);
+        Assert.Equal(SelectionKind.Rectangle, f.Engine.Selection(0)?.Kind);
+        Assert.Equal(dragged, ((MarkerAnnotationSpec)f.Engine.Annotation(0, 0)).At);
     }
 
     /// <summary>

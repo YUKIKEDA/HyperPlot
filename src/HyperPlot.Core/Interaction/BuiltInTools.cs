@@ -217,7 +217,10 @@ public sealed class SelectionTool : IPlotTool
         {
             case PointerEventKind.Down:
                 var area = context.Hit.Kind;
-                var fits = Kind == SelectionKind.XRange ? area is HitAreaKind.AxisX or HitAreaKind.Panel : area == HitAreaKind.Panel;
+
+                // A place over an annotation is its panel too (row I4a): the panel's flag, not the whole kind.
+                var panel = (area & HitAreaKind.Panel) != 0;
+                var fits = Kind == SelectionKind.XRange ? panel || area == HitAreaKind.AxisX : panel;
                 if (!fits || context.IsPolar(context.Hit.Panel))
                 {
                     return ToolResult.Ignored;
