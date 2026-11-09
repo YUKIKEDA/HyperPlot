@@ -46,7 +46,7 @@ public sealed class PanTool : IPlotTool
     public ToolResult OnGesture(in GestureEvent e, ToolContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (e.Kind != GestureKind.Scroll || context.Hit.Kind != HitAreaKind.Panel)
+        if (e.Kind != GestureKind.Scroll || (context.Hit.Kind & HitAreaKind.Panel) == 0)
         {
             return ToolResult.Ignored;
         }
@@ -63,9 +63,12 @@ public sealed class PanTool : IPlotTool
         context.Views.EndGesture();
     }
 
-    /// <summary>Returns the axes a drag on a place moves: both on a panel, one on its axis, none elsewhere.</summary>
+    /// <summary>
+    /// Returns the axes a drag on a place moves: both on a panel, one on its axis, none elsewhere. A place over an annotation is
+    /// its panel too (row I4a).
+    /// </summary>
     internal static ViewAxes Axes(HitAreaKind kind) =>
-        kind switch
+        (kind & ~HitAreaKind.Annotation) switch
         {
             HitAreaKind.Panel => ViewAxes.All,
             HitAreaKind.AxisX => ViewAxes.X,
@@ -93,7 +96,7 @@ public sealed class RectangleZoomTool : IPlotTool
         switch (e.Kind)
         {
             case PointerEventKind.Down:
-                if (context.Hit.Kind != HitAreaKind.Panel)
+                if ((context.Hit.Kind & HitAreaKind.Panel) == 0)
                 {
                     return ToolResult.Ignored;
                 }
@@ -171,7 +174,7 @@ public sealed class WheelZoomTool : IPlotTool
     public ToolResult OnGesture(in GestureEvent e, ToolContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (e.Kind != GestureKind.Pinch || context.Hit.Kind != HitAreaKind.Panel || !double.IsFinite(e.Scale) || e.Scale <= 0)
+        if (e.Kind != GestureKind.Pinch || (context.Hit.Kind & HitAreaKind.Panel) == 0 || !double.IsFinite(e.Scale) || e.Scale <= 0)
         {
             return ToolResult.Ignored;
         }
@@ -214,7 +217,10 @@ public sealed class SelectionTool : IPlotTool
         {
             case PointerEventKind.Down:
                 var area = context.Hit.Kind;
-                var fits = Kind == SelectionKind.XRange ? area is HitAreaKind.AxisX or HitAreaKind.Panel : area == HitAreaKind.Panel;
+
+                // A place over an annotation is its panel too (row I4a): the panel's flag, not the whole kind.
+                var panel = (area & HitAreaKind.Panel) != 0;
+                var fits = Kind == SelectionKind.XRange ? panel || area == HitAreaKind.AxisX : panel;
                 if (!fits || context.IsPolar(context.Hit.Panel))
                 {
                     return ToolResult.Ignored;
@@ -346,7 +352,7 @@ public sealed class SelectionTool : IPlotTool
     /// <summary>Adds the points a click hits to the plot's selection of points, or starts one.</summary>
     private static ToolResult AddPoints(Vector2 at, ToolContext context)
     {
-        if (context.Hit.Kind != HitAreaKind.Panel || context.IsPolar(context.Hit.Panel))
+        if ((context.Hit.Kind & HitAreaKind.Panel) == 0 || context.IsPolar(context.Hit.Panel))
         {
             return ToolResult.Ignored;
         }
@@ -384,4 +390,42 @@ public sealed class SelectionTool : IPlotTool
 
     private static Vector2 Clamp(Vector2 point, int left, int top, int width, int height) =>
         new(Math.Clamp(point.X, left, left + width), Math.Clamp(point.Y, top, top + height));
+}
+
+/// <summary>
+/// Drags a draggable annotation (design §6.5, requirement I-5, row I4a): a press on one takes hold of it, the drag moves its
+/// whole, each coordinate in its own kind (a scale's value, or a share of the panel), and the release keeps it and raises
+/// <see cref="PlotEngine.AnnotationChanged"/> when it moved. Escape and a cancel put it back. In the default bindings for a
+/// left drag over an annotation, before the pan.
+/// </summary>
+public sealed class AnnotationTool : IPlotTool
+{
+    /// <inheritdoc />
+    public ToolResult OnPointer(in PointerEvent e, ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        switch (e.Kind)
+        {
+            case PointerEventKind.Down:
+                return (context.Hit.Kind & HitAreaKind.Annotation) != 0 && context.BeginAnnotationDrag(context.Hit, e.Position)
+                    ? ToolResult.Capture
+                    : ToolResult.Ignored;
+            case PointerEventKind.Move:
+                context.DragAnnotation(e.Position);
+                return ToolResult.Handled;
+            case PointerEventKind.Up:
+                context.DragAnnotation(e.Position);
+                context.EndAnnotationDrag(keep: true);
+                return ToolResult.Release;
+            default:
+                return ToolResult.Handled;
+        }
+    }
+
+    /// <inheritdoc />
+    public void Cancel(ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        context.EndAnnotationDrag(keep: false);
+    }
 }

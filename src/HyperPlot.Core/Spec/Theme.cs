@@ -115,6 +115,12 @@ public sealed record Theme
     /// </summary>
     public float ColorBarLength { get; init; } = 200;
 
+    /// <summary>Gets the subtitle's size in DIPs (design §4.6, row I4a): 13.</summary>
+    public float SubtitleSize { get; init; } = 13;
+
+    /// <summary>Gets the caption's size in DIPs (design §4.6, row I4a): 11.</summary>
+    public float CaptionSize { get; init; } = 11;
+
     /// <summary>Throws unless every member is in range for a renderer of a scale (design §4.7).</summary>
     internal void Validate(float scale)
     {
@@ -122,6 +128,8 @@ public sealed record Theme
         CheckText(AxisTitleSize, scale, nameof(AxisTitleSize));
         CheckText(TickLabelSize, scale, nameof(TickLabelSize));
         CheckText(LegendSize, scale, nameof(LegendSize));
+        CheckText(SubtitleSize, scale, nameof(SubtitleSize));
+        CheckText(CaptionSize, scale, nameof(CaptionSize));
         CheckLength(AxisWidth, nameof(AxisWidth));
         CheckLength(GridWidth, nameof(GridWidth));
         CheckLength(TickWidth, nameof(TickWidth));

@@ -227,6 +227,30 @@ internal sealed class PlotGuides
         (_titleBand, _legendBand) = (0, 0);
         UsePanels(facet?.Cells.Length ?? 1);
 
+        // The caption's band comes off the bottom before the other bands (row I4a): the layout runs over what is left.
+        var caption = CaptionBand(spec, theme);
+        _height -= caption;
+        try
+        {
+            LayoutWithin(spec, theme, xTransform, yTransform, xTransform2, yTransform2, facet, learned);
+        }
+        finally
+        {
+            _height += caption;
+        }
+    }
+
+    private void LayoutWithin(
+        PlotSpec spec,
+        Theme theme,
+        IScale? xTransform,
+        IScale? yTransform,
+        IScale? xTransform2,
+        IScale? yTransform2,
+        FacetArrangement? facet,
+        ReadOnlySpan<PanelDomains> learned
+    )
+    {
         // The axes each panel draws over a view take its range as it is (rows I1a, I1b, design §6.2).
         for (var p = 0; p < _panelCount && p < learned.Length; p++)
         {
@@ -314,7 +338,7 @@ internal sealed class PlotGuides
         var (figureLeft, figureTop) = (_left + padding, _top + padding);
         var (figureRight, figureBottom) = (_left + _width - padding, _top + _height - padding);
 
-        var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
+        var titleBand = HeadBand(spec, theme, gap);
         var tickStyle = Style(theme, theme.TickLabelSize);
         var titleStyle = Style(theme, theme.AxisTitleSize);
         var lineHeight = _text.Measure("0", tickStyle).Height;
@@ -656,12 +680,47 @@ internal sealed class PlotGuides
         }
 
         RecordStrips(list, theme, gap);
+        var below = _top + padding;
         if (HasText(spec.Title))
         {
+            var style = Style(theme, theme.TitleSize);
+            var size = _text.Measure(spec.Title!, style);
             list.DrawText(
                 spec.Title!,
-                new Vector2(_gridLeft + (_gridWidth / 2f) - (_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Width / 2), _top + padding),
-                Style(theme, theme.TitleSize) with
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (size.Width / 2), below),
+                style with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Top,
+                }
+            );
+            below += Ceiling(size.Height) + gap;
+        }
+
+        // The subtitle below the title, centered as it is; the caption at the lower right, in its band (row I4a).
+        if (HasText(spec.Subtitle))
+        {
+            var style = Style(theme, theme.SubtitleSize);
+            var width = _text.Measure(spec.Subtitle!, style).Width;
+            list.DrawText(
+                spec.Subtitle!,
+                new Vector2(_gridLeft + (_gridWidth / 2f) - (width / 2), below),
+                style with
+                {
+                    Horizontal = TextAlign.Left,
+                    Vertical = TextBaseline.Top,
+                }
+            );
+        }
+
+        if (HasText(spec.Caption))
+        {
+            var style = Style(theme, theme.CaptionSize);
+            var size = _text.Measure(spec.Caption!, style);
+            list.DrawText(
+                spec.Caption!,
+                new Vector2(_left + _width - padding - size.Width, _top + _height - padding - Ceiling(size.Height)),
+                style with
                 {
                     Horizontal = TextAlign.Left,
                     Vertical = TextBaseline.Top,
@@ -691,6 +750,18 @@ internal sealed class PlotGuides
     internal LineStyle Scaled(in LineStyle style) => style with { Width = style.Width * _scale, Dash = style.Dash?.Scaled(_scale) };
 
     private static bool HasText(string? text) => !string.IsNullOrEmpty(text);
+
+    /// <summary>
+    /// Returns the band above the plot (design §4.6): the title's height and a gap, then the subtitle's and a gap (row I4a),
+    /// each when it has text.
+    /// </summary>
+    private int HeadBand(PlotSpec spec, Theme theme, int gap) =>
+        (HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0)
+        + (HasText(spec.Subtitle) ? Ceiling(_text.Measure(spec.Subtitle!, Style(theme, theme.SubtitleSize)).Height) + gap : 0);
+
+    /// <summary>Returns the caption's band at the bottom of the plot (design §4.6, row I4a): its height and a gap, or 0.</summary>
+    private int CaptionBand(PlotSpec spec, Theme theme) =>
+        HasText(spec.Caption) ? Ceiling(_text.Measure(spec.Caption!, Style(theme, theme.CaptionSize)).Height) + Round(theme.Spacing) : 0;
 
     /// <summary>
     /// Returns the label of a layer's own row in the legend, or null for none (design §4.6): a layer with a label, not split by
@@ -871,7 +942,7 @@ internal sealed class PlotGuides
         var tick = Round(theme.TickLength);
         var (figureLeft, figureTop) = (_left + padding, _top + padding);
         var (figureRight, figureBottom) = (_left + _width - padding, _top + _height - padding);
-        var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
+        var titleBand = HeadBand(spec, theme, gap);
         var legendBand = LegendBand(
             spec,
             theme,
@@ -1010,7 +1081,7 @@ internal sealed class PlotGuides
             _left + _width - padding,
             _top + _height - padding
         );
-        var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
+        var titleBand = HeadBand(spec, theme, gap);
         _titleBand = titleBand;
         var tickStyle = Style(theme, theme.TickLabelSize);
         var titleStyle = Style(theme, theme.AxisTitleSize);
@@ -1268,7 +1339,7 @@ internal sealed class PlotGuides
             _left + _width - padding,
             _top + _height - padding
         );
-        var titleBand = HasText(spec.Title) ? Ceiling(_text.Measure(spec.Title!, Style(theme, theme.TitleSize)).Height) + gap : 0;
+        var titleBand = HeadBand(spec, theme, gap);
         _titleBand = titleBand;
         var tickStyle = Style(theme, theme.TickLabelSize);
         var titleStyle = Style(theme, theme.AxisTitleSize);

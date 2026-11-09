@@ -22,6 +22,7 @@ internal sealed partial class PlotPlan : IDisposable
     private readonly bool _ownImages;
     private readonly PlotWorkerPool _pool;
     private readonly PlotGuides _guides;
+    private readonly TextEngine _text;
 
     // The pyramids the plan reads (design §5.5.3): its own store, or its figure's, which the plots share (row G6c); and
     // the columns whose pyramid this plan holds in the store.
@@ -68,6 +69,7 @@ internal sealed partial class PlotPlan : IDisposable
     private bool _pendingRanges;
     private bool _pendingLooks;
     private bool _pendingFlipped;
+    private bool _pendingAnnotations;
     private bool _pendingExtract;
     private bool _pendingRecord;
     private PanelDomains[] _views = [];
@@ -112,6 +114,7 @@ internal sealed partial class PlotPlan : IDisposable
         _indexes = new LayerIndexes(pool, column => _held.Contains(column) ? _store.Find(column) : null) { Makings = _store.Makings };
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
+        _text = text;
         _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
         _ownImages = images is null;
         GatherBatches();
@@ -446,6 +449,7 @@ internal sealed partial class PlotPlan : IDisposable
 
         spec.Theme.Validate(_scale);
         CheckTextSizes(spec);
+        CheckAnnotations(spec);
         (spec.Coord as PolarCoordSpec)?.Validate();
     }
 
@@ -473,6 +477,8 @@ internal sealed partial class PlotPlan : IDisposable
             || OptionsChanged(previous!.ScaleX, spec.ScaleX)
             || OptionsChanged(previous!.ScaleY, spec.ScaleY)
             || !string.Equals(previous.Title, spec.Title, StringComparison.Ordinal)
+            || !string.Equals(previous.Subtitle, spec.Subtitle, StringComparison.Ordinal)
+            || !string.Equals(previous.Caption, spec.Caption, StringComparison.Ordinal)
             || !previous.Theme.Equals(spec.Theme)
             || CoordLooksChanged(previous.Coord, spec.Coord)
             || previous.ScaleColor?.Id != spec.ScaleColor?.Id
@@ -584,6 +590,10 @@ internal sealed partial class PlotPlan : IDisposable
         }
 
         (_pendingSpec, _pendingScales, _pendingRanges, _pendingLooks, _pendingFlipped) = (spec, scales, ranges, looks, flipped);
+
+        // Annotations of other nodes, or moved by the engine, are recorded again alone (row I4a): no scale, no layout.
+        _pendingAnnotations = previous is null || !SameAnnotations(previous, spec) || _shiftsChanged;
+        _shiftsChanged = false;
         (_pendingExtract, _pendingRecord) = (false, false);
     }
 
@@ -848,6 +858,10 @@ internal sealed partial class PlotPlan : IDisposable
             {
                 SkipSeries();
             }
+        }
+        else if (_pendingAnnotations && !_guides.Empty)
+        {
+            _pendingRecord = true;
         }
 
         return _pendingExtract;
@@ -2425,16 +2439,17 @@ internal sealed partial class PlotPlan : IDisposable
 
         _guides.RecordBehind(_list, spec);
         LayersRecorded = 0;
+        _annotationHits.Clear();
         for (var p = 0; p < _panels.Length; p++)
         {
-            RecordPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
+            RecordPanel(spec, p, _panels[p], _guides.PanelAt(p), flipped);
         }
 
         _guides.RecordOver(_list, spec);
     }
 
     /// <summary>Records a panel's layers inside its clip, mapped by its axes (row G6b).</summary>
-    private void RecordPanel(PlotSpec spec, PlotPanel panel, PanelGuide guide, bool flipped)
+    private void RecordPanel(PlotSpec spec, int index, PlotPanel panel, PanelGuide guide, bool flipped)
     {
         var yScale = (ContinuousScaleSpec)spec.ScaleY;
 
@@ -2453,6 +2468,7 @@ internal sealed partial class PlotPlan : IDisposable
             var polarY = new GeomFrame.Axis(_yTransform, panel.Y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
             _context.Begin(polarX, polarY, panel.Boundaries, _scale, flipped: false, (left, top, width, height), polar);
             RecordLayers(panel, spec.Theme.Palette, flipped: false);
+            RecordAnnotations(spec, index, guide, new AnnotationAxes(polarX, polarY, polarX, polarY, Flipped: false));
             return;
         }
 
@@ -2482,6 +2498,7 @@ internal sealed partial class PlotPlan : IDisposable
         panel.Frames = (x, y, x2, y2);
         _context.Begin(x, y, panel.Boundaries, _scale, flipped, (left, top, width, height), null);
         RecordLayers(panel, spec.Theme.Palette, flipped);
+        RecordAnnotations(spec, index, guide, new AnnotationAxes(x, y, x2, y2, flipped));
     }
 
     /// <summary>

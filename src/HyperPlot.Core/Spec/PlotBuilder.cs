@@ -11,9 +11,12 @@ public sealed class PlotBuilder
 {
     private readonly DataTable _data;
     private readonly List<LayerSpec> _layers = [];
+    private readonly List<AnnotationSpec> _annotations = [];
     private ScaleSpec? _scaleX;
     private ScaleSpec? _scaleY;
     private string? _title;
+    private string? _subtitle;
+    private string? _caption;
     private Theme? _theme;
     private CoordSpec? _coord;
     private ColorScaleSpec? _scaleColor;
@@ -898,6 +901,41 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Sets the subtitle below the title (design §4.6, row I4a).</summary>
+    /// <param name="subtitle">The subtitle; null or empty for none.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Subtitle(string? subtitle)
+    {
+        ThrowIfBuilt();
+        _subtitle = subtitle;
+        return this;
+    }
+
+    /// <summary>Sets the caption at the plot's lower right (design §4.6, row I4a).</summary>
+    /// <param name="caption">The caption; null or empty for none.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Caption(string? caption)
+    {
+        ThrowIfBuilt();
+        _caption = caption;
+        return this;
+    }
+
+    /// <summary>Adds an annotation (design §4.1, row I4a): drawn after the ones added before.</summary>
+    /// <param name="annotation">The annotation, made with <see cref="Annotation"/>.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="annotation"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Annotate(AnnotationSpec annotation)
+    {
+        ArgumentNullException.ThrowIfNull(annotation);
+        ThrowIfBuilt();
+        _annotations.Add(annotation);
+        return this;
+    }
+
     /// <summary>Sets the theme of the guides.</summary>
     /// <param name="theme">The theme.</param>
     /// <returns>This builder.</returns>
@@ -954,6 +992,9 @@ public sealed class PlotBuilder
             ScaleX = _scaleX ?? Scale.Linear(),
             ScaleY = _scaleY ?? Scale.Linear(),
             Title = _title,
+            Subtitle = _subtitle,
+            Caption = _caption,
+            Annotations = [.. _annotations],
             Theme = _theme ?? HyperPlot.Theme.Light,
             Coord = _coord ?? HyperPlot.Coord.Cartesian(),
             ScaleColor = _scaleColor,
