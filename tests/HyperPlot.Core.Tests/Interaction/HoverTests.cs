@@ -141,11 +141,13 @@ public sealed class HoverTests
     /// - The engine fixture; the default tool set to <see cref="HitMode.XY"/> and a radius of 4 DIPs.
     ///
     /// Steps:
-    /// - Move 3 pixels below the line's peak (row 79); move 30 pixels above it. Set each setting to a value out of range.
+    /// - Move 3 pixels below the line's peak (row 79); move 30 pixels above it. Resize to a scale of 2 and draw; move 6 pixels
+    ///   below the peak. Set each setting to a value out of range.
     ///
     /// Expected:
     /// - Below: the hover is the hit test's answer in XY with a radius of 4 pixels, a row near the peak. Above: no line point lies
-    ///   within the radius, and the hover is empty. A mode or a crosshair that is not named, and a radius that is negative,
+    ///   within the radius, and the hover is empty. At the scale of 2: the hover is the hit test's answer with a radius of 8
+    ///   pixels, which one of 4 pixels does not find. A mode or a crosshair that is not named, and a radius that is negative,
     ///   NaN, or infinite, throw <see cref="ArgumentOutOfRangeException"/>.
     /// </remarks>
     [Fact]
@@ -168,6 +170,20 @@ public sealed class HoverTests
 
         f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, peak - new Vector2(0, 30)));
         Assert.Equal(0, f.Engine.Hover.Length);
+
+        // At a scale of 2 the radius of 4 DIPs is 8 pixels: a point 6 pixels away is in it.
+        f.Engine.Resize(EngineFixture.Width, EngineFixture.Height, 2);
+        f.Engine.RenderFrame();
+        peak = f.Engine.ViewToPixel(
+            Panel,
+            ViewRange.FromValues(79.0, 79.0),
+            ViewRange.FromValues(10 * Math.Sin(79 * 0.02), 10 * Math.Sin(79 * 0.02))
+        );
+        below = peak + new Vector2(0, 6);
+        f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, below));
+        Assert.Single(f.Engine.Hover.ToArray());
+        Assert.Equal(Hits(f.Engine, below, 8, HitMode.XY), f.Engine.Hover.ToArray());
+        Assert.Empty(Hits(f.Engine, below, 4, HitMode.XY));
 
         Assert.Throws<ArgumentOutOfRangeException>(() => tool.Mode = (HitMode)7);
         Assert.Throws<ArgumentOutOfRangeException>(() => tool.Crosshair = (HoverCrosshair)7);
@@ -694,6 +710,127 @@ public sealed class HoverTests
         Assert.Equal(Premultiplied(Theme.Light.Palette.Series(hits[2].Series)), discs[5].Color);
         Assert.Equal(Premultiplied(Theme.Light.Palette.Series(hits[3].Series)), discs[7].Color);
         Assert.NotEqual(hits[2].Series, hits[3].Series);
+    }
+
+    /// <summary>
+    /// A stacked layer's markers take each group's color, as its parts are drawn, and its groups' series are numbered 2 a
+    /// group (design §6.3, row I2b, the review of PR #352).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 200 rows: x = row / 2, a y of 1, and a category of 2 values that alternate row by row; an area stacked over x and
+    ///   colored by the category; Theme.Light.
+    ///
+    /// Steps:
+    /// - Hover at the middle of the panel in X mode; draw.
+    ///
+    /// Expected:
+    /// - Three hits of three series: the lowest group's area and the upper group's band's two edges, numbered 2 a group so
+    ///   that no two meet. Each disc is the palette's color of its hit's group (series / 2), made opaque.
+    /// </remarks>
+    [Fact]
+    public void Markers_TakeEachStackedGroupsColor()
+    {
+        using var x = Column.Wrap(Enumerable.Range(0, 200).Select(i => i / 2.0).ToArray());
+        using var y = Column.Wrap(Enumerable.Repeat(1.0, 200).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", x)
+            .Add("y", y)
+            .Add("g", Column.Categorical([.. Enumerable.Range(0, 200).Select(i => i % 2 == 0 ? "a" : "b")]))
+            .Build();
+        var spec = Plot.Create(table)
+            .Area(table.Col<double>("x"), table.Col<double>("y"), configure: a => a.ColorBy(table.Cat("g")).Position(Position.Stack))
+            .Build();
+        using var pool = new PlotWorkerPool(2);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, EngineFixture.Width, EngineFixture.Height, 1, pool) { WaitsForIndexes = true };
+        engine.SetPlot(spec);
+        engine.RenderFrame();
+        var guide = engine.Plan!.Guides.PanelAt(0);
+        engine.OnPointer(Move(new Vector2(guide.Left + (guide.Width / 2f), guide.Top + (guide.Height / 2f))));
+        engine.RenderFrame();
+
+        // The lowest group answers its area (2 · group), the one above its band's two edges (2 · group and 2 · group + 1).
+        var hits = engine.Hover.ToArray();
+        Assert.Equal(3, hits.Length);
+        Assert.Equal(3, hits.Select(h => h.Series).Distinct().Count());
+        Assert.Equal(2, hits.Select(h => h.Series / 2).Distinct().Count());
+        var discs = backend.LastList!.SectorCalls.ToArray();
+        Assert.Equal(6, discs.Length);
+        for (var i = 0; i < hits.Length; i++)
+        {
+            Assert.Equal(Premultiplied(Theme.Light.Palette.Series(hits[i].Series / 2) with { A = 255 }), discs[(2 * i) + 1].Color);
+        }
+    }
+
+    /// <summary>A stat's marker takes the color of the layer the stat draws (row I2b, the review of PR #352): a red line of a density is marked red.</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 1,000 rows of a value that rises with the row; a line of its density with a red stroke; Theme.Light.
+    ///
+    /// Steps:
+    /// - Hover at the middle of the panel in X mode; draw.
+    ///
+    /// Expected:
+    /// - One hit, marked derived; its disc is red, not the palette's first color.
+    /// </remarks>
+    [Fact]
+    public void Markers_TakeTheStatsLayerColor()
+    {
+        using var values = Column.Wrap(Enumerable.Range(0, 1000).Select(i => Math.Sqrt(i)).ToArray());
+        var table = DataTable.Create().Add("v", values).Build();
+        var red = new Color(220, 20, 20, 255);
+        var spec = new PlotSpec
+        {
+            Data = table,
+            Layers =
+            [
+                new LineLayerSpec
+                {
+                    X = table.Col<double>("v"),
+                    Stat = Stat.Density(),
+                    Style = new StrokeSpec(red),
+                },
+            ],
+        };
+        using var pool = new PlotWorkerPool(2);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, EngineFixture.Width, EngineFixture.Height, 1, pool) { WaitsForIndexes = true };
+        engine.SetPlot(spec);
+        engine.RenderFrame();
+        var guide = engine.Plan!.Guides.PanelAt(0);
+        engine.OnPointer(Move(new Vector2(guide.Left + (guide.Width / 2f), guide.Top + (guide.Height / 2f))));
+        engine.RenderFrame();
+
+        Assert.True(Assert.Single(engine.Hover.ToArray()).Derived);
+        Assert.Equal(Premultiplied(red), backend.LastList!.SectorCalls[1].Color);
+    }
+
+    /// <summary>
+    /// The crosshair runs along the screen's sides under a flip too (row I2b): a vertical line the panel's height through the
+    /// pointer's pixel column.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The engine fixture with a flipped Cartesian coordinate system; the default hover.
+    ///
+    /// Steps:
+    /// - Move to the middle; draw.
+    ///
+    /// Expected:
+    /// - The last list holds a rect at the pointer's pixel column, 1 pixel wide, from the panel's top for its height.
+    /// </remarks>
+    [Fact]
+    public void Crosshair_KeepsTheScreensSidesUnderAFlip()
+    {
+        using var f = new EngineFixture(b => b.Coord(Coord.Cartesian(flip: true)));
+        f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, f.Middle));
+        f.Engine.RenderFrame();
+
+        var guide = f.Engine.Plan!.Guides.PanelAt(0);
+        var rects = f.Backend.LastList!.Rects.ToArray().Select(r => r with { Color = default });
+        Assert.Contains(new RectInstance(MathF.Floor(f.Middle.X), guide.Top, 1, guide.Height, default), rects);
     }
 
     /// <summary>

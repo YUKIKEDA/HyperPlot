@@ -10,6 +10,9 @@ namespace HyperPlot;
 /// </summary>
 internal sealed class StackedSeriesPlan : LayerPlan
 {
+    /// <summary>The series a group of the stack is numbered by in a hit test: an area's one, or a band's low and high edges.</summary>
+    private const int GroupWidth = 2;
+
     private readonly List<Part> _parts = [];
     private readonly SeriesStack _stack;
     private readonly long[] _built;
@@ -134,6 +137,20 @@ internal sealed class StackedSeriesPlan : LayerPlan
     /// Answers for each group's part, numbered by its group (row I2a): the rows are the stack's table's, of each group's x
     /// joined (Issue #341 Decision 3). The outline lines repeat the parts and do not answer; the bars are row I2c's.
     /// </summary>
+    /// <summary>Returns the color of a group's part (row I2b): its series are numbered by its group, as <see cref="Hit"/> does.</summary>
+    internal override Color HitColor(int series)
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Plan is not LinePlan && Math.Max(part.Category, 0) == series / GroupWidth)
+            {
+                return part.Plan.HitColor(series % GroupWidth);
+            }
+        }
+
+        return SeriesColor;
+    }
+
     internal override void Hit(ref HitScan scan)
     {
         var (base0, width, derived) = (scan.SeriesBase, scan.SeriesWidth, scan.Derived);
@@ -145,7 +162,9 @@ internal sealed class StackedSeriesPlan : LayerPlan
                 continue;
             }
 
-            (scan.SeriesBase, scan.SeriesWidth) = (Math.Max(_parts[k].Category, 0), _parts[k].Plan.HitWidth);
+            // Every group is numbered 2 wide (PR #352's review): the lowest group is an area of one series and the ones above
+            // bands of two, and numbering each by its own width made the band's high edge and the next group's area meet.
+            (scan.SeriesBase, scan.SeriesWidth) = (Math.Max(_parts[k].Category, 0), GroupWidth);
             _parts[k].Plan.Hit(ref scan);
         }
 

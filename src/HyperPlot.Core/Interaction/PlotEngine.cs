@@ -1495,7 +1495,7 @@ public sealed class PlotEngine : IDisposable
         float line
     )
     {
-        var length = plan.WriteTooltip(Hover, _tooltip);
+        var length = tool.TooltipFormat is null ? plan.WriteTooltip(Hover, _tooltip) : 0;
         if (tool.TooltipFormat is { } format)
         {
             if (!format(Hover, _tooltip, out length))
