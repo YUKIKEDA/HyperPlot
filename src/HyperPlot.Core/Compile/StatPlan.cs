@@ -113,6 +113,8 @@ internal sealed class StatPlan : LayerPlan
 
     internal override int HitWidth => _inner.HitWidth;
 
+    internal override Color HitColor(int series) => _inner.HitColor(series);
+
     public override void BeginLearning() => _inner.BeginLearning();
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)

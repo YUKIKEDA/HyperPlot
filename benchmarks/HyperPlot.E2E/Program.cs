@@ -11,6 +11,8 @@ using HyperPlot.Samples;
 //   dotnet publish benchmarks/HyperPlot.E2E -c Release -r win-x64 -o <dir>
 //   <dir>/HyperPlot.E2E.exe --dir <folder for the data files> [--series 1] [--files 4] [--rounds 2] [--points 1000000000]
 //     [--csv <file for one row a frame>] [--min-span <points: keep only the views at least this wide, for a profile>]
+//     [--hover | --hover-whole: the hover's scene of row I2b instead, 300 frames of the mouse alone, or as many drawn whole]
+//     [--hover-frames <frames of the hover's scene, 300 by default>]
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
 string? directory = null;
 string? csv = null;
@@ -19,6 +21,8 @@ long points = 1_000_000_000;
 var seriesCount = 1;
 var fileCount = 4;
 var rounds = 2;
+bool? hover = null;
+var hoverFrames = 300;
 for (var i = 0; i < args.Length; i++)
 {
     switch (args[i])
@@ -44,6 +48,15 @@ for (var i = 0; i < args.Length; i++)
         case "--rounds":
             rounds = int.Parse(args[++i], CultureInfo.InvariantCulture);
             break;
+        case "--hover":
+            hover = false;
+            break;
+        case "--hover-whole":
+            hover = true;
+            break;
+        case "--hover-frames":
+            hoverFrames = int.Parse(args[++i], CultureInfo.InvariantCulture);
+            break;
         default:
             Console.Error.WriteLine($"Unknown option {args[i]}.");
             return 2;
@@ -59,6 +72,10 @@ if (directory is null)
 using var process = Process.GetCurrentProcess();
 process.PriorityClass = ProcessPriorityClass.High;
 Directory.CreateDirectory(directory);
+if (hover is { } whole)
+{
+    return HyperPlot.E2E.HoverScene.Run(directory, points, seriesCount, fileCount, whole, csv, hoverFrames);
+}
 
 // Series beyond the number of files map the same files again, each with a pyramid of its own.
 var files = Math.Min(fileCount, seriesCount);

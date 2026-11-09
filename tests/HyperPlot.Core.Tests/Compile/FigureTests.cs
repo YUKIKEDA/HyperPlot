@@ -588,6 +588,10 @@ public sealed class FigureTests : IDisposable
 
         public void Draw(IRenderTarget target, RenderList list) => Draws++;
 
+        public void Copy(IRenderTarget source, IRenderTarget destination) { }
+
+        public long DeviceGeneration => 1;
+
         public void EndFrame(long token) { }
 
         public void Dispose() { }

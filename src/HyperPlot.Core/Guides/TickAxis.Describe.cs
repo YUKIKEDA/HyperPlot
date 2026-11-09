@@ -2,7 +2,7 @@ using System.Text;
 
 namespace HyperPlot;
 
-/// <content>The axis's range in words, for the plot's summary (design §7.1 "要約", row W1c, Issue #323).</content>
+/// <content>The axis's range in words, for the plot's summary (design §7.1 "要約", row W1c, Issue #323), and a value in its format, for a hover (row I2b).</content>
 internal sealed partial class TickAxis
 {
     /// <summary>
@@ -64,6 +64,102 @@ internal sealed partial class TickAxis
             // A user's format that writes no label for an end: the values as numbers.
             _ = text.Append(System.Globalization.CultureInfo.InvariantCulture, $"from {Inverse(low):G6} to {Inverse(high):G6}");
         }
+    }
+
+    /// <summary>
+    /// Writes a data value in the format of the axis's tick labels, for a hover's tooltip (design §6.5, row I2b): a numeric
+    /// axis's value at the ticks' decimals and up to three more (log and symlog at three significant digits), a time axis's at
+    /// the finest boundary of its ticks; the user's format when the scale has one. A band axis carries no series a hover hits
+    /// (row I2c adds its elements). Returns the characters written, as many as fit. Allocates nothing.
+    /// </summary>
+    internal int WriteValue(double value, Span<char> destination)
+    {
+        var written = 0;
+        if (Band is null && double.IsFinite(value) && Scale is TimeScaleSpec time)
+        {
+            if (WriteTime(value, time, out written))
+            {
+                return Copy(_buffer.AsSpan(0, written), destination);
+            }
+        }
+        else if (double.IsFinite(value) && Scale is not null)
+        {
+            if (Scale.NumericFormat is { } format)
+            {
+                if (format(value, _buffer, out written) && written >= 0 && written <= _buffer.Length)
+                {
+                    return Copy(_buffer.AsSpan(0, written), destination);
+                }
+            }
+            else if (WriteNumber(value, out written))
+            {
+                return Copy(_buffer.AsSpan(0, written), destination);
+            }
+        }
+
+        // A value the axis's format does not write (NaN, outside the years 1 to 9999, a format that wrote nothing).
+        return value.TryFormat(destination, out written, "G6", System.Globalization.CultureInfo.InvariantCulture) ? written : 0;
+    }
+
+    /// <summary>Copies as many characters as fit.</summary>
+    private static int Copy(ReadOnlySpan<char> text, Span<char> destination)
+    {
+        var count = Math.Min(text.Length, destination.Length);
+        text[..count].CopyTo(destination);
+        return count;
+    }
+
+    /// <summary>Writes a value into the axis's buffer as its default labels would, with the decimals <see cref="DescribeRange"/> takes.</summary>
+    private bool WriteNumber(double value, out int written)
+    {
+        var own = Scale is LogScaleSpec or SymlogScaleSpec;
+        var decimals = 0;
+        for (var i = 0; i < _count; i++)
+        {
+            decimals = Math.Max(decimals, TickFormat.Decimals(_numbers[i]));
+        }
+
+        var number = Number(value, own ? null : decimals);
+        var places = own ? TickFormat.Decimals(number) : Math.Max(decimals, TickFormat.Decimals(number));
+        if (TickFormat.FixedLength(number, places) <= TickFormat.MaxFixedLength)
+        {
+            return TickFormat.TryWriteFixed(number, places, _buffer, out written);
+        }
+
+        var magnitude = number.Mantissa == 0 ? 0 : TickFormat.Magnitude(number);
+        var mantissa = TickFormat.Decimals(new TickNumber(number.Mantissa, number.Exponent - magnitude));
+        return TickFormat.TryWriteExponent(number, magnitude, mantissa, _buffer, out written);
+    }
+
+    /// <summary>Writes a time value, in the column's unit, at the finest boundary of the ticks; false outside the years 1 to 9999.</summary>
+    private bool WriteTime(double value, TimeScaleSpec time, out int written)
+    {
+        written = 0;
+        var unit = TimeTicks.UnitNanoseconds(time.Unit);
+        var boundary = TimeInterval.Day;
+        for (var i = 0; i < _count; i++)
+        {
+            boundary = i == 0 || _boundaries[i] > boundary ? _boundaries[i] : boundary;
+        }
+
+        if (Math.Abs(value) >= 9.2e18)
+        {
+            return false;
+        }
+
+        var whole = Math.Floor(value);
+        if (time.TickFormat is { } format)
+        {
+            return format((long)whole, boundary, _buffer, out written) && written >= 0 && written <= _buffer.Length;
+        }
+
+        var instant = ((Int128)time.Epoch.Ticks * 100) + ((Int128)(long)whole * unit) + (Int128)Math.Round((value - whole) * unit);
+        if (instant < 0 || instant / 100 > DateTime.MaxValue.Ticks)
+        {
+            return false;
+        }
+
+        return TickFormat.TryWriteTime(new DateTime((long)(instant / 100)), (int)(instant % 100), boundary, _buffer, out written);
     }
 
     /// <summary>

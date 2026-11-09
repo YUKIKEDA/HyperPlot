@@ -348,6 +348,17 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>The mouse leaving the view ends the hover (design §7.2, row I2b).</remarks>
+    protected override void OnMouseLeave(MouseEventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (!IsTouch(e))
+        {
+            _ = Pointer(PointerEventKind.Leave, e.GetPosition(this), PointerButtons.None, Held(e), Device(e));
+        }
+    }
+
+    /// <inheritdoc />
     protected override void OnMouseUp(MouseButtonEventArgs e)
     {
         base.OnMouseUp(e);

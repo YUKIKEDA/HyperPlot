@@ -955,6 +955,9 @@ internal abstract class LayerPlan
     /// <summary>Gets the number of series the layer answers a hit test with: 2 for a band's two edges, else 1.</summary>
     internal virtual int HitWidth => 1;
 
+    /// <summary>Returns the color a series of the layer's hits is drawn in (row I2b): where a hover marks it. The series color by default.</summary>
+    internal virtual Color HitColor(int series) => SeriesColor;
+
     /// <summary>
     /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
     /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer

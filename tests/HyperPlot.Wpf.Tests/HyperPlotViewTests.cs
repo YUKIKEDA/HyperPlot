@@ -582,6 +582,32 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.Equal(lost, X(view));
         });
 
+    /// <summary>The mouse leaving the view passes <see cref="PointerEventKind.Leave"/>, and the engine empties its hover (design §7.2, row I2b).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene's view, drawn, with the default bindings.
+    ///
+    /// Steps:
+    /// - Move the mouse to the middle with no button; raise MouseLeave on the view.
+    ///
+    /// Expected:
+    /// - After the move the engine hovers a hit; after the leave its hover is empty.
+    /// </remarks>
+    [Fact]
+    public void MouseLeave_EndsTheHover() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            DrawUntilShown(view);
+            var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
+
+            _ = view.Pointer(PointerEventKind.Move, middle, PointerButtons.None, PointerButtons.None, PointerKind.Mouse);
+            Assert.NotEqual(0, view.Engine.Hover.Length);
+            view.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent });
+            Assert.Equal(0, view.Engine.Hover.Length);
+        });
+
     /// <summary>
     /// The wheel zooms, keys zoom when the engine knows them, and the horizontal wheel's message over the view reaches the
     /// engine with its notches (design §6.1).

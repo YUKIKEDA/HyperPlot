@@ -153,6 +153,9 @@ public sealed class ToolContext
 
     /// <summary>Asks for a frame: a tool that changes what it draws over the plot calls it.</summary>
     public void RequestFrame() => _engine.RequestFrame();
+
+    /// <summary>Hovers at a pixel with a tool's settings (row I2b): the engine's hit test, its hits, and the frame.</summary>
+    internal void Hover(HoverTool tool, Vector2 pixel) => _engine.HoverAt(tool, pixel);
 }
 
 /// <summary>A command a binding runs instead of a tool (design §6.5): an operation with no state of its own.</summary>
@@ -209,9 +212,12 @@ public enum InputGestureKind
 
     /// <summary>A two-finger scroll.</summary>
     Scroll,
+
+    /// <summary>A move of the pointer with no button held and no tool holding it (row I2b): a hover.</summary>
+    Move,
 }
 
-/// <summary>A shape of input (design §6.5): a drag or a click of a button, a wheel, a key, a pinch, or a scroll.</summary>
+/// <summary>A shape of input (design §6.5): a drag or a click of a button, a wheel, a key, a pinch, a scroll, or a move.</summary>
 /// <param name="Kind">The shape.</param>
 /// <param name="Button">The button of a drag or a click.</param>
 /// <param name="ClickCount">The clicks in a row of a click: 1 or 2.</param>
@@ -247,6 +253,9 @@ public readonly record struct InputGesture(
 
     /// <summary>Gets a two-finger scroll.</summary>
     public static InputGesture Scroll => new(InputGestureKind.Scroll);
+
+    /// <summary>Gets a move with no button held (row I2b).</summary>
+    public static InputGesture Move => new(InputGestureKind.Move);
 }
 
 /// <summary>
@@ -301,7 +310,8 @@ public sealed class InputBindings : List<InputBinding>
     /// Returns the default bindings (design §6.5, after Plotly's and matplotlib's): a left drag pans (one axis on an axis), a
     /// right drag or a Control left drag zooms to a rectangle, the wheel and a pinch zoom at the pointer (one axis on an
     /// axis), a two-finger scroll pans, a double click shows the full view; the arrows pan, Plus and Minus zoom, Home shows the
-    /// full view, the browser's keys, Alt and an arrow, and the extra buttons go back and forward, and Escape cancels a tool.
+    /// full view, the browser's keys, Alt and an arrow, and the extra buttons go back and forward, and Escape cancels a tool;
+    /// a move over a panel hovers (row I2b).
     /// </summary>
     /// <returns>A new list of the default bindings, with new built-in tools.</returns>
     public static InputBindings CreateDefault()
@@ -312,6 +322,7 @@ public sealed class InputBindings : List<InputBinding>
         const HitAreaKind PanelOrAxes = HitAreaKind.Panel | HitAreaKind.Axes;
         return
         [
+            new(InputGesture.Move, ModifierKeys.None, HitAreaKind.Panel, new HoverTool()),
             new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.Control, HitAreaKind.Panel, rectangle),
             new(InputGesture.Drag(PointerButtons.Left), ModifierKeys.None, PanelOrAxes, pan),
             new(InputGesture.Drag(PointerButtons.Right), ModifierKeys.None, HitAreaKind.Panel, rectangle),
