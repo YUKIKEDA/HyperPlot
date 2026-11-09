@@ -1347,7 +1347,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
 
 - ファセットは、分ける列のカテゴリごとの行を、行 G7c の分けた層の道（§5.5.3 の「カテゴリで分けた系列」）で 1 つのパネルの層にする。カテゴリが行の区間に並べば写さずに区間で読み、混ざれば X と Y を集めた列を作る。パネルごとにピラミッドと M4 の系列を持つ（行 G6b で決めた。以前の「値ごとに選択ベクトル（行の位置の並び）を作る」形は、1e9 行で 8 GB の位置の並びに加え、ピラミッドのために Y を集めることになるので取らない、`design-decisions.md`）
 - 大規模データのファセットでは、パネルごとのピラミッドと集める列の仕事を、ワーカーが並列に作る
-- 各パネルはそれぞれのビュー範囲を持つ。描く domain の共有は `FacetSpec.Scales` で決め（行 G6b）、操作中の共有はパネルのビューをリンク（§6.4、行 I3）でつなぐことで表す
+- 各パネルはそれぞれのビュー範囲を持つ。描く domain の共有は `FacetSpec.Scales` で決め（行 G6b）、操作中の共有はパネルのビューをリンク（§6.4、行 I3b）でつなぐことで表す
 - **行 G6b のファセット**（Issue #238）: 要件 G-8 の wrap と grid、軸の shared と free
   - **口**: `PlotSpec.Facet`。`FacetWrapSpec` は 1 つのカテゴリの列 `By` の値ごとのパネルを、`ColumnCount` 列で行を折り返して並べる（ggplot2 の `facet_wrap`、Vega-Lite の `facet` と `columns`）。`FacetGridSpec` は `Rows` と `Columns` のカテゴリの組ごとのパネルを格子に並べる（`facet_grid`、Vega-Lite の `row` と `column`）。分ける列はプロットの表のカテゴリの列だけで、数の列・別の表の列は `ArgumentException`（表の列の長さは `DataTableBuilder.Build` がそろえるので、長さの違う列は作れない）
   - **パネルの並び**: カテゴリの番号の順。wrap は左から右、上から下（ggplot2 の `as.table = TRUE`、`dir = "h"`）。`ColumnCount` が null なら、R の `n2mfrow`（`src/library/grDevices/R/utils.R`）の値を ggplot2 の `wrap_dims` と同じく使う: n 枚が 3 以下なら 1 行 n 列、6 以下なら 2 行 ⌈n / 2⌉ 列、12 以下なら 3 行 ⌈n / 3⌉ 列、それより多いと ⌈√n⌉ 列 ⌈n / ⌈√n⌉⌉ 行。`ColumnCount` を与えたら ⌈n / `ColumnCount`⌉ 行
@@ -1362,17 +1362,17 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **座標系**: flip と polar のどちらとも組める。どのパネルも同じ座標系で描く
   - **凡例**: 図に 1 つで、右に置く（パネルごとに出さない）
   - **検査**（§4.8）: grid の `Rows` と `Columns` が両方 null、分ける列がカテゴリの列でない・別の表の列、パネルが 256 枚を超える、`with` で入れた 1 未満の `ColumnCount`・定義にない `Scales` で `ArgumentException`。`Facet.Wrap` の `columns` が 1 未満と `scales` が定義にないのは `ArgumentOutOfRangeException`
-  - **ビュー**: パネルごとにビューを持つ（§6.2）。ズームとパンがパネルの間でどう動くか（共有する domain を一緒に動かすか）は、行 I1（ズームとパン）と行 I3（パネルのビューのリンク）で決める。どちらの行もロードマップでファセットを名指ししている
+  - **ビュー**: パネルごとにビューを持つ（§6.2）。ズームとパンがパネルの間でどう動くか（共有する domain を一緒に動かすか）は、行 I1（ズームとパン）と行 I3b（パネルのビューのリンク）で決める。共有する軸は、行 I1b で、あるパネルを動かすと共有するパネルも一緒に動く（§6.2）。行 I3b は、ファセットのパネルも `LinkGroup` に入れられる形を足すだけで、既定の動きは変えない（Issue #364 の決定 2）。どちらの行もロードマップでファセットを名指ししている
 
 - **行 G6c の図**（Issue #254）: 要件 G-9 の「複数のプロットを並べた構成（concat・subplots）」
   - **口**: `FigureSpec`。`ConcatFigureSpec` はプロットを左から右、上から下に `Columns` 列で並べる（Vega-Lite の `concat` と `columns`。`hconcat` は `Columns` が null、`vconcat` は 1）。`GridFigureSpec` は `Rows` 行 `Columns` 列の格子に、`FigureCell` を置く。セルは `RowSpan` 行 `ColumnSpan` 列をまたげる（matplotlib の `GridSpec` の `gs[0, :]` と同じ）。セルに置くのは `PlotSpec` だけで、図の中に図は置かない（入れ子の並べ方は grid のまたぎで作る。ファセットを持つプロットは置ける）。描くのは `HeadlessRenderer.Render(FigureSpec)`（§7.5）
   - **セル**: どのセルも同じ大きさで、行と列の大きさの比は持たない（Vega-Lite の既定の `align: "all"`）。大きいプロットはまたぎで作る。concat の欠けた最後の行は左に寄せ、列の数はプロットの数を超えない（Vega-Lite と同じ）
   - **図の設定**: `Title`（図の上に 1 つ）、`Theme`（描画先の背景、図の余白、タイトルの文字）、`Spacing`（セルの間、DIP）。軸・凡例・プロットのタイトルは、各プロットの `Theme` で描く
   - **セルの中**: 各プロットは、自分のセルの矩形を描画先の全体の代わりにして、1 枚の図と同じ配置で描く（§4.6）。タイトル・軸・凡例・テーマはプロットごとで、軸のラベルの幅が違えば、セルの間でパネルの端はそろわない（Vega-Lite の `bounds: "full"`。そろえる配置は取らない、`design-decisions.md`）
-  - **独立**: 位置と色のスケール、凡例、Stat、ファセットはプロットごとで、プロットの間で共有しない（Vega-Lite は位置のスケールを既定で独立、色を共有にするが、ここではすべて独立）。同じ domain にしたいときは各プロットに同じ domain を与え、操作中の共有はリンク（§6.4、行 I3）で表す
+  - **独立**: 位置と色のスケール、凡例、Stat、ファセットはプロットごとで、プロットの間で共有しない（Vega-Lite は位置のスケールを既定で独立、色を共有にするが、ここではすべて独立）。同じ domain にしたいときは各プロットに同じ domain を与え、操作中の共有はリンク（§6.4、行 I3b）で表す
   - **データとワーカー**: 各プロットは自分の表を持ち、自分の計画（§4.8）でコンパイルする。図の中の同じ列のピラミッドは 1 つで、全プロットが共有する（§5.5.3）。全プロットの全パネルの M4 の組は、1 回の `ExtractTogether`（行 G6a）で取り出す。プロットごとの上限（text の層の 4,096 行など）はプロットごとのまま。グリフの atlas のページ（§5.6）と、ラスタの常駐キャッシュ（§5.2 の `ResidencyCache`）はバックエンドの 1 つを全プロットで共有するので、atlas のページの上限と 1 フレームの送る量の上限（4 MB）は図の全体に当たる
   - **検査**（§4.8）: プロットが 0 個か 257 個以上（256 個は 16 × 16 の格子で、1,920 × 1,080 でもセルが約 110 × 60 画素になり、それより多いと読めない。ファセットのパネルと同じ数）、全プロットのパネルの数の和が 257 枚以上（ファセットを持つプロットを並べても、図の全体のパネルは 256 枚まで。同じ理由で、M4 の組と配置も増え続けない）、`Columns`・`Rows`・またぎが 1 未満、セルの位置が負、セルが格子の外に出る、セル同士が重なる、`Spacing` が有限で 0 以上でない、で `ArgumentException`（`with` で入れた値も、コンパイルが確かめる）。同じ `PlotSpec` を 2 つのセルに置くのは許し、それぞれを別の計画で描く。各プロットの検査は、今の 1 枚の図と同じ
-  - **後の行**: 図のプロットの間のビュー・カーソル・選択のリンクは行 I3、ホストでの図の表示は行 W1a（`HyperPlotView.Spec` に `FigureSpec` を置く、§7.2）、図のどのプロットを操作しているかの当たり判定とそのプロットの操作は行 I1 で作る
+  - **後の行**: 図のプロットの間のビュー・カーソル・選択のリンクは行 I3b、ホストでの図の表示は行 W1a（`HyperPlotView.Spec` に `FigureSpec` を置く、§7.2）、図のどのプロットを操作しているかの当たり判定とそのプロットの操作は行 I1 で作る
 
 ### 4.6 ガイドと配置
 
@@ -1915,6 +1915,7 @@ var shops = Plot.Create(data)
 - 行 I1a は、`HyperPlot.Interaction` の `PlotEngine`（§7.1）、入力（`PointerEvent`・`WheelEvent`・`KeyEvent`・`GestureEvent` とその列挙 `PointerEventKind`・`PointerButtons`・`PointerKind`・`KeyEventKind`・`PlotKey`・`ModifierKeys`・`GestureKind`、§6.1）、ビュー（`PanelView`・`PanelView2D`・`ViewRange`・`PanelId`・`ViewAxes`・`ViewOperations`・`IViewConstraint`・`ViewProposal`・`AutoRangeY`・`ViewChange`・`ViewChangeReason`・`ViewChangedHandler`、§6.2）、場所（`HitArea`・`HitAreaKind`、§6.3）、ツールと割り当て（`IPlotTool`・`ToolContext`・`ToolResult`・`InputBindings`・`InputBinding`・`InputGesture`・`InputGestureKind`・`ViewCommand`・`PanTool`・`RectangleZoomTool`・`WheelZoomTool`・`InteractionOptions`、§6.5）を公開する。`HyperPlot.Testing` は `InputScript`・`ScriptPoint`・`InputReplay`（§6.6）を足す。行 I1b は型を足さない（Issue #266）。`ViewAxes` に値 `X2`・`Y2`・`All` を足した（Issue #278）
 - 行 I2a は、`HyperPlot.Interaction` の `PlotEngine.HitTest`、`SeriesHit`、`HitMode`（§6.3）を公開する（Issue #337）
 - 行 I2b は、`HyperPlot.Interaction` の `HoverTool`、`HoverCrosshair`、`TooltipFormatter`、`PlotEngine.Hover`・`HoverChanged`、`InputGestureKind.Move`・`InputGesture.Move`（§6.5）、`PointerEventKind.Leave`（§6.1）と、§5.2 のバックエンドの層の口 `IGpuBackend.Copy`・`DeviceGeneration` を公開する（Issue #347、行 I2b の実装 Issue #351）
+- 行 I3a は、`HyperPlot.Interaction` の `Selection`・`Selection2D`・`SelectionKind`・`SelectionTool`・`RowSelection`、`ViewCommand.ClearSelection`、`PlotEngine.Selection`・`SelectionChanged`・`Select`・`ClearSelection`・`SelectedRowsAsync` を公開する（§6.4、Issue #364）
 - 行 W1a は、`HyperPlot.Wpf` の `HyperPlotView`（§7.2）、`HyperPlot.Rendering.D3D11` の `D3D11SharedSurface`・`D3D11ReadbackSurface` と、`D3D11Backend.Create` の引数 `adapterLuid` と `D3D11Backend.AdapterLuid`（§7.2）、`PlotEngine.Target`・`PlotEngine.Resize`（§7.1）を公開する。行 W1b1 は `PlotEngine.IsProvisional`・`ProvisionalChanged`・`WorkFailed` と `WorkFailure`・`WorkFailedHandler`（§7.1）と `D3D11SharedSurface.HasUnread`（§7.2）を、行 W1c は `PlotEngine.Describe`（§7.1）を公開する（Issue #282・#291）
 
 ```csharp
@@ -2577,7 +2578,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 
 ## 6. インタラクション
 
-対話は、行 I1c（ズーム中のラベルで確保しない、§4.6・§5.6）、I1a（対話の土台、この節の 6.1・6.2・6.3 の場所・6.5 の枠・6.6）、I1b（二次のスケール・ファセット・図、§6.2 の「I1b」）の順に作る。ヒットテストの最近傍は行 I2a、ホバー・クロスヘア・ツールチップと層の合成は行 I2b（Issue #337 の決定 1）、選択とリンクは行 I3、注釈と計測は行 I4 である（Issue #266）。
+対話は、行 I1c（ズーム中のラベルで確保しない、§4.6・§5.6）、I1a（対話の土台、この節の 6.1・6.2・6.3 の場所・6.5 の枠・6.6）、I1b（二次のスケール・ファセット・図、§6.2 の「I1b」）の順に作る。ヒットテストの最近傍は行 I2a、ホバー・クロスヘア・ツールチップと層の合成は行 I2b（Issue #337 の決定 1）、選択は行 I3a、リンクは行 I3b（Issue #364 の決定 1）、注釈と計測は行 I4 である（Issue #266）。
 
 **層と拡張点**（Issue #266、オーナーの指摘: 対話の見た目と操作はアプリの UI/UX で決まるので、拡張点を先に設計する）: 対話は 4 つの層に分け、どの層も公開して差し替えられる。
 
@@ -2636,7 +2637,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 - **フレームの要求（行 I1a）**: ビューが変わるか、ツールが重ねて描くものを変えたら、`FrameRequested` を 1 回出す。ホストが `RenderFrame()` を呼ぶまでに何度変わっても 1 回である。アニメーションの間は、`RenderFrame` の終わりに次のフレームを要求する（§7.1）
 - **二次のスケール**（行 G6a の `ScaleX2`・`ScaleY2`）へのズームとパン（行 I1b、Issue #266）: パネルの中の操作は、主と二次の両方を同じ割合で動かす。中心は、それぞれの範囲の中で同じ割合の位置（画素の位置から決まる）で、倍率も同じである。こうすると、2 本の線の重なり方が変わらない。軸の上のドラッグとホイールは、その軸（主か二次）だけを動かす。主の軸の変換の軸（`WithSecondaryAxis`）は主に従うので、自分のビューを持たない
 - **ファセット**（行 I1b）: 共有している軸（`Fixed` の x と y、`FreeX` の y、`FreeY` の x、§4.5）は、あるパネルで動かすと、その軸を共有するパネルもすべて一緒に動く（1 つのビュー範囲を共有する）。自由な軸は、そのパネルだけが動く。行 G6b の「共有の軸は外側のパネルだけに描く」と合う
-- **図**（行 I1b）: ポインタを押したとき、その下のプロットをドラッグの間の相手にし、離すまで変えない。ホイールはカーソルの下のプロットに送り、キーボードは最後に操作したパネル（そのプロットの中の）に送る。各プロットのビューと履歴は独立で、プロットの間のリンクは行 I3 である
+- **図**（行 I1b）: ポインタを押したとき、その下のプロットをドラッグの間の相手にし、離すまで変えない。ホイールはカーソルの下のプロットに送り、キーボードは最後に操作したパネル（そのプロットの中の）に送る。各プロットのビューと履歴は独立で、プロットの間のリンクは行 I3b である
 - **原点の付け直し**（行 D2 の規則、使うのは行 I1）: パン・ズーム・履歴の移動・リンクの共有でビュー範囲が変わるたびに、§3.6 のとおり 原点 += ⌊下端の差⌋、差 −= ⌊下端の差⌋ と付け直す。ズームの中心（カーソルの位置）も同じ原点の差で計算する。リンクしたパネルは、原点と差の組をそのまま渡す。カーソルの位置をスケールの空間へ戻す（§6.3）ときも、原点と差の組で返す
 - **band の軸と polar**（行 I1b）: band の軸（行 G7b）のビューは、カテゴリの番号の空間（0 から n）の範囲で、ズームとパンはこの範囲を動かす。範囲の外のカテゴリは描かず、ラベルの間引き（§4.6 のカテゴリの軸）は見える範囲に当てる。polar（行 G11）は、半径の軸だけをズームとパンで動かし、θ は全周のまま（Plotly の polar の半径の軸と同じ）。polar の θ は組み込みのツールが動かさず、`SetView` は全周と違う θ の範囲を `ArgumentException` にする（行 I1a では band の軸と θ とファセットのプロットが全体表示から動かなかった。PR #275 のレビュー、オーナーの決定。行 I1b で上のとおりに動かした）。band の軸の層（棒・積んだ棒・誤差棒・規則線）の、帯が 1 画素以上の道は、見える範囲にかかるカテゴリだけを回り、目盛りはビューの範囲に中央が入るカテゴリのうち k の倍数の番号のものに付ける（パンしてもラベルが同じカテゴリに留まる）。polar の半径のパンは、縦の移動で動かし、上へのドラッグでデータが外へ動く（`Pan` は画素の量だけを受け、押した位置を知らないので、放射の向きへの射影は使わない）。矩形ズームは、矩形の中心から最も近い点と最も遠い点の距離を半径の範囲にする。半径を拡大したときの外側の縁の切り抜きは §4.4（以上、行 I1b の実装で決めた。Issue #278）
 - **行 I1b の実装で決めたこと**（Issue #278）:
@@ -2695,10 +2696,29 @@ public interface ITextBackend                 // バックエンドが実装す�
 
 ### 6.4 選択とリンク
 
-- 選択は Vega-Lite の selection（param）に当たる `Selection` で表す。種類は interval（スケールの空間の範囲）、point（点の集合）、polygon（投げ縄）
-- 選択の中身はまず「述語」（範囲・多角形）として持つ。強調の描画はシェーダが述語で判定する（生の点）か、ワーカーが作る選択部分の密度で描く（密度の領域）
-- 選択した点の位置の集合が API で要るときは、ワーカーがチャンクごとにビット列（1 ビット/点）を作る。10 億点で 125 MB になるので、要求されたときだけ作る
-- **リンク**: `LinkGroup` に入れたパネル・プロットの間で、ビュー範囲（x だけ・y だけ・両方）、カーソル、選択を共有する。ファセットの軸の共有もこれで表す（§4.5）
+行 I3 は、選択の行 I3a とリンクの行 I3b に分けた（Issue #364 の決定 1。どちらも大きく、計測も別である）。
+
+- 選択は Vega-Lite の selection（param）に当たる。中身はまず「述語」（範囲・多角形・点）として持つ。散布の点の強調（シェーダが述語で判定する生の点、ワーカーが作る選択部分の密度）は散布の行（C3・R3）で作る
+- 矩形と投げ縄で選んだ点の位置の集合が API で要るときは、ワーカーがチャンクごとにビット列（1 ビット/点）を作る。10 億点で 125 MB になるので、要求されたときだけ作る（X の範囲は区間で返す。下の「行の集合」）
+- **選択（行 I3a、Issue #364）**:
+  - **種類**（決定 3）: `SelectionKind` の `Rectangle`（x と y の範囲）、`XRange`（x だけの範囲、ブラシ）、`Lasso`（多角形）、`Points`（クリックで当たった点の集合）。どれもスケールの空間の述語で、選んだパネルについて持つ。polar のパネルは選ばない（ヒットテストと同じく、画素が軸に沿わない）
+  - **持ち方**（決定 7）: プロットごとに 1 つ（図ではプロットごと）。新しいドラッグは前の選択を置き換え、Shift とクリックは点を足す
+  - **値の型**（決定 14、PR #365 のレビュー）: ビューの `PanelView` と `PanelView2D`（§6.2）と同じく、抽象の `Selection`（公開の型、変わらない値）と、2D の中身の `Selection2D` に分ける。不変条件 12 の例外を増やさず、3D は `Selection3D` を足す
+    - `Selection`: `Kind`、`Panel`（`PanelId`）、`Points`（当たった点の `SeriesHit` の並び。`SeriesHit` は不変条件 12 の例外のまま）
+    - `Selection2D`: `X` と `Y`（`ViewRange`。矩形と X の範囲の範囲、投げ縄の多角形を囲む範囲。X の範囲の `Y` はパネルの y 全体）、`Polygon`（投げ縄の頂点。`X` と `Y` の範囲の中の割合の組で、時間の軸の原点の精度を落とさない、§3.6）
+  - **API**（決定 7、要件 I-9）: `Selection? PlotEngine.Selection(int plot)`、`event Action<int>? SelectionChanged`（プロットの番号）、`void Select(Selection selection)`（コードから選ぶ。ツールと同じ知らせ。検査: 描いたパネル（なければ `ArgumentOutOfRangeException`）で polar でないこと、種類と中身の組（矩形は `X` と `Y`、X の範囲は `X`、投げ縄は 3 から 1,024 の頂点、点は 1 つ以上）、範囲と割合が有限であること。合わなければ `ArgumentException`）、`void ClearSelection()`（どのプロットの選択も消す。消したプロットごとに知らせる）
+  - **ビューの変化**（決定 8）: 選択はスケールの空間なので、ズームとパンでは残す。仕様の写像が変わったとき（§6.2 でビューが落ちるとき）だけ消して知らせる
+  - **ツール**（決定 6、§6.5）: `SelectionTool`（公開の型、`IPlotTool`）は、`Kind` の形でドラッグを選択にする。ドラッグの間は枠（投げ縄は線）を `Overlay` で描く。`Points` の形は、クリックの位置で `HitTest`（`XY`、半径はホバーと同じ 8 DIP）を呼び、当たった点を足す
+  - **投げ縄**（決定 11）: 前の頂点から 1 DIP 以上離れたドラッグの点を頂点にし、1,024 点を超えたら 1 つおきに間引く。点が多角形の内か外かは偶奇の規則で決める
+  - **行の集合**（決定 4・9・10）: `ValueTask<RowSelection> PlotEngine.SelectedRowsAsync(int plot, int layer)`。`RowSelection`（公開の型）は `Count`、`Contains(long row)`、区間の列挙を持ち、中身は種類で分ける
+    - X の範囲で、x が並んだ系列の層（line・step・area・band と数の x の棒・エラーバー）は、行の区間をその場で O(log N) で返す（ビット列を作らない）
+    - 矩形と投げ縄は、ワーカーがチャンクごとにビット列を作る。呼んだスレッドで待たず、終わったら `ValueTask` が終わる（ワーカーのスレッドで終わりうる）
+    - 呼び出しはエンジンを作ったスレッドから（§6.1）。`RowSelection` は変わらない値なので、結果はどのスレッドで読んでもよい
+    - `Points` は、当たった点の行の並び
+    - 答える層はヒットテストと同じ（系列・要素・image）。系列は (x, y) が述語の中の行、棒は x が範囲の中で値（根元から値まで）が範囲にかかる行、エラーバーは線分がかかる行、矩形は範囲と重なる行、image は中心が述語の中のテクセルの要素の番号
+    - 分けた層とファセットは元の表の行に戻し、Stat と積み上げは派生の表の行を返す（`RowSelection.Derived`）。rule・segment・text・custom は空を返す
+  - **強調**（決定 5）: 選んだ範囲（投げ縄は多角形）を、テーマの `Foreground` の 15 % で、毎フレーム描く層（§5.4）に重ねる。線の層（line・step・area の外形）は、選んだ x の範囲の部分だけを、線の太さの 2 倍で描き直す（その層の M4 の出力を区間で切る。データ層は記録し直さない）。x の範囲は、X の範囲と矩形はその `X`、投げ縄は囲む範囲の `X` である。点の選択は線を太くせず、各点にホバーと同じ印を描く。選択を変えたフレームはマウスだけのフレームと同じく、残した層を写して上に描く
+- **リンク**（行 I3b）: `LinkGroup` に入れたパネル・プロットの間で、ビュー範囲（x だけ・y だけ・両方）、カーソル、選択を共有する。ファセットの共有する軸は行 I1b のまま一緒に動き、行 I3b は、ファセットのパネルも `LinkGroup` に入れられる形を足すだけで、既定の動きは変えない（Issue #364 の決定 2）
 
 ### 6.5 ツール
 
@@ -2707,7 +2727,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 - **`IPlotTool`**: ツールはこの公開のインターフェースを実装する。`OnPointer`・`OnWheel`・`OnKey`・`OnGesture` はイベントと `ToolContext` を受け、`ToolResult`（`Ignored`・`Handled`・`Capture`・`Release`）を返す。`Capture` を返したツールは、`Release` を返すか取り消されるまで、ポインタのイベントをすべて受ける（ドラッグがパネルや描画先の外へ出ても）。`Cancel(context)` は、`Escape`、ポインタの `Cancel`、仕様の写像の変化（§6.2）、ツールを外したときに呼ばれ、ツールは自分の状態を捨てる。`Overlay(RenderList list, ToolContext context)` は、ポインタを掴んでいるツールが重ねて描くもの（矩形ズームの枠）を、その間の毎フレームのデータと軸の後に記録する（掴まずに描くもの、行 I2b のクロスヘアは、ツールの `Overlay` でなく、エンジンがホバーの状態から描く（下の「ホバー」）。PR #275 のレビュー）。重ねて描くものを変えたら `context.RequestFrame()` を呼ぶ
 - **`ToolContext`**: `PlotEngine` が 1 つ持って使い回す（入力ごとに確保しない）。ポインタの下の場所（`HitArea`、§6.3）、パネルの矩形、画素とスケールの空間の変換（`PixelToView` は x と y の 1 点の `ViewRange` の組を返す。`ViewToPixel` はその逆で、`PlotEngine` にも同じ口がある。原点と差の組、§6.2）、ビューの操作の API（`Views`、§6.2）、`TimeProvider`、設定（`Options`）、倍率、テーマ（重ねて描く色）を持つ。`IPlotTool` の 6 つのメソッドは既定の実装（`Ignored` か何もしない）を持ち、自前のツールは使うものだけを書く。入力の形は `InputGesture`（種類は `InputGestureKind`）で表す。ホイールとピンチと 2 本指スクロールのように履歴でまとめる操作のため、`ViewOperations.ZoomAt` と `Pan` は `group` の引数を持つ（自前のツールも組み込みと同じことができる。行 I1a の実装、Issue #274）
 - **送り方**: ポインタを掴んでいるツールがあれば、そのツールに送る。なければ割り当ての表を上から見て、入力の形と場所の種類が合う項目のツールかコマンドを順に呼び、最初に `Ignored` 以外を返したもので止める。どれも使わなければ、`OnPointer` などは偽を返す（§6.1）。押してから `DragThreshold`（既定 4 DIP）動くまではクリックで、それを超えたらドラッグとして送る
-- **`InputBindings`**: `PlotEngine.Bindings` は `InputBinding` の並びで、各項目は入力の形（`Drag(button)`・`Click(button, count)`・`Wheel`・`Key(key)`・`Pinch`・`Scroll`、行 I2b から `Move`: ボタンを押さないポインタの移動）、修飾キー、場所の種類の組（`HitArea` の種類のフラグ）と、ツールかコマンド（`ViewCommand`: `Reset`・`Back`・`Forward`・`ZoomIn`・`ZoomOut`・`PanLeft`・`PanRight`・`PanUp`・`PanDown`・`CancelTool`）を持つ。アプリは `Clear`・`Add`・`Insert`・`Remove` で変え、空にすれば対話をすべて止められる。`InputBindings.CreateDefault()` は下の既定の表を返す
+- **`InputBindings`**: `PlotEngine.Bindings` は `InputBinding` の並びで、各項目は入力の形（`Drag(button)`・`Click(button, count)`・`Wheel`・`Key(key)`・`Pinch`・`Scroll`、行 I2b から `Move`: ボタンを押さないポインタの移動）、修飾キー、場所の種類の組（`HitArea` の種類のフラグ）と、ツールかコマンド（`ViewCommand`: `Reset`・`Back`・`Forward`・`ZoomIn`・`ZoomOut`・`PanLeft`・`PanRight`・`PanUp`・`PanDown`・`CancelTool`、行 I3a から `ClearSelection`。`CancelTool` は進行中のツールがなければ使わず、表の次の項目に回るので、`Escape` は取り消す道具がないときに選択を消す）を持つ。アプリは `Clear`・`Add`・`Insert`・`Remove` で変え、空にすれば対話をすべて止められる。`InputBindings.CreateDefault()` は下の既定の表を返す
 - **既定の表**（行 I1a。Plotly と matplotlib の既定の操作に合わせた）:
 
 | 入力 | 修飾キー | 場所 | 動き |
@@ -2725,9 +2745,13 @@ public interface ITextBackend                 // バックエンドが実装す�
 | `Plus`・`Minus` | なし | どこでも | ビューの中心で `KeyZoomFactor`（既定 1.25）倍の拡大・縮小 |
 | `Home` | なし | どこでも | 全体表示 |
 | `BrowserBack`・`BrowserForward`、`Alt` と左右の矢印、ボタン `X1`・`X2` | | どこでも | 戻る・進む |
-| `Escape` | なし | どこでも | 進行中のツールを取り消す（選択の解除は行 I3） |
+| Shift と左ドラッグ | `Shift` | パネル | 矩形の選択（`SelectionTool`、行 I3a） |
+| Shift と左ドラッグ | `Shift` | x 軸 | X の範囲の選択（ブラシ、行 I3a） |
+| Shift と Alt と左ドラッグ | `Shift`・`Alt` | パネル | 投げ縄の選択（行 I3a） |
+| Shift と左クリック | `Shift` | パネル | 当たった点を選択に足す（行 I3a） |
+| `Escape` | なし | どこでも | 進行中のツールを取り消す。なければ選択を消す（表の 2 つの項目: `CancelTool` と、その次の `ViewCommand.ClearSelection`。アプリは片方だけ外せる、行 I3a） |
 
-- **組み込みのツール**（公開の型）: `PanTool`（パネルで両軸、軸で 1 軸）、`RectangleZoomTool`（枠を重ねて描く。枠の色はテーマの `Foreground` の 15 % の塗りと 1 DIP の線）、`WheelZoomTool`（ホイールとピンチ）。キーボードとダブルクリックはコマンドで、ツールの状態を持たない。組み込みのツールも、自前のツールと同じく `IPlotTool` で、ビューの操作の API だけを呼ぶ
+- **組み込みのツール**（公開の型）: `PanTool`（パネルで両軸、軸で 1 軸）、`RectangleZoomTool`（枠を重ねて描く。枠の色はテーマの `Foreground` の 15 % の塗りと 1 DIP の線）、`WheelZoomTool`（ホイールとピンチ）、`SelectionTool`（行 I3a、§6.4。矩形・X の範囲・投げ縄のドラッグと、クリックの点）。キーボードとダブルクリックはコマンドで、ツールの状態を持たない。組み込みのツールも、自前のツールと同じく `IPlotTool` で、ビューの操作の API だけを呼ぶ
 - **設定**: `PlotEngine.Options`（`InteractionOptions`）が、次の値を持つ。範囲の外の値は `ArgumentOutOfRangeException`。既定の値の出どころは次のとおり（PR #267 のレビュー）
   - `DoubleClickTime` 500 ms・`DoubleClickDistance` 2 DIP: Windows の既定（§6.1）
   - `DragThreshold` 4 DIP: Windows の既定の `SM_CXDRAG`・`SM_CYDRAG`（押した点から左右と上下に 4 画素。この機械で読んだ値も同じ）
@@ -2736,7 +2760,7 @@ public interface ITextBackend                 // バックエンドが実装す�
   - `ZoomAnimation` 150 ms: 決めた値。60 Hz で 9 フレームで、動きが見えて、続けて回すホイールを待たせない長さ
   - `WheelGroupGap` 300 ms: 決めた値。続けて回すホイールの目盛りの間（数十 ms）より十分長く、回し直し（数百 ms 以上空く）と分けられる
   - `HistoryDepth` 100: 決めた値。1 項目はプロットの全パネルのビュー（パネル × 2 軸 × 24 バイト）で、256 パネルでも 100 項目で約 1.2 MB
-- 投げ縄・注釈・計測は、同じ枠の上に、それぞれの行（I3・I4）でツールとして足す
+- 投げ縄・注釈・計測は、同じ枠の上に、それぞれの行（投げ縄は I3a の `SelectionTool`、注釈と計測は I4）でツールとして足す
 
 **注釈と計測のツール（行 I4）**
 
@@ -2797,7 +2821,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 - 仕様: `SetPlot(PlotSpec)`・`SetFigure(FigureSpec)`。検査は `HeadlessRenderer` の `Render` と同じで、コンパイルは次の `RenderFrame` で行う（検査は呼んだときに行い、例外はそこで投げる。図は図の検査（§4.5）を呼んだときに、各プロットの検査をフレームで行う）。ビューの扱いは §6.2 の「ビューと domain」
 - フレーム: `event Action? FrameRequested` と `RenderFrame()`。`RenderFrame` は、アニメーションを今の時刻へ進め（§6.2）、ビューを計画に渡して、変わった段だけをやり直し（§4.8 の「ビュー」）、描画先に描く。ツールの重ねて描くもの（§6.5）は、データと軸の後に描く。描いた後に読み出す口（`ReadPixels`）はテストと画像の出力のためで、`HeadlessRenderer` と同じ形
 - **大きさと倍率（行 W1a、Issue #282）**: `Resize(int width, int height, float scale)`（倍率はコンストラクタ・`Scale`・`HeadlessRenderer` と同じ `float`。`double` で受けると、同じ値を渡しても `Scale` と比べて違うことがある。PR #283 のレビュー）。値の検査はコンストラクタと同じ（`ArgumentOutOfRangeException`）。描画先は大きさが変わったときだけ作り直し、配置は次の `RenderFrame` でやり直す（倍率はテーマの長さに掛かるので、倍率が変われば配置とガイドの段から）。ビュー・アニメーション・履歴は残し、フレームを 1 回要求する。同じ値なら何もしない。`HeadlessRenderer` の倍率は作った後に変えないまま（§7.5）。計画（`PlotPlan`・`FigurePlan`）は描画先の大きさと倍率を受け取り直し、図のセルを置き直したときと同じく、配置と記録をやり直す。ピラミッドは持ったまま。層の M4 の出力の場所は描画先の長い辺で大きさが決まるので、それを超える大きさになったときだけ層の計画を作り直す（ピラミッドは保管庫から引き直す）。そのとき長い辺を 2 の冪に切り上げた分の場所を取り、ウィンドウを広げる間に画素ごとに作り直さない（行 W1a の実装、Issue #286）
-- 入力: `OnPointer`・`OnWheel`・`OnKey`・`OnGesture`（§6.1）。構成: `Views`（§6.2）、`Bindings`（§6.5）、`Constraints`（§6.2）、`Options`（§6.5）、`HitArea`（§6.3）、`HitTest`（§6.3、行 I2a）、`Hover`・`HoverChanged`（§6.5、行 I2b）、`CurrentView`、`ViewChanged`、`StartRecording`・`StopRecording`（§6.6）
+- 入力: `OnPointer`・`OnWheel`・`OnKey`・`OnGesture`（§6.1）。構成: `Views`（§6.2）、`Bindings`（§6.5）、`Constraints`（§6.2）、`Options`（§6.5）、`HitArea`（§6.3）、`HitTest`（§6.3、行 I2a）、`Hover`・`HoverChanged`（§6.5、行 I2b）、`Selection`・`SelectionChanged`・`Select`・`ClearSelection`・`SelectedRowsAsync`（§6.4、行 I3a）、`CurrentView`、`ViewChanged`、`StartRecording`・`StopRecording`（§6.6）
 - スレッド: 作ったスレッドだけから呼ぶ。ほかのスレッドからは `InvalidOperationException`（§6.1）
 - 待ち方: 行 I1a の `RenderFrame` は、ヘッドレスと同じく、使う索引とワーカーの仕事が列の今の世代でそろうのを待ってから描いた（§4.8 の「ヘッドレスの待ち方」）。行 W1b1 から、フレームの中では待たない（§4.8 の「`PlotEngine` の待たない描き方」）。行 W1b2 から、層を作る段（Stat、数の x の積み上げ、分けた系列の集め、ファセット）もフレームの外で作る。行 W1b3 から、ラスタのミップマップの更新も待たない（§3.7 の「更新の進め方」）
 - **暫定と失敗（行 W1b1、Issue #282・#291）**: `bool IsProvisional`（最後に描いたフレームが暫定か）と `event Action? ProvisionalChanged`。ワーカーの失敗は `event WorkFailedHandler? WorkFailed` で、`delegate void WorkFailedHandler(in WorkFailure failure)`、`WorkFailure` は `Plot`（プロットの番号。1 枚の図は 0、図はそのプロットの番号）・`Layer`（仕様の層の番号）・`Exception`（仕事が投げたまま）を持つ読み取り専用の構造体（`ViewChange` と同じ形）。出す時と作り直しは §4.8。`RenderFrame` は、層の仕事の失敗では投げない
@@ -2924,6 +2948,10 @@ public interface ITextBackend                 // バックエンドが実装す�
     - 方法: I2a と同じく、シードつきの 1,000 か所のカーソル（パネルの中の一様な位置と、棒の上の端）で、`X` と `XY` のそれぞれについて、1 回の p50 と p99
     - 行 I2c の実装は、パネルの中の一様な位置だけで測った。棒の上の端は、要素の層では重い場合にならない: 数の x の棒の `XY` は、窓ごとにピラミッドの極値で 1 本だけを見るので、カーソルの y によらない（線の `XY` のように、カーソルの y を横切る点を降りて探さない）
     - 結果（行 I2c の実装）: どの場面も p99 は 1 ms を下回った。最も重いのは矩形で p99 0.56 ms 以下。矩形は、x の範囲で退けられるものを `Vector<double>` の幅でまとめて飛ばして、要件の内に入った。詳しくは記録のファイル
+  - **選択（行 I3a、Issue #364 の決定 12）**: NativeAOT、1,920 × 1,080、ハードウェア、1e9 点の `float` の系列 1 本と 4 本（メモリマップ、ページキャッシュに載っている）。記録は `docs/benchmarks/i3a-selection.md`
+    - X の範囲の行の区間: `SelectedRowsAsync` が区間を返すまでの CPU 時間（シードつきの 1,000 の範囲、p50 と p99）。ヒットテストと同じ UI のスレッドの問い合わせなので、要件 P-5（p99 で 1 ms 以下）と比べる
+    - 矩形のビット列: ワーカーがビット列を作り終えるまでの時間（1 本と 4 本、ワーカーの数は既定）。要件に数はないので記録だけで、行 B1 のピラミッドを作る時間（1e9 点）と並べて読む
+    - 強調したマウスだけのフレーム: 選択を置いたままマウスを 300 フレーム動かす、行 I2b のホバーの場面と同じ方法で、要件 P-6（p95 で 2 ms 以下）と比べる
   - **ラスタのミップマップ（行 W1b3、Issue #314 の決定 7）**: 2 万 × 2 万の `float` のラスタ（1.6 GB、メモリマップ）で、2 つの場面を main（更新を待つ）と比べる。NativeAOT、1,920 × 1,080、main と交互に 3 回。記録は `docs/benchmarks/w1b3-mipmap.md`
     - 最初の構築: 仕様を置いてから最初のフレームまでの CPU 時間と、作る間のフレームの中央値と p95
     - 列全体を `Invalidate` した後: 更新の間のフレームの中央値と p95 と、1 フレームの転送量（決定 2・3 で 0 になる）
@@ -2975,6 +3003,8 @@ public interface ITextBackend                 // バックエンドが実装す�
 | ヒットテスト（I2a） | `HitTest`（Core、エンジン）: `X` で系列ごとにカーソルの x に最も近い行（総当たりの基準と一致、等間隔と保存された X、NaN の欠けを飛ばす）、`XY` で半径の中の最も近い点（総当たりの基準の最も近いものから半画素の内。20 万点で全体表示とズーム。各点を画面に写す総当たりの基準の時間のため、半径の外では答えない）。rule・segment・text・custom は答えない。分けた系列とファセットは元の行、Stat は派生の行と印。二次のスケールの層の x と y がその層の単位。パネルの外で 0 件、図ではカーソルの下のプロット。バッファが足りないとき入るだけ書き、戻り値が合計。ピラミッドを `TestStorage` で止めた間は待たずに答え、暫定の印（1 本のプール、`testing.mdc`）。X の統計を止めて描いていない層は答えない。`X` は半径の外の行も返す（半径を 1 画素にしても、カーソルの x に最も近い行）。image はテクセルの中心と要素の番号（ファセットの中の image も同じ番号）。図ではカーソルの下のプロットの表の行。polar のパネルで 0 件。数の x の積み上げの系列は、積み上げの表の行と派生の印。積み上げの系列の番号は群ごとに 2 つずつで、群をまたいでぶつからない（`HoverTests` の積み上げの印の色、PR #352）。描く前は `InvalidOperationException`。確保: 温まった後の `HitTest` が 0 B |
 | ホバー（I2b） | `HoverTool`（Core、偽のバックエンド、`HoverTests`）: 既定の割り当てにあり（移動・なし・パネル、既定の設定）、ポインタの移動で `Hover` が `HitTest` と同じヒットになり `HoverChanged` が 1 回、同じ行の上の移動（`Distance` だけ違う）では出ない。パネルの外とポインタの外出（`Leave`）で空、そのとき 1 回知らせてフレームを要求。修飾キーの合わない移動とボタンを押したままの移動で空。`HitMode.XY` と半径（DIP。倍率 2 の描画先では 2 倍の画素）、範囲の外の設定の値で `ArgumentOutOfRangeException`。クロスヘアの向き（なし・縦・横・両方。flip でも画面の縦）、印、ツールチップの設定。割り当てから外すと次に描き直すフレームで空、移動も何もしない。移動に `Ignored` を返し、後ろの移動のツールも受ける。ほかのツールが掴んだら空。全部を描き直すフレーム（キーのパン、ホイールのズーム、暫定が解けたとき）で、最後の位置でヒットし直す。記録（`RenderList`）: 縦のクロスヘアがポインタの画素の列でパネルの高さいっぱい、印が各ヒットの点に系列の色（線の色、area の塗りの不透明の色、分けた層のカテゴリの色、積み上げの群の色）で背景の色の輪の上、ツールチップの行が既定の書式（`Label` か Geom の名前、軸の書式: time は目盛りの最も細かい区切り、log は有効数字 3 桁、利用者の書式、書けなければ `G6`）、背景の箱と前景の文字、`TooltipFormatter` の行と偽で描かない、書いた長さが範囲の外で `InvalidOperationException`、はみ出す向きは反対側。層の合成（Core）: マウスだけのフレームで計画が記録し直さない（記録の数、写し 1 回、描く並び 1 つ）。ビュー・列の版・大きさ・仕様（テーマ）・デバイスの番号で描き直し、暫定のフレームは残さない。描くものがないマウスだけのフレームは写すだけ。D3D11（WARP）: `Copy` が全画素を写し、大きさ違い・同じ描画先・別のバックエンド・null を拒む。`DeviceGeneration` が喪失の後の作り直しで 1 増え、ほかでは動かない。マウスだけのフレームの画素が、同じホバーを全部描き直したフレームと同じで、ホバーを外したフレームがホバーの前の画素と同じ。WPF: ポインタがビューの外へ出る（`MouseLeave`）と `Leave` が渡り、ホバーが空。確保: 温まった後のマウスだけのフレームが 0 B（同じ位置を回る。新しいツールチップの文字は整形のキャッシュの最初の項目を作る、行 I1c） |
 | ヒットテスト（I2c） | 要素の層（Core、`ElementHitTests`、`HitTest` と各要素を画面に写した総当たりの基準）: 数の x の棒の `X` が x の最も近い行（隙間でも答える、NaN を飛ばす、4W を超えても同じ）、`XY` が棒の矩形への距離で半径の中の最も近い棒（行の多い窓は最も伸びた棒、根元の上と下）。カテゴリの棒が、カーソルの下か最も近いカテゴリの、根元の上なら最大の行と値、下なら最小の行と値（極値の行がワーカーの結果にある、同じ値は最初の行）。band が 1 画素未満（1e5 カテゴリ）では、画素列の区間で根元の上なら最大を持つカテゴリ、下なら最小を持つカテゴリの極値の行。積み上げの棒が、数の x は積み上げの表の行と外側の端、カテゴリの x はセルの行で、派生の印と群ごとに 2 つの番号、fill は割った後の値。並べた棒が元の表の行とデータの x で、印は並べた棒の中心。エラーバーが 1 行で 2 系列（下と上）、`XY` はカップを含む距離（4W を超える窓は極値で選ぶ: 上、下、間の 3 つの場合）、カテゴリの x は極値の行。矩形が `X` で x の幅と y の範囲（なければ y の最も近いもの）、`XY` で広げた矩形、同じ距離は後の行、中心の x と y。flip と polar（0 件）。ホバーのツールチップがカテゴリの軸の値をカテゴリ名で書く。印の色が棒と矩形の塗り、エラーバーの線。数の x の積み上げの正と負の混じった群が 2 · 群と 2 · 群 + 1 の別の番号で、高さのない側は答えない。1 画素未満の band の `XY`。確保 0 B |
+| 選択（I3a） | `SelectionTool`（Core、偽のバックエンド）: 既定の割り当てにある（Shift と左ドラッグはパネルで矩形・x 軸で X の範囲、Shift と Alt と左ドラッグで投げ縄、Shift とクリックで点、`Escape` は取り消す道具がなければ選択を消す）。`Selection` と `Selection2D` の値（種類、パネル、`X`・`Y`、投げ縄の割合の頂点、点）、`Select` の検査（パネル、polar、種類と中身の組、有限、頂点の数）と例外、`SelectionChanged` の回数（置き換え、点を足す、消す、仕様の写像の変化で 1 回）、ズームとパンで残る、`Select` と `ClearSelection`、polar のパネルは選ばない。投げ縄の頂点の間引き（1 DIP、1,024 点）と偶奇の内外。`SelectedRowsAsync`: X の範囲の系列は区間（総当たりの基準と同じ行、ビット列を作らない）、矩形と投げ縄はワーカーのビット列（総当たりと同じ行、呼んだスレッドで待たない）、点は行の並び、棒・エラーバー・矩形・image の答え方、分けた層とファセットの元の行、Stat と積み上げの派生の印、rule・segment・text の空。強調（`RenderList`）: 範囲の矩形（投げ縄は多角形）が `Foreground` の 15 %、線の層の範囲の部分が 2 倍の太さ、選択を変えたフレームが計画を記録し直さない。確保: 強調したマウスだけのフレームが温まった後 0 B |
+| リンク（I3b） | 行 I3b の設計で決める（Issue #364 の決定 1・2） |
 | アクセシビリティ（W1c） | `Describe`（Core）: 1 枚の図・ファセット・図の各々で、プロットの種類、タイトル、各軸のタイトルと今のビューの範囲（軸の書式、time の軸の日時）、系列のラベルと Geom、ファセットのパネルの数。カテゴリの軸の最初と最後の見えるカテゴリ名と数、polar の角と半径、flip でも x と y の名前。失敗した層と作っている途中の層に「not drawn」、全部の層を作っている間は軸を書かず全部「not drawn」。二次の軸も書く。暫定のフレームの後に「(provisional)」。ビューを動かすと範囲が変わる。描く前は `InvalidOperationException`。要約を作った後のフレームが温まった後 0 B（Issue #323 の決定 5。計測は置かない）。`HyperPlotView` の `AutomationPeer`: 種類が `Image`、`Name` が `Describe` の文、`AutomationProperties.Name` を置くとそちら、聞き手がいるときだけ知らせる。仕様の変化はそれを描いた最初のフレームの後、null の仕様は空の `Name` ですぐ、ビューの変化は偽の時刻で最後の変化から 500 ms の後に 1 回だけ（その間のフレームでは知らせない）、暫定でなくなったときにもう一度 |
 | ガイドと配置（G3） | 目盛り（Core、偽の `ITextBackend` で測る）: 拡張アルゴリズムの探し方が、枝刈りなしの総当たり（j ≤ 8、k ≤ 30、z は §5 の最初から 6 つ上まで、start は §5 の範囲）と同じ候補を選ぶ（乱数の範囲・軸の長さ・目標の間隔で 100 通り）。点数の 4 項が §4.6 の式の値で、重みが 0.25・0.2・0.5・0.05（疑似コードの入れ替えた重みと違う候補になる範囲を 1 つ含める）、v が 0 を含む目盛りで 1。`Nice` が偽で目盛りがすべて domain の中にあり「埋める」条件を満たし、真で domain を覆い、domain が [lmin, lmax] になる。軸が短くてすべて重なるとき目盛りを描かない。重なりの値の 3 つの場合（1.5 em ちょうど、その間、重なり）。値が M · 10^e で正確（0.1 刻みの 0.3 が "0.3"）。負の範囲・0 をまたぐ範囲・1e300 と 1e-300 の大きさ。pow と sqrt と利用者の `IScale` の目盛りの画素が `Forward` の位置。log: 1 桁に満たない範囲で linear の選び方、3 桁に満たない範囲で {1, 2, 5} · 10^k、多い桁で j 個おき、重ならない、目盛りが 2 つを下回る j で止まる、nice が 10 の冪に広げる、nice の候補の当たる条件を広げた domain の画素で測る（広げる前の画素では当たり、広げた後は重なる候補を選ばない。symlog と time も）、広げた domain で当たる候補がなければ nice なしの選び方になり domain は学習したまま（log の 0.3〜3,000 を 250 画素、間隔 90）。symlog: 0 を含み両側、10 · C に届かない domain で linear。time: 各段（ns から年まで）が選ばれる範囲、置き方（7 日が月曜、月の 3 と 6 が 1 月から、年が倍数、日の 2 が 0001 年からの日数）、ns の単位で 2262 年の近くまで正確、`Ticks` の単位で 100 ns の倍数でない刻みを使わず、ms の単位で ms より細かい刻みを使わない、起点より前（1969 年）が ⌊⌋ で分かれる、`boundary` が目盛りごとに最も粗い境、`DateTime` の範囲の外の domain が `InvalidOperationException`（`ShowAxes` と `ShowGrid` が偽なら投げない）、nice が刻みの目盛りに広げる。書式: 拡張アルゴリズムの軸で小数の桁がそろう、log で目盛りごと、12 文字を超えると軸のすべてが指数の形、負の 0 を書かない、time の 9 つの境の形。利用者の書式: 偽・64 を超える `charsWritten`・負の `charsWritten` が `InvalidOperationException`、投げた例外がそのまま出る、0 文字のラベル（`DrawText` を記録せず、重なりでは幅 0 として隣のラベルとの間を測る）。（行 G3 の「文字列の表」の項は、行 I1c で表を消したので外した。ラベルの文字の置き場のテストは I1c の行）。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: タイトルあり・なし、凡例あり・なし、軸のタイトルあり・なし、倍率 1 と 1.5（丸め）、`ShowAxes` が偽、y を x より先に選ぶ（y のラベルの幅が W を決める）、小さい描画先で背景だけを描き例外を投げない。記録（`RenderList` の命令の列を見る）: §4.6 の描く順、パネルの切り抜き、太さ 1 と 2 の線の位置（奇数は ⌊p⌋ + 0.5、偶数は ⌊p + 0.5⌋）、太さ 1 と 2 の軸の線がパネルの画素に重ならない（WARP で、パネルの最後の行と最初の列が軸の色を持たず、そのすぐ外が持つ）、目盛りが軸の線の中心から始まり、丸い端を含めた外の端がパネルの辺から T、凡例の見本が `Style` の s 倍、文字のスタイルが `Foreground`・大きさ · s・`FontFamily`・`Locale`。テーマの検査（メンバーごとの範囲の外、s を掛けて 512 を超える大きさ、null のテーマ）。`HeadlessRenderer` の `scale` の 0・負・NaN・∞。倍率: 1.5 でデータの線の太さと破線の長さ（`On`・`Off`・`Offset`）が 1.5 倍で記録され、1 で行 G1 と同じ値で記録される。倍率 1.5 の `HeadlessRenderer` の `Render(RenderList)` の画素と `MeasureText` の値が、倍率 1 のものと同じ。`WithTitle` の null の scale と `PlotBuilder.Theme(null)` が `ArgumentNullException`。`PlotSpec.Title`・`Label`・スケールの `Title` が null のときと空のときのどちらも「なし」で、タイトルの帯・凡例の行・軸のタイトルの帯を取らない。差分（数え口）: 同じ仕様の描き直しは配置 0・M4 0・記録 0、タイトル・テーマ・ラベル・書式・軸のタイトルだけは配置 1・M4 0・記録 1、W を変えるテーマ（`Padding`）は M4 1、`Nice` は M4 1。矩形（WARP）: CPU の基準（§5.1 の ox · oy を背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（整数の端、端数の端、1 画素より小さい矩形、半透明の 2 つの重なり）。幅か高さ 0 は何も描かない、切り抜き、§5.1 の引数の例外、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、同じ仕様の描き直しが確保しない。2 つの domain を交互に描くと、両方を一度描いた後は確保しない。ゴールデン画像: §10.1 の場面 (6) と (7)。サンプル（`SpecPlot`）は NativeAOT で発行して警告 0、実行して 2 枚の PNG を書く。行 G1 と G2 の行の「手で組んだ記録との比較」と確保のテストは、§4.8 のガイドのないテーマで描く |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
@@ -3051,7 +3081,7 @@ public sealed class ImageMismatchException : Exception
 9. `src/` のコードはリフレクションと実行時のコード生成を使わない
 10. GPU の資源は、Core の状態（常駐キャッシュの記述子）から作り直せる
 11. 同じ入力（データ・仕様・入力の列・時刻）から、WARP 上で同じ画素が出る。例外は DirectWrite で描いたテキストの画素で、OS のフォントと DirectWrite の版に依る（§5.6、行 T1）。テキストの画素の比較は、偽の `ITextBackend` の場面で行う（§10 の T1 の行）
-12. 座標系・ビュー・描画 IR・ヒットテスト・空間索引の公開の契約は、引数と戻り値を抽象（`PanelView`、4×4 の変換、画面の位置とビュー）で表す。2 次元を前提にした型（x と y だけの範囲・3×3 の行列など）を契約の引数や戻り値にしない。2D の範囲はその抽象の 1 つの種類（§6.2）として持ってよい。3D（§13）は、契約を変えずに種類を足して入れる。例外は 2 つ。1 つめは、行 G4 の `IGeom` の口（`GeomFrame`・`GeomRanges`）で、x と y の成分ごとのメソッドである。3D では z の成分のメソッドを sealed class に足して広げる（§4.1、PR #121 のレビュー）。2 つめは、行 I2a の `SeriesHit` の x と y の欄で、確保しない構造体のまま値を読めるようにするためである。3D では z の欄を足す（§6.3、Issue #337 の決定 11）
+12. 座標系・ビュー・描画 IR・ヒットテスト・空間索引の公開の契約は、引数と戻り値を抽象（`PanelView`、4×4 の変換、画面の位置とビュー）で表す。2 次元を前提にした型（x と y だけの範囲・3×3 の行列など）を契約の引数や戻り値にしない。2D の範囲はその抽象の 1 つの種類（§6.2）として持ってよい。3D（§13）は、契約を変えずに種類を足して入れる。例外は 2 つ。1 つめは、行 G4 の `IGeom` の口（`GeomFrame`・`GeomRanges`）で、x と y の成分ごとのメソッドである。3D では z の成分のメソッドを sealed class に足して広げる（§4.1、PR #121 のレビュー）。2 つめは、行 I2a の `SeriesHit` の x と y の欄で、確保しない構造体のまま値を読めるようにするためである。3D では z の欄を足す（§6.3、Issue #337 の決定 11） 選択（§6.4、行 I3a）も、ビューと同じく抽象の `Selection` と 2D の `Selection2D` で表し、例外にしない（Issue #364 の決定 14）。
 
 ## 12. 対象外
 

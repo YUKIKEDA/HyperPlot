@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** C（インタラクションと WPF）
-- **作業中:** I3（I2c は #359 の PR で済み）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** I3a（I2c は #359 の PR で済み）
+- **ブランチ:** `docs/364-i3a-selection`（設計）
+- **Issue:** #364（設計）
 
 ## ツールチェーン
 
@@ -79,7 +79,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | I2a | ヒットテスト（要件 I-2・P-5、§6.3）: `PlotEngine.HitTest`・`SeriesHit`・`HitMode`、系列の層の X の最近傍と XY の最近傍（ピラミッド）、image のテクセル、分けた系列・ファセット・Stat の行 | done | [#337](https://github.com/YUKIKEDA/HyperPlot/issues/337)（設計）、[#341](https://github.com/YUKIKEDA/HyperPlot/issues/341) |
 | I2b | ホバー、クロスヘア、ツールチップ、End-to-end のホバーの場面（P-6）、層のテクスチャでの合成（§5.4、要件 R-5。マウスを動かしただけのフレームでデータ層を描き直さない。行 W1 から移した、Issue #282） | done | [#337](https://github.com/YUKIKEDA/HyperPlot/issues/337)（決定）、[#347](https://github.com/YUKIKEDA/HyperPlot/issues/347)（設計）、[#351](https://github.com/YUKIKEDA/HyperPlot/issues/351) |
 | I2c | 要素の層（bar・error bar・rect。普通・カテゴリ・積み上げ・浮いた棒・並べた棒）のヒットテスト（要件 I-2、§6.3）と、ホバーのツールチップのカテゴリの軸の値（カテゴリ名、§6.5）。行 I2a から分けた（Issue #341 の決定 2） | done | [#341](https://github.com/YUKIKEDA/HyperPlot/issues/341)（決定）、[#355](https://github.com/YUKIKEDA/HyperPlot/issues/355)（設計）、[#359](https://github.com/YUKIKEDA/HyperPlot/issues/359) |
-| I3 | 選択とリンク、ファセットのパネルのビューのリンク（行 G6b）、図のプロットの間のリンク（行 G6c） | not-started | |
+| I3a | 選択（要件 I-3・I-7、§6.4）: 矩形・X の範囲・投げ縄・クリックの点、`Selection`・`SelectionTool`・`RowSelection`、行の集合の API（区間とビット列）、強調、`Escape` で消す。行 I3 から分けた（Issue #364 の決定 1） | in-progress | [#364](https://github.com/YUKIKEDA/HyperPlot/issues/364)（設計） |
+| I3b | リンク（要件 I-4、§6.4）: `LinkGroup` で、図のプロットの間とファセットのパネルの間のビュー（x・y・両方）・カーソル・選択の共有、ファセットのパネルも入れられる形（行 G6b・G6c。共有する軸の既定の動きは行 I1b のまま、Issue #364 の決定 2）。行 I3 から分けた | not-started | [#364](https://github.com/YUKIKEDA/HyperPlot/issues/364)（分け方） |
 | I4 | 注釈と計測、注記（要件 G-10、§4.6） | not-started | |
 | **D: 散布の大規模化とストリーミング** | | | |
 | C3 | 空間タイル索引（Morton 順の並べ直し、四分木の表） | not-started | |
