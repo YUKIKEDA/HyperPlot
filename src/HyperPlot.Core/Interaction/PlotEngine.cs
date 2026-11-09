@@ -35,6 +35,7 @@ public sealed class PlotEngine : IDisposable
     private readonly ViewProposal _proposal = new();
     private readonly RenderList _overlay = new();
     private readonly char[] _tooltip = new char[HoverTool.TooltipLength];
+    private readonly List<(float X, float Y, float Width, float Height)> _lassoFill = [];
     private PlotState[] _states = [];
     private PanelDomains[][] _shownViews = [];
     private PlotSpec? _plot;
@@ -62,6 +63,10 @@ public sealed class PlotEngine : IDisposable
     private HoverTool? _hoverTool;
     private Vector2 _hoverPixel;
     private bool _hovered;
+
+    // The selections (design §6.4, row I3a): one a plot, and a lasso's fill as rects of the last layout.
+    private Selection2D?[] _selections = [];
+    private int _lassoPlot = -1;
 
     // The kept layer (design §5.4, row I2b): what the plot drew last, kept by the renderer, and what it was drawn from.
     private bool _kept;
@@ -141,6 +146,12 @@ public sealed class PlotEngine : IDisposable
     /// pointer is outside a panel. Valid until the next input or frame; read it on the engine's thread. Allocates nothing.
     /// </summary>
     public ReadOnlySpan<SeriesHit> Hover => _hover.AsSpan(0, _hoverCount);
+
+    /// <summary>
+    /// Occurs when a plot's selection changes (design §6.4, row I3a): a new one, points added, cleared, or dropped for a spec
+    /// whose mapping changed. The argument is the plot's number.
+    /// </summary>
+    public event Action<int>? SelectionChanged;
 
     /// <summary>Gets the bindings, in the order the engine tries them: the defaults to start with.</summary>
     public InputBindings Bindings { get; } = InputBindings.CreateDefault();
@@ -418,6 +429,85 @@ public sealed class PlotEngine : IDisposable
         return area.Kind == HitAreaKind.Panel ? PlanOf(area.Panel.Plot).HitTest(area.Panel.Plot, area.Panel.Panel, pixel, radius, mode, results) : 0;
     }
 
+    /// <summary>Returns a plot's selection (design §6.4, row I3a), or null when it has none.</summary>
+    /// <param name="plot">The plot: 0 for a plot alone, its number in a figure.</param>
+    /// <returns>The selection.</returns>
+    /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
+    public Selection? Selection(int plot)
+    {
+        CheckThread();
+        return plot >= 0 && plot < _selections.Length ? _selections[plot] : null;
+    }
+
+    /// <summary>
+    /// Sets a plot's selection from code (design §6.4, row I3a, requirement I-9): as the selection tool does, it replaces the
+    /// plot's selection and tells <see cref="SelectionChanged"/>. An x range takes the panel's current y.
+    /// </summary>
+    /// <param name="selection">The selection: a <see cref="Selection2D"/> of a drawn panel that is not polar.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="selection"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The selection's panel is not drawn.</exception>
+    /// <exception cref="ArgumentException">
+    /// The selection is not a <see cref="Selection2D"/>, its panel is polar, or its content does not fit its kind: a range
+    /// not finite or reversed, a lasso of fewer than 3 or more than 1,024 vertices or of shares not finite, points none.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">The engine has drawn no frame, or the call comes from another thread.</exception>
+    public void Select(Selection selection)
+    {
+        ArgumentNullException.ThrowIfNull(selection);
+        CheckPanel(selection.Panel);
+        if (selection is not Selection2D flat)
+        {
+            throw new ArgumentException("A 2D panel takes a Selection2D.", nameof(selection));
+        }
+
+        if (PanelOf(selection.Panel).Polar is not null)
+        {
+            throw new ArgumentException("A polar panel takes no selection: its pixels do not run along its axes (design §6.4).", nameof(selection));
+        }
+
+        static bool Range(in ViewRange r) => double.IsFinite(r.Lower) && double.IsFinite(r.Upper) && r.Lower <= r.Upper;
+        var good = flat.Kind switch
+        {
+            SelectionKind.Rectangle => Range(flat.X) && Range(flat.Y),
+            SelectionKind.XRange => Range(flat.X),
+            SelectionKind.Lasso => Range(flat.X) && Range(flat.Y) && flat.Polygon.Length is >= 3 and <= 1024 && AllFinite(flat.Polygon.Span),
+            SelectionKind.Points => flat.Points.Length > 0,
+            _ => false,
+        };
+        if (!good)
+        {
+            throw new ArgumentException($"The {flat.Kind} selection's content does not fit its kind (design §6.4).", nameof(selection));
+        }
+
+        if (flat.Kind == SelectionKind.XRange)
+        {
+            flat = flat.WithY(CurrentView(selection.Panel) is PanelView2D view ? view.Y : default);
+        }
+
+        SetSelection(selection.Panel.Plot, flat);
+
+        static bool AllFinite(ReadOnlySpan<Vector2> points)
+        {
+            foreach (var point in points)
+            {
+                if (!float.IsFinite(point.X) || !float.IsFinite(point.Y))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
+    /// <summary>Clears every plot's selection (design §6.4, row I3a): tells <see cref="SelectionChanged"/> for each plot that had one.</summary>
+    /// <exception cref="InvalidOperationException">The call comes from another thread than the engine's.</exception>
+    public void ClearSelection()
+    {
+        CheckThread();
+        _ = ClearSelections();
+    }
+
     /// <summary>Returns a panel's current view: the one drawn, mid-animation included.</summary>
     /// <param name="panel">The panel.</param>
     /// <returns>The view, as a new object.</returns>
@@ -687,6 +777,10 @@ public sealed class PlotEngine : IDisposable
         y = ViewRange.FromScale(range);
         return true;
     }
+
+    internal bool IsPolar(PanelId panel) => PanelOf(panel).Polar is not null;
+
+    internal bool Flipped(PanelId panel) => PlanOf(panel.Plot).Guides.Flipped;
 
     internal (int Left, int Top, int Width, int Height) PanelRectangle(PanelId panel)
     {
@@ -1228,6 +1322,9 @@ public sealed class PlotEngine : IDisposable
                     {
                         Notify(k, p, ViewChangeReason.Spec);
                     }
+
+                    // A new mapping: the selection's predicate meant the old one (Issue #364 Decision 8).
+                    SetSelection(k, null);
                 }
             }
 
@@ -1332,6 +1429,40 @@ public sealed class PlotEngine : IDisposable
         }
 
         (_kept, _keptSpec, _keptScale, _keptVersions) = (true, (object?)_plot ?? _figure, Scale, versions);
+    }
+
+    /// <summary>Sets a plot's selection, tells it, and asks for a frame (row I3a).</summary>
+    internal void SetSelection(int plot, Selection2D? selection)
+    {
+        if (plot < 0 || plot >= _selections.Length || ReferenceEquals(_selections[plot], selection))
+        {
+            return;
+        }
+
+        _selections[plot] = selection;
+        if (_lassoPlot == plot)
+        {
+            _lassoPlot = -1;
+        }
+
+        RequestFrame();
+        SelectionChanged?.Invoke(plot);
+    }
+
+    /// <summary>Clears every plot's selection; returns whether one had any.</summary>
+    private bool ClearSelections()
+    {
+        var had = false;
+        for (var k = 0; k < _selections.Length; k++)
+        {
+            if (_selections[k] is not null)
+            {
+                had = true;
+                SetSelection(k, null);
+            }
+        }
+
+        return had;
     }
 
     /// <summary>Hovers at a pixel with a tool's settings (design §6.5, row I2b): called by the tool on a move.</summary>
@@ -1740,6 +1871,12 @@ public sealed class PlotEngine : IDisposable
             return had;
         }
 
+        // Escape's second entry: with no tool to cancel, the selections go (design §6.5, row I3a).
+        if (command == ViewCommand.ClearSelection)
+        {
+            return ClearSelections();
+        }
+
         // The plot and the panel last operated on (design §6.2, row I1b).
         var panel = _active;
         if (panel.Plot >= PlotCount || panel.Panel >= _states[panel.Plot].Panels)
@@ -1991,6 +2128,10 @@ public sealed class PlotEngine : IDisposable
         {
             _states[k] = new PlotState();
         }
+
+        // Another number of plots: the selections of the plots before go (row I3a).
+        _ = ClearSelections();
+        _selections = new Selection2D?[count];
 
         _shownViews = new PanelDomains[count][];
         (_active, _inGesture) = (default, false);
