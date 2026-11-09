@@ -318,25 +318,71 @@ internal ref struct HitScan
         Column[] columns
     )
     {
-        var (best, bestRow) = (Mode == HitMode.X ? double.PositiveInfinity : Radius, -1L);
-        for (var i = (int)start; i < end; i++)
+        // Squared distances and plain comparisons: 131,072 rectangles a call (design §9, P-5). A rectangle with a corner
+        // that does not map (NaN) fails each "lower ≤ upper" test and is passed, as the recording draws nothing for it.
+        var (along, across, xMode) = (Along, Across, Mode == HitMode.X);
+        var reach = xMode ? double.PositiveInfinity : (double)Radius;
+        var (best, bestRow) = (xMode ? double.PositiveInfinity : reach * reach, -1L);
+        var (first, last) = ((int)start, (int)Math.Min(end, Math.Min(Math.Min(x0.Length, x1.Length), Math.Min(y0.Length, y1.Length))));
+
+        // Most rectangles lie away from the cursor along: a vector of them at a time is passed when none comes within reach.
+        var lanes = System.Numerics.Vector<double>.Count;
+        var window = xMode ? 0 : reach;
+        var (low, high) = (new System.Numerics.Vector<double>(along - window), new System.Numerics.Vector<double>(along + window));
+        for (var i = first; i < last; i++)
         {
-            var (left, right) = (Math.Min(x0[i], x1[i]), Math.Max(x0[i], x1[i]));
-            var (top, bottom) = (Math.Min(y0[i], y1[i]), Math.Max(y0[i], y1[i]));
-            if (double.IsNaN(left) || double.IsNaN(right) || double.IsNaN(top) || double.IsNaN(bottom))
+            if (i + lanes <= last && (i - first) % lanes == 0)
+            {
+                var (a, b) = (new System.Numerics.Vector<double>(x0.Slice(i, lanes)), new System.Numerics.Vector<double>(x1.Slice(i, lanes)));
+                var near =
+                    System.Numerics.Vector.GreaterThanOrEqual(System.Numerics.Vector.Max(a, b), low)
+                    & System.Numerics.Vector.LessThanOrEqual(System.Numerics.Vector.Min(a, b), high);
+                if (near == System.Numerics.Vector<long>.Zero)
+                {
+                    i += lanes - 1;
+                    continue;
+                }
+            }
+
+            var (left, right) = (x0[i], x1[i]);
+            if (left > right)
+            {
+                (left, right) = (right, left);
+            }
+
+            if (!(left <= right))
             {
                 continue;
             }
 
-            if (Mode == HitMode.X && (Along < left || Along > right))
+            var gap =
+                along < left ? left - along
+                : along > right ? along - right
+                : 0;
+            if (gap > reach || (xMode && gap > 0))
             {
                 continue;
             }
 
-            var distance = Box(left, right, top, bottom);
-            if (distance <= best)
+            var (top, bottom) = (y0[i], y1[i]);
+            if (top > bottom)
             {
-                (best, bestRow) = (distance, i);
+                (top, bottom) = (bottom, top);
+            }
+
+            if (!(top <= bottom))
+            {
+                continue;
+            }
+
+            var height =
+                across < top ? top - across
+                : across > bottom ? across - bottom
+                : 0;
+            var squared = (gap * gap) + (height * height);
+            if (squared <= best)
+            {
+                (best, bestRow) = (squared, i);
             }
         }
 
@@ -344,7 +390,7 @@ internal ref struct HitScan
         {
             var x = (ValueOf(X, columns[0], bestRow) + ValueOf(X, columns[1], bestRow)) / 2;
             var y = (columns[2].DifferenceAt(bestRow, 0) + columns[3].DifferenceAt(bestRow, 0)) / 2;
-            Add(0, bestRow, x, y, best, derived: false, provisional: false);
+            Add(0, bestRow, x, y, Math.Sqrt(best), derived: false, provisional: false);
         }
     }
 
