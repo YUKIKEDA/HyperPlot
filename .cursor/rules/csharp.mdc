@@ -69,5 +69,6 @@ _slots[index].Generation = 1;
 - XML docs state the caller's contract only. How it works lives in `docs/design.ja.md`; refer to the section instead of restating it.
 - A commit that changes a contract also searches the XML docs for the old contract's words and rewrites what they say in the same push. PR #19 changed what a provisional answer reads and when the pool sets a fault, and its review found five summaries and remarks that still said "answered from its chunk statistics" and "pyramids with chunks left".
 - Use `<inheritdoc />` when an implementation has the interface's contract.
+- A member put in before another goes above the other's XML doc comment, not between the comment and the member. A script that anchors on the member's signature splits them: PR #379 put `UnionOf` under `Union`'s `<summary>`, so that one method had two and the other none, and the build did not object.
 - A member that returns one shared instance of a public `IDisposable` says in its XML docs that callers do not dispose it.
 - Wording and terminology: `.agents/skills/english-writing/SKILL.md`.
