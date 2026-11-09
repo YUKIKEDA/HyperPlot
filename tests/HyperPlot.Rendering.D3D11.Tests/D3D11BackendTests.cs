@@ -196,6 +196,84 @@ public sealed class D3D11BackendTests
     }
 
     /// <summary>
+    /// <see cref="IGpuBackend.Copy"/> copies every pixel of a target into another of its size, and refuses what it cannot copy
+    /// (design §5.2, row I2b).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend with two targets of 3 × 2 and one of 2 × 2; a second backend with a target of 3 × 2.
+    ///
+    /// Steps:
+    /// - Clear the first to one color and the second to another; copy the first into the second; read the second. Copy
+    ///   between the two sizes, a target into itself, a target of the other backend, and null.
+    ///
+    /// Expected:
+    /// - The second reads back the first's color at every pixel. The others throw ArgumentException, and null
+    ///   ArgumentNullException.
+    /// </remarks>
+    [Fact]
+    public void Copy_CopiesEveryPixelAndRefusesOtherTargets()
+    {
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var other = D3D11Backend.Create(useWarp: true);
+        using var source = backend.CreateRenderTarget(new RenderTargetDescription(3, 2));
+        using var destination = backend.CreateRenderTarget(new RenderTargetDescription(3, 2));
+        using var smaller = backend.CreateRenderTarget(new RenderTargetDescription(2, 2));
+        using var foreign = other.CreateRenderTarget(new RenderTargetDescription(3, 2));
+        source.Clear(new Color(10, 20, 30, 255));
+        destination.Clear(new Color(200, 100, 50, 255));
+
+        backend.Copy(source, destination);
+
+        var pixels = new byte[3 * 2 * 4];
+        destination.ReadPixels(pixels);
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            Assert.Equal([10, 20, 30, 255], pixels[i..(i + 4)]);
+        }
+
+        _ = Assert.Throws<ArgumentException>(() => backend.Copy(source, smaller));
+        _ = Assert.Throws<ArgumentException>(() => backend.Copy(source, source));
+        _ = Assert.Throws<ArgumentException>(() => backend.Copy(foreign, destination));
+        _ = Assert.Throws<ArgumentException>(() => backend.Copy(source, foreign));
+        _ = Assert.Throws<ArgumentNullException>(() => backend.Copy(null!, destination));
+        _ = Assert.Throws<ArgumentNullException>(() => backend.Copy(source, null!));
+    }
+
+    /// <summary>
+    /// <see cref="IGpuBackend.DeviceGeneration"/> moves when a lost device is made again, and only then (design §5.2, row I2b).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A WARP backend and a target; a loss injected through Map.
+    ///
+    /// Steps:
+    /// - Read the number; draw two frames; read it; read the target with the loss injected; remove the injection; begin a
+    ///   frame; read it.
+    ///
+    /// Expected:
+    /// - The frames leave the number as it was; the frame after the loss makes the device again and moves it by 1.
+    /// </remarks>
+    [Fact]
+    public void DeviceGeneration_MovesWhenTheDeviceIsMadeAgain()
+    {
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(2, 2));
+        var first = backend.DeviceGeneration;
+        target.Clear(new Color(1, 2, 3, 255));
+        target.Clear(new Color(1, 2, 3, 255));
+        Assert.Equal(first, backend.DeviceGeneration);
+
+        backend.CheckResult = (call, result) => call == "Map" ? DXGI.DXGI_ERROR_DEVICE_REMOVED : result;
+        _ = Assert.Throws<GpuDeviceLostException>(() => target.ReadPixels(new byte[16]));
+        backend.CheckResult = null;
+        using (backend.BeginFrame())
+        {
+            Assert.Equal(first + 1, backend.DeviceGeneration);
+        }
+    }
+
+    /// <summary>
     /// While the device is lost, making a target makes the device and every target again first; a failed remake leaves the
     /// backend lost until a later frame succeeds (design §5.3).
     /// </summary>

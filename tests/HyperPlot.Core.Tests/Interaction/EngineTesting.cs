@@ -44,12 +44,19 @@ internal sealed class NullBackend : IGpuBackend
     /// <summary>Gets the last list drawn: the overlay when one is drawn.</summary>
     public RenderList? LastList { get; private set; }
 
+    /// <summary>Gets the copies between targets in the last frame (row I2b): the kept plot's.</summary>
+    public int CopiesInFrame { get; private set; }
+
+    /// <summary>Gets or sets the device's number: a test moves it as a device loss would (row I2b).</summary>
+    public long DeviceGeneration { get; set; } = 1;
+
     public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => new Target(description);
 
     public FrameScope BeginFrame()
     {
         Frames++;
         DrawsInFrame = 0;
+        CopiesInFrame = 0;
         return new(this, ++_frame);
     }
 
@@ -58,6 +65,8 @@ internal sealed class NullBackend : IGpuBackend
         DrawsInFrame++;
         LastList = list;
     }
+
+    public void Copy(IRenderTarget source, IRenderTarget destination) => CopiesInFrame++;
 
     public void EndFrame(long token) { }
 

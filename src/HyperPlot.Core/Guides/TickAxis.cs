@@ -233,6 +233,9 @@ internal sealed partial class TickAxis
     /// <summary>Returns the instant of the time tick in a slot, in ns from 0001-01-01.</summary>
     internal Int128 InstantAt(int index) => _times[index];
 
+    /// <summary>Returns the boundary of the time tick in a slot. Tests only.</summary>
+    internal TimeInterval BoundaryAt(int index) => _boundaries[index];
+
     /// <summary>Sets the pixel of the tick in a slot.</summary>
     internal void SetPixel(int index, double pixel) => _pixels[index] = pixel;
 

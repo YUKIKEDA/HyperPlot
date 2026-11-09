@@ -244,6 +244,10 @@ public sealed class HeadlessRendererTests
 
         public void Draw(IRenderTarget target, RenderList list) => Drawn = list;
 
+        public void Copy(IRenderTarget source, IRenderTarget destination) { }
+
+        public long DeviceGeneration => 1;
+
         public void EndFrame(long token) { }
 
         public void Dispose() => IsDisposed = true;

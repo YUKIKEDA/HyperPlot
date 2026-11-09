@@ -99,6 +99,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     public GpuFrameTime? LastFrameTime => _timer.Last;
 
     /// <inheritdoc />
+    public long DeviceGeneration { get; private set; }
+
+    /// <inheritdoc />
     /// <remarks>Shapes and rasterizes with DirectWrite (design §5.6).</remarks>
     public TextEngine Text { get; }
 
@@ -284,6 +287,27 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         Unbind(bound);
     }
 
+    /// <inheritdoc />
+    public void Copy(IRenderTarget source, IRenderTarget destination)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(destination);
+        if (source is not D3D11RenderTarget from || !from.BelongsTo(this) || destination is not D3D11RenderTarget to || !to.BelongsTo(this))
+        {
+            throw new ArgumentException("A render target belongs to another backend.", nameof(source));
+        }
+
+        if (from == to || from.Description.Width != to.Description.Width || from.Description.Height != to.Description.Height)
+        {
+            throw new ArgumentException("The targets are two of the same size.", nameof(destination));
+        }
+
+        from.ThrowIfDisposed();
+        to.ThrowIfDisposed();
+        using var frame = BeginFrame();
+        _context->CopyResource((ID3D11Resource*)to.Texture, (ID3D11Resource*)from.Texture);
+    }
+
     private void Unbind(DrawStepKind? kind)
     {
         switch (kind)
@@ -465,6 +489,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         }
 
         _state = State.Ready;
+        DeviceGeneration++;
         try
         {
             _lines.Make();

@@ -547,6 +547,20 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         (scan.SeriesBase, scan.SeriesWidth) = (base0, width);
     }
 
+    /// <summary>Returns the color of a category's part (row I2b): its series are numbered by its category, as <see cref="Hit"/> does.</summary>
+    internal override Color HitColor(int series)
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Category >= 0 && part.Category == series / part.Plan.HitWidth)
+            {
+                return part.Plan.HitColor(series % part.Plan.HitWidth);
+            }
+        }
+
+        return SeriesColor;
+    }
+
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered)
     {

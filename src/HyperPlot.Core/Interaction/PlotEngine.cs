@@ -34,6 +34,7 @@ public sealed class PlotEngine : IDisposable
     private readonly ToolContext _context;
     private readonly ViewProposal _proposal = new();
     private readonly RenderList _overlay = new();
+    private readonly char[] _tooltip = new char[HoverTool.TooltipLength];
     private PlotState[] _states = [];
     private PanelDomains[][] _shownViews = [];
     private PlotSpec? _plot;
@@ -53,6 +54,21 @@ public sealed class PlotEngine : IDisposable
     private TextWriter? _recording;
     private long _lastRecorded;
     private bool _disposed;
+
+    // The hover (design §6.5, row I2b): the tool that hovers, where, and the hits; a buffer for the next hits and the tooltip.
+    private SeriesHit[] _hover = new SeriesHit[16];
+    private SeriesHit[] _hits = new SeriesHit[16];
+    private int _hoverCount;
+    private HoverTool? _hoverTool;
+    private Vector2 _hoverPixel;
+    private bool _hovered;
+
+    // The kept layer (design §5.4, row I2b): what the plot drew last, kept by the renderer, and what it was drawn from.
+    private bool _kept;
+    private object? _keptSpec;
+    private float _keptScale;
+    private long _keptVersions;
+    private PanelDomains[][] _keptViews = [];
 
     /// <summary>Initializes a new instance of the <see cref="PlotEngine"/> class with a target of its own.</summary>
     /// <param name="backend">The backend that draws.</param>
@@ -86,6 +102,13 @@ public sealed class PlotEngine : IDisposable
     public event Action? ProvisionalChanged;
 
     /// <summary>
+    /// Occurs when the hover's hits change (design §6.5, row I2b): a move to another row or series, the pointer leaving the
+    /// panel or the target, a tool taking the pointer, or a frame drawn again that finds other hits at the same pixel. The
+    /// same hits at another distance do not make it occur.
+    /// </summary>
+    public event Action? HoverChanged;
+
+    /// <summary>
     /// Occurs in a <see cref="RenderFrame"/> that finds a layer's work failed (design §4.8, row W1b1): once a failure. The
     /// frame does not throw it; the layer is not drawn until one of its columns' versions moves, and is then tried again.
     /// </summary>
@@ -111,6 +134,13 @@ public sealed class PlotEngine : IDisposable
 
     /// <summary>Gets the operations on the views.</summary>
     public ViewOperations Views { get; }
+
+    /// <summary>
+    /// Gets the hits of the hover (design §6.5, row I2b): what <see cref="HitTest"/> answered at the pointer with the
+    /// <see cref="HoverTool"/>'s settings, at the last move or the last frame drawn again; empty when no tool hovers or the
+    /// pointer is outside a panel. Valid until the next input or frame; read it on the engine's thread. Allocates nothing.
+    /// </summary>
+    public ReadOnlySpan<SeriesHit> Hover => _hover.AsSpan(0, _hoverCount);
 
     /// <summary>Gets the bindings, in the order the engine tries them: the defaults to start with.</summary>
     public InputBindings Bindings { get; } = InputBindings.CreateDefault();
@@ -184,6 +214,7 @@ public sealed class PlotEngine : IDisposable
         }
 
         (_plot, _figure) = (plot, null);
+        _kept = false;
         RequestFrame();
     }
 
@@ -208,6 +239,7 @@ public sealed class PlotEngine : IDisposable
         }
 
         (_plot, _figure) = (null, figure);
+        _kept = false;
         RequestFrame();
     }
 
@@ -234,16 +266,19 @@ public sealed class PlotEngine : IDisposable
         }
 
         _renderer.Resize(width, height, scale);
+        _kept = false;
         RequestFrame();
     }
 
     /// <summary>
     /// Draws a frame (design §7.1): moves the animations to the engine's time, gives the views to the plans, draws, and draws
-    /// what the tool that holds the pointer draws over it. It does not wait for the indexes or the workers (design §4.8,
-    /// invariant 7): it draws what is there, and a layer's work that failed is reported through <see cref="WorkFailed"/>, not
-    /// thrown. While an animation runs or the frame is provisional, it asks for the next frame.
+    /// the hover and what the tool that holds the pointer draws over it. It does not wait for the indexes or the workers
+    /// (design §4.8, invariant 7): it draws what is there, and a layer's work that failed is reported through
+    /// <see cref="WorkFailed"/>, not thrown. While an animation runs or the frame is provisional, it asks for the next frame.
+    /// A frame that only the hover or a tool's overlay changes copies the plot it kept from the last frame and draws those
+    /// over it (design §5.4, row I2b); a frame drawn again hits again at the hover's pixel.
     /// </summary>
-    /// <exception cref="InvalidOperationException">The call comes from another thread, or the plot fails as <see cref="HeadlessRenderer.Render(PlotSpec)"/> says for a cause other than a layer's work.</exception>
+    /// <exception cref="InvalidOperationException">The call comes from another thread, or the plot fails as <see cref="HeadlessRenderer.Render(PlotSpec)"/> says for a cause other than a layer's work, or a <see cref="TooltipFormatter"/> wrote a length outside 0 to its span's.</exception>
     /// <exception cref="ArgumentException">The plot does not check.</exception>
     /// <exception cref="GpuDeviceLostException">The device was lost.</exception>
     /// <exception cref="ObjectDisposedException">The engine was disposed.</exception>
@@ -262,75 +297,31 @@ public sealed class PlotEngine : IDisposable
             Animate(k);
         }
 
+        using var frame = _renderer.BeginFrame();
+
+        // The kept plot when nothing it was drawn from moved (design §5.4): the data layer is not recorded again.
+        var full = !CanRestore() || !_renderer.TryRestore();
+        if (full)
+        {
+            DrawPlot();
+        }
+
         _overlay.Clear();
+        DrawHover(_overlay);
         _captured?.Overlay(_overlay, _context);
-        if (_plot is not null)
+        if (full)
         {
-            _renderer.Render(_plot, _states[0].Shown, _overlay);
-        }
-        else
-        {
-            for (var k = 0; k < _states.Length; k++)
+            // A frame with something over the plot keeps it for the frames of the mouse alone; a provisional one is drawn
+            // again each frame anyway.
+            _kept = false;
+            if (_overlay.Commands.Length > 0 && !IsProvisional)
             {
-                _shownViews[k] = _states[k].Shown;
-            }
-
-            _renderer.Render(_figure!, _shownViews, _overlay);
-        }
-
-        _drawn = true;
-        var (dropped, animating) = (false, false);
-        count = PlotCount;
-        for (var k = 0; k < count; k++)
-        {
-            var (state, plan) = (_states[k], PlanOf(k));
-            if (plan.ViewsDropped || state.Panels != plan.PanelCount)
-            {
-                // A new mapping, or other panels: the views over the old ones go back to the full view, and the history with
-                // them (design §6.2).
-                var told = plan.ViewsDropped;
-                state.Size(plan.PanelCount);
-                if (told)
-                {
-                    dropped = true;
-                    for (var p = 0; p < state.Panels; p++)
-                    {
-                        Notify(k, p, ViewChangeReason.Spec);
-                    }
-                }
-            }
-
-            animating |= state.Animating;
-        }
-
-        if (dropped)
-        {
-            CancelCaptured();
-        }
-
-        // The plots' failures and whether the frame is provisional (row W1b1). An index, not foreach: no enumerator is boxed.
-        var provisional = false;
-        for (var k = 0; k < count; k++)
-        {
-            var plan = PlanOf(k);
-            provisional |= plan.IsProvisional;
-            var failures = plan.Failures;
-            for (var f = 0; f < failures.Count; f++)
-            {
-                WorkFailed?.Invoke(new WorkFailure(k, failures[f].Layer, failures[f].Error));
+                _renderer.Keep();
+                KeepState();
             }
         }
 
-        if (provisional != IsProvisional)
-        {
-            IsProvisional = provisional;
-            ProvisionalChanged?.Invoke();
-        }
-
-        if (animating || provisional)
-        {
-            RequestFrame();
-        }
+        _renderer.DrawOver(_overlay);
     }
 
     /// <summary>Reads the last frame as RGBA, top row first, alpha not premultiplied (design §7.5).</summary>
@@ -938,6 +929,24 @@ public sealed class PlotEngine : IDisposable
 
     private static bool Reversed(ScaleSpec? scale) => scale is ContinuousScaleSpec { Reverse: true };
 
+    private static bool SameKept(PanelDomains[] shown, PanelDomains[] kept)
+    {
+        if (shown.Length != kept.Length)
+        {
+            return false;
+        }
+
+        for (var p = 0; p < shown.Length; p++)
+        {
+            if (!Same(shown[p], kept[p]) || shown[p].Viewed != kept[p].Viewed)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private static ScaleRange Zoom(in ScaleRange range, double at, double factor)
     {
         if (PlotPlan.IsNone(range))
@@ -1179,8 +1188,374 @@ public sealed class PlotEngine : IDisposable
         }
     }
 
+    /// <summary>
+    /// Draws the plots over the views shown (design §7.1): records and draws them, then sizes the views to the panels drawn,
+    /// tells their failures and whether the frame is provisional, and hits again at the hover's pixel (row I2b).
+    /// </summary>
+    private void DrawPlot()
+    {
+        _kept = false;
+        if (_plot is not null)
+        {
+            _renderer.Render(_plot, _states[0].Shown, null);
+        }
+        else
+        {
+            for (var k = 0; k < _states.Length; k++)
+            {
+                _shownViews[k] = _states[k].Shown;
+            }
+
+            _renderer.Render(_figure!, _shownViews, null);
+        }
+
+        _drawn = true;
+        var (dropped, animating) = (false, false);
+        var count = PlotCount;
+        for (var k = 0; k < count; k++)
+        {
+            var (state, plan) = (_states[k], PlanOf(k));
+            if (plan.ViewsDropped || state.Panels != plan.PanelCount)
+            {
+                // A new mapping, or other panels: the views over the old ones go back to the full view, and the history with
+                // them (design §6.2).
+                var told = plan.ViewsDropped;
+                state.Size(plan.PanelCount);
+                if (told)
+                {
+                    dropped = true;
+                    for (var p = 0; p < state.Panels; p++)
+                    {
+                        Notify(k, p, ViewChangeReason.Spec);
+                    }
+                }
+            }
+
+            animating |= state.Animating;
+        }
+
+        if (dropped)
+        {
+            CancelCaptured();
+        }
+
+        // The plots' failures and whether the frame is provisional (row W1b1). An index, not foreach: no enumerator is boxed.
+        var provisional = false;
+        for (var k = 0; k < count; k++)
+        {
+            var plan = PlanOf(k);
+            provisional |= plan.IsProvisional;
+            var failures = plan.Failures;
+            for (var f = 0; f < failures.Count; f++)
+            {
+                WorkFailed?.Invoke(new WorkFailure(k, failures[f].Layer, failures[f].Error));
+            }
+        }
+
+        if (provisional != IsProvisional)
+        {
+            IsProvisional = provisional;
+            ProvisionalChanged?.Invoke();
+        }
+
+        if (animating || provisional)
+        {
+            RequestFrame();
+        }
+
+        // A frame drawn again (a zoom, new data, a provisional answer made final) hits again where the pointer is, so that no
+        // older hit stays under it (design §6.5); a tool taken out of the bindings hovers no more.
+        if (_hoverTool is { } hover)
+        {
+            if (Bound(hover))
+            {
+                HitAgain();
+            }
+            else
+            {
+                ClearHover(request: false);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns whether the kept plot is what the frame would draw (design §5.4, row I2b): kept from a frame that was not
+    /// provisional, of the same spec, scale, views, and column versions. The renderer checks the size and the device.
+    /// </summary>
+    private bool CanRestore()
+    {
+        if (!_kept || IsProvisional || !ReferenceEquals(_keptSpec, (object?)_plot ?? _figure) || _keptScale != Scale)
+        {
+            return false;
+        }
+
+        var count = PlotCount;
+        if (_keptViews.Length != count)
+        {
+            return false;
+        }
+
+        var versions = 0L;
+        for (var k = 0; k < count; k++)
+        {
+            if (!SameKept(_states[k].Shown, _keptViews[k]))
+            {
+                return false;
+            }
+
+            versions += PlanOf(k).ColumnVersions();
+        }
+
+        return versions == _keptVersions;
+    }
+
+    /// <summary>Keeps what the kept plot was drawn from. Allocates only for a new number of plots or panels.</summary>
+    private void KeepState()
+    {
+        var count = PlotCount;
+        if (_keptViews.Length != count)
+        {
+            _keptViews = new PanelDomains[count][];
+        }
+
+        var versions = 0L;
+        for (var k = 0; k < count; k++)
+        {
+            var shown = _states[k].Shown;
+            if (_keptViews[k] is not { } views || views.Length != shown.Length)
+            {
+                _keptViews[k] = views = new PanelDomains[shown.Length];
+            }
+
+            shown.CopyTo(views, 0);
+            versions += PlanOf(k).ColumnVersions();
+        }
+
+        (_kept, _keptSpec, _keptScale, _keptVersions) = (true, (object?)_plot ?? _figure, Scale, versions);
+    }
+
+    /// <summary>Hovers at a pixel with a tool's settings (design §6.5, row I2b): called by the tool on a move.</summary>
+    internal void HoverAt(HoverTool tool, Vector2 pixel)
+    {
+        _hovered = true;
+        (_hoverTool, _hoverPixel) = (tool, pixel);
+        HitAgain();
+
+        // The crosshair follows the pointer even over the same hits.
+        RequestFrame();
+    }
+
+    /// <summary>Takes a move with no button and no tool holding the pointer (row I2b): the bindings of a move, and the hover.</summary>
+    private bool Move(in PointerEvent e)
+    {
+        _hovered = false;
+        var used = false;
+        if (e.Buttons == PointerButtons.None)
+        {
+            var area = Hit(e.Position, out _);
+            _context.Hit = area;
+            foreach (var binding in Bindings)
+            {
+                if (binding.Gesture.Kind == InputGestureKind.Move && Matches(binding, e.Modifiers, area.Kind) && binding.Tool is { } tool)
+                {
+                    if (tool.OnPointer(e, _context) != ToolResult.Ignored)
+                    {
+                        used = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // No hover tool took the move (outside its places, other modifiers, a button held): nothing is hovered.
+        if (!_hovered)
+        {
+            ClearHover(request: true);
+        }
+
+        return used;
+    }
+
+    /// <summary>Hits again at the hover's pixel with its tool's settings, and keeps the hits (row I2b).</summary>
+    private void HitAgain()
+    {
+        var count = 0;
+        if (_hoverTool is { } tool && PlotCount > 0 && Hit(_hoverPixel, out _) is { Kind: HitAreaKind.Panel } area)
+        {
+            var (plan, radius) = (PlanOf(area.Panel.Plot), tool.Radius * Scale);
+            count = plan.HitTest(area.Panel.Plot, area.Panel.Panel, _hoverPixel, radius, tool.Mode, _hits);
+            if (count > _hits.Length)
+            {
+                // More series than ever before: the buffer grows once, and the hits are asked again.
+                _hits = new SeriesHit[count];
+                count = plan.HitTest(area.Panel.Plot, area.Panel.Panel, _hoverPixel, radius, tool.Mode, _hits);
+            }
+        }
+
+        SetHover(_hits.AsSpan(0, count));
+    }
+
+    /// <summary>Takes the hover's hits, and tells when they are other hits than the ones before: not only other distances.</summary>
+    private void SetHover(ReadOnlySpan<SeriesHit> hits)
+    {
+        var same = hits.Length == _hoverCount;
+        for (var i = 0; same && i < hits.Length; i++)
+        {
+            same = hits[i] with { Distance = 0 } == _hover[i] with { Distance = 0 };
+        }
+
+        if (_hover.Length < hits.Length)
+        {
+            _hover = new SeriesHit[hits.Length];
+        }
+
+        hits.CopyTo(_hover);
+        _hoverCount = hits.Length;
+        if (!same)
+        {
+            HoverChanged?.Invoke();
+        }
+    }
+
+    /// <summary>Ends the hover (row I2b): the pointer left, another tool took it, or no hover tool reads it.</summary>
+    private void ClearHover(bool request)
+    {
+        if (_hoverTool is null && _hoverCount == 0)
+        {
+            return;
+        }
+
+        _hoverTool = null;
+        if (request)
+        {
+            RequestFrame();
+        }
+
+        SetHover([]);
+    }
+
+    /// <summary>
+    /// Records the hover over the plot (design §6.5, row I2b): the crosshair through the pointer, a disc at each hit in its
+    /// series' color, and the tooltip at the pointer's lower right, on the other side where it would leave the panel.
+    /// Allocates nothing once the list's buffers and the shaping cache hold the frame's.
+    /// </summary>
+    private void DrawHover(RenderList list)
+    {
+        if (_hoverTool is not { } tool || PlotCount == 0 || Hit(_hoverPixel, out _) is not { Kind: HitAreaKind.Panel } area)
+        {
+            return;
+        }
+
+        var (guide, theme, plan) = (PanelOf(area.Panel), SpecOf(area.Panel.Plot).Theme, PlanOf(area.Panel.Plot));
+        var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
+        var line = MathF.Max(1, MathF.Round(Scale));
+        var foreground = theme.Foreground;
+        var faint = foreground with { A = (byte)Math.Round(foreground.A * 0.5) };
+        var (x, y) = (MathF.Floor(_hoverPixel.X), MathF.Floor(_hoverPixel.Y));
+        if (tool.Crosshair is HoverCrosshair.Vertical or HoverCrosshair.Both)
+        {
+            list.DrawRect(x, top, line, height, faint);
+        }
+
+        if (tool.Crosshair is HoverCrosshair.Horizontal or HoverCrosshair.Both)
+        {
+            list.DrawRect(left, y, width, line, faint);
+        }
+
+        var hits = Hover;
+        if (tool.Markers)
+        {
+            // A disc of 3.5 DIPs in the series' color, in a ring of the panel's background, so that it shows on its line.
+            var (radius, ring) = (3.5f * Scale, 4.5f * Scale);
+            ReadOnlySpan<SectorTrapezoid> outer = [new SectorTrapezoid(0, MathF.Tau, ring, ring, 0, 0)];
+            ReadOnlySpan<SectorTrapezoid> inner = [new SectorTrapezoid(0, MathF.Tau, radius, radius, 0, 0)];
+            for (var i = 0; i < hits.Length; i++)
+            {
+                if (plan.HitPixel(hits[i], out var at) && at.X >= left && at.X <= left + width && at.Y >= top && at.Y <= top + height)
+                {
+                    list.DrawSectors(outer, at, theme.PanelBackground);
+                    list.DrawSectors(inner, at, plan.HitColor(hits[i]));
+                }
+            }
+        }
+
+        if (tool.Tooltip && hits.Length > 0)
+        {
+            DrawTooltip(list, tool, plan, theme, (left, top, width, height), line);
+        }
+    }
+
+    /// <summary>Records the tooltip's box and lines (Issue #347 Decision 4): the default lines or the tool's formatter's.</summary>
+    private void DrawTooltip(
+        RenderList list,
+        HoverTool tool,
+        PlotPlan plan,
+        Theme theme,
+        (int Left, int Top, int Width, int Height) panel,
+        float line
+    )
+    {
+        var length = plan.WriteTooltip(Hover, _tooltip);
+        if (tool.TooltipFormat is { } format)
+        {
+            if (!format(Hover, _tooltip, out length))
+            {
+                return;
+            }
+
+            if (length < 0 || length > _tooltip.Length)
+            {
+                throw new InvalidOperationException($"The TooltipFormat wrote {length} characters: a length from 0 to {_tooltip.Length}.");
+            }
+        }
+
+        if (length == 0)
+        {
+            return;
+        }
+
+        var text = _tooltip.AsSpan(0, length);
+        var style = new TextStyle(theme.Foreground, theme.TickLabelSize * Scale, theme.FontFamily, Vertical: TextBaseline.Top, Locale: theme.Locale);
+        var size = _renderer.Text.Measure(text, style);
+        var (pad, offset) = (MathF.Round(4 * Scale), MathF.Round(12 * Scale));
+        var (w, h) = (MathF.Ceiling(size.Width) + (2 * pad), MathF.Ceiling(size.Height) + (2 * pad));
+
+        // At the pointer's lower right; across a side of the panel it would pass, on the other side of the pointer.
+        var bx = _hoverPixel.X + offset + w > panel.Left + panel.Width ? _hoverPixel.X - offset - w : _hoverPixel.X + offset;
+        var by = _hoverPixel.Y + offset + h > panel.Top + panel.Height ? _hoverPixel.Y - offset - h : _hoverPixel.Y + offset;
+        (bx, by) = (MathF.Round(bx), MathF.Round(by));
+        var border = theme.Foreground with { A = (byte)Math.Round(theme.Foreground.A * 0.25) };
+        list.DrawRect(bx, by, w, h, theme.Background);
+        list.DrawRect(bx, by, w, line, border);
+        list.DrawRect(bx, by + h - line, w, line, border);
+        list.DrawRect(bx, by, line, h, border);
+        list.DrawRect(bx + w - line, by, line, h, border);
+        list.DrawText(text, new Vector2(bx + pad, by + pad), style);
+    }
+
+    /// <summary>Returns whether a hover tool is still bound to a move.</summary>
+    private bool Bound(HoverTool tool)
+    {
+        foreach (var binding in Bindings)
+        {
+            if (binding.Gesture.Kind == InputGestureKind.Move && binding.Tool == tool)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private bool Pointer(in PointerEvent e)
     {
+        // The pointer left the target: no tool reads it, and the hover ends (design §7.2, row I2b).
+        if (e.Kind == PointerEventKind.Leave)
+        {
+            ClearHover(request: true);
+            return false;
+        }
+
         if (_captured is { } captured)
         {
             if (e.Kind == PointerEventKind.Cancel)
@@ -1224,6 +1599,8 @@ public sealed class PlotEngine : IDisposable
                 return true;
             case PointerEventKind.Move when _pressed:
                 return true;
+            case PointerEventKind.Move:
+                return Move(e);
             case PointerEventKind.Up when _pressed:
                 _pressed = false;
                 if (!_dragging)
@@ -1265,6 +1642,8 @@ public sealed class PlotEngine : IDisposable
 
             if (result == ToolResult.Capture)
             {
+                // The hover ends while a tool holds the pointer, so that no crosshair stays over the data it moves (row I2b).
+                ClearHover(request: true);
                 _captured = tool;
                 Release(tool.OnPointer(move, _context));
             }

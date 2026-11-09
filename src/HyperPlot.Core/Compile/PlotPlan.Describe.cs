@@ -67,6 +67,13 @@ internal sealed partial class PlotPlan
     /// <summary>Returns the words of a layer's geom, with its stat.</summary>
     private static string GeomOf(LayerSpec layer)
     {
+        var (geom, stat) = GeomWords(layer);
+        return stat is null ? geom : $"{geom} of {stat}";
+    }
+
+    /// <summary>Returns the word of a layer's geom and the word of its stat, or null for none: no string is made (row I2b).</summary>
+    private static (string Geom, string? Stat) GeomWords(LayerSpec layer)
+    {
         var geom = layer switch
         {
             LineLayerSpec => "line",
@@ -93,7 +100,7 @@ internal sealed partial class PlotPlan
             Bin2DStatSpec => "2D bins",
             _ => "stat",
         };
-        return stat is null ? geom : $"{geom} of {stat}";
+        return (geom, stat);
     }
 
     /// <summary>

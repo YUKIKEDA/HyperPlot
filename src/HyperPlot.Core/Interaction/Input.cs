@@ -16,6 +16,9 @@ public enum PointerEventKind
 
     /// <summary>The host lost the pointer (a capture taken away, a touch cancelled): a tool in progress is cancelled.</summary>
     Cancel,
+
+    /// <summary>The pointer left the target (row I2b): the hover is cleared. No tool reads it.</summary>
+    Leave,
 }
 
 /// <summary>The buttons of a pointer (design §6.1).</summary>

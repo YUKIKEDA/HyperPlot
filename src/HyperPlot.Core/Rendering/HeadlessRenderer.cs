@@ -10,6 +10,8 @@ public sealed class HeadlessRenderer : IDisposable
     private readonly IGpuBackend _backend;
     private readonly PlotWorkerPool? _pool;
     private IRenderTarget _target;
+    private IRenderTarget? _kept;
+    private long _keptGeneration;
     private PlotPlan? _plan;
     private FigurePlan? _figure;
     private bool _disposed;
@@ -136,6 +138,53 @@ public sealed class HeadlessRenderer : IDisposable
         finally
         {
             _backend.Images.Unbounded = false;
+        }
+    }
+
+    /// <summary>Gets the backend's text, which measures what the engine draws over the plot (row I2b).</summary>
+    internal TextEngine Text => _backend.Text;
+
+    /// <summary>Opens a frame of the backend: the engine's frame holds the plot, its copies, and what it draws over them.</summary>
+    internal FrameScope BeginFrame() => _backend.BeginFrame();
+
+    /// <summary>
+    /// Keeps the image drawn so far in a target of the renderer's own (design §5.4, row I2b): the plot, before what the engine
+    /// draws over it. The target is made the first time, and again for a new size.
+    /// </summary>
+    internal void Keep()
+    {
+        if (_kept is null || _kept.Description != _target.Description)
+        {
+            _kept?.Dispose();
+            _kept = null;
+            _kept = _backend.CreateRenderTarget(_target.Description);
+        }
+
+        _backend.Copy(_target, _kept);
+        _keptGeneration = _backend.DeviceGeneration;
+    }
+
+    /// <summary>
+    /// Copies the kept image back over the whole target (design §5.4, row I2b), in the frame the caller opened: false, and
+    /// nothing copied, when none is kept for the target's size or the device was made again since, which cleared it.
+    /// </summary>
+    internal bool TryRestore()
+    {
+        if (_kept is null || _kept.Description != _target.Description || _keptGeneration != _backend.DeviceGeneration)
+        {
+            return false;
+        }
+
+        _backend.Copy(_kept, _target);
+        return true;
+    }
+
+    /// <summary>Draws a list over the target, as the engine's overlay: nothing for an empty one.</summary>
+    internal void DrawOver(RenderList list)
+    {
+        if (list.Commands.Length > 0)
+        {
+            _backend.Draw(_target, list);
         }
     }
 
@@ -338,6 +387,8 @@ public sealed class HeadlessRenderer : IDisposable
             var target = _backend.CreateRenderTarget(new RenderTargetDescription(width, height));
             _target.Dispose();
             _target = target;
+            _kept?.Dispose();
+            _kept = null;
         }
 
         Scale = scale;
@@ -370,6 +421,7 @@ public sealed class HeadlessRenderer : IDisposable
             _disposed = true;
             _plan?.Dispose();
             _figure?.Dispose();
+            _kept?.Dispose();
             _target.Dispose();
         }
     }

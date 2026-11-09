@@ -70,6 +70,27 @@ public interface IGpuBackend : IDisposable
     void Draw(IRenderTarget target, RenderList list);
 
     /// <summary>
+    /// Copies every pixel of a render target into another of the same size, in a frame of its own if none is open (design
+    /// §5.2, §5.4, row I2b): the engine keeps the drawn plot in a target of its own and copies it back under what it draws
+    /// each frame. Allocates nothing.
+    /// </summary>
+    /// <param name="source">The target copied from.</param>
+    /// <param name="destination">The target copied into.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="source"/> or <paramref name="destination"/> is null.</exception>
+    /// <exception cref="ArgumentException">A target belongs to another backend, the two are the same, or their sizes differ.</exception>
+    /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again.</exception>
+    /// <exception cref="InvalidOperationException">After a device loss, the device or a render target could not be made again; the backend stays lost, and the next frame tries again.</exception>
+    /// <exception cref="ObjectDisposedException">The backend or a target was disposed.</exception>
+    void Copy(IRenderTarget source, IRenderTarget destination);
+
+    /// <summary>
+    /// Gets the number of the device the render targets are on (design §5.2, row I2b): it moves each time a device is made
+    /// again after a loss, when every target's pixels are gone. A target kept from an earlier frame is drawn again when it
+    /// moves.
+    /// </summary>
+    long DeviceGeneration { get; }
+
+    /// <summary>
     /// Closes the open frame of <paramref name="token"/> and the frames still open inside it; called by
     /// <see cref="FrameScope.Dispose"/>. A token of a frame already closed, or 0, does nothing: closing never throws for
     /// the order of the calls (design §5.2). Closing checks that the device is still there; while it is lost, closing
