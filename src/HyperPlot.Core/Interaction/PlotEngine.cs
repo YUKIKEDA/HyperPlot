@@ -539,17 +539,17 @@ public sealed partial class PlotEngine : IDisposable
         // A link that also stands the selection on more of the plot's panels (a facet's) adds their rows (row I3b).
         var (plan, origin) = (PlanOf(plot), selection.Panel.Panel);
         var answer = plan.SelectRows(origin, layer, selection, _renderer.Pool);
-        List<Task<RowSelection>>? parts = null;
+        List<(Task<RowSelection> Rows, Func<long, long>? Map)>? parts = null;
         for (var p = 0; p < plan.PanelCount; p++)
         {
             if (p != origin && selection.Kind != SelectionKind.Points && Applied(plot, p))
             {
-                parts ??= [answer.AsTask()];
-                parts.Add(plan.SelectRows(p, layer, selection, _renderer.Pool).AsTask());
+                parts ??= [(answer.AsTask(), null)];
+                parts.Add((plan.SelectRows(p, layer, selection, _renderer.Pool).AsTask(), null));
             }
         }
 
-        return parts is null ? answer : SelectionQuery.UnionOf(parts);
+        return parts is null ? answer : SelectionQuery.Union(parts, derived: false);
     }
 
     /// <summary>Clears every plot's selection (design §6.4, row I3a): tells <see cref="SelectionChanged"/> for each plot that had one.</summary>
@@ -2333,9 +2333,9 @@ public sealed partial class PlotEngine : IDisposable
         for (var p = 0; p < state.Panels && !_quietLinks; p++)
         {
             var (before, after) = (state.Work[p], state.Target[p]);
-            var axes =
-                (SameRange(before.X, after.X) && SameRange(before.X2, after.X2) ? ViewAxes.None : ViewAxes.X)
-                | (SameRange(before.Y, after.Y) && SameRange(before.Y2, after.Y2) ? ViewAxes.None : ViewAxes.Y);
+
+            // A link copies the primary scales (Issue #373 Decision 2): a change of a secondary scale alone copies nothing.
+            var axes = (SameRange(before.X, after.X) ? ViewAxes.None : ViewAxes.X) | (SameRange(before.Y, after.Y) ? ViewAxes.None : ViewAxes.Y);
             QueueView(plot, p, axes, animate);
         }
 

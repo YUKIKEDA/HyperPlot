@@ -388,6 +388,84 @@ public sealed class LinkTests
     }
 
     /// <summary>
+    /// A member draws the line along the axis whose kind it shares: the vertical line where its x is of the origin's kind,
+    /// the horizontal one where its y is (Issue #373 Decisions 4 and 16).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A figure of the fixture's line, the line over a log x, and the line over a symlog y; linked with Cursor; the hover's
+    ///   crosshair Both.
+    ///
+    /// Steps:
+    /// - Move to the origin's point of row 300; draw.
+    ///
+    /// Expected:
+    /// - Plot 1 (log x): a horizontal line across its panel, no vertical one. Plot 2 (symlog y): a vertical line down its
+    ///   panel, no horizontal one.
+    /// </remarks>
+    [Fact]
+    public void Cursor_DrawsTheLineOfTheAxisOfTheSameKind()
+    {
+        using var f = new EngineFixture();
+        var (x, y) = (f.Table.Col<double>("x"), f.Table.Col<float>("y"));
+        var logX = Plot.Create(f.Table).Line(x, y).ScaleX(Scale.Log().WithDomain(1, 1000)).ScaleY(Scale.Linear().WithDomain(-20, 20)).Build();
+        var symlogY = Plot.Create(f.Table).Line(x, y).ScaleY(Scale.Symlog().WithDomain(-20, 20)).Build();
+        Figure(f, f.Spec, logX, symlogY);
+        Link(f, LinkKinds.Cursor, First, Second, Third);
+        ((HoverTool)f.Engine.Bindings.First(b => b.Tool is HoverTool).Tool!).Crosshair = HoverCrosshair.Both;
+
+        var value = MathF.Sin(300 * 0.02f) * 10;
+        var at = f.Engine.ViewToPixel(First, ViewRange.FromValues(300.0, 300.0), ViewRange.FromValues(value, value));
+        _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, at));
+        f.Engine.RenderFrame();
+        var rects = f.Backend.LastList!.Rects.ToArray();
+        foreach (var (panel, across, down) in ((PanelId, bool, bool)[])[(Second, true, false), (Third, false, true)])
+        {
+            var (left, top, width, height) = PanelRectangle(f, panel);
+            Assert.Equal(across, rects.Any(r => r.X == left && r.Width == width && r.Height == 1 && r.Y >= top && r.Y < top + height));
+            Assert.Equal(down, rects.Any(r => r.Y == top && r.Height == height && r.Width == 1 && r.X >= left && r.X < left + width));
+        }
+    }
+
+    /// <summary>
+    /// A change of a secondary scale alone copies nothing: a link copies the primary x and y (Issue #373 Decision 2).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A figure of two plots of the fixture's line with a secondary x over [0, 2000], linked with View; a constraint that
+    ///   sets plot 1's y to [−5, 5]; animations off.
+    ///
+    /// Steps:
+    /// - Zoom plot 0's secondary x alone.
+    ///
+    /// Expected:
+    /// - No notice for plot 1, and its y at its full view, untouched by its constraint.
+    /// </remarks>
+    [Fact]
+    public void Views_ASecondaryChangeAloneIsNotCopied()
+    {
+        using var f = new EngineFixture();
+        var (x, y) = (f.Table.Col<double>("x"), f.Table.Col<float>("y"));
+        var spec = Plot.Create(f.Table)
+            .Line(x, y)
+            .Line(x, y, l => l.SecondaryX())
+            .ScaleY(Scale.Linear().WithDomain(-20, 20))
+            .ScaleX2(Scale.Linear().WithDomain(0, 2000))
+            .Build();
+        Figure(f, spec, spec);
+        Link(f, LinkKinds.View, First, Second);
+        var full = View(f, Second);
+        f.Engine.Constraints.Add(new SetYOf(1, -5, 5));
+        f.Changes.Clear();
+
+        f.Engine.Views.ZoomAt(First, Middle(f, First), 2, ViewAxes.X2);
+        f.Engine.RenderFrame();
+        Assert.NotEmpty(f.Changes);
+        Assert.DoesNotContain(f.Changes, c => c.Panel == Second);
+        Assert.Equal(full, View(f, Second));
+    }
+
+    /// <summary>
     /// A selection group copies a rectangle and an x range to another plot, each told in the order of the plots, an x range
     /// taking the member's y; points are not copied; a member of another x is passed over; clearing clears them all (Issue
     /// #373 Decisions 5 and 12).
@@ -455,11 +533,13 @@ public sealed class LinkTests
     /// - A facet of 2 panels with fixed scales (rows 0 to 499 and 500 to 999, x the row); every panel linked with Selection.
     ///
     /// Steps:
-    /// - Select an x range of [450, 550] on panel 0; draw; read the rows of layer 0.
+    /// - Select an x range of [450, 550] on panel 0; draw; read the rows of layer 0. Clear the groups; draw; read them again.
+    ///   Select the same range again; read them.
     ///
     /// Expected:
     /// - The selection's panel (0, 0). The last list holds the range's rect of 15 % of the foreground on both panels. The rows
-    ///   are those of x in [450, 550]: 450 to 499 of panel 0 and 500 to 550 of panel 1.
+    ///   are those of x in [450, 550]: 450 to 499 of panel 0 and 500 to 550 of panel 1. After the groups go: the same 101.
+    ///   The new selection: panel 0's 50 rows alone.
     /// </remarks>
     [Fact]
     public void Selection_StandsOnAFacetsLinkedPanels()
@@ -485,6 +565,13 @@ public sealed class LinkTests
         Assert.Equal(101, rows.Count);
         Assert.True(rows.Contains(450) && rows.Contains(499) && rows.Contains(500) && rows.Contains(550));
         Assert.False(rows.Contains(449) || rows.Contains(551));
+
+        // The group gone, the selection stands on panel 1 until it changes (Issue #377 Decision 3); a new one stands on its own.
+        f.Engine.Links.Clear();
+        f.Engine.RenderFrame();
+        Assert.Equal(101, SelectedRows(f.Engine).Count);
+        f.Engine.Select(Selection2D.XRange(First, ViewRange.FromValues(450.0, 550.0)));
+        Assert.Equal(50, SelectedRows(f.Engine).Count);
     }
 
     /// <summary>
