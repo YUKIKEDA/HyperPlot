@@ -1,5 +1,6 @@
 using System.Numerics;
 using HyperPlot.Interaction;
+using HyperPlot.Rendering;
 
 namespace HyperPlot;
 
@@ -54,6 +55,26 @@ internal sealed partial class PlotPlan
         var across = HitScan.PixelOfValue(layer.SecondaryY ? frames.Y2 : frames.Y, hit.Y);
         pixel = _guides.Flipped ? new Vector2((float)across, (float)along) : new Vector2((float)along, (float)across);
         return float.IsFinite(pixel.X) && float.IsFinite(pixel.Y);
+    }
+
+    /// <summary>
+    /// Records a panel's lines again over the plot, twice as wide and clipped to a rectangle, for a selection's highlight
+    /// (design §6.4, row I3a): a line, a step, and an area's outline as they were drawn last.
+    /// </summary>
+    internal void Highlight(int panel, RenderList list, int left, int top, int width, int height)
+    {
+        if (panel >= _panels.Length || width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        list.SetClip(left, top, width, height);
+        foreach (var layer in _panels[panel].Layers)
+        {
+            layer.Highlight(list);
+        }
+
+        list.ResetClip();
     }
 
     /// <summary>Returns the color a hit's series is drawn in (row I2b): its line's, its fill's, or its category's.</summary>

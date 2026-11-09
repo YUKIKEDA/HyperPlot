@@ -318,6 +318,7 @@ public sealed class PlotEngine : IDisposable
         }
 
         _overlay.Clear();
+        DrawSelections(_overlay);
         DrawHover(_overlay);
         _captured?.Overlay(_overlay, _context);
         if (full)
@@ -1289,6 +1290,7 @@ public sealed class PlotEngine : IDisposable
     private void DrawPlot()
     {
         _kept = false;
+        _lassoPlot = -1;
         if (_plot is not null)
         {
             _renderer.Render(_plot, _states[0].Shown, null);
@@ -1614,6 +1616,130 @@ public sealed class PlotEngine : IDisposable
         {
             DrawTooltip(list, tool, plan, theme, (left, top, width, height), line);
         }
+    }
+
+    /// <summary>
+    /// Records each plot's selection over the plot (design §6.4, row I3a, Issue #364 Decision 5): its range, or its lasso's
+    /// polygon, in 15 % of the foreground; the lines of its panel within its x range again, twice as wide; and a marker at each
+    /// of a selection's points. Allocates nothing once warm: a lasso's fill is made again only when it or the layout changes.
+    /// </summary>
+    private void DrawSelections(RenderList list)
+    {
+        var count = PlotCount;
+        for (var k = 0; k < count && k < _selections.Length; k++)
+        {
+            if (_selections[k] is not { } selection || selection.Panel.Panel >= PlanOf(k).PanelCount)
+            {
+                continue;
+            }
+
+            var (guide, theme, plan) = (PanelOf(selection.Panel), SpecOf(k).Theme, PlanOf(k));
+            var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
+            var faint = theme.Foreground with { A = (byte)Math.Round(theme.Foreground.A * 0.15) };
+            if (selection.Kind == SelectionKind.Points)
+            {
+                foreach (var point in selection.Points.Span)
+                {
+                    if (point.Panel == selection.Panel.Panel && plan.HitPixel(point, out var at))
+                    {
+                        Marker(list, at, plan.HitColor(point), theme);
+                    }
+                }
+
+                continue;
+            }
+
+            // The x range's span along, and its frame clamped to the panel; an x range runs the panel across.
+            var flipped = plan.Guides.Flipped;
+            var low = ViewToPixel(selection.Panel, selection.X with { Upper = selection.X.Lower }, selection.Y with { Upper = selection.Y.Lower });
+            var high = ViewToPixel(selection.Panel, selection.X with { Lower = selection.X.Upper }, selection.Y with { Lower = selection.Y.Upper });
+            var (x0, x1) = (Math.Clamp(MathF.Min(low.X, high.X), left, left + width), Math.Clamp(MathF.Max(low.X, high.X), left, left + width));
+            var (y0, y1) = (Math.Clamp(MathF.Min(low.Y, high.Y), top, top + height), Math.Clamp(MathF.Max(low.Y, high.Y), top, top + height));
+            if (selection.Kind == SelectionKind.XRange)
+            {
+                (x0, x1, y0, y1) = flipped ? ((float)left, (float)(left + width), y0, y1) : (x0, x1, (float)top, (float)(top + height));
+            }
+
+            if (selection.Kind == SelectionKind.Lasso)
+            {
+                FillLasso(list, k, selection, faint, (left, top, width, height));
+            }
+            else
+            {
+                list.DrawRect(x0, y0, x1 - x0, y1 - y0, faint);
+            }
+
+            var (alongFrom, alongTo) = flipped ? (y0, y1) : (x0, x1);
+            var (clipLeft, clipTop, clipWidth, clipHeight) = flipped
+                ? (left, (int)MathF.Floor(alongFrom), width, (int)MathF.Ceiling(alongTo - MathF.Floor(alongFrom)))
+                : ((int)MathF.Floor(alongFrom), top, (int)MathF.Ceiling(alongTo - MathF.Floor(alongFrom)), height);
+            plan.Highlight(selection.Panel.Panel, list, clipLeft, clipTop, clipWidth, clipHeight);
+        }
+    }
+
+    /// <summary>
+    /// Records a lasso's polygon filled by the even-odd rule, a rect a pixel row a run, from rects made again when the lasso or
+    /// the layout changes (the frames of the mouse alone reuse them).
+    /// </summary>
+    private void FillLasso(RenderList list, int plot, Selection2D selection, Color color, (int Left, int Top, int Width, int Height) panel)
+    {
+        if (_lassoPlot != plot)
+        {
+            _lassoFill.Clear();
+            _lassoPlot = plot;
+            var shares = selection.Polygon.Span;
+            Span<Vector2> pixels = shares.Length <= 1024 ? stackalloc Vector2[shares.Length] : new Vector2[shares.Length];
+            var (top, bottom) = (float.PositiveInfinity, float.NegativeInfinity);
+            for (var i = 0; i < shares.Length; i++)
+            {
+                var x = selection.X.Lower + (shares[i].X * (selection.X.Upper - selection.X.Lower));
+                var y = selection.Y.Lower + (shares[i].Y * (selection.Y.Upper - selection.Y.Lower));
+                pixels[i] = ViewToPixel(selection.Panel, new ViewRange(selection.X.Origin, x, x), new ViewRange(selection.Y.Origin, y, y));
+                (top, bottom) = (MathF.Min(top, pixels[i].Y), MathF.Max(bottom, pixels[i].Y));
+            }
+
+            Span<float> crossings = stackalloc float[1025];
+            for (var row = MathF.Max(MathF.Floor(top), panel.Top); row < MathF.Min(MathF.Ceiling(bottom), panel.Top + panel.Height); row++)
+            {
+                var (y, n) = (row + 0.5f, 0);
+                for (int i = 0, j = pixels.Length - 1; i < pixels.Length; j = i++)
+                {
+                    var (a, b) = (pixels[i], pixels[j]);
+                    if ((a.Y > y) != (b.Y > y) && n < crossings.Length)
+                    {
+                        crossings[n++] = a.X + ((y - a.Y) * (b.X - a.X) / (b.Y - a.Y));
+                    }
+                }
+
+                crossings[..n].Sort();
+                for (var c = 0; c + 1 < n; c += 2)
+                {
+                    var (from, to) = (
+                        Math.Clamp(crossings[c], panel.Left, panel.Left + panel.Width),
+                        Math.Clamp(crossings[c + 1], panel.Left, panel.Left + panel.Width)
+                    );
+                    if (to > from)
+                    {
+                        _lassoFill.Add((from, row, to - from, 1));
+                    }
+                }
+            }
+        }
+
+        foreach (var (x, y, width, height) in _lassoFill)
+        {
+            list.DrawRect(x, y, width, height, color);
+        }
+    }
+
+    /// <summary>Records a marker: a disc of 3.5 DIPs in a color, in a ring of the panel's background (rows I2b and I3a).</summary>
+    private void Marker(RenderList list, Vector2 at, Color color, Theme theme)
+    {
+        var (radius, ring) = (3.5f * Scale, 4.5f * Scale);
+        ReadOnlySpan<SectorTrapezoid> outer = [new SectorTrapezoid(0, MathF.Tau, ring, ring, 0, 0)];
+        ReadOnlySpan<SectorTrapezoid> inner = [new SectorTrapezoid(0, MathF.Tau, radius, radius, 0, 0)];
+        list.DrawSectors(outer, at, theme.PanelBackground);
+        list.DrawSectors(inner, at, color);
     }
 
     /// <summary>Records the tooltip's box and lines (Issue #347 Decision 4): the default lines or the tool's formatter's.</summary>

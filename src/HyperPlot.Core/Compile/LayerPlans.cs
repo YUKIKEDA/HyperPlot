@@ -955,6 +955,61 @@ internal abstract class LayerPlan
     /// <summary>Gets the number of series the layer answers a hit test with: 2 for a band's two edges, else 1.</summary>
     internal virtual int HitWidth => 1;
 
+    // The line the layer drew last, on the screen, for a selection's highlight (row I3a): a line, a step, an area's outline.
+    private Vector2[] _drawn = [];
+    private int _drawnCount;
+    private LineStyle _drawnStyle;
+
+    /// <summary>
+    /// Records the layer's line again over the plot, twice as wide, for a selection's highlight (design §6.4, row I3a, Issue
+    /// #364 Decision 5): the caller clips it to the selected x range. A layer that keeps no line draws nothing.
+    /// </summary>
+    internal virtual void Highlight(RenderList list)
+    {
+        if (_drawnCount > 1)
+        {
+            list.DrawPolyline(_drawn.AsSpan(0, _drawnCount), _drawnStyle with { Width = _drawnStyle.Width * 2 });
+        }
+    }
+
+    /// <summary>Keeps the line the layer drew, given along and across, as the screen has it (row I3a).</summary>
+    protected void KeepLine(ReadOnlySpan<Vector2> line, in LineStyle style, bool flipped)
+    {
+        Ensure(ref _drawn, line.Length);
+        for (var i = 0; i < line.Length; i++)
+        {
+            _drawn[i] = flipped ? new Vector2(line[i].Y, line[i].X) : line[i];
+        }
+
+        (_drawnCount, _drawnStyle) = (line.Length, style);
+    }
+
+    /// <summary>Keeps a series' line from its M4 points mapped to pixels, a break where the points break (row I3a).</summary>
+    protected void KeepLine(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, in LineStyle style, bool flipped)
+    {
+        Ensure(ref _drawn, (2 * points.Length) + 1);
+        var count = 0;
+        for (var i = 0; i < points.Length; i++)
+        {
+            if (points[i].BreakBefore)
+            {
+                _drawn[count++] = new Vector2(float.NaN);
+            }
+
+            _drawn[count++] = flipped ? new Vector2((float)ys[i], (float)xs[i]) : new Vector2((float)xs[i], (float)ys[i]);
+        }
+
+        (_drawnCount, _drawnStyle) = (count, style);
+    }
+
+    private static void Ensure(ref Vector2[] buffer, int length)
+    {
+        if (buffer.Length < length)
+        {
+            Array.Resize(ref buffer, Math.Max(length, buffer.Length * 2));
+        }
+    }
+
     /// <summary>Returns the color a series of the layer's hits is drawn in (row I2b): where a hover marks it. The series color by default.</summary>
     internal virtual Color HitColor(int series) => SeriesColor;
 

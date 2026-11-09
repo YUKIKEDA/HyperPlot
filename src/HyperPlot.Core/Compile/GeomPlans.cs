@@ -37,7 +37,9 @@ internal sealed class LinePlan : LayerPlan
     {
         var points = _output.AsSpan(0, context.Batch.GetResult(_series).Count);
         _ = context.MapSeries(points, out var xs, out var ys);
-        context.Polyline(points, xs, ys, Stroke(((LineLayerSpec)Spec).Style));
+        var style = Stroke(((LineLayerSpec)Spec).Style);
+        context.Polyline(points, xs, ys, style);
+        KeepLine(points, xs, ys, style, context.Flipped);
     }
 }
 
@@ -103,6 +105,7 @@ internal sealed class StepPlan : LayerPlan
         }
 
         context.DrawPolyline(buffer[..count], Stroke(step.Style));
+        KeepLine(buffer[..count], Stroke(step.Style), context.Flipped);
     }
 }
 
@@ -158,6 +161,7 @@ internal sealed class AreaPlan : LayerPlan
         if (area.Outline is { } outline)
         {
             context.Polyline(points, xs, ys, Stroke(outline));
+            KeepLine(points, xs, ys, Stroke(outline), context.Flipped);
         }
     }
 

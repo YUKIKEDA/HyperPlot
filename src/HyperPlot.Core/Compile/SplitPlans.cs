@@ -574,6 +574,14 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         return HitScan.PixelOfValue(x, hit.X);
     }
 
+    internal override void Highlight(RenderList list)
+    {
+        foreach (var part in _parts)
+        {
+            part.Plan.Highlight(list);
+        }
+    }
+
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered)
     {

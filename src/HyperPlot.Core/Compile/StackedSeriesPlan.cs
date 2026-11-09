@@ -147,6 +147,14 @@ internal sealed class StackedSeriesPlan : LayerPlan
         return SeriesColor;
     }
 
+    internal override void Highlight(RenderList list)
+    {
+        foreach (var part in _parts)
+        {
+            part.Plan.Highlight(list);
+        }
+    }
+
     internal override double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit)
     {
         foreach (var part in _parts)
