@@ -176,7 +176,12 @@ internal sealed partial class PlotPlan
         if (measurement.Kind == MeasureKind.Points)
         {
             written += Append("Δx: ", destination);
-            if (spec.ScaleX is TimeScaleSpec)
+            if (spec.ScaleX is BandScaleSpec)
+            {
+                // A band axis writes a value as its category's name (row I2c): a difference is a number of categories.
+                written += Number(measurement.DeltaX, destination[written..]);
+            }
+            else if (spec.ScaleX is TimeScaleSpec)
             {
                 written += Number(measurement.DeltaX * SecondsPerUnit(ofX: true), destination[written..]);
                 written += Append(" s", destination[written..]);
@@ -209,7 +214,7 @@ internal sealed partial class PlotPlan
             }
 
             length += Append(": n=", line[length..]);
-            length += Number(s.Count, line[length..]);
+            length += s.Count.TryFormat(line[length..], out var digits, provider: System.Globalization.CultureInfo.InvariantCulture) ? digits : 0;
             length += Append(", mean=", line[length..]);
             length += guide.Y.WriteValue(s.Mean, line[length..]);
             length += Append(", min=", line[length..]);

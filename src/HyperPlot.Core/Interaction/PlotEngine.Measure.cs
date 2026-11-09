@@ -14,7 +14,6 @@ public sealed partial class PlotEngine
     private readonly char[] _measureText = new char[HoverTool.TooltipLength];
     private Measurement2D? _measurement;
     private MeasureTool? _measureTool;
-    private Vector2 _measureAnchor;
     private SeriesStatistics[] _statisticsBuffer = new SeriesStatistics[16];
 
     /// <summary>
@@ -80,8 +79,7 @@ public sealed partial class PlotEngine
             );
         }
 
-        var end = flat.Kind == MeasureKind.Points ? flat.To : (flat.X with { Lower = flat.X.Upper }, MiddleY(flat.Panel));
-        Take(Computed(flat), null, ViewToPixel(flat.Panel, end.Item1, end.Item2));
+        Take(Computed(flat), null);
     }
 
     /// <summary>Clears the measurement (design §6.5, row I4b): tells <see cref="MeasurementChanged"/> when there was one.</summary>
@@ -120,7 +118,7 @@ public sealed partial class PlotEngine
     {
         var (a, b) = (PixelToView(panel, from), PixelToView(panel, to));
         var measurement = tool.Kind == MeasureKind.Points ? Measurement2D.OfPoints(panel, a, b) : Measurement2D.OfRange(panel, Span(a.X, b.X));
-        Take(Computed(measurement), tool, to);
+        Take(Computed(measurement), tool);
 
         static ViewRange Span(in ViewRange one, in ViewRange other)
         {
@@ -166,10 +164,10 @@ public sealed partial class PlotEngine
         return count;
     }
 
-    /// <summary>Takes a measurement, the tool that made it, and its box's place; tells it and asks for a frame.</summary>
-    private void Take(Measurement2D measurement, MeasureTool? tool, Vector2 anchor)
+    /// <summary>Takes a measurement and the tool that made it; tells it and asks for a frame.</summary>
+    private void Take(Measurement2D measurement, MeasureTool? tool)
     {
-        (_measurement, _measureTool, _measureAnchor) = (measurement, tool, anchor);
+        (_measurement, _measureTool) = (measurement, tool);
         RequestFrame();
         MeasurementChanged?.Invoke();
     }
@@ -236,9 +234,13 @@ public sealed partial class PlotEngine
         var (guide, theme, plan) = (PanelOf(measured.Panel), SpecOf(measured.Panel.Plot).Theme, PlanOf(measured.Panel.Plot));
         var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
         var line = MathF.Max(1, MathF.Round(Scale));
+
+        // The box goes at the end as the view shows it now (PR #395's review): the second point, or the range's end.
+        Vector2 end;
         if (measured.Kind == MeasureKind.Points)
         {
             var (a, b) = (ViewToPixel(measured.Panel, measured.From.X, measured.From.Y), ViewToPixel(measured.Panel, measured.To.X, measured.To.Y));
+            end = b;
             list.SetClip(left, top, width, height);
             list.DrawPolyline([a, b], new LineStyle(theme.Foreground, line));
             list.ResetClip();
@@ -250,6 +252,7 @@ public sealed partial class PlotEngine
             var y = MiddleY(measured.Panel);
             var low = ViewToPixel(measured.Panel, measured.X with { Upper = measured.X.Lower }, y);
             var high = ViewToPixel(measured.Panel, measured.X with { Lower = measured.X.Upper }, y);
+            end = high;
             var faint = theme.Foreground with { A = (byte)Math.Round(theme.Foreground.A * 0.15) };
             if (plan.Guides.Flipped)
             {
@@ -279,7 +282,7 @@ public sealed partial class PlotEngine
 
         if (length > 0)
         {
-            DrawBox(list, _measureText.AsSpan(0, length), _measureAnchor, theme, (left, top, width, height), line);
+            DrawBox(list, _measureText.AsSpan(0, length), end, theme, (left, top, width, height), line);
         }
     }
 }

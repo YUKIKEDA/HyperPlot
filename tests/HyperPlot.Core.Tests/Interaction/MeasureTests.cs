@@ -391,13 +391,15 @@ public sealed class MeasureTests
     /// - The fixture's line; then 60 lines split by a category of 60 values over the same x.
     ///
     /// Steps:
-    /// - Measure points (100, −5) to (300, 5) by code; draw. Measure the range [100, 300]; draw. Measure the range over the 60
+    /// - Measure points (100, −5) to (300, 5) by code; draw; zoom by a wheel and draw. Measure points from category 1 to 3 over
+    ///   bars of a band x; draw. Measure the range [100, 300]; draw. Measure the range over the 60
     ///   series; draw. With a MeasureTool whose Format writes "custom", drag; whose Format returns false; whose Format writes
     ///   2,000 characters.
     ///
     /// Expected:
     /// - Points: a polyline of one segment between the points' pixels, 4 sector calls, the box's text "Δx: 200\nΔy: 10\nslope:
-    ///   0.05". Range: a rect of 15 % of the foreground from x 100's pixel to x 300's, the panel's height; one text that starts
+    ///   0.05"; after the zoom the box's rect starts 12 pixels from the end's new pixel. The band: the text starts with
+    ///   "Δx: 2". Range: a rect of 15 % of the foreground from x 100's pixel to x 300's, the panel's height; one text that starts
     ///   with "line: n=201". 60 series: the text ends with " more)". The format: "custom"; false: no text; 2,000:
     ///   InvalidOperationException from RenderFrame.
     /// </remarks>
@@ -414,6 +416,31 @@ public sealed class MeasureTests
         Assert.True(Vector2.Distance(segment.Start, a) < 0.75f && Vector2.Distance(segment.End, b) < 0.75f);
         Assert.Equal(4, list.SectorCalls.Length);
         Assert.Equal("Δx: 200\nΔy: 10\nslope: 0.05", Assert.Single(list.Texts.ToArray()).Text);
+
+        // The box follows the end through a zoom (PR #395's review): its rect starts 12 pixels from the end's new pixel.
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        Assert.True(f.Wheel(f.Middle, 1));
+        f.Engine.RenderFrame();
+        var end = f.Engine.ViewToPixel(Panel, P(300, 5).Item1, P(300, 5).Item2);
+        Assert.False(Vector2.Distance(end, b) < 1);
+        Assert.Contains(
+            f.Backend.LastList!.Rects.ToArray(),
+            r => r.Width > 20 && (Math.Abs(r.X - (MathF.Round(end.X) + 12)) <= 1.5f || Math.Abs(r.X + r.Width - (MathF.Round(end.X) - 12)) <= 1.5f)
+        );
+        f.Engine.Views.ResetAll();
+        f.Engine.RenderFrame();
+
+        // A band x writes Δx as a number of categories, not a category's name (PR #395's review).
+        string[] names = ["c0", "c1", "c2", "c3", "c4"];
+        using var heights = Column.Wrap(new double[] { 1, 2, 3, 4, 5 });
+        var bars = DataTable.Create().Add("c", Column.Categorical(names, names)).Add("v", heights).Build();
+        f.Engine.SetPlot(Plot.Create(bars).Bar(bars.Cat("c"), bars.Col<double>("v")).ScaleX(Scale.Band()).Build());
+        f.Engine.RenderFrame();
+        f.Engine.Measure(Measurement2D.OfPoints(Panel, P(1, 1), P(3, 2)));
+        f.Engine.RenderFrame();
+        Assert.StartsWith("Δx: 2\n", Assert.Single(f.Backend.LastList!.Texts.ToArray()).Text);
+        f.Engine.SetPlot(f.Spec);
+        f.Engine.RenderFrame();
 
         f.Engine.Measure(Measurement2D.OfRange(Panel, ViewRange.FromValues(100.0, 300.0)));
         f.Engine.RenderFrame();
