@@ -20,11 +20,30 @@ internal ref struct HitScan
     private readonly Span<SeriesHit> _results;
     private readonly PyramidStore _store;
 
+    // A scan of statistics (row I4b): the series' summaries over an x range of the scale space, in place of hits.
+    private readonly Span<SeriesStatistics> _statistics;
+    private readonly bool _summing;
+    private readonly ScaleRange _range;
+
     public HitScan(Span<SeriesHit> results, PyramidStore store, int plot, int panel, HitMode mode, float radius, double along, double across)
     {
         _results = results;
         _store = store;
         (Plot, Panel, Mode, Radius, Along, Across) = (plot, panel, mode, radius, along, across);
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="HitScan"/> struct for statistics (design §6.5 "計測", row I4b): each series
+    /// asked adds its summary over the rows whose x lies in the range of the x scale's space; bars, error bars, and rects add
+    /// none.
+    /// </summary>
+    public HitScan(Span<SeriesStatistics> statistics, PyramidStore store, int plot, int panel, ScaleRange range)
+    {
+        _statistics = statistics;
+        _store = store;
+        _summing = true;
+        _range = range;
+        (Plot, Panel) = (plot, panel);
     }
 
     /// <summary>Gets the number of hits found, written or not: the caller's buffer may be shorter (Issue #337 Decision 9).</summary>
@@ -67,6 +86,51 @@ internal ref struct HitScan
 
     /// <summary>Gets or sets a value indicating whether the rows asked are a derived table's: a stat's or a stack's.</summary>
     public bool Derived { get; set; }
+
+    /// <summary>
+    /// Adds a series' summary over the rows of [start, end) whose x lies in the scan's range (row I4b): the rows found by two
+    /// searches of x, the y's count, mean, least, and greatest from its pyramid. Counted whether the span has room or not.
+    /// </summary>
+    private void Summarize(int series, PlotPyramid pyramid, Column x, long start, long end)
+    {
+        long count = 0;
+        double sum = 0,
+            min = double.NaN,
+            max = double.NaN;
+        var provisional = LayerProvisional;
+        if (start < end)
+        {
+            // The range's ends as the column's values: a difference from the domain's origin, or a data value through a transform.
+            var (lowOrigin, low) = ColumnValue(X, _range.Origin, _range.Lower);
+            var (highOrigin, high) = ColumnValue(X, _range.Origin, _range.Upper);
+            var first = x.LowerBound(low, lowOrigin, new RowRange(start, end));
+            var last = x.LowerBound(Math.BitIncrement(high), highOrigin, new RowRange(start, end));
+            if (first < last)
+            {
+                pyramid.Summarize(first, last, out count, out sum, out min, out max, ref provisional);
+            }
+        }
+
+        if (Found < _statistics.Length)
+        {
+            var (mean, low, high) = count > 0 ? (sum / count, min, max) : (double.NaN, double.NaN, double.NaN);
+            _statistics[Found] = new SeriesStatistics(Layer, (SeriesBase * SeriesWidth) + series, count, mean, low, high, provisional);
+        }
+
+        Found++;
+
+        static (long Origin, double Difference) ColumnValue(in GeomFrame.Axis axis, long origin, double difference)
+        {
+            if (axis.Transform is not { } transform)
+            {
+                return (origin, difference);
+            }
+
+            Span<double> one = [origin + difference];
+            transform.Inverse(one, one);
+            return (0, one[0]);
+        }
+    }
 
     /// <summary>Writes a hit when the buffer has room, and counts it either way.</summary>
     public void Add(int series, long row, double x, double y, double distance, bool derived, bool provisional)
@@ -118,6 +182,12 @@ internal ref struct HitScan
         }
 
         var (start, end) = (rows.Start, rows.EndIn(Math.Min(x.Length, y.Length)));
+        if (_summing)
+        {
+            Summarize(series, pyramid, x, start, end);
+            return;
+        }
+
         if (start >= end)
         {
             return;
@@ -160,6 +230,11 @@ internal ref struct HitScan
     /// </summary>
     public void Bars(int series, Column x, Column? low, Column high, RowRange rows, double baseline, double shift, double half, bool derived)
     {
+        if (_summing)
+        {
+            return;
+        }
+
         if (_store.Find(high) is not { } pyramid)
         {
             return;
@@ -226,6 +301,11 @@ internal ref struct HitScan
     /// </summary>
     public void ErrorBars(Column x, Column low, Column high, RowRange rows, double cap)
     {
+        if (_summing)
+        {
+            return;
+        }
+
         if (_store.Find(high) is not { } highs || _store.Find(low) is not { } lows)
         {
             return;
@@ -318,6 +398,11 @@ internal ref struct HitScan
         Column[] columns
     )
     {
+        if (_summing)
+        {
+            return;
+        }
+
         // Squared distances and plain comparisons: 131,072 rectangles a call (design §9, P-5). A rectangle with a corner
         // that does not map (NaN) fails each "lower ≤ upper" test and is passed, as the recording draws nothing for it.
         var (along, across, xMode) = (Along, Across, Mode == HitMode.X);

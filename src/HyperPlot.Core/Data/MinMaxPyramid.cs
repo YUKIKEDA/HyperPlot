@@ -361,6 +361,82 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     }
 
     /// <summary>
+    /// Adds up the values of [start, end) that are not NaN, and counts them (design §6.5 "計測", row I4b): a whole chunk from
+    /// its statistics already computed, a whole bucket of sums from its sum and count, and at most 4,095 raw values at each
+    /// end of a chunk. A chunk whose block is not built, or changed under the read, adds nothing and sets
+    /// <paramref name="provisional"/>: nothing is computed on the caller's thread (design §3.3, invariant 2). Allocates nothing.
+    /// </summary>
+    internal void Summarize(long start, long end, out long count, out double sum, ref bool provisional)
+    {
+        (count, sum) = (0, 0);
+        if (start >= end)
+        {
+            return;
+        }
+
+        var firstChunk = (int)(start >> HyperPlot.Column.ChunkShift);
+        var lastChunk = (int)((end - 1) >> HyperPlot.Column.ChunkShift);
+        for (var chunk = firstChunk; chunk <= lastChunk; chunk++)
+        {
+            var chunkStart = (long)chunk << HyperPlot.Column.ChunkShift;
+            var layout = LayoutOf(chunk);
+            var lo = (int)(Math.Max(start, chunkStart) - chunkStart);
+            var hi = (int)(Math.Min(end, chunkStart + layout.ChunkLength) - chunkStart);
+            if (lo == 0 && hi == layout.ChunkLength && Column.TryGetStoredStats(chunk, out var stats))
+            {
+                (count, sum) = (count + stats.Count, sum + stats.Sum);
+                continue;
+            }
+
+            if (TryBeginRead(chunk, out var sequence))
+            {
+                var values = Column.GetChunk(chunk);
+                var sums = Sums(chunk, layout);
+                var (localCount, localSum) = (0L, 0.0);
+                var position = lo;
+                while (position < hi)
+                {
+                    var bucket = position >> PyramidLayout.SumShift;
+                    var bucketEnd = Math.Min((bucket + 1) << PyramidLayout.SumShift, layout.ChunkLength);
+                    if ((position & (PyramidLayout.SumBucket - 1)) == 0 && bucketEnd <= hi)
+                    {
+                        localSum += sums[bucket];
+                        localCount += NumberOf(chunk, layout, PyramidLayout.SumLevel, bucket);
+                        position = bucketEnd;
+                        continue;
+                    }
+
+                    var runEnd = Math.Min(hi, bucketEnd);
+                    var run = values[position..runEnd];
+                    _rawReads += run.Length;
+                    localSum += PyramidKernel.Sum(run);
+                    localCount += run.Length - CountNaN(run);
+                    position = runEnd;
+                }
+
+                if (EndRead(chunk, sequence))
+                {
+                    (count, sum) = (count + localCount, sum + localSum);
+                    continue;
+                }
+            }
+
+            provisional = true;
+        }
+
+        static int CountNaN(ReadOnlySpan<T> run)
+        {
+            var nan = 0;
+            foreach (var x in run)
+            {
+                nan += T.IsNaN(x) ? 1 : 0;
+            }
+
+            return nan;
+        }
+    }
+
+    /// <summary>
     /// Returns the first (or last) element in [start, end) that is not NaN, or -1 when there is none. Skips buckets that are
     /// all NaN. A chunk whose pyramid is not built, or whose block disagrees with the raw values, is not scanned (design
     /// §5.5.1): the search returns <see cref="PyramidSearch.Unknown"/> and sets <paramref name="provisional"/>.
@@ -726,6 +802,8 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     // The spans below (minima, maxima, and the counts in each level's width) cover regions of a block that the constructor
     // allocated for the chunk's layout, and live no longer than the call that made them; every read and write through them
     // is bounds-checked. Blocks are freed only in Dispose, which must not run beside a query or a build.
+    private Span<double> Sums(int chunk, PyramidLayout layout) => new((byte*)_blocks[chunk] + layout.SumOffset, layout.Count(PyramidLayout.SumLevel));
+
     private Span<T> Mins(int chunk, PyramidLayout layout, int level) => new((byte*)_blocks[chunk] + layout.MinOffset(level), layout.Count(level));
 
     private Span<T> Maxs(int chunk, PyramidLayout layout, int level) => new((byte*)_blocks[chunk] + layout.MaxOffset(level), layout.Count(level));
@@ -776,11 +854,11 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
         var stats = default(ChunkStats<T>);
         if (withStats)
         {
-            stats = PyramidKernel.StatsAndLevel1(values, mins, maxs, level1Numbers);
+            stats = PyramidKernel.StatsAndLevel1(values, mins, maxs, level1Numbers, Sums(chunk, layout));
         }
         else
         {
-            PyramidKernel.Level1(values, mins, maxs, level1Numbers);
+            PyramidKernel.Level1(values, mins, maxs, level1Numbers, Sums(chunk, layout));
         }
 
         for (var level = 1; level < PyramidLayout.LevelCount; level++)

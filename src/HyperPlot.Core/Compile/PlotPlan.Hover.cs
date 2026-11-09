@@ -129,6 +129,126 @@ internal sealed partial class PlotPlan
     /// label or its geom, the values in the format of their axes' tick labels; a line feed between two. Returns the characters
     /// written, as many as fit. Allocates nothing.
     /// </summary>
+    /// <summary>
+    /// Returns a value of the scale space in data units (row I4b): through the axis's transform's inverse, else as it is.
+    /// </summary>
+    internal double DataValue(bool ofX, long origin, double difference)
+    {
+        var transform = ofX ? _xTransform : _yTransform;
+        if (transform is null)
+        {
+            return origin + difference;
+        }
+
+        Span<double> one = [origin + difference];
+        transform.Inverse(one, one);
+        return one[0];
+    }
+
+    /// <summary>Returns the seconds of one unit of a time axis (row I4b's slope), or 1 for another axis.</summary>
+    internal double SecondsPerUnit(bool ofX) =>
+        (_spec is { } spec ? (ofX ? spec.ScaleX : spec.ScaleY) : null) is TimeScaleSpec time
+            ? time.Unit switch
+            {
+                TimeUnit.Ticks => 1e-7,
+                TimeUnit.Nanoseconds => 1e-9,
+                TimeUnit.Microseconds => 1e-6,
+                TimeUnit.Milliseconds => 1e-3,
+                _ => 1,
+            }
+            : 1;
+
+    /// <summary>
+    /// Writes a measurement's lines (design §6.5 "計測", row I4b, Issue #390 Decisions 6 and 11): "Δx", "Δy", and "slope" for
+    /// points, a time axis's Δx in seconds; a line a series for a range, its count, mean, least, and greatest in the y axis's
+    /// format, and "… (n more)" for the series past the room. Returns the characters written.
+    /// </summary>
+    internal int WriteMeasurement(Measurement2D measurement, Span<char> destination)
+    {
+        if (_spec is not { } spec || measurement.Panel.Panel >= _guides.PanelCount)
+        {
+            return 0;
+        }
+
+        var guide = _guides.PanelAt(measurement.Panel.Panel);
+        Span<char> line = stackalloc char[256];
+        var written = 0;
+        if (measurement.Kind == MeasureKind.Points)
+        {
+            written += Append("Δx: ", destination);
+            if (spec.ScaleX is TimeScaleSpec)
+            {
+                written += Number(measurement.DeltaX * SecondsPerUnit(ofX: true), destination[written..]);
+                written += Append(" s", destination[written..]);
+            }
+            else
+            {
+                written += guide.X.WriteValue(measurement.DeltaX, destination[written..]);
+            }
+
+            written += Append("\nΔy: ", destination[written..]);
+            written += guide.Y.WriteValue(measurement.DeltaY, destination[written..]);
+            written += Append("\nslope: ", destination[written..]);
+            written += Number(measurement.Slope, destination[written..]);
+            return written;
+        }
+
+        var statistics = measurement.Statistics.Span;
+        for (var i = 0; i < statistics.Length; i++)
+        {
+            var s = statistics[i];
+            var length = 0;
+            var layer = s.Layer < spec.Layers.Count ? spec.Layers[s.Layer] : null;
+            if (layer?.Label is { Length: > 0 } label)
+            {
+                length += Append(label, line);
+            }
+            else if (layer is not null)
+            {
+                length += Append(GeomWords(layer).Geom, line);
+            }
+
+            length += Append(": n=", line[length..]);
+            length += Number(s.Count, line[length..]);
+            length += Append(", mean=", line[length..]);
+            length += guide.Y.WriteValue(s.Mean, line[length..]);
+            length += Append(", min=", line[length..]);
+            length += guide.Y.WriteValue(s.Min, line[length..]);
+            length += Append(", max=", line[length..]);
+            length += guide.Y.WriteValue(s.Max, line[length..]);
+
+            // A line that leaves no room for the note of the rest is not written: the note takes its place.
+            var rest = statistics.Length - i - 1;
+            var needed = (written > 0 ? 1 : 0) + length + (rest > 0 ? 20 : 0);
+            if (written + needed > destination.Length)
+            {
+                written += Append(written > 0 ? "\n… (" : "… (", destination[written..]);
+                written += Number(statistics.Length - i, destination[written..]);
+                written += Append(" more)", destination[written..]);
+                return written;
+            }
+
+            if (written > 0)
+            {
+                written += Append("\n", destination[written..]);
+            }
+
+            written += Append(line[..length], destination[written..]);
+        }
+
+        return written;
+
+        static int Number(double value, Span<char> to) =>
+            value.TryFormat(to, out var count, "G6", System.Globalization.CultureInfo.InvariantCulture) ? count : 0;
+
+        static int Append(ReadOnlySpan<char> text, Span<char> to)
+        {
+            var count = Math.Min(text.Length, to.Length);
+            text[..count].CopyTo(to);
+            return count;
+        }
+    }
+
     internal int WriteTooltip(ReadOnlySpan<SeriesHit> hits, Span<char> destination)
     {
         var written = 0;

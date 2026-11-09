@@ -429,3 +429,67 @@ public sealed class AnnotationTool : IPlotTool
         context.EndAnnotationDrag(keep: false);
     }
 }
+
+/// <summary>
+/// Measures with a drag (design §6.5 "計測", requirement I-6, row I4b, Issue #390): <see cref="MeasureKind.Points"/> from the
+/// press to the pointer, Δx, Δy, and the slope; <see cref="MeasureKind.Range"/> over the x range the drag spans, each series'
+/// count, mean, least, and greatest. The measurement follows the drag and stays after the release, until the next one, Escape,
+/// or a new mapping. Not in the default bindings: an application adds it. A polar panel is not measured.
+/// </summary>
+public sealed class MeasureTool : IPlotTool
+{
+    private PanelId _panel;
+    private System.Numerics.Vector2 _from;
+
+    /// <summary>Initializes a new instance of the <see cref="MeasureTool"/> class.</summary>
+    /// <param name="kind">What the tool measures.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="kind"/> is not a named value.</exception>
+    public MeasureTool(MeasureKind kind = MeasureKind.Points)
+    {
+        if (!Enum.IsDefined(kind))
+        {
+            throw new ArgumentOutOfRangeException(nameof(kind), kind, "The kind is a named MeasureKind value.");
+        }
+
+        Kind = kind;
+    }
+
+    /// <summary>Gets what the tool measures.</summary>
+    public MeasureKind Kind { get; }
+
+    /// <summary>Gets or sets the writer of the measurement's box: null for the default lines (Issue #390 Decision 11).</summary>
+    public MeasureFormatter? Format { get; set; }
+
+    /// <inheritdoc />
+    public ToolResult OnPointer(in PointerEvent e, ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        switch (e.Kind)
+        {
+            case PointerEventKind.Down:
+                if ((context.Hit.Kind & HitAreaKind.Panel) == 0 || context.IsPolar(context.Hit.Panel))
+                {
+                    return ToolResult.Ignored;
+                }
+
+                (_panel, _from) = (context.Hit.Panel, e.Position);
+                context.MeasureAt(this, _panel, _from, e.Position);
+                return ToolResult.Capture;
+            case PointerEventKind.Move:
+                context.MeasureAt(this, _panel, _from, e.Position);
+                return ToolResult.Handled;
+            case PointerEventKind.Up:
+                context.MeasureAt(this, _panel, _from, e.Position);
+                return ToolResult.Release;
+            default:
+                return ToolResult.Handled;
+        }
+    }
+
+    /// <inheritdoc />
+    public void Cancel(ToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        context.ClearMeasurement();
+    }
+}

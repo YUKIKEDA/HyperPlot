@@ -2878,14 +2878,14 @@ public interface ITextBackend                 // バックエンドが実装す�
   - **見た目の既定**（決定 12）: 色はテーマの `Foreground`、線と矩形の縁は 1 DIP、矩形は塗りなし、テキストは `TickLabelSize` で左下揃え、マーカーは円で半径 4 DIP
   - **不変条件 12**: 注釈は仕様のモデル（§4.1）で、層の X と Y のチャネルと同じく x と y を持つ。不変条件 12 が言う公開の契約（座標系・ビュー・描画 IR・ヒットテスト・空間索引）ではない。エンジンの口が受け渡すのは仕様の値（`AnnotationSpec`）と番号だけで、ヒットテストの `HitArea` が足すのも番号だけである。3D の注釈（§13）は、z を持つ注釈の型を足す
 - **計測（行 I4b、Issue #390）**: 2 点の差（Δx・Δy・傾き）と、範囲の統計（件数・平均・最小・最大）（要件 I-6）
-  - **`MeasureTool`**（公開の型、`IPlotTool`、決定 1・6）: `Kind`（`MeasureKind` の `Points`・`Range`）で形を選ぶ。`Points` は、パネルの上で押した点から離した点までのドラッグで 2 点を測る。`Range` は、ドラッグの x の範囲で統計を測る。ドラッグの間も結果を書き換える。既定の割り当てには入れない（左ドラッグはパン、Shift は選択、Control は矩形ズームに使われ、空いた組がない）。アプリが `InputBindings` に足す。polar のパネルでは測らない（選択と同じく、画素が軸に沿わない）
+  - **`MeasureTool`**（公開の型、`IPlotTool`、決定 1・6）: `Kind`（`MeasureKind` の `Points`・`Range`）で形を選ぶ。`Points` は、パネルの上で押した点から離した点までのドラッグで 2 点を測る。`Range` は、ドラッグの x の範囲で統計を測る。ドラッグの間も結果を書き換え、取り消し（`Escape`、ポインタの `Cancel`）では計測を消す（行 I4b の実装、Issue #394 の決定 3）。既定の割り当てには入れない（左ドラッグはパン、Shift は選択、Control は矩形ズームに使われ、空いた組がない）。アプリが `InputBindings` に足す。polar のパネルでは測らない（選択と同じく、画素が軸に沿わない）
   - **値の型**（決定 7）: 選択（§6.4）と同じく、抽象の `Measurement`（公開の型、変わらない値。`Kind`・`Panel`）と、2D の中身の `Measurement2D` に分ける。不変条件 12 の例外は増やさない
-    - `Points`: `From`・`To`（スケールの空間の点、`ViewRange` の組）と、`DeltaX`・`DeltaY`・`Slope`（`double`、データの単位）
+    - `Points`: `From`・`To`（スケールの空間の点、`ViewRange` の組）と、`DeltaX`・`DeltaY`・`Slope`（`double`、データの単位）。作る口は `Measurement2D.OfPoints(panel, from, to)` と `OfRange(panel, x)` で、差と統計はエンジンが `Measure` で受けたときに求めて埋める（行 I4b の実装、Issue #394 の決定 4）
     - `Range`: `X`（`ViewRange`）と `Statistics`（`ReadOnlyMemory<SeriesStatistics>`）
     - `SeriesStatistics(int Layer, int Series, long Count, double Mean, double Min, double Max, bool Provisional)`（公開の値の型）: y だけの値で、2 次元を前提にしない。`Count` が 0 なら、`Mean`・`Min`・`Max` は NaN
-  - **Δ の単位**（決定 5）: データの単位。変換の軸（log など）は、スケールの空間から戻したデータの値の差。時間の軸の Δx はナノ秒などの軸の単位の差で、表示では時間の長さとして目盛りの書式で書く。`Slope` は Δy / Δx で、時間の軸では y の単位 / 秒。Δx が 0 なら `Slope` は NaN
+  - **Δ の単位**（決定 5）: データの単位。変換の軸（log など）は、スケールの空間から戻したデータの値の差。時間の軸の Δx はナノ秒などの軸の単位の差で、表示では時間の長さとして秒で書く（「Δx: 2 s」。行 I4b の実装、Issue #394 の決定 1）。`Slope` は Δy / Δx で、時間の軸では y の単位 / 秒。Δx が 0 なら `Slope` は NaN
   - **統計**（決定 2・3・4・10）: x の範囲 [a, b] に入る行の y の、件数（有限の値の数）・平均（`double` で足す）・最小・最大
-    - 出す層: ピラミッドを持つ系列の層（line・step・area・band）。系列ごとで、分けた層はカテゴリごと、ファセットは測ったパネル。band は上と下の 2 本を別の系列（`Series` 0 と 1）として、area は値の線の y。Stat の層（density・smooth の線など）と積み上げた系列は、選択の行の集合（§6.4）と同じく派生の表の y（積み上げは積んだ後の、描いた線の値）で出し、`Layer` は仕様の層の番号（PR #391 のレビュー、Issue #390 の決定 15、オーナーの決定）。棒・散布・rule・text・image などは出さない
+    - 出す層: ピラミッドを持つ系列の層（line・step・area・band）。系列ごとで、分けた層はカテゴリごと、ファセットは測ったパネル。band は上と下の 2 本を別の系列（`Series` 0 と 1）として、area は値の線の y。Stat の層（density・smooth の線など）と積み上げた系列は、選択の行の集合（§6.4）と同じく派生の表の y（積み上げは積んだ後の、描いた線の値）で出し、`Layer` は仕様の層の番号（PR #391 のレビュー、Issue #390 の決定 15、オーナーの決定）。棒・散布・rule・text・image などは出さない。二次の x の層（`SecondaryX`）は、測った範囲が主の x のスケールの空間なので出さない（行 I4b の実装、Issue #394 の決定 2）
     - 求め方: 行の区間は x の二分探索（等間隔なら計算、§3.3）。min / max はピラミッドの区間の問い合わせ（§3.3）。和と件数は、範囲に完全に含まれるチャンクはチャンクの統計、含まれる水準 3 のバケットはバケットの和（§3.3）と NaN でない値の数、両端の半端は元の値を高々 2 × 4,096 個読む。O(log N + 8,192)
     - 暫定: できていないピラミッドやチャンクの統計は計算せず、できているものだけで答えて `Provisional` を立てる（不変条件 4、perf の規則）
   - **エンジンの口**（決定 8）: `Measurement? PlotEngine.Measurement`、`event Action? MeasurementChanged`、`void Measure(Measurement measurement)`（コードから測る。ツールと同じ知らせ。検査は選択の `Select` と同じ形: 描いたパネル、polar でない、種類と中身の組、有限）、`void ClearMeasurement()`、`int PlotEngine.Statistics(PanelId panel, ViewRange x, Span<SeriesStatistics> results)`（UI のスレッドで、確保しない。呼び手の span に書き、見つけた数を返す。足りなければ書けた分だけ書く。`HitTest` と同じ形）。計測はエンジンに 1 つで、新しく測ると置き換える

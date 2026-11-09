@@ -12,7 +12,7 @@ public sealed class SelectionTests
 {
     private static readonly PanelId Panel = new(0, 0);
 
-    /// <summary>The default bindings select with Shift (a rectangle, an x range on the x axis, a lasso with Alt, points by a click), and Escape has two entries.</summary>
+    /// <summary>The default bindings select with Shift (a rectangle, an x range on the x axis, a lasso with Alt, points by a click), and Escape has three entries.</summary>
     /// <remarks>
     /// Preconditions:
     /// - The default bindings.
@@ -22,7 +22,7 @@ public sealed class SelectionTests
     ///   left click with Shift, and Escape.
     ///
     /// Expected:
-    /// - Selection tools of the kinds Rectangle, XRange, Lasso, and Points; Escape's entries are CancelTool, then ClearSelection.
+    /// - Selection tools of the kinds Rectangle, XRange, Lasso, and Points; Escape's entries are CancelTool, then ClearSelection, then ClearMeasurement (row I4b).
     /// </remarks>
     [Fact]
     public void Defaults_BindTheSelectionTools()
@@ -41,7 +41,7 @@ public sealed class SelectionTests
         Assert.Equal(SelectionKind.Lasso, KindOf(InputGestureKind.Drag, ModifierKeys.Shift | ModifierKeys.Alt, HitAreaKind.Panel));
         Assert.Equal(SelectionKind.Points, KindOf(InputGestureKind.Click, ModifierKeys.Shift, HitAreaKind.Panel));
         var escape = bindings.Where(b => b.Gesture.Kind == InputGestureKind.Key && b.Gesture.Key == PlotKey.Escape).Select(b => b.Command).ToArray();
-        Assert.Equal([ViewCommand.CancelTool, ViewCommand.ClearSelection], escape);
+        Assert.Equal([ViewCommand.CancelTool, ViewCommand.ClearSelection, ViewCommand.ClearMeasurement], escape);
     }
 
     /// <summary>
