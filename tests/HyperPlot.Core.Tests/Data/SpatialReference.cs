@@ -118,6 +118,16 @@ internal static class SpatialReference
         return (x, y, rows);
     }
 
+    /// <summary>Checks that two reads of every point (<see cref="ReadAll"/>) hold the same points at the same places.</summary>
+    /// <param name="expected">The points read first.</param>
+    /// <param name="actual">The points read later.</param>
+    public static void AssertSamePoints((double[] X, double[] Y, long[] Rows) expected, (double[] X, double[] Y, long[] Rows) actual)
+    {
+        Assert.True(expected.X.AsSpan().SequenceEqual(actual.X), "The x of the points changed.");
+        Assert.True(expected.Y.AsSpan().SequenceEqual(actual.Y), "The y of the points changed.");
+        Assert.True(expected.Rows.AsSpan().SequenceEqual(actual.Rows), "The rows of the points changed.");
+    }
+
     /// <summary>The cells that a snapshot returns for a rectangle and a level.</summary>
     public static SpatialCell[] Cells(SpatialSnapshot snapshot, in SpatialRect rect, int maxLevel)
     {

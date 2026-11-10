@@ -341,7 +341,7 @@ public sealed class SpatialCopyTests
             new SpatialIndexInput
             {
                 Rows = RowRange.All,
-                YTransform = new Throwing(thrown),
+                YTransform = new ThrowingScale(thrown),
                 TempFolder = folder.Path,
             },
             allocator: allocator
@@ -500,12 +500,5 @@ public sealed class SpatialCopyTests
         Assert.Equal(new SpatialCount(0, Short), snapshot.Count(SpatialReference.Everything, 32));
         snapshot.Release();
         return fault;
-    }
-
-    private sealed class Throwing(Exception exception) : IScale
-    {
-        public void Forward(ReadOnlySpan<double> values, Span<double> destination) => throw exception;
-
-        public void Inverse(ReadOnlySpan<double> values, Span<double> destination) => throw exception;
     }
 }

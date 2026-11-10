@@ -139,6 +139,9 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
     /// <summary>Gets a value indicating whether the copy is a view of a temporary file.</summary>
     public bool IsMapped => _stream != null;
 
+    /// <summary>Gets a value indicating whether the memory or the file was released. The tests use it to see that a build which did not publish freed its copy.</summary>
+    internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
+
     /// <summary>Gets the number of regions: one for each axis, and the last one for the original positions.</summary>
     public int RegionCount => _widths.Length;
 
