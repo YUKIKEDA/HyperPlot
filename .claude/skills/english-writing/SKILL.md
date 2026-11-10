@@ -50,6 +50,16 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | M4 集約 | M4 aggregation |
 | 密度集約 | density aggregation |
 | 空間タイル索引、タイル | spatial tile index, tile |
+| 並べ直した写し（索引が持つ x、y、元の位置） | reordered copy |
+| 元の位置（写しの点の、行の範囲の先頭からの行の数） | original position |
+| Morton 符号 | Morton code |
+| 四分木の表、セル、葉 | quadtree table, cell, leaf |
+| 同じ位置の点の葉、上限で止まった葉 | coincident leaf, capped leaf (`SpatialCellKind`) |
+| 密度タイル、ビン、目次 | density tile, bin, tile directory |
+| スナップショット（空・粗い・確定） | snapshot (empty, coarse, full; `SpatialStage`) |
+| 参照の数 | reference count |
+| 単位、グループ（索引の走査の仕事の分け方） | unit, group |
+| 数え上げ、書き込み（索引の構築の走査） | counting pass, write pass |
 | ストリーミング、追記 | streaming, append |
 | 版（列と派生の結果の世代） | version |
 | 暫定（できていない索引の代わりに統計で答えた結果） | provisional |

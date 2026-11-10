@@ -6,11 +6,11 @@ alwaysApply: false
 
 # Interop and unsafe code
 
-The design for this is `docs/design.ja.md` §3.2 (mapped storage), §5.2 and §5.3 (the GPU abstraction and D3D11), §7 (hosts), and §8 (threads). This rule is the set of promises reviews hold.
+The design for this is `docs/design.ja.md` §3.2 (mapped storage), §3.4 (the copy of the spatial tile index and its temporary file), §5.2 and §5.3 (the GPU abstraction and D3D11), §7 (hosts), and §8 (threads). This rule is the set of promises reviews hold.
 
 ## Where unsafe code may live
 
-- `unsafe`, function pointers, and `Unsafe`/`MemoryMarshal` reinterpretation are allowed only in the GPU backends (`HyperPlot.Rendering.*`), the host adapters, and the storage of Core's data layer (native and memory-mapped chunks, design §3.2). `AllowUnsafeBlocks` is set in those projects only, and inside a project the unsafe code stays in the types that own the native or mapped memory. The rest stays safe.
+- `unsafe`, function pointers, and `Unsafe`/`MemoryMarshal` reinterpretation are allowed only in the GPU backends (`HyperPlot.Rendering.*`), the host adapters, and the storage of Core's data layer (native and memory-mapped chunks, design §3.2; the reordered copy of the spatial tile index, design §3.4). `AllowUnsafeBlocks` is set in those projects only, and inside a project the unsafe code stays in the types that own the native or mapped memory. The rest stays safe.
 - Every `unsafe` block has a comment that states the invariant that makes it safe (lifetime, length, alignment).
 - A read or write through a pointer into mapped, native, or GPU-mapped memory checks its index against that memory's size first. Out of range, a Release build ends with an access violation and a Debug build may pass by luck, so only the Release test run shows it.
   - The usual check is a `Span<T>` over the region, read by index. A region whose element width is chosen at run time does the same through a span of each width (`Span<byte>`, `Span<ushort>`, `Span<uint>`), not through a pointer cast and an index. PR #19 read a pyramid's bucket counts as `((ushort*)at)[bucket]` beside minima and maxima read through spans.

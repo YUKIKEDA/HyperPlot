@@ -18,9 +18,9 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 ## 今
 
 - **フェーズ:** D（散布の大規模化とストリーミング）
-- **作業中:** C3（I4b は #394 の PR で済み、フェーズ C の最後の行）
-- **ブランチ:** —
-- **Issue:** —
+- **作業中:** C3a（行 C3 を C3a と C3b に分けた。I4b は #394 の PR で済み）
+- **ブランチ:** `docs/401-c3-spatial-index`（設計）
+- **Issue:** #401（設計）
 
 ## ツールチェーン
 
@@ -84,9 +84,10 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | I4a | 注記と注釈（要件 G-10・I-5、§4.6・§6.5）: `Subtitle`・`Caption`、線・矩形・テキスト・マーカーの注釈（データの座標かパネルの割合に軸ごとに固定）、`AnnotationTool` のドラッグと `AnnotationChanged`。行 I4 から分けた（Issue #382 の決定 1） | done | [#382](https://github.com/YUKIKEDA/HyperPlot/issues/382)（設計）、[#386](https://github.com/YUKIKEDA/HyperPlot/issues/386) |
 | I4b | 計測（要件 I-6、§6.5）: 2 点の差（Δx・Δy・傾き）、範囲の統計（件数・平均・最小・最大）。行 I4 から分けた（Issue #382 の決定 1）。`MeasureTool`（2 点と範囲）、`Statistics`、ピラミッドのバケットの和 | done | [#390](https://github.com/YUKIKEDA/HyperPlot/issues/390)（設計）、[#394](https://github.com/YUKIKEDA/HyperPlot/issues/394) |
 | **D: 散布の大規模化とストリーミング** | | | |
-| C3 | 空間タイル索引（Morton 順の並べ直し、四分木の表） | not-started | |
-| R3 | 密度タイルと生の点の切り替え、生の点のチャンクと密度タイルを行 G9 の常駐キャッシュ（`ResidencyCache`）に置くこと、point の Geom（`DrawMarkers`、polar では頂点シェーダで写す、§4.4）、point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、GPU で写す `RenderList.SetTransform`（§5.1）と座標系の 4×4 の変換の公開の契約（不変条件 12、Issue #136）、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1） | not-started | |
-| C4 | ストリーミングとリングバッファ（全体表示を追い続ける表示と、ビューの間に学び直した後の全体表示の値と通知、行 I1a の `FullStale`） | not-started | |
+| C3a | 空間タイル索引（要件 D-4・R-3・P-15、§3.4）: Morton 順に並べ直した写し、四分木の表、問い合わせ（矩形の中の点の数、矩形にかかるセル、写しの点と元の行）、一時ファイル、構築の計測、P-15 の値と `Dispose` が確保の仕事を待ってよい時間を決める ADR。行 C3 から分けた（Issue #401 の決定 1） | in-progress | [#401](https://github.com/YUKIKEDA/HyperPlot/issues/401)（設計） |
+| C3b | 密度タイル（要件 R-3・P-8、§3.4）: 256 × 256 のビンのタイルと 2 × 2 の和、メモリの計測、`DensitySplit` の値。行 C3 から分けた（Issue #401 の決定 1） | not-started | [#401](https://github.com/YUKIKEDA/HyperPlot/issues/401)（設計） |
+| R3 | 密度タイルと生の点の切り替え、生の点のチャンクと密度タイルを行 G9 の常駐キャッシュ（`ResidencyCache`）に置くこと、point の Geom（`DrawMarkers`、polar では頂点シェーダで写す、§4.4）、point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、GPU で写す `RenderList.SetTransform`（§5.1）と座標系の 4×4 の変換の公開の契約（不変条件 12、Issue #136）、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1）、行 C3 から回った点（Issue #401、§3.4 の「行 R3 で決めること」）: 索引ができるまでの粗い密度の表示・ヒットテスト・ヘッドレスの待ちの配線、上限で止まったセルと疎なセルの描き方、`SeriesHit` の密度の領域の点の数、軸の定義域を索引の範囲として渡すか、散布の点の強調（シェーダが述語で判定する生の点と、選択部分の密度、§6.4）、エンコードの列の並べ直し、カテゴリごとの密度、色の写像（eq_hist）、索引を持つ保管庫（どの散布が索引を作るか、仕様の間の使い回し）、切り替えの判定に使う点の数、GPU へ送る `float32` の値と型のままの読み出し、索引の型を公開するか | not-started | |
+| C4 | ストリーミングとリングバッファ（全体表示を追い続ける表示と、ビューの間に学び直した後の全体表示の値と通知、行 I1a の `FullStale`）。空間タイル索引への追記は v1 で作らない（要件 §7、Issue #401 の決定 6） | not-started | |
 | **E: XylemUI と公開** | | | |
 | X1 | XylemUI のホスト | not-started | |
 | Q1 | 性能の受け入れの計測（要件 §5） | not-started | |
@@ -94,7 +95,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | **v1 の後: 3D（v1.x）** | | | |
 | K0 | 3D の設計（八分木・線の単純化・面の LOD・半透明の方式と、性能の仮説の確定） | not-started | |
 | K1 | 3D の座標系・カメラ・軸の箱・3D のインタラクション、線分と点のパイプラインの深度と 3 成分の位置 | not-started | |
-| K2 | 3D 散布（点群、八分木の LOD） | not-started | |
+| K2 | 3D 散布（点群、八分木の LOD。行 C3a の、次元の数 D を引数に取る部品の上に作る、§3.4・§13.1） | not-started | |
 | K3 | 3D の線（軌跡） | not-started | |
 | K4 | 面（z = f(x, y)、格子の LOD） | not-started | |
 | K5 | メッシュと半透明の合成 | not-started | |
@@ -102,7 +103,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | **v1 の後: ホストとバックエンド** | | | |
 | A1 | Avalonia のホスト | not-started | |
 | P1 | wgpu-native のバックエンド（Linux） | not-started | |
-| P2 | Metal のバックエンド（macOS） | not-started | |
+| P2 | Metal のバックエンド（macOS）。空間タイル索引の一時ファイルの macOS での作り方（それまで、macOS ではメモリマップの列の索引の構築が `PlatformNotSupportedException` で失敗する、§3.4） | not-started | |
 
 ## 意図的に対象外
 
