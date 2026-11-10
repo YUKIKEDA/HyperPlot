@@ -51,6 +51,13 @@ internal abstract class PlotPyramid : IDisposable
     /// </summary>
     public abstract bool TryExtremes(long start, long end, out double min, out long minRow, out double max, out long maxRow, ref bool provisional);
 
+    /// <summary>
+    /// Gets the count, the sum, the least, and the greatest of the numbers of [start, end) (design §6.5 "計測", row I4b): the
+    /// extremes from the pyramid, the count and the sum from the chunks' statistics and the buckets' sums. Sets
+    /// <paramref name="provisional"/> when a chunk is not built. Does not allocate.
+    /// </summary>
+    public abstract void Summarize(long start, long end, out long count, out double sum, out double min, out double max, ref bool provisional);
+
     /// <inheritdoc />
     public abstract void Dispose();
 }
@@ -100,6 +107,13 @@ internal sealed class PlotPyramid<T>(MinMaxPyramid<T> pyramid) : PlotPyramid
         provisional |= result.IsProvisional;
         (min, minRow, max, maxRow) = (double.CreateTruncating(result.Min), result.MinIndex, double.CreateTruncating(result.Max), result.MaxIndex);
         return result.Found;
+    }
+
+    /// <inheritdoc />
+    public override void Summarize(long start, long end, out long count, out double sum, out double min, out double max, ref bool provisional)
+    {
+        pyramid.Summary(start, end, out count, out sum, out var low, out var high, out var found, ref provisional);
+        (min, max) = found ? (double.CreateTruncating(low), double.CreateTruncating(high)) : (double.NaN, double.NaN);
     }
 
     /// <inheritdoc />

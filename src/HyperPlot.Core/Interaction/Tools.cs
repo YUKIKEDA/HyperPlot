@@ -182,6 +182,12 @@ public sealed class ToolContext
     /// <summary>Sets a plot's selection (row I3a): the engine's checks, its notice, and the frame.</summary>
     internal void Select(Selection2D selection) => _engine.Select(selection);
 
+    /// <summary>Measures from a tool (row I4b): two pixels of a panel, as points or as an x range, the box at the second.</summary>
+    internal void MeasureAt(MeasureTool tool, PanelId panel, Vector2 from, Vector2 to) => _engine.MeasureAt(tool, panel, from, to);
+
+    /// <summary>Clears the measurement a tool made (row I4b), and tells it.</summary>
+    internal void ClearMeasurement() => _engine.ClearMeasurement();
+
     /// <summary>Takes hold of the annotation at a place for a drag from a pixel (row I4a); false when there is none.</summary>
     internal bool BeginAnnotationDrag(HitArea area, Vector2 pixel) => _engine.BeginAnnotationDrag(area, pixel);
 
@@ -239,6 +245,9 @@ public enum ViewCommand
 
     /// <summary>Clears every plot's selection (row I3a): Escape's entry after <see cref="CancelTool"/>.</summary>
     ClearSelection,
+
+    /// <summary>Clears the measurement (row I4b): Escape's entry after <see cref="ClearSelection"/>.</summary>
+    ClearMeasurement,
 }
 
 /// <summary>What shape of input a binding matches (design §6.5).</summary>
@@ -405,6 +414,7 @@ public sealed class InputBindings : List<InputBinding>
             new(InputGesture.KeyDown(PlotKey.Home), ModifierKeys.None, HitAreaKind.All, ViewCommand.Reset),
             new(InputGesture.KeyDown(PlotKey.Escape), ModifierKeys.None, HitAreaKind.All, ViewCommand.CancelTool),
             new(InputGesture.KeyDown(PlotKey.Escape), ModifierKeys.None, HitAreaKind.All, ViewCommand.ClearSelection),
+            new(InputGesture.KeyDown(PlotKey.Escape), ModifierKeys.None, HitAreaKind.All, ViewCommand.ClearMeasurement),
         ];
     }
 }

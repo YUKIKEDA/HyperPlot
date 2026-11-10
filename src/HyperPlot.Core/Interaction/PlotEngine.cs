@@ -321,6 +321,7 @@ public sealed partial class PlotEngine : IDisposable
 
         _overlay.Clear();
         DrawSelections(_overlay);
+        DrawMeasurement(_overlay);
         DrawHover(_overlay);
         _captured?.Overlay(_overlay, _context);
         if (full)
@@ -1404,6 +1405,12 @@ public sealed partial class PlotEngine : IDisposable
                 }
             }
 
+            // A new mapping: the measurement's points and range meant the old one too (Issue #390 Decision 9).
+            if (plan.MappingChanged && _measurement is { } measured && measured.Panel.Plot == k)
+            {
+                _ = ClearMeasured();
+            }
+
             // A new mapping: the selection's predicate meant the old one (Issue #364 Decision 8). It is not copied: the
             // members keep theirs until the next change (Issue #373 Decision 15).
             if (plan.MappingChanged)
@@ -1444,6 +1451,9 @@ public sealed partial class PlotEngine : IDisposable
         {
             RequestFrame();
         }
+
+        // A frame drawn again finds a range's statistics again: new data, or a provisional answer made final (Issue #390 Decision 9).
+        MeasureAgain();
 
         // A frame drawn again (a zoom, new data, a provisional answer made final) hits again where the pointer is, so that no
         // older hit stays under it (design §6.5); a tool taken out of the bindings hovers no more.
@@ -1914,15 +1924,30 @@ public sealed partial class PlotEngine : IDisposable
             return;
         }
 
-        var text = _tooltip.AsSpan(0, length);
+        DrawBox(list, _tooltip.AsSpan(0, length), _hoverPixel, theme, panel, line);
+    }
+
+    /// <summary>
+    /// Records a box of text at an anchor (rows I2b and I4b): at its lower right, on the other side where it would leave the
+    /// panel; the theme's background with a border of 25 % of the foreground.
+    /// </summary>
+    private void DrawBox(
+        RenderList list,
+        ReadOnlySpan<char> text,
+        Vector2 anchor,
+        Theme theme,
+        (int Left, int Top, int Width, int Height) panel,
+        float line
+    )
+    {
         var style = new TextStyle(theme.Foreground, theme.TickLabelSize * Scale, theme.FontFamily, Vertical: TextBaseline.Top, Locale: theme.Locale);
         var size = _renderer.Text.Measure(text, style);
         var (pad, offset) = (MathF.Round(4 * Scale), MathF.Round(12 * Scale));
         var (w, h) = (MathF.Ceiling(size.Width) + (2 * pad), MathF.Ceiling(size.Height) + (2 * pad));
 
-        // At the pointer's lower right; across a side of the panel it would pass, on the other side of the pointer.
-        var bx = _hoverPixel.X + offset + w > panel.Left + panel.Width ? _hoverPixel.X - offset - w : _hoverPixel.X + offset;
-        var by = _hoverPixel.Y + offset + h > panel.Top + panel.Height ? _hoverPixel.Y - offset - h : _hoverPixel.Y + offset;
+        // At the anchor's lower right; across a side of the panel it would pass, on the other side of the anchor.
+        var bx = anchor.X + offset + w > panel.Left + panel.Width ? anchor.X - offset - w : anchor.X + offset;
+        var by = anchor.Y + offset + h > panel.Top + panel.Height ? anchor.Y - offset - h : anchor.Y + offset;
         (bx, by) = (MathF.Round(bx), MathF.Round(by));
         var border = theme.Foreground with { A = (byte)Math.Round(theme.Foreground.A * 0.25) };
         list.DrawRect(bx, by, w, h, theme.Background);
@@ -2144,6 +2169,12 @@ public sealed partial class PlotEngine : IDisposable
         if (command == ViewCommand.ClearSelection)
         {
             return ClearSelections();
+        }
+
+        // Escape's third entry (row I4b): with no selection to clear, the measurement goes.
+        if (command == ViewCommand.ClearMeasurement)
+        {
+            return ClearMeasured();
         }
 
         // The plot and the panel last operated on (design §6.2, row I1b).

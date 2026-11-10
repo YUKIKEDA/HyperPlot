@@ -13,6 +13,15 @@ internal sealed class PyramidLayout
 
     internal const int ShiftStep = 3;
 
+    /// <summary>The level whose buckets also hold their sum (design §3.3 "バケットの和", row I4b): 4,096 elements, the design's level 3.</summary>
+    internal const int SumLevel = 2;
+
+    /// <summary>The shift of a bucket of sums: 12, for 4,096 elements.</summary>
+    internal const int SumShift = FirstShift + (ShiftStep * SumLevel);
+
+    /// <summary>The elements of a bucket of sums.</summary>
+    internal const int SumBucket = 1 << SumShift;
+
     private readonly int[] _counts = new int[LevelCount];
     private readonly int[] _minOffsets = new int[LevelCount];
     private readonly int[] _maxOffsets = new int[LevelCount];
@@ -41,8 +50,15 @@ internal sealed class PyramidLayout
             offset += _counts[level] * width;
         }
 
+        // The sums of the level of sums (row I4b), 8-byte aligned, last.
+        offset = (offset + sizeof(double) - 1) & -sizeof(double);
+        SumOffset = offset;
+        offset += _counts[SumLevel] * sizeof(double);
         ByteCount = offset;
     }
+
+    /// <summary>Gets where the sums of the level of sums begin (row I4b).</summary>
+    internal int SumOffset { get; }
 
     /// <summary>Gets the number of elements of the chunk the layout is for.</summary>
     internal int ChunkLength { get; }

@@ -155,7 +155,8 @@ public sealed class MinMaxPyramidTests
     /// Expected:
     /// - At most n · 2 · sizeof(T) · (1/64 + 1/512 + 1/4096 + 1/32768 + 1/262144) for the minima and maxima, plus the counts
     ///   n · (1/64 + 2/512 + 2/4096 + 2/32768 + 4/262144), plus per chunk 5 partial buckets of 2 · sizeof(T) + 4 bytes and 3
-    ///   bytes of alignment (design §3.3).
+    ///   bytes of alignment (design §3.3), plus the sums n · 8 / 4096 and per chunk a partial bucket's 8 bytes and 7 of
+    ///   alignment (row I4b).
     /// </remarks>
     [Fact]
     public void BlockBytes_Columns_StayWithinTheDesignBound()
@@ -177,7 +178,9 @@ public sealed class MinMaxPyramidTests
             var counts = (length / 64.0) + (2.0 * length * ((1.0 / 512) + (1.0 / 4096) + (1.0 / 32768))) + (4.0 * length / 262144);
 
             // Per chunk: 5 partial buckets of min, max, and a count of at most 4 bytes, and at most 3 bytes of alignment.
-            var bound = (length * 2.0 * size * fraction) + counts + (column.ChunkCount * 5.0 * ((2 * size) + 4)) + (3.0 * column.ChunkCount);
+            // The sums of the 4,096-element buckets (row I4b): 8 bytes a bucket, a partial one and 7 bytes of alignment a chunk.
+            var sums = (length * 8.0 / 4096) + (column.ChunkCount * (8.0 + 7.0));
+            var bound = (length * 2.0 * size * fraction) + counts + sums + (column.ChunkCount * 5.0 * ((2 * size) + 4)) + (3.0 * column.ChunkCount);
             Assert.InRange(pyramid.BlockBytes, 1, (long)bound);
         }
     }
