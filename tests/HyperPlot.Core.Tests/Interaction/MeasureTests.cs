@@ -155,7 +155,8 @@ public sealed class MeasureTests
 
     /// <summary>
     /// A range over a chunk whose pyramid is not built is answered without it and provisional, and the frame after it is
-    /// built finds the statistics again and tells them (Issue #390 Decisions 9, 10).
+    /// built finds the statistics again and tells them (Issue #390 Decisions 9, 10). The box writes a count of a million rows
+    /// and more as an integer (Issue #397).
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -167,7 +168,8 @@ public sealed class MeasureTests
     ///
     /// Expected:
     /// - Held: provisional, the count at most the first chunk's. Released: the measurement's statistics not provisional, the
-    ///   count 2 chunks, and a notice for the change.
+    ///   count 2 chunks, and a notice for the change; the box's text holds "n=2097152,", not the exponent form of a
+    ///   general number format ("n=2.09715E+06").
     /// </remarks>
     [Fact]
     public void Provisional_IsFoundAgainOnceBuilt()
@@ -176,7 +178,8 @@ public sealed class MeasureTests
         using var y = TestStorage<float>.MakeColumn([.. Enumerable.Repeat(1f, 2 * Chunk)], out var storage);
         storage.Hold(1);
         var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();
-        using var engine = new PlotEngine(new NullBackend(), 640, 360, 1, pool);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360, 1, pool);
         engine.SetPlot(Plot.Create(table).Line(table.Col<double>("x"), table.Col<float>("y")).Build());
         engine.RenderFrame();
         storage.WaitForWorker(1);
@@ -201,6 +204,7 @@ public sealed class MeasureTests
         var done = Assert.IsType<Measurement2D>(engine.Measurement).Statistics.Span[0];
         Assert.Equal((false, 2L * Chunk), (done.Provisional, done.Count));
         Assert.True(told >= 2);
+        Assert.Contains("n=2097152,", Assert.Single(backend.LastList!.Texts.ToArray()).Text, StringComparison.Ordinal);
     }
 
     /// <summary>
