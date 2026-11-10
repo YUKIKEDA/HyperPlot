@@ -15,6 +15,12 @@ namespace HyperPlot;
 /// <see cref="GeomFrame"/> (design §4.2, §5.5.3). Keep work that is done once out of it, and make a call of one value
 /// cheap. An exception it throws comes out of the render as it is. A transform that is not monotone is
 /// not checked, and its line is not promised. A value it maps to a number that is not finite is dropped and breaks the line.
+/// <para>
+/// The build of the spatial tile index of a scatter layer (design §3.4) calls <see cref="Forward"/> from the threads of
+/// the workers, from several of them at the same time, a span of the column at a time: <see cref="Forward"/> must be
+/// callable from several threads at once. The index does not call <see cref="Inverse"/>. An exception that
+/// <see cref="Forward"/> throws there ends the build of the index, which keeps the exception.
+/// </para>
 /// </remarks>
 public interface IScale
 {

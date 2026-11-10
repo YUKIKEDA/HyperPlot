@@ -24,6 +24,7 @@ public sealed class PlotWorkerPool : IDisposable
 
     private PoolWork[] _works = [];
     private M4Batch? _batches;
+    private SpatialSnapshot? _freeList;
     private volatile bool _disposed;
 
     /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
@@ -129,6 +130,95 @@ public sealed class PlotWorkerPool : IDisposable
 
         Wake();
         return pyramid;
+    }
+
+    /// <summary>
+    /// Starts building a spatial tile index over an x and a y column and returns it at once (design §3.4). Until the
+    /// build ends, <see cref="SpatialIndex.Acquire"/> lends what there is: nothing, then the counts of levels 0 to 8, then
+    /// the table and the copy.
+    /// </summary>
+    /// <typeparam name="TX">The element type of the x column.</typeparam>
+    /// <typeparam name="TY">The element type of the y column.</typeparam>
+    /// <param name="x">The x column. Dispose the index before it.</param>
+    /// <param name="y">The y column: as long as <paramref name="x"/>. Dispose the index before it.</param>
+    /// <param name="input">The rows, the transforms, and the ranges.</param>
+    /// <returns>The index, which the pool builds in the background. A build that throws sets <see cref="SpatialIndex.Fault"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="x"/> or <paramref name="y"/> is null.</exception>
+    /// <exception cref="ArgumentException">
+    /// The columns differ in length; the first row is negative or after the row past the last; or a passed range has an
+    /// end that is not finite or a lower end greater than its upper end.
+    /// </exception>
+    /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
+    internal SpatialIndex BuildSpatialIndex<TX, TY>(Column<TX> x, Column<TY> y, in SpatialIndexInput input)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY> => BuildSpatialIndex(x, y, input, SpatialIndexTuning.Default, SpatialCopyAllocator.Default);
+
+    /// <summary>
+    /// Starts building a spatial tile index with the constants and the allocator that the caller passes. The tests and the
+    /// benchmarks only: they reach the deep and the capped shapes of the table with few points, make an allocation throw,
+    /// and time the jobs.
+    /// </summary>
+    /// <typeparam name="TX">The element type of the x column.</typeparam>
+    /// <typeparam name="TY">The element type of the y column.</typeparam>
+    /// <param name="x">The x column.</param>
+    /// <param name="y">The y column: as long as <paramref name="x"/>.</param>
+    /// <param name="input">The rows, the transforms, and the ranges.</param>
+    /// <param name="tuning">The constants of the build.</param>
+    /// <param name="allocator">What makes the copy.</param>
+    /// <returns>The index.</returns>
+    /// <exception cref="ArgumentException">As the other overload; or the rows of a unit are not a power of two, or are more than a chunk.</exception>
+    internal SpatialIndex BuildSpatialIndex<TX, TY>(
+        Column<TX> x,
+        Column<TY> y,
+        in SpatialIndexInput input,
+        SpatialIndexTuning tuning,
+        SpatialCopyAllocator allocator
+    )
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+    {
+        ArgumentNullException.ThrowIfNull(x);
+        ArgumentNullException.ThrowIfNull(y);
+        if (x.Length != y.Length)
+        {
+            ThrowHelper.ThrowSpatialColumnsDiffer(x.Length, y.Length);
+        }
+
+        if (input.Rows.Start < 0 || input.Rows.Start > input.Rows.End)
+        {
+            ThrowHelper.ThrowSpatialRowsInvalid(input.Rows.Start, input.Rows.End);
+        }
+
+        CheckRange(input.XRange, nameof(SpatialIndexInput.XRange));
+        CheckRange(input.YRange, nameof(SpatialIndexInput.YRange));
+
+        // A unit lies in one chunk, and the units of a chunk are the same for every first row.
+        if (!int.IsPow2(tuning.RowsPerUnit) || tuning.RowsPerUnit > Column.ChunkLength)
+        {
+            ThrowHelper.ThrowSpatialUnitInvalid(tuning.RowsPerUnit);
+        }
+
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var index = new SpatialIndex<TX, TY>(this, x, y, input, tuning, allocator);
+        var registered = false;
+        lock (_gate)
+        {
+            if (!_disposed)
+            {
+                _works = [.. _works, index.Work];
+                registered = true;
+            }
+        }
+
+        if (!registered)
+        {
+            // The pool was disposed while the index was made: no worker is left to build it.
+            index.Dispose();
+            throw new ObjectDisposedException(nameof(PlotWorkerPool));
+        }
+
+        Wake();
+        return index;
     }
 
     /// <summary>
@@ -389,6 +479,9 @@ public sealed class PlotWorkerPool : IDisposable
             work.OnPoolDisposed();
         }
 
+        // No worker is left to free the snapshots that were given back to it.
+        DrainFree();
+
         // The event is not disposed: a query on another thread may still call Wake, which must not throw.
     }
 
@@ -452,6 +545,37 @@ public sealed class PlotWorkerPool : IDisposable
         }
     }
 
+    /// <summary>
+    /// Hands a spatial snapshot that nothing reads any more to a worker, which frees its table and its copy (design §3.4
+    /// "参照の数"). Neither allocates nor waits. Once the pool is disposed, the call frees them itself.
+    /// </summary>
+    /// <param name="snapshot">The snapshot, whose last reference was given back.</param>
+    internal void QueueFree(SpatialSnapshot snapshot)
+    {
+        if (_disposed)
+        {
+            snapshot.Free();
+            return;
+        }
+
+        while (true)
+        {
+            var head = Volatile.Read(ref _freeList);
+            snapshot.NextFree = head;
+            if (Interlocked.CompareExchange(ref _freeList, snapshot, head) == head)
+            {
+                break;
+            }
+        }
+
+        Wake();
+        if (_disposed)
+        {
+            // Dispose may have looked at the list before the snapshot was in it.
+            DrainFree();
+        }
+    }
+
     internal void Unregister(PoolWork work)
     {
         lock (_gate)
@@ -486,6 +610,30 @@ public sealed class PlotWorkerPool : IDisposable
 
             batch.Next = null;
         }
+    }
+
+    private static void CheckRange(ScaleRange? range, string name)
+    {
+        if (range is { } passed && !(double.IsFinite(passed.Lower) && double.IsFinite(passed.Upper) && passed.Lower <= passed.Upper))
+        {
+            ThrowHelper.ThrowSpatialRangeInvalid(name, passed.Lower, passed.Upper);
+        }
+    }
+
+    // Frees the snapshots that QueueFree was given. The list is taken whole, so each snapshot is freed by one thread.
+    private bool DrainFree()
+    {
+        var snapshot = Interlocked.Exchange(ref _freeList, null);
+        var freed = snapshot is not null;
+        while (snapshot is not null)
+        {
+            var next = snapshot.NextFree;
+            snapshot.NextFree = null;
+            snapshot.Free();
+            snapshot = next;
+        }
+
+        return freed;
     }
 
     private void Run()
@@ -536,6 +684,12 @@ public sealed class PlotWorkerPool : IDisposable
         if (batch is not null && batch.TryRunOne())
         {
             TestTook?.Invoke(true);
+            return true;
+        }
+
+        // Freeing a snapshot gives memory back, so it comes before the work that takes memory.
+        if (Volatile.Read(ref _freeList) is not null && DrainFree())
+        {
             return true;
         }
 
