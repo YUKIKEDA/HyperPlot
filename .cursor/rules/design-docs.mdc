@@ -201,6 +201,8 @@ A design of a background pass states what it takes from the machine and what it 
 
 A constant that a requirement fixes (a share of the source, a time) is checked against the smallest data of the tests before the code: a density tile is 65,536 B or more, so no test of a few thousand points fits 10 % of its source, and the share became a value of the tuning during row C3b. A row that adds a state or a publication to an existing sequence lists the tests of the earlier rows whose expectations move, with the rule they move by (row C3b: one more version for each finished build, in 32 cases).
 
+A design that lowers a thread's priority, parks it, or slows it lists everyone who can wait for that thread and what bounds each wait: the jobs it has taken, the locks it holds (a `lock`, the native heap under `NativeMemory`, the allocator under `new`), a `Dispose` that waits for its job, and the runtime's suspension for a GC. "It takes no lock" is written after a search of the code under it: PR #418 wrote it of the background units and then found two locks at the end of a unit (`_waiterGate` of a pyramid, the merge of the category extremes), and its review found the native allocation in `DensityBuilder.Pack`.
+
 ```text
 # BAD — the design says "as datashader does" for the density path, and its PR body says datashader was not read
 # GOOD — the design names datashader's file and lines for each step it shares, and the steps it does not share are HyperPlot's own
