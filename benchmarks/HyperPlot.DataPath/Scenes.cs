@@ -166,7 +166,7 @@ internal static class Scenes
         }
     }
 
-    private static void Report(Options options, int run, params (string Key, object Value)[] figures)
+    internal static void Report(Options options, int run, params (string Key, object Value)[] figures)
     {
         var line = string.Create(
             CultureInfo.InvariantCulture,
