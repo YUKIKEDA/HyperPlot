@@ -119,7 +119,8 @@ public sealed class SpatialIndexRebuildTests
     ///   current snapshot is full and provisional, and Completion has not ended.
     /// - A second build follows without any call: Allocate ran twice. It publishes no coarse snapshot (the version is
     ///   2 at the end of its PublishCoarse), and at the end of its PublishFull the state is Complete, the version is
-    ///   3, and Completion has ended.
+    ///   3, and Completion has not ended yet: it ends once that job is reported, and the wait for it finds both
+    ///   PublishFull jobs in the probe.
     /// - The last snapshot is not provisional and agrees with the brute force over the new values.
     /// </remarks>
     [Theory]
@@ -176,7 +177,7 @@ public sealed class SpatialIndexRebuildTests
         Assert.Equal(3, steps[second].Version);
         Assert.Equal(SpatialStage.Full, sights[second].Stage);
         Assert.False(sights[second].Provisional);
-        Assert.True(sights[second].Ended);
+        Assert.False(sights[second].Ended);
         Assert.Equal(second, steps.Length - 1);
 
         Assert.True(index.IsComplete);

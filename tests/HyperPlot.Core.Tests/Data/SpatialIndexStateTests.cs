@@ -90,7 +90,8 @@ public sealed class SpatialIndexStateTests
     /// - The version is 0 before PublishCoarse, 1 from PublishCoarse to the last Write, and 2 at PublishFull.
     /// - The current snapshot has the stage None, Coarse, and Full over the same three spans, and is provisional
     ///   until the last.
-    /// - Completion has ended at the end of PublishFull and at the end of no job before it.
+    /// - Completion has ended at the end of no job, PublishFull among them: it ends once the last job is reported, so
+    ///   every job is in the probe when the wait for Completion returns.
     /// </remarks>
     [Fact]
     public void Build_FirstBuild_PassesTheStatesAndPublishesThreeSnapshots()
@@ -142,13 +143,7 @@ public sealed class SpatialIndexStateTests
                 : i >= coarse ? SpatialStage.Coarse
                 : SpatialStage.None;
             var (step, sight) = (steps[i], sights[i]);
-            if (
-                step.State != state
-                || step.Version != version
-                || sight.Stage != stage
-                || sight.Provisional != (i != last)
-                || sight.Ended != (i == last)
-            )
+            if (step.State != state || step.Version != version || sight.Stage != stage || sight.Provisional != (i != last) || sight.Ended)
             {
                 Assert.Fail(
                     $"Job {i} ({jobs[i]}) ended as {step} with {sight}; the state {state}, the version {version}, and the stage {stage} were expected."

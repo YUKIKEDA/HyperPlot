@@ -102,7 +102,7 @@ internal sealed class SpatialBuild
             cursor.End = (long)((Int128)(group + 1) * UnitCount / Groups);
 
             // Nothing is taken until a stage begins.
-            cursor.Next = cursor.End;
+            Volatile.Write(ref cursor.Next, cursor.End);
         }
     }
 
@@ -172,6 +172,9 @@ internal sealed class SpatialBuild
 
         return joined;
     }
+
+    /// <summary>Gets or sets a value indicating whether the build made the index complete. Only the job that publishes the full snapshot writes it.</summary>
+    public bool Completed { get; set; }
 
     /// <summary>Enters the build, as every job does before it reads the build.</summary>
     /// <returns><see langword="false"/> when the build is stopped: the caller has left it again and does nothing.</returns>
@@ -335,7 +338,11 @@ internal sealed class SpatialBuild
     {
         public long Begin;
         public long End;
-        public long Next;
+
+        // A group has a unit to take while Next is less than End. The build is visible to the workers before its rows
+        // are cut into units, so Next starts above every End: a worker that looks at the group while Lay writes it
+        // finds nothing to take.
+        public long Next = long.MaxValue;
         public int Busy;
         public ulong[] Codes = [];
         public double[]? X;

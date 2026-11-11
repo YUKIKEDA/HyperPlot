@@ -41,7 +41,8 @@ public sealed class SpatialCopyTests
     /// - While the index lives, a mapped copy has one file <c>hyperplot-*.tmp</c> of the copy's size in the folder on
     ///   Windows and no file on Linux; a native copy has none.
     /// - The snapshot agrees with the brute force.
-    /// - After the last release the snapshot is freed and the folder is empty.
+    /// - After the last release the snapshot is freed. The copy's <c>Closed</c> has not ended before the release; once it
+    ///   has ended, the folder is empty.
     /// </remarks>
     /// <param name="xStorage">The storage of the x column.</param>
     /// <param name="yStorage">The storage of the y column.</param>
@@ -56,6 +57,7 @@ public sealed class SpatialCopyTests
         using var yFile = TempFile.Write<float>(ys, 0);
         var allocator = new RecordingCopyAllocator();
         SpatialSnapshot snapshot;
+        Task closed;
         using (
             var built = SpatialBuilt.Over(
                 Make(xStorage, xs, xFile),
@@ -96,9 +98,12 @@ public sealed class SpatialCopyTests
             Assert.True(built.Index.IsComplete);
             SpatialReference.Check(snapshot, SpatialAxisData.Of(xs), SpatialAxisData.Of(ys), new RowRange(0, Short), SpatialReference.Small);
             Assert.False(snapshot.IsFreed);
+            closed = copy.Closed;
+            Assert.False(closed.IsCompleted);
         }
 
         Assert.True(snapshot.IsFreed);
+        Eventually.True(() => closed.IsCompleted, "The copy was not closed.");
         Assert.Empty(Directory.GetFileSystemEntries(folder.Path));
     }
 
@@ -320,7 +325,7 @@ public sealed class SpatialCopyTests
     /// Expected:
     /// - The allocation seam made one mapped copy.
     /// - <c>Completion</c> ends with the transform's exception, which is the <c>Fault</c>.
-    /// - Once the workers have left the build, the folder is empty.
+    /// - Once the workers have left the build and the copy's <c>Closed</c> has ended, the folder is empty.
     /// </remarks>
     [Fact]
     public void Build_FailureAfterTheAllocation_ClosesTheTempFile()
@@ -350,8 +355,10 @@ public sealed class SpatialCopyTests
         Assert.Same(thrown, Eventually.Faults(index.Completion));
 
         Assert.Same(thrown, index.Fault);
-        Assert.True(Assert.Single(allocator.Requests).Copy!.IsMapped);
-        Eventually.True(() => Directory.GetFileSystemEntries(folder.Path).Length == 0, "The temporary file of the failed build stayed.");
+        var copy = Assert.Single(allocator.Requests).Copy!;
+        Assert.True(copy.IsMapped);
+        Eventually.True(() => copy.Closed.IsCompleted, "The copy of the failed build was not closed.");
+        Assert.Empty(Directory.GetFileSystemEntries(folder.Path));
     }
 
     /// <summary>A process that is killed while it writes the copy leaves no file in the <c>TempFolder</c>.</summary>

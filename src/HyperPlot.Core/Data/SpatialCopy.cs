@@ -24,6 +24,7 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
     private readonly FileStream? _stream;
     private readonly MemoryMappedFile? _file;
     private readonly MemoryMappedViewAccessor? _view;
+    private readonly TaskCompletionSource _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private bool _pointerAcquired;
     private int _disposed;
 
@@ -125,7 +126,10 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
         }
         catch
         {
-            Dispose();
+            // No one has the copy yet: the file is closed here, so that it is gone when the exception reaches the caller.
+            _disposed = 1;
+            Array.Clear(_regions);
+            Close();
             throw;
         }
     }
@@ -138,6 +142,12 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
 
     /// <summary>Gets a value indicating whether the copy is a view of a temporary file.</summary>
     public bool IsMapped => _stream != null;
+
+    /// <summary>
+    /// Gets a task that ends when a disposed copy holds nothing any more: at the end of <see cref="Dispose"/> for native
+    /// memory, and once the thread pool has unmapped and closed the temporary file. It does not end before <see cref="Dispose"/>.
+    /// </summary>
+    public Task Closed => _closed.Task;
 
     /// <summary>Gets a value indicating whether the memory or the file was released. The tests use it to see that a build which did not publish freed its copy.</summary>
     internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
@@ -226,7 +236,11 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
         }
     }
 
-    /// <summary>Unmaps and closes the temporary file, which deletes it, or frees the native blocks. A second call does nothing.</summary>
+    /// <summary>
+    /// Frees the native blocks, or hands the temporary file to the thread pool, which unmaps and closes it (closing deletes
+    /// it on Windows): that takes 1.3 to 2.9 s for the copy of 1e9 points (docs/benchmarks/c3a-spatial-index.md), and the
+    /// caller may be the UI thread. <see cref="Closed"/> ends when it is done. A second call does nothing.
+    /// </summary>
     public void Dispose()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -242,22 +256,29 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
                 _regions[region] = 0;
             }
 
+            _closed.TrySetResult();
             return;
         }
 
         Array.Clear(_regions);
+        ThreadPool.UnsafeQueueUserWorkItem(static copy => copy.Close(), this, preferLocal: false);
+    }
+
+    private void Close()
+    {
         if (_pointerAcquired)
         {
             _view!.SafeMemoryMappedViewHandle.ReleasePointer();
         }
 
-        // The accessor's Dispose first writes every changed page to the file and waits for it: 26 to 48 s for a copy of
+        // The accessor's Dispose first writes every changed page to the file and waits for it: 25 to 44 s for a copy of
         // 1e9 points that the writing stage had begun (docs/benchmarks/c3a-spatial-index.md). The file is going to be
         // deleted, so the view's handle is closed first, which unmaps without writing; the accessor then has nothing to write.
         _view?.SafeMemoryMappedViewHandle.Dispose();
         _view?.Dispose();
         _file?.Dispose();
-        _stream.Dispose();
+        _stream?.Dispose();
+        _closed.TrySetResult();
     }
 
     private static void Fill<T>(Region<T> region, long source, long first, long count)

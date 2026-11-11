@@ -129,9 +129,10 @@ public sealed class SpatialIndexWaitTests
     ///
     /// Expected:
     /// - The task has not ended while the worker is kept.
-    /// - Without the change: one PublishFull; at its end the state is Complete and both tasks have ended.
-    /// - With the change: two. At the end of the first the state is Waiting and neither task has ended; at the end of
-    ///   the second the state is Complete and both have.
+    /// - Without the change: one PublishFull; at its end the state is Complete and neither task has ended yet.
+    /// - With the change: two. At the end of the first the state is Waiting, at the end of the second it is Complete,
+    ///   and neither task has ended at either.
+    /// - The tasks end once the last PublishFull is reported: every end is noted when the wait for the task returns.
     /// - After the task: IsComplete is true and Completion ended without an exception.
     /// </remarks>
     [Theory]
@@ -170,8 +171,8 @@ public sealed class SpatialIndexWaitTests
         Assert.True(index.IsComplete);
         Assert.True(index.Completion.IsCompletedSuccessfully);
         (SpatialIndexState, bool, bool)[] expected = invalidated
-            ? [(SpatialIndexState.Waiting, false, false), (SpatialIndexState.Complete, true, true)]
-            : [(SpatialIndexState.Complete, true, true)];
+            ? [(SpatialIndexState.Waiting, false, false), (SpatialIndexState.Complete, false, false)]
+            : [(SpatialIndexState.Complete, false, false)];
         Assert.Equal(expected, ends);
     }
 

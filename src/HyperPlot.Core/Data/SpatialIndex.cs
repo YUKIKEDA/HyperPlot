@@ -329,7 +329,20 @@ internal abstract class SpatialIndex : IDisposable
                 next = RunSingle(build, ran);
             }
 
-            _tuning.JobEnded?.Invoke(ran, TimeProvider.System.GetTimestamp() - began);
+            try
+            {
+                _tuning.JobEnded?.Invoke(ran, TimeProvider.System.GetTimestamp() - began);
+            }
+            finally
+            {
+                // The index is complete whatever the listener does.
+                if (build.Completed)
+                {
+                    _completion.TrySetResult();
+                    EndWaitIfDone();
+                }
+            }
+
             if (next is { } job2)
             {
                 Queue(build, job2);
@@ -498,11 +511,8 @@ internal abstract class SpatialIndex : IDisposable
         Interlocked.CompareExchange(ref _build, null, build);
         if (X.Version == build.XVersion && Y.Version == build.YVersion)
         {
-            if (TryMove(build, Writing, Complete))
-            {
-                _completion.TrySetResult();
-                EndWaitIfDone();
-            }
+            // The job that ran tells the waiters, after JobEnded: what waits for the index finds every job reported.
+            build.Completed = TryMove(build, Writing, Complete);
         }
         else if (TryMove(build, Writing, Waiting))
         {

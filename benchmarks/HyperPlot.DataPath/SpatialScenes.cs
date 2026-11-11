@@ -51,7 +51,8 @@ internal static class SpatialScenes
                 var tuning = Tuning(options) with { JobEnded = recorder.Add };
                 var frames = new FrameRecorder();
                 recorder.Start = Stopwatch.GetTimestamp();
-                var index = pool.BuildSpatialIndex(x, y, Input(options), tuning, SpatialCopyAllocator.Default);
+                var copies = new Copies();
+                var index = pool.BuildSpatialIndex(x, y, Input(options), tuning, copies);
                 try
                 {
                     QueryEachFrame(index, frames);
@@ -86,6 +87,9 @@ internal static class SpatialScenes
                 finally
                 {
                     index.Dispose();
+
+                    // The next build starts with the file of this one closed and gone.
+                    copies.WaitClosed();
                 }
 
                 foreach (var moment in (string[])["started", "counting", "writing"])
@@ -116,6 +120,8 @@ internal static class SpatialScenes
             began = Stopwatch.GetTimestamp();
             copy.Dispose();
             var disposed = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
+            copy.Closed.Wait();
+            var closed = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             Scenes.Report(
                 options,
                 run,
@@ -123,7 +129,8 @@ internal static class SpatialScenes
                 ("temp", options.Temp ?? Path.GetTempPath()),
                 ("bytes", copy.ByteCount),
                 ("allocate_ms", allocated),
-                ("dispose_ms", disposed)
+                ("dispose_ms", disposed),
+                ("closed_ms", closed)
             );
         }
     }
@@ -344,7 +351,8 @@ internal static class SpatialScenes
 
     /// <summary>
     /// Starts another build and disposes of the index at a moment of it: as soon as a worker began it, once the coarse
-    /// snapshot is published (a counting pass runs), or once the writing began. Reports how long Dispose took.
+    /// snapshot is published (a counting pass runs), or once the writing began. Reports how long Dispose took, and how long
+    /// after the call the thread pool had closed the copy's file.
     /// </summary>
     private static (string Key, object Value)[] DisposeAt(
         PlotWorkerPool pool,
@@ -356,7 +364,8 @@ internal static class SpatialScenes
     )
     {
         var recorder = new JobRecorder { Start = Stopwatch.GetTimestamp() };
-        var index = pool.BuildSpatialIndex(x, y, Input(options), tuning with { JobEnded = recorder.Add }, SpatialCopyAllocator.Default);
+        var copies = new Copies();
+        var index = pool.BuildSpatialIndex(x, y, Input(options), tuning with { JobEnded = recorder.Add }, copies);
 
         // The state is read once a turn: two reads could see two states.
         Func<SpatialIndexState, bool> reached = moment switch
@@ -377,6 +386,8 @@ internal static class SpatialScenes
         var began = Stopwatch.GetTimestamp();
         index.Dispose();
         var milliseconds = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
+        copies.WaitClosed();
+        var closed = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
         var (jobsAfter, waited, longest) = recorder.Since(jobsBefore, began);
         return
         [
@@ -384,6 +395,7 @@ internal static class SpatialScenes
             ("state", state),
             ("jobs_before", jobsBefore),
             ("dispose_ms", milliseconds),
+            ("closed_ms", closed),
             ("jobs_after", jobsAfter),
             ("last_job_end_ms", waited),
             ("longest_job_ms", longest),
@@ -403,6 +415,38 @@ internal static class SpatialScenes
 
     private static void Report(Options options, int run, string figure, (string Key, object Value)[] figures) =>
         Scenes.Report(options, run, [("figure", figure), .. figures]);
+
+    /// <summary>The allocator of the engine, which keeps the copies it made so that a scene can wait until their files are closed.</summary>
+    private sealed class Copies : SpatialCopyAllocator
+    {
+        private readonly List<SpatialCopy> _made = [];
+
+        public override SpatialCopy Allocate(long capacity, ReadOnlySpan<int> valueWidths, bool mapped, string? tempFolder)
+        {
+            var copy = base.Allocate(capacity, valueWidths, mapped, tempFolder);
+            lock (_made)
+            {
+                _made.Add(copy);
+            }
+
+            return copy;
+        }
+
+        /// <summary>Waits until every copy made so far is closed. The index that made them is disposed.</summary>
+        public void WaitClosed()
+        {
+            SpatialCopy[] made;
+            lock (_made)
+            {
+                made = [.. _made];
+            }
+
+            foreach (var copy in made)
+            {
+                copy.Closed.Wait();
+            }
+        }
+    }
 
     /// <summary>The jobs of one build: what each was, how long it ran, and when it ended, kept without a lock.</summary>
     private sealed class JobRecorder
