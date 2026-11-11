@@ -32,6 +32,8 @@ Details: `docs/conventions.md`. C# style: `.cursor/rules/csharp.mdc`. Tests: `.c
 
 `./build.ps1` before a PR. It runs tool restore, the CSharpier check, restore, then for Release and for Debug a build and every test project. Release is what ships; Debug runs the checks that only exist there (`Invariant.Fail` throws instead of ending the process). Hosted CI runs the same script, on Windows (the merge gate) and Linux. A step the gate needs later (a native library build) joins `build.ps1` and CI in the PR that adds what needs it. The shader generator (`tools/ShaderGen`) does not run in the gate: its output is committed, and a test compares the SHA-256 written in it with the HLSL's (design §5.7), so a shader changed without generating fails on every OS.
 
+The gate stops at the first step that fails, and Debug comes after Release. A report of a failed gate says which steps ran: the gate of PR #409's first head stopped in the Release WPF tests, so its Debug half had not run.
+
 A script calls an operating-system tool by its full path, not the first one on `PATH`: run from Git Bash, `tar` is GNU tar, which reads the `C:` of a path as a remote host (`System32/tar.exe` is the Windows one).
 
 A commit and a push follow the build only through its exit code. Piping the build's output into `grep` and chaining `git commit ... && git push` after it runs the commit even when the build failed, since the pipe's status is `grep`'s, and a commit that does not compile reaches the PR. Write `if dotnet build ...; then git commit ...; fi`, or check `$LASTEXITCODE` in PowerShell.
