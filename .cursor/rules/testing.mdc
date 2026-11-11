@@ -157,3 +157,7 @@ Assert.False(renderingAfterFrame);
 ```
 
 A row that adds states that workers move through runs its tests three times in a row while the machine is loaded (a benchmark or another test run beside them) before the PR. Row C3a's two races, the order of completion and a group read while it was being laid out, showed only when the tests ran beside the 1e9-point measurement. A race that no test forces is listed in the PR body and gets an Issue (Issue #410).
+
+A mutant is undone by writing the saved text of the file back, not by `git checkout <file>`: the checkout also discards the uncommitted edits of that file. In PR #415 it took a comment's fix with it, which had to be made again.
+
+Tests run only after a build that succeeded. With `dotnet build ... | grep error; dotnet test --no-build`, a build that an analyzer stopped leaves the old binaries, and the tests report on those: in PR #415 a failure "stayed" after its fix until the blank line that the analyzer asked for was added. Chain the two with `&&` on the build's exit code, or read the build's result first.

@@ -195,6 +195,12 @@ The design records a decision made at that time. It is not proof that the decisi
 - Do not add public API only so an older shape can stay.
 - If the written decision is no longer the best one, say so and change the design through the process above.
 
+A design that lets a job leave its work half done (a stop, a cancellation) follows the half-done work to the next step: what the job's end still triggers, and who may run it. Row C3a's unit that stopped writing still ended its stage and queued the job that publishes; a worker that had entered before the stop could run it over a copy that was not written to the end (PR #415's review).
+
+A design of a background pass states what it takes from the machine and what it yields to: its threads and their priority, how many of them one pass may hold, its files, and its memory, and which requirement holds it to that. Rows B1 and C3a designed the workers to yield to the frame only; nothing made them yield to the app's other threads or to other processes, and no requirement asked (row S4).
+
+A constant that a requirement fixes (a share of the source, a time) is checked against the smallest data of the tests before the code: a density tile is 65,536 B or more, so no test of a few thousand points fits 10 % of its source, and the share became a value of the tuning during row C3b. A row that adds a state or a publication to an existing sequence lists the tests of the earlier rows whose expectations move, with the rule they move by (row C3b: one more version for each finished build, in 32 cases).
+
 ```text
 # BAD — the design says "as datashader does" for the density path, and its PR body says datashader was not read
 # GOOD — the design names datashader's file and lines for each step it shares, and the steps it does not share are HyperPlot's own
