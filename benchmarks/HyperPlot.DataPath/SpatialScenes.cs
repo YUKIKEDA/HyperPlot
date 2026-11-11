@@ -16,6 +16,7 @@ internal static class SpatialScenes
     private const double ZoomShare = 0.01;
     private const double DeepShare = 0.0001;
     private const double HoverRadius = 8;
+    private const int WritesBefore = 200;
     private const ulong PlaceSeed = 0x43_33_61_50_6C_61_63_65UL;
     private static readonly TimeSpan FramePeriod = TimeSpan.FromSeconds(1.0 / 60);
 
@@ -96,6 +97,55 @@ internal static class SpatialScenes
         finally
         {
             _ = NativeMethods.TimeEndPeriod(1);
+        }
+    }
+
+    /// <summary>
+    /// The allocation job alone: makes the copy of <see cref="Options.Points"/> float points in a temporary file of
+    /// <see cref="Options.Temp"/> as the index does, and disposes of it, three times. On Linux, a file system without
+    /// <c>fallocate</c> makes glibc reserve the blocks another way (design §3.4 "一時ファイル"); the record names the file
+    /// system.
+    /// </summary>
+    internal static void Allocate(Options options)
+    {
+        for (var run = 1; run <= 3; run++)
+        {
+            var began = Stopwatch.GetTimestamp();
+            var copy = SpatialCopyAllocator.Default.Allocate(options.Points, [sizeof(float), sizeof(float)], mapped: true, options.Temp);
+            var allocated = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
+            began = Stopwatch.GetTimestamp();
+            copy.Dispose();
+            var disposed = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
+            Scenes.Report(
+                options,
+                run,
+                ("os", Environment.OSVersion.Platform),
+                ("temp", options.Temp ?? Path.GetTempPath()),
+                ("bytes", copy.ByteCount),
+                ("allocate_ms", allocated),
+                ("dispose_ms", disposed)
+            );
+        }
+    }
+
+    /// <summary>
+    /// Disposes of the index as soon as the writing began and once <see cref="WritesBefore"/> units of it have ended, eight
+    /// times each, over the files as they are (design §9: the wait of <see cref="SpatialIndex.Dispose"/>).
+    /// </summary>
+    internal static void DisposeWhileWriting(Options options)
+    {
+        using var ownPool = options.Workers > 0 ? new PlotWorkerPool(options.Workers) : null;
+        var pool = ownPool ?? PlotWorkerPool.Shared;
+        var (xPath, yPath) = PointFiles.Paths(options.File);
+        using var x = Column.MapFile<float>(xPath);
+        using var y = Column.MapFile<float>(yPath);
+        var tuning = Tuning(options);
+        for (var run = 1; run <= 8; run++)
+        {
+            foreach (var moment in (string[])["writing", "written"])
+            {
+                Report(options, run, "dispose", [.. Common(options, pool, tuning), .. DisposeAt(pool, x, y, options, tuning, moment)]);
+            }
         }
     }
 
@@ -313,6 +363,7 @@ internal static class SpatialScenes
         {
             "started" => state => state != SpatialIndexState.Waiting,
             "counting" => _ => index.Version >= 1,
+            "written" => _ => recorder.Writes >= WritesBefore,
             _ => state => state is not (SpatialIndexState.Waiting or SpatialIndexState.Counting),
         };
         var state = index.State;
@@ -326,7 +377,17 @@ internal static class SpatialScenes
         var began = Stopwatch.GetTimestamp();
         index.Dispose();
         var milliseconds = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
-        return [("moment", moment), ("state", state), ("jobs_before", jobsBefore), ("dispose_ms", milliseconds)];
+        var (jobsAfter, waited, longest) = recorder.Since(jobsBefore, began);
+        return
+        [
+            ("moment", moment),
+            ("state", state),
+            ("jobs_before", jobsBefore),
+            ("dispose_ms", milliseconds),
+            ("jobs_after", jobsAfter),
+            ("last_job_end_ms", waited),
+            ("longest_job_ms", longest),
+        ];
     }
 
     private static (string Key, object Value)[] Percentiles(double[] microseconds)
@@ -351,14 +412,23 @@ internal static class SpatialScenes
         private readonly long[] _ticks = new long[Capacity];
         private readonly long[] _ends = new long[Capacity];
         private int _count;
+        private int _writes;
 
         public long Start { get; set; }
 
         public int Count => Math.Min(Volatile.Read(ref _count), Capacity);
 
+        /// <summary>Gets the number of units of the writing that have ended.</summary>
+        public int Writes => Volatile.Read(ref _writes);
+
         public void Add(SpatialJob job, long ticks)
         {
             var end = Stopwatch.GetTimestamp();
+            if (job == SpatialJob.Write)
+            {
+                Interlocked.Increment(ref _writes);
+            }
+
             var slot = Interlocked.Increment(ref _count) - 1;
             if (slot < Capacity)
             {
@@ -366,6 +436,24 @@ internal static class SpatialScenes
                 _ticks[slot] = ticks;
                 _ends[slot] = end - Start;
             }
+        }
+
+        /// <summary>
+        /// The jobs that ended after the first <paramref name="before"/>: how many, when the last of them ended after
+        /// <paramref name="timestamp"/>, and how long the longest ran, in milliseconds. Dispose waits for these jobs; the
+        /// rest of its time frees the build.
+        /// </summary>
+        public (int Count, double LastEnd, double Longest) Since(int before, long timestamp)
+        {
+            var (lastEnd, longest) = (0.0, 0.0);
+            var count = Count;
+            for (var i = before; i < count; i++)
+            {
+                lastEnd = Math.Max(lastEnd, Seconds(_ends[i] + Start - timestamp) * 1e3);
+                longest = Math.Max(longest, Seconds(_ticks[i]) * 1e3);
+            }
+
+            return (count - before, lastEnd, longest);
         }
 
         /// <summary>

@@ -251,6 +251,10 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
             _view!.SafeMemoryMappedViewHandle.ReleasePointer();
         }
 
+        // The accessor's Dispose first writes every changed page to the file and waits for it: 26 to 48 s for a copy of
+        // 1e9 points that the writing stage had begun (docs/benchmarks/c3a-spatial-index.md). The file is going to be
+        // deleted, so the view's handle is closed first, which unmaps without writing; the accessor then has nothing to write.
+        _view?.SafeMemoryMappedViewHandle.Dispose();
         _view?.Dispose();
         _file?.Dispose();
         _stream.Dispose();

@@ -21,7 +21,9 @@ internal sealed record Options(
     {
         if (args.Length == 0)
         {
-            throw new ArgumentException("Name a scene: generate, hash, build, provisional, cold-frame, generate-points, hash-points, or spatial.");
+            throw new ArgumentException(
+                "Name a scene: generate, hash, build, provisional, cold-frame, generate-points, hash-points, spatial, or allocate."
+            );
         }
 
         var options = new Options(args[0], string.Empty, 1_000_000_000, SeriesFile.DefaultSeed, 0, false, false, false, "uniform", 0, null);
