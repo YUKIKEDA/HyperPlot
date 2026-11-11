@@ -44,16 +44,24 @@ internal sealed class StatsWork<T> : PoolWork
 
     private protected override void Build(int chunk)
     {
+        var low = PlotWorkerPool.Lower();
         try
         {
-            _ = _column.GetStats(chunk);
+            if (IsDisposed)
+            {
+                low.Restore();
+            }
+
+            _ = _column.GetStats(chunk, ref low);
         }
         catch (Exception exception)
         {
             // A failed chunk ends the work; the statistics of that chunk are computed when first read instead.
+            low.Restore();
             _completion.TrySetException(exception);
         }
 
+        low.Restore();
         if (Interlocked.Decrement(ref _remaining) == 0)
         {
             _pool.Unregister(this);

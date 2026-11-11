@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 
 namespace HyperPlot;
 
@@ -7,10 +8,10 @@ namespace HyperPlot;
 /// the series of an <see cref="M4Batch"/> within a frame (design §8.1).
 /// Use <see cref="Shared"/>, or make a pool of your own and dispose it when done.
 /// </summary>
-public sealed class PlotWorkerPool : IDisposable
+public sealed partial class PlotWorkerPool : IDisposable
 {
     private static readonly Lazy<PlotWorkerPool> _shared = new(
-        () => new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1), isShared: true, WarmsGate),
+        () => new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1), DefaultPriority, isShared: true, WarmsGate),
         LazyThreadSafetyMode.ExecutionAndPublication
     );
 
@@ -18,30 +19,60 @@ public sealed class PlotWorkerPool : IDisposable
     private readonly ManualResetEventSlim _wake = new(initialState: false);
     private readonly Lock _gate = new();
     private readonly bool _isShared;
+    private readonly ThreadPriority _priority;
 
     [ThreadStatic]
     private static bool _isWorkerThread;
+
+    // The pool of this worker thread, while the thread runs work that no frame and no query asked for.
+    [ThreadStatic]
+    private static PlotWorkerPool? _background;
 
     private PoolWork[] _works = [];
     private M4Batch? _batches;
     private SpatialSnapshot? _freeList;
     private volatile bool _disposed;
 
-    /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads. Its background work
+    /// runs at <see cref="ThreadPriority.BelowNormal"/>.
+    /// </summary>
     /// <param name="threadCount">The number of threads, at least 1.</param>
     public PlotWorkerPool(int threadCount)
-        : this(threadCount, isShared: false, WarmsGate) { }
+        : this(threadCount, DefaultPriority, isShared: false, WarmsGate) { }
+
+    /// <summary>Initializes a new instance of the <see cref="PlotWorkerPool"/> class and starts its threads.</summary>
+    /// <param name="threadCount">The number of threads, at least 1.</param>
+    /// <param name="priority">
+    /// The priority of a thread while it computes background work, which no frame waits for (a chunk of a pyramid,
+    /// statistics computed ahead, a unit of a spatial tile index): <see cref="ThreadPriority.Lowest"/>,
+    /// <see cref="ThreadPriority.BelowNormal"/>, or <see cref="ThreadPriority.Normal"/>. Below
+    /// <see cref="ThreadPriority.Normal"/>, the operating system runs the app's other threads and other processes
+    /// first when they ask for the processors (requirement N-12). The work of a frame runs at the normal priority.
+    /// On Linux the threads keep the lower priority (a nice value of 10 or 19) for all their work.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="threadCount"/> is less than 1, or <paramref name="priority"/> is above <see cref="ThreadPriority.Normal"/>.
+    /// </exception>
+    public PlotWorkerPool(int threadCount, ThreadPriority priority)
+        : this(threadCount, priority, isShared: false, WarmsGate) { }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlotWorkerPool"/> class that makes its lock's wait event when it is made, or
     /// not (Issue #304). Tests only: the test of the warm-up makes a pool of each kind.
     /// </summary>
     internal PlotWorkerPool(int threadCount, bool warmGate)
-        : this(threadCount, isShared: false, warmGate) { }
+        : this(threadCount, DefaultPriority, isShared: false, warmGate) { }
 
-    private PlotWorkerPool(int threadCount, bool isShared, bool warmGate)
+    private PlotWorkerPool(int threadCount, ThreadPriority priority, bool isShared, bool warmGate)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(threadCount);
+        if (priority is not (ThreadPriority.Lowest or ThreadPriority.BelowNormal or ThreadPriority.Normal))
+        {
+            throw new ArgumentOutOfRangeException(nameof(priority), priority, "The priority of background work is Lowest, BelowNormal, or Normal.");
+        }
+
+        _priority = priority;
         _isShared = isShared;
         _threads = new Thread[threadCount];
         for (var i = 0; i < threadCount; i++)
@@ -88,6 +119,16 @@ public sealed class PlotWorkerPool : IDisposable
     /// would count it. The test assemblies turn it on in a module initializer.
     /// </summary>
     internal static bool WarmsGate { get; set; }
+
+    /// <summary>
+    /// Gets or sets the priority of background work in a pool that is made without one, <see cref="Shared"/> included
+    /// (design §8.1 "優先度"). The test assemblies set <see cref="ThreadPriority.Normal"/> in a module initializer: their
+    /// threads run beside the workers on few processors, and a unit at a lower priority would be starved there.
+    /// </summary>
+    internal static ThreadPriority DefaultPriority { get; set; } = ThreadPriority.BelowNormal;
+
+    /// <summary>Gets the priority of a thread of the pool while it computes background work.</summary>
+    internal ThreadPriority Priority => _priority;
 
     /// <summary>
     /// Gets the pool that every plot shares, made when first read with <see cref="Environment.ProcessorCount"/> − 1 threads
@@ -461,6 +502,9 @@ public sealed class PlotWorkerPool : IDisposable
         }
 
         _disposed = true;
+
+        // The flag is written before the priorities: a worker that lowers its own afterwards reads the flag (Lower).
+        RaiseWorkers();
         PoolWork[] running;
 
         // The lock is also the full barrier between the write of the flag and what a work reads in OnPoolDisposing: a
@@ -654,9 +698,78 @@ public sealed class PlotWorkerPool : IDisposable
         return freed;
     }
 
+    /// <summary>
+    /// Lowers the priority of the calling thread to the pool's, when the thread is a worker that runs background work
+    /// (design §8.1 "下げる範囲"). The caller computes without taking a lock or allocating, and calls
+    /// <see cref="LowPriority.Restore"/> before it does either. After this call the caller reads the stop of its own work
+    /// again and restores at once when the work was stopped: a Dispose stops the work and then raises the workers, so one
+    /// of the two sees the other.
+    /// </summary>
+    /// <returns>What restores the priority.</returns>
+    internal static LowPriority Lower()
+    {
+        if (_background is not { } pool || pool._priority == ThreadPriority.Normal || !OperatingSystem.IsWindows())
+        {
+            return default;
+        }
+
+        Thread.CurrentThread.Priority = pool._priority;
+        if (pool._disposed)
+        {
+            // The disposal of the pool raised the workers before this thread lowered itself.
+            Thread.CurrentThread.Priority = ThreadPriority.Normal;
+            return default;
+        }
+
+        return new LowPriority(lowered: true);
+    }
+
+    /// <summary>
+    /// Sets the threads of the pool back to the normal priority. Called by what is about to wait for a worker's job, after
+    /// it stopped the work: a job that computes at a lower priority may not get a processor while others ask for them
+    /// (design §8.1 "ワーカーの終わりを待つ側"). A worker lowers itself again at its next background job.
+    /// </summary>
+    internal void RaiseWorkers()
+    {
+        if (_priority == ThreadPriority.Normal || !OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        foreach (var thread in _threads)
+        {
+            // A thread that has ended has no priority to set.
+            if (thread.IsAlive)
+            {
+                try
+                {
+                    thread.Priority = ThreadPriority.Normal;
+                }
+                catch (ThreadStateException)
+                {
+                    // The thread ended between the check and the call.
+                }
+            }
+        }
+    }
+
+    // int setpriority(int which, id_t who, int prio): −1 with errno set on failure (setpriority(2)). With PRIO_PROCESS and
+    // who = 0 it sets the nice value of the calling thread on Linux, where the nice value is a thread's.
+    [LibraryImport("libc", EntryPoint = "setpriority", SetLastError = true)]
+    private static partial int SetPriority(int which, uint who, int priority);
+
     private void Run()
     {
         _isWorkerThread = true;
+        if (OperatingSystem.IsLinux() && _priority != ThreadPriority.Normal)
+        {
+            // Thread.Priority does nothing on Linux (dotnet/runtime v10.0.0). A thread may raise its nice value without a
+            // privilege and not lower it again, so the worker keeps it for all its work. A failure leaves the thread as it
+            // was: the work is the same, it only yields less.
+            const int ProcessScope = 0;
+            _ = SetPriority(ProcessScope, 0, _priority == ThreadPriority.BelowNormal ? 10 : 19);
+        }
+
         while (!_disposed)
         {
             if (RunOne())
@@ -723,15 +836,44 @@ public sealed class PlotWorkerPool : IDisposable
             }
         }
 
-        foreach (var work in works)
+        // What no query asked for is background work: its computation runs at the pool's priority (Lower).
+        _background = this;
+        try
         {
-            if (work.RunOne(requestedOnly: false))
+            foreach (var work in works)
             {
-                TestTook?.Invoke(false);
-                return true;
+                if (work.RunOne(requestedOnly: false))
+                {
+                    TestTook?.Invoke(false);
+                    return true;
+                }
             }
+        }
+        finally
+        {
+            _background = null;
         }
 
         return false;
+    }
+
+    /// <summary>The lower priority of a worker thread during the computation of one background job.</summary>
+    internal struct LowPriority
+    {
+        private bool _lowered;
+
+        /// <summary>Initializes a new instance of the <see cref="LowPriority"/> struct.</summary>
+        /// <param name="lowered">Whether the calling thread's priority was lowered.</param>
+        internal LowPriority(bool lowered) => _lowered = lowered;
+
+        /// <summary>Sets the calling thread back to the normal priority. Further calls do nothing.</summary>
+        internal void Restore()
+        {
+            if (_lowered)
+            {
+                _lowered = false;
+                Thread.CurrentThread.Priority = ThreadPriority.Normal;
+            }
+        }
     }
 }

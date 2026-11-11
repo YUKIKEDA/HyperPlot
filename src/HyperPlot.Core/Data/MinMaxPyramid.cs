@@ -60,12 +60,16 @@ internal abstract class PoolWork
     private protected abstract void Build(int chunk);
 
     /// <summary>Marks the pyramid disposed and waits for the chunk a worker is building, if any. Returns false if it was already disposed.</summary>
-    internal bool BeginDispose()
+    /// <param name="pool">The pool whose workers run the work: they are set back to the normal priority before the wait.</param>
+    internal bool BeginDispose(PlotWorkerPool pool)
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
             return false;
         }
+
+        // After the flag: a worker that lowers its priority for a job of this work reads the flag afterwards.
+        pool.RaiseWorkers();
 
         // At most one chunk build per worker is in flight (design §8.1: Dispose waits for one chunk, invariant 7).
         var spin = default(SpinWait);
@@ -205,6 +209,9 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     /// <summary>Gets or sets a call a worker makes after writing a block, before the sequence goes even again. Tests only.</summary>
     internal Action? TestBlockWritten { get; set; }
 
+    /// <summary>Gets or sets what a worker calls just before it writes a chunk's block, inside the pass that runs at the pool's lower priority. Tests only.</summary>
+    internal Action? TestInBlock { get; set; }
+
     /// <summary>Gets the number of raw values queries have read, to check that a query reads at most the ends. Tests only; not exact beside other threads.</summary>
     internal long RawElementsRead => Volatile.Read(ref _rawReads);
 
@@ -241,7 +248,7 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
     /// </summary>
     public void Dispose()
     {
-        if (!Work.BeginDispose())
+        if (!Work.BeginDispose(_pool))
         {
             return;
         }
@@ -582,14 +589,25 @@ public sealed unsafe class MinMaxPyramid<T> : IDisposable
             // Rule 1 makes this worker the only writer of the block, so the sequence goes odd and even again (seqlock).
             Interlocked.Increment(ref _sequences[chunk]);
             ChunkStats<T> stats;
+
+            // The pass over the chunk neither locks nor allocates: a background chunk yields the processor to the app.
+            var low = PlotWorkerPool.Lower();
             try
             {
+                if (Work.IsDisposed)
+                {
+                    low.Restore();
+                }
+
+                TestInBlock?.Invoke();
                 stats = BuildBlock(chunk, values, withStats);
+                low.Restore();
                 Volatile.Write(ref _builtGenerations[chunk], generation);
                 TestBlockWritten?.Invoke();
             }
             finally
             {
+                low.Restore();
                 Interlocked.Increment(ref _sequences[chunk]);
             }
 

@@ -59,7 +59,7 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
     }
 
     /// <inheritdoc />
-    private protected override void RunUnit(SpatialBuild build, int group, long unit)
+    private protected override void RunUnit(SpatialBuild build, int group, long unit, ref PlotWorkerPool.LowPriority low)
     {
         // A unit lies in one chunk: its ends are multiples of the rows of a unit, which divide the length of a chunk.
         var (first, count) = build.RowsOf(unit);
@@ -71,12 +71,12 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
         {
             if (Input.XRange is null)
             {
-                Extend(build, group, 0, _x, Input.XTransform, xs, chunk, local);
+                Extend(build, group, 0, _x, Input.XTransform, xs, chunk, local, ref low);
             }
 
             if (Input.YRange is null)
             {
-                Extend(build, group, 1, _y, Input.YTransform, ys, chunk, local);
+                Extend(build, group, 1, _y, Input.YTransform, ys, chunk, local, ref low);
             }
 
             return;
@@ -148,7 +148,8 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
         IScale? transform,
         ReadOnlySpan<T> values,
         int chunk,
-        int local
+        int local,
+        ref PlotWorkerPool.LowPriority low
     )
         where T : unmanaged, INumber<T>
     {
@@ -163,7 +164,7 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
         var chunkFirst = (long)chunk << Column.ChunkShift;
         if (chunkFirst >= build.Start && chunkFirst + column.GetChunkLength(chunk) <= build.End)
         {
-            var stats = column.GetStats(chunk);
+            var stats = column.GetStats(chunk, ref low);
             if (stats.Count == 0)
             {
                 return;

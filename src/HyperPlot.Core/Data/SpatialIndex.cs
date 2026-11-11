@@ -214,7 +214,7 @@ internal abstract class SpatialIndex : IDisposable
         }
 
         // Outside the lock, which a job in flight may be waiting for. After this, no job of the index runs.
-        Work.BeginDispose();
+        Work.BeginDispose(Pool);
         Pool.Unregister(Work);
         Withdraw();
         Volatile.Read(ref _current).Release();
@@ -239,7 +239,8 @@ internal abstract class SpatialIndex : IDisposable
     /// <param name="build">The build.</param>
     /// <param name="group">The group of the unit, which the calling worker has.</param>
     /// <param name="unit">The unit.</param>
-    private protected abstract void RunUnit(SpatialBuild build, int group, long unit);
+    /// <param name="low">The lower priority of the calling worker: a unit gives it up before it allocates or takes a lock.</param>
+    private protected abstract void RunUnit(SpatialBuild build, int group, long unit, ref PlotWorkerPool.LowPriority low);
 
     private static long Pack(long sequence, int kind) => (sequence << KindBits) | (uint)kind;
 
@@ -311,13 +312,36 @@ internal abstract class SpatialIndex : IDisposable
             if (token < StartToken)
             {
                 var job = build!.UnitJob;
+                var unit = build.NextUnit(token);
+
+                // A unit computes without a lock and without an allocation, at the pool's lower priority. A Dispose stops
+                // the build and then raises the workers; this worker lowers itself and then reads the stop.
+                var low = PlotWorkerPool.Lower();
+                try
+                {
+                    if (build.IsStopped)
+                    {
+                        low.Restore();
+                    }
+
+                    if (job == SpatialJob.Density)
+                    {
+                        build.Density!.RunUnit(token, unit, build);
+                    }
+                    else
+                    {
+                        RunUnit(build, token, unit, ref low);
+                    }
+                }
+                finally
+                {
+                    low.Restore();
+                }
+
                 if (job == SpatialJob.Density)
                 {
-                    build.Density!.RunUnit(token, build.NextUnit(token), build);
-                }
-                else
-                {
-                    RunUnit(build, token, build.NextUnit(token));
+                    // Packing a tile allocates its block, so it comes after the priority is back.
+                    build.Density!.EndUnit(token, unit);
                 }
 
                 _tuning.JobEnded?.Invoke(job, TimeProvider.System.GetTimestamp() - began);
