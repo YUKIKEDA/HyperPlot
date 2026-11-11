@@ -1,6 +1,7 @@
 # Runs the spatial tile index scene of row C3a (design §9, docs/benchmarks/c3a-spatial-index.md) on 1e9 points of each
 # distribution: three rounds, each pair of compared sides in a balanced order (.cursor/rules/bench.mdc), then the build at
-# each RowsPerUnit with 8 workers over warm files, then Dispose during the writing. Publish first:
+# each RowsPerUnit with 8 workers over warm files, then Dispose during the writing. Run watch-machine.ps1 beside it: the
+# build times move with the CPU that other processes use. Publish first:
 #   dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64 -o .dev/c3a-datapath
 # Usage: ./benchmarks/HyperPlot.DataPath/run-c3a.ps1 -File D:\...\.dev\c3a-points
 # The x and y files (4 GB each) are written by the scenes and deleted at the end. Each build puts its copy (12 GB) in a

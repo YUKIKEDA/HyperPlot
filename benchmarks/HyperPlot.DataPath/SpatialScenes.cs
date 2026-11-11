@@ -18,6 +18,8 @@ internal static class SpatialScenes
     private const double DeepShare = 0.0001;
     private const double HoverRadius = 8;
     private const int WritesBefore = 200;
+    private const int TouchThreads = 8;
+    private const int TouchPagesPerThread = 12_288;
     private const ulong PlaceSeed = 0x43_33_61_50_6C_61_63_65UL;
     private static readonly TimeSpan FramePeriod = TimeSpan.FromSeconds(1.0 / 60);
 
@@ -133,6 +135,76 @@ internal static class SpatialScenes
                 ("dispose_ms", disposed),
                 ("closed_ms", closed)
             );
+        }
+    }
+
+    /// <summary>
+    /// Times the first writes to the pages of a mapped copy, which the first units of the writing pay for: one write,
+    /// then batches in which <see cref="TouchThreads"/> threads each write one element to
+    /// <see cref="TouchPagesPerThread"/> pages that nothing wrote before, then the pages of the first batch again.
+    /// </summary>
+    internal static void Touch(Options options)
+    {
+        const int ElementsPerPage = 4096 / sizeof(float);
+        const int Batches = 8;
+        var pages = new int[options.Points / ElementsPerPage];
+        if (pages.Length < Batches * TouchThreads * TouchPagesPerThread)
+        {
+            throw new ArgumentException(
+                $"The touch scene needs {(long)Batches * TouchThreads * TouchPagesPerThread * ElementsPerPage} points or more."
+            );
+        }
+
+        for (var page = 0; page < pages.Length; page++)
+        {
+            pages[page] = page;
+        }
+
+        new Random(1).Shuffle(pages);
+        var copy = SpatialCopyAllocator.Default.Allocate(options.Points, [sizeof(float), sizeof(float)], mapped: true, options.Temp);
+        try
+        {
+            var began = Stopwatch.GetTimestamp();
+            copy.GetRegion<float>(0).TryWrite((ulong)pages[^1] * ElementsPerPage, 1f);
+            Scenes.Report(options, 1, ("figure", "first_write"), ("ms", Stopwatch.GetElapsedTime(began).TotalMilliseconds));
+
+            // The batch after the last writes the pages of the first batch again: the same loop without a first write.
+            for (var batch = 0; batch <= Batches; batch++)
+            {
+                var source = batch % Batches;
+                began = Stopwatch.GetTimestamp();
+                Parallel.For(
+                    0,
+                    TouchThreads,
+                    new ParallelOptions { MaxDegreeOfParallelism = TouchThreads },
+                    thread =>
+                    {
+                        var region = copy.GetRegion<float>(0);
+                        var first = ((source * TouchThreads) + thread) * TouchPagesPerThread;
+                        for (var i = 0; i < TouchPagesPerThread; i++)
+                        {
+                            region.TryWrite((ulong)pages[first + i] * ElementsPerPage, 1f);
+                        }
+                    }
+                );
+                var milliseconds = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
+                Scenes.Report(
+                    options,
+                    1,
+                    ("figure", "touch"),
+                    ("batch", batch),
+                    ("pages", batch < Batches ? "new" : "written"),
+                    ("threads", TouchThreads),
+                    ("pages_per_thread", TouchPagesPerThread),
+                    ("ms", milliseconds),
+                    ("us_per_page", milliseconds * 1000 / TouchPagesPerThread)
+                );
+            }
+        }
+        finally
+        {
+            copy.Dispose();
+            copy.Closed.Wait();
         }
     }
 

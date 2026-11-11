@@ -55,6 +55,7 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | Morton 符号 | Morton code |
 | 四分木の表、セル、葉 | quadtree table, cell, leaf |
 | 同じ位置の点の葉、上限で止まった葉 | coincident leaf, capped leaf (`SpatialCellKind`) |
+| 分けたセル、分けているセル、印のあるセル（数え上げの間の表のセル） | split cell, open cell, settled cell |
 | 密度タイル、ビン、目次 | density tile, bin, tile directory |
 | スナップショット（空・粗い・確定） | snapshot (empty, coarse, full; `SpatialStage`) |
 | 参照の数 | reference count |

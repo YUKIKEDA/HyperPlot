@@ -12,6 +12,7 @@ using HyperPlot.DataPath;
 //   HyperPlot.DataPath hash-points --file ...
 //   HyperPlot.DataPath spatial --file ... [--distribution ...] [--workers 8] [--cold] [--rows-per-unit N] [--temp D:\...]
 //   HyperPlot.DataPath allocate --file - [--points N] [--temp /mnt/c/...]
+//   HyperPlot.DataPath touch --file - [--points N] [--temp D:\...]
 // The data files live outside the repository and are deleted after the run. The spatial scenes read <file>.x and <file>.y.
 var options = Options.Parse(args);
 using var process = Process.GetCurrentProcess();
@@ -55,6 +56,9 @@ switch (options.Scene)
         break;
     case "allocate":
         SpatialScenes.Allocate(options);
+        break;
+    case "touch":
+        SpatialScenes.Touch(options);
         break;
     default:
         Console.Error.WriteLine($"Unknown scene '{options.Scene}'.");
