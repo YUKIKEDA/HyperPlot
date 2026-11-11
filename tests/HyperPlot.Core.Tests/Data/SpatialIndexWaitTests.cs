@@ -61,7 +61,7 @@ public sealed class SpatialIndexWaitTests
     /// Expected:
     /// - The 9 calls return the same task, which has not ended while the worker is kept.
     /// - The calls queued one build: Allocate ran twice in all.
-    /// - After the task: IsComplete is true, the version is 3, and WhenComplete returns an ended task.
+    /// - After the task: IsComplete is true, the version is 5, and WhenComplete returns an ended task.
     /// </remarks>
     [Fact]
     public void WhenComplete_CalledTogetherAfterInvalidate_GivesEveryCallerTheSameTask()
@@ -109,7 +109,7 @@ public sealed class SpatialIndexWaitTests
         Eventually.Completes(tasks[0]!);
         Assert.Equal(2, rig.Probe.CountOf(SpatialJob.Allocate));
         Assert.True(index.IsComplete);
-        Assert.Equal(3, index.Version);
+        Assert.Equal(5, index.Version);
         Assert.True(index.WhenComplete().IsCompletedSuccessfully);
     }
 
@@ -124,15 +124,16 @@ public sealed class SpatialIndexWaitTests
     ///
     /// Steps:
     /// - While the worker is kept, call WhenComplete, and call Invalidate on x when <paramref name="invalidated"/>.
-    /// - Let the worker go. At the end of each PublishFull, note the state and whether the task and Completion have ended.
+    /// - Let the worker go. At the end of each PublishDensity, the last job of a build, note the state and whether the
+    ///   task and Completion have ended.
     /// - Wait for the task.
     ///
     /// Expected:
     /// - The task has not ended while the worker is kept.
-    /// - Without the change: one PublishFull; at its end the state is Complete and neither task has ended yet.
+    /// - Without the change: one PublishDensity; at its end the state is Complete and neither task has ended yet.
     /// - With the change: two. At the end of the first the state is Waiting, at the end of the second it is Complete,
     ///   and neither task has ended at either.
-    /// - The tasks end once the last PublishFull is reported: every end is noted when the wait for the task returns.
+    /// - The tasks end once the last PublishDensity is reported: every end is noted when the wait for the task returns.
     /// - After the task: IsComplete is true and Completion ended without an exception.
     /// </remarks>
     [Theory]
@@ -145,7 +146,7 @@ public sealed class SpatialIndexWaitTests
         var ends = new List<(SpatialIndexState State, bool Waiting, bool Completion)>();
         rig.Probe.AfterJob = (job, index) =>
         {
-            if (job == SpatialJob.PublishFull)
+            if (job == SpatialJob.PublishDensity)
             {
                 ends.Add((index.State, waiting!.IsCompleted, index.Completion.IsCompleted));
             }

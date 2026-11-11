@@ -35,4 +35,16 @@ internal enum SpatialJob
 
     /// <summary>The single job that fills the gaps of the copy and publishes the full snapshot.</summary>
     PublishFull,
+
+    /// <summary>The single job that chooses the cells that get a density tile.</summary>
+    PlanDensity,
+
+    /// <summary>A unit that counts one quadrant of a density tile, or one run of the copy in it.</summary>
+    Density,
+
+    /// <summary>The single job that ends one level of density tiles and begins the level above it.</summary>
+    EndDensityLevel,
+
+    /// <summary>The single job that gives the full snapshot its density tiles and ends the build.</summary>
+    PublishDensity,
 }

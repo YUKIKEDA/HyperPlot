@@ -113,7 +113,7 @@ internal sealed class SpatialRig : IDisposable
         {
             before?.Invoke(job, index);
             var snapshot = index.Acquire();
-            var sight = new Sight(job, snapshot, snapshot.Stage, snapshot.IsProvisional, index.Completion.IsCompleted);
+            var sight = new Sight(job, snapshot, snapshot.Stage, snapshot.IsProvisional, index.Completion.IsCompleted, snapshot.Tiles is not null);
             snapshot.Release();
             lock (_gate)
             {
@@ -152,7 +152,8 @@ internal sealed class SpatialRig : IDisposable
     /// <param name="Stage">The stage of the snapshot.</param>
     /// <param name="Provisional">Whether the snapshot was provisional.</param>
     /// <param name="Ended">Whether <see cref="SpatialIndex.Completion"/> had ended.</param>
-    internal readonly record struct Sight(SpatialJob Job, SpatialSnapshot Snapshot, SpatialStage Stage, bool Provisional, bool Ended);
+    /// <param name="HasTiles">Whether the snapshot had its density tiles.</param>
+    internal readonly record struct Sight(SpatialJob Job, SpatialSnapshot Snapshot, SpatialStage Stage, bool Provisional, bool Ended, bool HasTiles);
 
     /// <summary>The only worker of a pool, kept at the end of the first job of an index of one row.</summary>
     internal sealed class Blocker : IDisposable

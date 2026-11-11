@@ -56,6 +56,12 @@ internal sealed class SpatialBuild
     /// <summary>Gets or sets the copy, which the build owns until the full snapshot takes it.</summary>
     public SpatialCopy? Copy { get; set; }
 
+    /// <summary>Gets or sets the full snapshot that the build published and borrows while it makes the density tiles.</summary>
+    public SpatialSnapshot? Full { get; set; }
+
+    /// <summary>Gets or sets the builder of the density tiles, which the build owns.</summary>
+    public DensityBuilder? Density { get; set; }
+
     /// <summary>Gets or sets the counts of levels 0 to 8, which the snapshots of the build share.</summary>
     public long[]? Coarse { get; set; }
 
@@ -203,7 +209,10 @@ internal sealed class SpatialBuild
     /// <returns>Whether this call stopped it.</returns>
     public bool Stop() => Interlocked.Exchange(ref _stopped, 1) == 0;
 
-    /// <summary>Frees the builder and the copy. Only the first call does it. No job is in the build.</summary>
+    /// <summary>
+    /// Frees the builder, the copy, and the density tiles that no snapshot has taken, and gives the borrowed snapshot
+    /// back. Only the first call does it. No job is in the build.
+    /// </summary>
     public void Free()
     {
         if (Interlocked.Exchange(ref _freed, 1) != 0)
@@ -213,6 +222,29 @@ internal sealed class SpatialBuild
 
         Builder?.Dispose();
         Copy?.Dispose();
+        Density?.Dispose();
+        Full?.Release();
+    }
+
+    /// <summary>
+    /// Cuts the units of one level of density tiles into the groups: each group has whole tiles (design §3.4
+    /// "密度タイル"). The caller is the one job that runs in the build, and no unit is left to take.
+    /// </summary>
+    /// <param name="density">The builder, after it began a level.</param>
+    public void LayDensity(DensityBuilder density)
+    {
+        // Nothing is taken while the ends of the groups are written (see Group.Next).
+        foreach (var cursor in _groups)
+        {
+            Volatile.Write(ref cursor.Next, long.MaxValue);
+        }
+
+        UnitCount = density.UnitCount;
+        for (var group = 0; group < Groups; group++)
+        {
+            _groups[group].Begin = density.GroupStart(group);
+            _groups[group].End = density.GroupStart(group + 1);
+        }
     }
 
     /// <summary>

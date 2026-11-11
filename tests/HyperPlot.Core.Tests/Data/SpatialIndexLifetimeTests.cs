@@ -126,7 +126,8 @@ public sealed class SpatialIndexLifetimeTests
     /// Expected:
     /// - No reader saw a freed snapshot, before or after its reads; every Count was 500 inside and 0 touching; every
     ///   ReadPoints returned the points of the first snapshot; no reader threw.
-    /// - The version is 302: one publication for each replacement after the two of the first build.
+    /// - The version is 603: the full snapshot and its density tiles for each replacement, after the three
+    ///   publications of the first build.
     /// - After Dispose, the copy of every build is released.
     /// </remarks>
     [Fact]
@@ -206,7 +207,7 @@ public sealed class SpatialIndexLifetimeTests
         }
 
         Assert.All(failures, Assert.Null);
-        Assert.Equal(2 + Rounds, index.Version);
+        Assert.Equal(3 + (2 * Rounds), index.Version);
         index.Dispose();
         var requests = rig.Allocator.Requests;
         Assert.Equal(1 + Rounds, requests.Length);

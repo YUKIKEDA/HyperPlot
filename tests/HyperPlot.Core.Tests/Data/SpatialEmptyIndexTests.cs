@@ -23,9 +23,10 @@ public sealed class SpatialEmptyIndexTests
     ///
     /// Expected:
     /// - The allocator got no request.
-    /// - The jobs are Allocate, EndRange, PublishCoarse, Table, PublishFull: no unit ran.
-    /// - The versions at their ends are 0, 0, 1, 1, 2, and the states are Counting three times, Writing, and Complete.
-    /// - The index is complete with no Fault, and its version is 2.
+    /// - The jobs are Allocate, EndRange, PublishCoarse, Table, PublishFull, PlanDensity, PublishDensity: no unit ran.
+    /// - The versions at their ends are 0, 0, 1, 1, 2, 2, 3, and the states are Counting three times, Writing, Density
+    ///   twice, and Complete.
+    /// - The index is complete with no Fault, and its version is 3. Its snapshot has density tiles that hold 0 tiles.
     /// - The snapshot is full and not provisional, with 0 points, 0 excluded rows, both ranges with the origin 0 and
     ///   the width 0, coarse counts of 0, and a table of 1 row: the root with 0 points.
     /// - Count answers 0 inside and 0 touching, GetCells returns 0, and ReadPoints of 0 points returns.
@@ -50,14 +51,25 @@ public sealed class SpatialEmptyIndexTests
         using var built = SpatialBuilt.Over(Make(storage, xs, xFile), Make(storage, ys, yFile), input, allocator: allocator, probe: probe);
 
         Assert.Empty(allocator.Requests);
-        SpatialJob[] jobs = [SpatialJob.Allocate, SpatialJob.EndRange, SpatialJob.PublishCoarse, SpatialJob.Table, SpatialJob.PublishFull];
-        long[] versions = [0, 0, 1, 1, 2];
+        SpatialJob[] jobs =
+        [
+            SpatialJob.Allocate,
+            SpatialJob.EndRange,
+            SpatialJob.PublishCoarse,
+            SpatialJob.Table,
+            SpatialJob.PublishFull,
+            SpatialJob.PlanDensity,
+            SpatialJob.PublishDensity,
+        ];
+        long[] versions = [0, 0, 1, 1, 2, 2, 3];
         SpatialIndexState[] states =
         [
             SpatialIndexState.Counting,
             SpatialIndexState.Counting,
             SpatialIndexState.Counting,
             SpatialIndexState.Writing,
+            SpatialIndexState.Density,
+            SpatialIndexState.Density,
             SpatialIndexState.Complete,
         ];
         var steps = probe.Steps;
@@ -68,7 +80,8 @@ public sealed class SpatialEmptyIndexTests
         Assert.True(built.Index.IsComplete);
         Assert.Equal(SpatialIndexState.Complete, built.Index.State);
         Assert.Null(built.Index.Fault);
-        Assert.Equal(2, built.Index.Version);
+        Assert.Equal(3, built.Index.Version);
+        Assert.Equal(0, built.Snapshot.Tiles!.TileCount);
 
         var snapshot = built.Snapshot;
         Assert.Equal(SpatialStage.Full, snapshot.Stage);
