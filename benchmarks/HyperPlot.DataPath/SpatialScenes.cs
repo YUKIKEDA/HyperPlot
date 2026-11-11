@@ -77,6 +77,11 @@ internal static class SpatialScenes
                     try
                     {
                         Report(options, run, "memory", [.. common, .. Memory(snapshot, x.Length, tuning)]);
+                        foreach (var line in Density(snapshot, x.Length, tuning))
+                        {
+                            Report(options, run, "density", [.. common, .. line]);
+                        }
+
                         foreach (var line in Queries(snapshot, x, y, tuning))
                         {
                             Report(options, run, "queries", [.. common, .. line]);
@@ -229,13 +234,22 @@ internal static class SpatialScenes
         }
     }
 
-    private static SpatialIndexTuning Tuning(Options options) =>
-        options.RowsPerUnit > 0 ? SpatialIndexTuning.Default with { RowsPerUnit = options.RowsPerUnit } : SpatialIndexTuning.Default;
+    private static SpatialIndexTuning Tuning(Options options)
+    {
+        var tuning = SpatialIndexTuning.Default;
+        tuning = options.RowsPerUnit > 0 ? tuning with { RowsPerUnit = options.RowsPerUnit } : tuning;
+        return options.DensitySplit > 0 ? tuning with { DensitySplit = options.DensitySplit } : tuning;
+    }
 
     private static SpatialIndexInput Input(Options options) => new() { Rows = RowRange.All, TempFolder = options.Temp };
 
     private static (string Key, object Value)[] Common(Options options, PlotWorkerPool pool, SpatialIndexTuning tuning) =>
-        [("distribution", options.Distribution), ("workers", pool.ThreadCount), ("rows_per_unit", tuning.RowsPerUnit)];
+        [
+            ("distribution", options.Distribution),
+            ("workers", pool.ThreadCount),
+            ("rows_per_unit", tuning.RowsPerUnit),
+            ("density_split", tuning.DensitySplit),
+        ];
 
     /// <summary>
     /// Calls Acquire, Count over the whole plane at the level of about one cell per plot-area pixel, and Release once a frame
@@ -475,6 +489,83 @@ internal static class SpatialScenes
         ];
     }
 
+    /// <summary>
+    /// The density tiles of a full snapshot: one line of totals (the tiles, their bytes against the source, the table and
+    /// the tiles together against the 10 % of requirement P-8, the estimate, and the level the budget left out), one line
+    /// per level with the tiles of each width, and one line for TryGetTile at <see cref="Places"/> seeded cells with a tile.
+    /// </summary>
+    private static List<(string Key, object Value)[]> Density(SpatialSnapshot snapshot, long points, SpatialIndexTuning tuning)
+    {
+        var tiles = snapshot.Tiles!;
+        var sourceBytes = 2L * points * sizeof(float);
+        var rows = snapshot.Rows;
+        var byLevel = new int[DensityTiles.DeepestTileLevel + 1, 4];
+        var cells = new List<(ulong Code, int Level)>();
+        foreach (var row in rows)
+        {
+            if (tiles.TryGetTile(row.Code, row.Level, out var tile))
+            {
+                byLevel[row.Level, int.Log2(tile.BytesPerBin)]++;
+                cells.Add((row.Code, row.Level));
+            }
+        }
+
+        using var plan = new DensityBuilder(snapshot, tuning.DensitySplit, tuning.RowsPerUnit, sourceBytes, tuning.TotalShare);
+        var tableBytes = rows.Length * 32L;
+        var lines = new List<(string Key, object Value)[]>
+        {
+            new (string Key, object Value)[]
+            {
+                ("part", "total"),
+                ("tiles", tiles.TileCount),
+                ("tile_bytes", tiles.ByteCount),
+                ("tile_percent", 100.0 * tiles.ByteCount / sourceBytes),
+                ("table_and_tiles_percent", 100.0 * (tiles.ByteCount + tableBytes) / sourceBytes),
+                ("estimated_bytes", plan.EstimatedBytes),
+                ("estimated_percent", 100.0 * (plan.EstimatedBytes + tableBytes) / sourceBytes),
+                ("stopped_level", plan.StoppedLevel),
+                ("levels", plan.LevelCount),
+            },
+        };
+        for (var level = 0; level < plan.LevelCount; level++)
+        {
+            lines.Add([
+                ("part", "level"),
+                ("level", level),
+                ("bytes1", byLevel[level, 0]),
+                ("bytes2", byLevel[level, 1]),
+                ("bytes4", byLevel[level, 2]),
+                ("bytes8", byLevel[level, 3]),
+            ]);
+        }
+
+        if (cells.Count == 0)
+        {
+            return lines;
+        }
+
+        var times = new double[Places];
+        var state = PlaceSeed;
+        ulong check = 0;
+        _ = tiles.TryGetTile(cells[0].Code, cells[0].Level, out _);
+        var allocated = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < Places; i++)
+        {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            var (code, level) = cells[(int)((state * 0x2545F4914F6CDD1DUL) % (ulong)cells.Count)];
+            var began = Stopwatch.GetTimestamp();
+            _ = tiles.TryGetTile(code, level, out var tile);
+            times[i] = Stopwatch.GetElapsedTime(began).TotalMicroseconds;
+            check += tile[i % DensityTiles.Side, (i / DensityTiles.Side) % DensityTiles.Side];
+        }
+
+        allocated = GC.GetAllocatedBytesForCurrentThread() - allocated;
+        lines.Add([("part", "lookup"), .. Percentiles(times), ("allocated_bytes", allocated), ("check", check)]);
+        return lines;
+    }
+
     private static (string Key, object Value)[] Percentiles(double[] microseconds)
     {
         Array.Sort(microseconds);
@@ -601,8 +692,16 @@ internal static class SpatialScenes
                 .ToArray();
             var previous = 0.0;
             var pass = 0;
+            var levels = 0;
             foreach (var (job, end) in singles)
             {
+                if (job == SpatialJob.EndDensityLevel)
+                {
+                    // The levels of the tiles are one stage, which ends with PublishDensity.
+                    levels++;
+                    continue;
+                }
+
                 var name = job switch
                 {
                     SpatialJob.Allocate => "allocate_s",
@@ -610,18 +709,26 @@ internal static class SpatialScenes
                     SpatialJob.PublishCoarse => "first_s",
                     SpatialJob.EndPass => $"pass{++pass}_s",
                     SpatialJob.Table => "table_s",
-                    _ => "write_s",
+                    SpatialJob.PublishFull => "write_s",
+                    SpatialJob.PlanDensity => "plan_density_s",
+                    _ => "density_s",
                 };
                 yield return (name, end - previous);
                 if (job == SpatialJob.PublishCoarse)
                 {
                     yield return ("coarse_at_s", end);
                 }
+                else if (job == SpatialJob.PublishFull)
+                {
+                    // Requirement P-15 is the time to here: the points can be asked for.
+                    yield return ("full_at_s", end);
+                }
 
                 previous = end;
             }
 
             yield return ("passes", pass);
+            yield return ("density_levels", levels);
         }
 
         /// <summary>
@@ -656,7 +763,8 @@ internal static class SpatialScenes
             }
         }
 
-        private static bool IsUnit(SpatialJob job) => job is SpatialJob.Range or SpatialJob.First or SpatialJob.Pass or SpatialJob.Write;
+        private static bool IsUnit(SpatialJob job) =>
+            job is SpatialJob.Range or SpatialJob.First or SpatialJob.Pass or SpatialJob.Write or SpatialJob.Density;
 
         private static double Seconds(long ticks) => (double)ticks / Stopwatch.Frequency;
     }

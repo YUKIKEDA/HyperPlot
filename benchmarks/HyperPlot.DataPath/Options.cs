@@ -14,6 +14,7 @@ internal sealed record Options(
     bool ReadsOnly,
     string Distribution,
     int RowsPerUnit,
+    long DensitySplit,
     string? Temp
 )
 {
@@ -26,7 +27,7 @@ internal sealed record Options(
             );
         }
 
-        var options = new Options(args[0], string.Empty, 1_000_000_000, SeriesFile.DefaultSeed, 0, false, false, false, "uniform", 0, null);
+        var options = new Options(args[0], string.Empty, 1_000_000_000, SeriesFile.DefaultSeed, 0, false, false, false, "uniform", 0, 0, null);
         for (var i = 1; i < args.Length; i++)
         {
             options = args[i] switch
@@ -40,6 +41,7 @@ internal sealed record Options(
                 "--reads-only" => options with { ReadsOnly = true },
                 "--distribution" => options with { Distribution = args[++i] },
                 "--rows-per-unit" => options with { RowsPerUnit = int.Parse(args[++i], CultureInfo.InvariantCulture) },
+                "--density-split" => options with { DensitySplit = long.Parse(args[++i], CultureInfo.InvariantCulture) },
                 "--temp" => options with { Temp = args[++i] },
                 _ => throw new ArgumentException($"Unknown option '{args[i]}'."),
             };
