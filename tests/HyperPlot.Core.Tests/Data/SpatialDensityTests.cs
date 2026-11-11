@@ -14,11 +14,12 @@ public sealed class SpatialDensityTests
     /// - Leaves of 16 points and units of 256 rows, 3 workers, and a density split of <paramref name="split"/> points.
     ///   The share of the table and the tiles is not limited: a tile is 65,536 B or more, and the source is 40,000 B
     ///   to 320,000 B.
-    /// - "uniform": 5,000 float points spread evenly. "nested": 20,000 double points in clusters inside clusters, 30
-    ///   levels deep, so that cells below level 24 hold more points than the split and a quadrant without a tile is
-    ///   read in runs of 256 points. "coincident": the uniform points and 3,000 points at one place. "capped": the
-    ///   nested points with a table share of 0.01, so that leaves are capped. "skipped": the uniform points with NaN
-    ///   and infinities in 50 rows of x and 50 rows of y.
+    /// - "uniform": 5,000 float points spread evenly. "nested": 20,000 double points in clusters inside clusters, so
+    ///   that a quadrant without a tile is read in runs of 256 points. "deep": 1,000 double points spread evenly and
+    ///   1,000 in a square 2^-29 of the range wide, so that split cells below level 24 hold more points than the
+    ///   split. "coincident": the uniform points and 3,000 points at one place. "capped": the nested points with a
+    ///   table share of 0.01, so that leaves are capped. "skipped": the uniform points with NaN and infinities in 50
+    ///   rows of x and 50 rows of y.
     ///
     /// Steps:
     /// - Build the index and read its full snapshot. For each row of the table, ask for the tile of its cell.
@@ -26,7 +27,8 @@ public sealed class SpatialDensityTests
     ///
     /// Expected:
     /// - A cell has a tile exactly when it is split, holds more points than the split, and its level is 24 or less.
-    ///   TileCount is the number of such cells, and at least one cell has a tile.
+    ///   TileCount is the number of such cells, and at least one cell has a tile. In "deep", a split cell below level
+    ///   24 holds more points than the split and has no tile.
     /// - Bin (x, y) of the tile of a cell of level L is the number of points whose code lies in the cell and whose
     ///   cell at level L + 8 has x and y as its lower 8 bits on each axis.
     /// - The width of a tile is the least of 1, 2, 4, and 8 bytes that holds its largest bin, and ByteCount is the
@@ -35,6 +37,7 @@ public sealed class SpatialDensityTests
     [Theory]
     [InlineData("uniform", 64)]
     [InlineData("nested", 256)]
+    [InlineData("deep", 64)]
     [InlineData("coincident", 64)]
     [InlineData("capped", 256)]
     [InlineData("skipped", 64)]
@@ -50,9 +53,11 @@ public sealed class SpatialDensityTests
         Assert.NotNull(tiles);
         var codes = Codes(snapshot);
         var expected = 0;
+        var below = 0;
         long bytes = 0;
         foreach (var row in snapshot.Rows)
         {
+            below += row.Kind == (byte)SpatialCellKind.Inner && row.Count > split && row.Level > 24 ? 1 : 0;
             var wanted = row.Kind == (byte)SpatialCellKind.Inner && row.Count > split && row.Level <= 24;
             var found = tiles.TryGetTile(row.Code, row.Level, out var tile);
             if (found != wanted)
@@ -86,6 +91,10 @@ public sealed class SpatialDensityTests
         Assert.True(expected > 0, "No cell has a tile.");
         Assert.Equal(expected, tiles.TileCount);
         Assert.Equal(bytes, tiles.ByteCount);
+        if (shape == "deep")
+        {
+            Assert.True(below > 0, "No split cell below level 24 holds more points than the split.");
+        }
     }
 
     /// <summary>A tile's quadrant over a child with a tile is the 2 × 2 sums of the child's tile.</summary>
@@ -199,6 +208,8 @@ public sealed class SpatialDensityTests
     /// Expected:
     /// - A level from 1 on was left out. Every cell above it that is split and holds more than 1,000 points has a
     ///   tile, and no cell at or below it has one, although some hold more than 1,000 points.
+    /// - The estimate is, for each tile, 24 B and 65,536 bins at the width of the most points one bin can hold by the
+    ///   table: the points of a cell 8 levels below the tile's, or of a leaf that ends above that level.
     /// - The bytes of the tiles are no more than the estimate, and the table and the tiles together are no more than
     ///   10 % of the source.
     /// </remarks>
@@ -234,6 +245,31 @@ public sealed class SpatialDensityTests
 
         Assert.True(deeper > 0, "No cell at or below the level left out holds more points than the split.");
         Assert.Equal(plan.TileCount, tiles.TileCount);
+
+        long estimate = 0;
+        var rows = snapshot.Rows.ToArray();
+        foreach (var cell in rows)
+        {
+            if (!tiles.TryGetTile(cell.Code, cell.Level, out _))
+            {
+                continue;
+            }
+
+            // Every row whose cell lies in the tile's cell, at the level of the bins or a leaf above it.
+            long most = 0;
+            foreach (var row in rows)
+            {
+                var inside = row.Level >= cell.Level && row.Code >> (2 * (row.Level - cell.Level)) == cell.Code;
+                if (inside && (row.Level == cell.Level + 8 || (row.FirstChild < 0 && row.Level < cell.Level + 8)))
+                {
+                    most = Math.Max(most, row.Count);
+                }
+            }
+
+            estimate += 24 + (65_536L * DensityTiles.BytesPerBinFor((ulong)most));
+        }
+
+        Assert.Equal(estimate, plan.EstimatedBytes);
         Assert.True(tiles.ByteCount <= plan.EstimatedBytes, $"The tiles take {tiles.ByteCount} B; the estimate is {plan.EstimatedBytes} B.");
         var total = tiles.ByteCount + (snapshot.Rows.Length * 32L);
         Assert.True(total <= Source / 10, $"The table and the tiles take {total} B of {Source} B.");
@@ -494,6 +530,19 @@ public sealed class SpatialDensityTests
             case "capped":
                 var (nx, ny) = SpatialData.Nested(20_000, seed: 86);
                 return SpatialBuilt.Of(nx, ny, tuning: shape == "capped" ? tuning with { TableShare = 0.01 } : tuning);
+            case "deep":
+                var random = new Random(88);
+                var (dx, dy) = (new double[2_000], new double[2_000]);
+                for (var row = 0; row < dx.Length; row++)
+                {
+                    // The second thousand lies in a square 2^-29 of the range wide.
+                    var width = row < 1_000 ? 1.0 : 1.0 / (1 << 29);
+                    (dx[row], dy[row]) = (0.3 + (random.NextDouble() * width * 0.7), 0.6 + (random.NextDouble() * width * 0.4));
+                }
+
+                (dx[0], dy[0]) = (0, 0);
+                (dx[1], dy[1]) = (1, 1);
+                return SpatialBuilt.Of(dx, dy, tuning: tuning);
             default:
                 var (xs, ys) = SpatialData.Uniform(shape == "coincident" ? 8_000 : 5_000, seed: 87);
                 for (var row = 5_000; row < xs.Length; row++)

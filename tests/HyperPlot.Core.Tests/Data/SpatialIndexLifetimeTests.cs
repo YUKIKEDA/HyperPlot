@@ -429,7 +429,8 @@ public sealed class SpatialIndexLifetimeTests
     /// - 2,000 seeded float points (8 units a stage) on a pool of 2 threads.
     /// - 200 rounds, each with an index of its own. A round calls Dispose on a thread of the .NET pool once a chosen
     ///   job has ended, after a pause of a few spins: the last First (so that Dispose meets PublishCoarse) in the even
-    ///   rounds, and one of the eight Write jobs (so that it meets PublishFull) in the odd ones. The job and the pause
+    ///   rounds, and one of the eight Write jobs (so that it meets PublishFull, or the PublishDensity that follows it
+    ///   and publishes the density tiles) in the odd ones. The job and the pause
     ///   change from round to round, so that Dispose lands before, inside, and after the publishing job. The test does
     ///   not need a round to land inside: the mutation check of the row shows that rounds do on the machine of the row.
     ///
