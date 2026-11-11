@@ -143,8 +143,8 @@ internal abstract class SpatialIndex : IDisposable
 
     /// <summary>
     /// Returns a task that ends when <see cref="IsComplete"/> is true (design §3.4 "完了を待つ"): at once when it is. A
-    /// call that finds a column's version moved queues a new build. The task ends with <see cref="Fault"/> when the last
-    /// build threw and the versions have not moved since, with the exception of a build that throws during the wait, and
+    /// call that finds a column's version moved queues a new build. The task ends with the exception of the last build
+    /// when that build threw and the versions have not moved since, with the exception of a build that throws during the wait, and
     /// with <see cref="ObjectDisposedException"/> when the index or the pool is disposed. Calls during one wait get the
     /// same task.
     /// </summary>
@@ -168,9 +168,9 @@ internal abstract class SpatialIndex : IDisposable
 
         // A failed build is not queued again until a version moves (rule 4), so a wait for it would not end.
         Reconsider();
-        if (KindOf(Volatile.Read(ref _state)) == Failed && Fault is { } fault)
+        if (KindOf(Volatile.Read(ref _state)) == Failed && Volatile.Read(ref _lastFailure) is { } failure)
         {
-            return Task.FromException(fault);
+            return Task.FromException(failure);
         }
 
         Task task;
@@ -206,6 +206,10 @@ internal abstract class SpatialIndex : IDisposable
             // reads Disposed finds the build stopped.
             Volatile.Read(ref _build)?.Stop();
             Interlocked.Exchange(ref _state, Pack(state >> KindBits, Disposed));
+
+            // A worker that had read the state before may have put its build here since: it reads the state again
+            // after it, and this reads the build again after the state.
+            Volatile.Read(ref _build)?.Stop();
         }
 
         // Outside the lock, which a job in flight may be waiting for. After this, no job of the index runs.
@@ -323,7 +327,17 @@ internal abstract class SpatialIndex : IDisposable
                 }
 
                 build = new SpatialBuild(state >> KindBits);
-                Volatile.Write(ref _build, build);
+
+                // A disposal that began before the build was here found none to stop. Each side writes with a full
+                // barrier and then reads the other's word, so one of them sees the other: the build never runs on
+                // under a Dispose that waits for it.
+                Interlocked.Exchange(ref _build, build);
+                if (KindOf(Volatile.Read(ref _state)) != Counting || Pool.IsDisposed)
+                {
+                    build.Stop();
+                    return;
+                }
+
                 ran = SpatialJob.Allocate;
                 next = Allocate(build);
             }
@@ -687,6 +701,7 @@ internal abstract class SpatialIndex : IDisposable
         internal override void OnPoolDisposed() => index.OnPoolDisposed();
 
         // The pool waits for the unit in flight: one that writes the copy stops at its next check, as for Dispose.
+        // A worker that puts a build here afterwards reads the pool's flag after it (RunJob).
         internal override void OnPoolDisposing() => Volatile.Read(ref index._build)?.Stop();
 
         private protected override int TryTake(bool requestedOnly) => index.TryTake(requestedOnly);

@@ -462,6 +462,9 @@ public sealed class PlotWorkerPool : IDisposable
 
         _disposed = true;
         PoolWork[] running;
+
+        // The lock is also the full barrier between the write of the flag and what a work reads in OnPoolDisposing: a
+        // job that starts meanwhile reads the flag after its own write (IsDisposed).
         lock (_gate)
         {
             running = _works;
@@ -496,6 +499,9 @@ public sealed class PlotWorkerPool : IDisposable
 
         // The event is not disposed: a query on another thread may still call Wake, which must not throw.
     }
+
+    /// <summary>Gets a value indicating whether the disposal of the pool has begun: a job that would run long does not start.</summary>
+    internal bool IsDisposed => _disposed;
 
     /// <summary>Returns whether a batch is in the list the workers read; tests wait for it before they release a worker.</summary>
     internal bool IsQueued(M4Batch batch)

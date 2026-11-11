@@ -138,7 +138,7 @@ public sealed class SpatialIndexFailureTests
         Assert.True(index.WhenComplete().IsCompletedSuccessfully);
     }
 
-    /// <summary>A second failure leaves the first exception in Fault and in Completion, and the one who waits gets the second.</summary>
+    /// <summary>A second failure leaves the first exception in Fault and in Completion, and WhenComplete gives the second.</summary>
     /// <remarks>
     /// Preconditions:
     /// - 5,000 seeded float points on a pool of 1 thread whose build failed with a first exception of the transform of
@@ -153,7 +153,8 @@ public sealed class SpatialIndexFailureTests
     /// Expected:
     /// - The task of the wait is faulted with the second exception: the failure that came while it waited.
     /// - Fault and Completion hold the first exception, and the state is Failed after two runs of Allocate.
-    /// - WhenComplete, called after the failure with the versions as they are, is faulted with Fault, the first one.
+    /// - WhenComplete, called after the failure with the versions as they are, is faulted with the second exception
+    ///   too: the one of the last build, not Fault.
     /// - After the last Invalidate the index is complete at the version 2, and Fault still holds the first exception.
     /// </remarks>
     [Fact]
@@ -180,7 +181,7 @@ public sealed class SpatialIndexFailureTests
         Assert.Same(first, Eventually.Faults(index.Completion));
         Assert.Equal(SpatialIndexState.Failed, index.State);
         Assert.Equal(2, rig.Probe.CountOf(SpatialJob.Allocate));
-        Assert.Same(first, Eventually.Faults(index.WhenComplete()));
+        Assert.Same(second, Eventually.Faults(index.WhenComplete()));
 
         scale.Thrown = null;
         rig.X.Invalidate();
