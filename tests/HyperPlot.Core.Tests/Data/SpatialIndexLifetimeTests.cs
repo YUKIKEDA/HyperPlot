@@ -19,14 +19,16 @@ public sealed class SpatialIndexLifetimeTests
     /// Steps:
     /// - Write v / 2 + 1 over every x, call Invalidate on x, wait for WhenComplete, and borrow the new snapshot.
     /// - Read every point of the old snapshot, give one of its references back, and read every point again.
-    /// - Keep the worker in a job of another index, give the last reference back, and read IsFreed; let the worker go.
+    /// - Keep the worker in a job of another index, give the last reference back, read IsFreed, and try to add a
+    ///   reference; let the worker go.
     /// - Dispose the index, check the new snapshot against the columns, and give it back.
     ///
     /// Expected:
     /// - The two borrows of the complete index are the same object, and the new snapshot is another.
     /// - The old snapshot reads the points it read before the change, with two references and with one, and is not freed.
     /// - While the worker is kept, the old snapshot is not freed after its last reference went back: the thread that
-    ///   gives it back does not free it. Once the worker goes on, the snapshot is freed and its copy released.
+    ///   gives it back does not free it. No reference can be added to it any more (the step of Acquire that adds one
+    ///   only to a count above 0). Once the worker goes on, the snapshot is freed and its copy released.
     /// - After Dispose the new snapshot is not freed, agrees with the brute force, and its copy is not released. After
     ///   its reference went back, it is freed and its copy released.
     /// </remarks>
@@ -62,6 +64,7 @@ public sealed class SpatialIndexLifetimeTests
             old.Release();
             Assert.False(old.IsFreed);
             Assert.False(requests[0].Copy!.IsDisposed);
+            Assert.False(old.TryAddReference());
         }
 
         Eventually.True(() => old.IsFreed, "the replaced snapshot to be freed");

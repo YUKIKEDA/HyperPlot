@@ -220,6 +220,39 @@ public sealed class SpatialIndexStateTests
         Assert.Equal(2, index.Version);
     }
 
+    /// <summary>Each queued build is begun by one worker, however many free workers race for it.</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The complete index of 500 seeded float points on a pool of 8 threads, all free.
+    ///
+    /// Steps:
+    /// - 400 times: call Invalidate on x, call WhenComplete, which queues the rebuild and wakes the workers, and wait
+    ///   for the task.
+    ///
+    /// Expected:
+    /// - Allocate ran 401 times and the allocator got 401 requests: one per build, none begun twice.
+    /// - The index is complete at the version 402 (the first build published 2 snapshots, each rebuild 1), with no Fault.
+    /// </remarks>
+    [Fact]
+    public void Build_QueuedToManyFreeWorkers_IsBegunOnce()
+    {
+        const int Rounds = 400;
+        using var rig = new SpatialRig(length: 500, seed: 71, workers: 8);
+        var index = rig.Build();
+
+        for (var round = 0; round < Rounds; round++)
+        {
+            rig.X.Invalidate();
+            Eventually.Completes(index.WhenComplete());
+        }
+
+        Assert.Equal(Rounds + 1, rig.Probe.CountOf(SpatialJob.Allocate));
+        Assert.Equal(Rounds + 1, rig.Allocator.Requests.Length);
+        Assert.True(index.IsComplete);
+        Assert.Equal(Rounds + 2, index.Version);
+        Assert.Null(index.Fault);
+    }
+
     /// <summary>
     /// The coarse snapshot answers CoarseDensity and Count as a loop over every row does down to level 8, returns no
     /// cell, and has no point to read.

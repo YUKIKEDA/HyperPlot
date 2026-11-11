@@ -109,7 +109,8 @@ public sealed class SpatialIndexRebuildTests
     ///   first build. A probe notes the state, the version, and the current snapshot at the end of each job.
     ///
     /// Steps:
-    /// - While the worker is kept, write v / 2 + 1 over every x, call Invalidate on x, and call Acquire.
+    /// - While the worker is kept, write v / 2 + 1 over every value of x or of y (<paramref name="onY"/>), call
+    ///   Invalidate on that column, and call Acquire.
     /// - Let the worker go and wait for Completion.
     ///
     /// Expected:
@@ -121,8 +122,10 @@ public sealed class SpatialIndexRebuildTests
     ///   3, and Completion has ended.
     /// - The last snapshot is not provisional and agrees with the brute force over the new values.
     /// </remarks>
-    [Fact]
-    public void Invalidate_DuringABuild_RunsToTheEndAndBuildsAgain()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Invalidate_DuringABuild_RunsToTheEndAndBuildsAgain(bool onY)
     {
         using var rig = new SpatialRig(seed: 55);
         rig.Watch();
@@ -131,12 +134,13 @@ public sealed class SpatialIndexRebuildTests
         try
         {
             hold.WaitForWorker();
-            for (var row = 0; row < rig.Xs.Length; row++)
+            var values = onY ? rig.Ys : rig.Xs;
+            for (var row = 0; row < values.Length; row++)
             {
-                rig.Xs[row] = (rig.Xs[row] / 2) + 1;
+                values[row] = (values[row] / 2) + 1;
             }
 
-            rig.X.Invalidate();
+            (onY ? rig.Y : rig.X).Invalidate();
 
             var coarse = index.Acquire();
             Assert.Equal(SpatialStage.Coarse, coarse.Stage);
