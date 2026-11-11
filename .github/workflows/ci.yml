@@ -1,9 +1,23 @@
 name: CI
 
+# A change that touches only documents, rules, and skills runs nothing: build.ps1 reads none of them
+# (.cursor/rules/engineering.mdc, "Gate").
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.cursor/**'
+      - '.agents/**'
+      - '.claude/**'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.cursor/**'
+      - '.agents/**'
+      - '.claude/**'
   workflow_dispatch:
 
 concurrency:
