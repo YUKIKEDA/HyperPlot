@@ -113,6 +113,133 @@ internal static class SpatialScenes
     }
 
     /// <summary>
+    /// Builds the index over the files as they are, at the normal priority of the process, with the pool's background
+    /// priority from <see cref="Options.Priority"/>, and reports what the build leaves to others (design §9 "CPU を譲る
+    /// こと", requirement N-12): the speed of a competitor on every logical processor against its speed before the
+    /// build (<see cref="Options.Competitor"/>), the frames' Acquire, Count, and Release each 16.7 ms, the processors the
+    /// build took, and the time of GC.Collect from another thread (<see cref="Options.Collects"/>). With
+    /// <see cref="Options.Seconds"/> the build is disposed of after that many seconds, and the units that ended and the
+    /// time of Dispose are reported.
+    /// </summary>
+    internal static void Yield(Options options)
+    {
+        var priority = options.Priority switch
+        {
+            "normal" => ThreadPriority.Normal,
+            "lowest" => ThreadPriority.Lowest,
+            "below" => ThreadPriority.BelowNormal,
+            _ => throw new ArgumentException($"Unknown priority '{options.Priority}': write normal, below, or lowest."),
+        };
+        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), priority);
+        var (xPath, yPath) = PointFiles.Paths(options.File);
+        using var x = Column.MapFile<float>(xPath);
+        using var y = Column.MapFile<float>(yPath);
+        using var process = Process.GetCurrentProcess();
+        using var competitor = options.Competitor ? new YieldScenes.Competitor() : null;
+
+        // The competitor's speed with nothing beside it.
+        if (competitor is not null)
+        {
+            Thread.Sleep(TimeSpan.FromSeconds(3));
+        }
+
+        var baseline = competitor?.Measure(TimeSpan.FromSeconds(8)) ?? 0;
+
+        _ = NativeMethods.TimeBeginPeriod(1);
+        try
+        {
+            var recorder = new JobRecorder();
+            var tuning = Tuning(options) with { JobEnded = recorder.Add };
+            var copies = new Copies();
+            var times = new List<double>(1 << 16);
+            var collects = new List<double>();
+            var cpu = process.TotalProcessorTime;
+            competitor?.Mark();
+            recorder.Start = Stopwatch.GetTimestamp();
+            var index = pool.BuildSpatialIndex(x, y, Input(options), tuning, copies);
+            var clock = Stopwatch.StartNew();
+            var done = 0;
+            var collector = options.Collects
+                ? new Thread(() =>
+                {
+                    while (Volatile.Read(ref done) == 0)
+                    {
+                        Thread.Sleep(2_000);
+                        var began = Stopwatch.GetTimestamp();
+                        GC.Collect();
+                        collects.Add(Stopwatch.GetElapsedTime(began).TotalMilliseconds);
+                    }
+                })
+                : null;
+            collector?.Start();
+            var frame = 0;
+            var limit = options.Seconds > 0 ? TimeSpan.FromSeconds(options.Seconds) : TimeSpan.MaxValue;
+            while (!index.Completion.IsCompleted && clock.Elapsed < limit)
+            {
+                var began = Stopwatch.GetTimestamp();
+                var snapshot = index.Acquire();
+                _ = snapshot.Count(Everywhere, LevelFor(Width));
+                snapshot.Release();
+                times.Add(Stopwatch.GetElapsedTime(began).TotalMicroseconds);
+                frame++;
+                var next = FramePeriod * frame;
+                while (clock.Elapsed < next && !index.Completion.IsCompleted)
+                {
+                    Thread.Sleep(1);
+                }
+            }
+
+            var seconds = clock.Elapsed.TotalSeconds;
+            var during = competitor?.SinceMark() ?? 0;
+            var completed = index.Completion.IsCompletedSuccessfully;
+            process.Refresh();
+            var cores = (process.TotalProcessorTime - cpu).TotalSeconds / seconds;
+            var disposing = Stopwatch.GetTimestamp();
+            index.Dispose();
+            var disposed = Stopwatch.GetElapsedTime(disposing).TotalMilliseconds;
+            Volatile.Write(ref done, 1);
+            collector?.Join();
+            copies.WaitClosed();
+
+            var frames = times.ToArray();
+            Array.Sort(frames);
+            (string Key, object Value)[] figures =
+            [
+                ("priority", options.Priority),
+                ("workers", pool.ThreadCount),
+                ("competitor", options.Competitor),
+                ("completed", completed),
+                ("ended_utc", EndedUtc()),
+                ("seconds", seconds),
+                ("cores", cores),
+                ("units_range", recorder.CountOf(SpatialJob.Range)),
+                ("units_first", recorder.CountOf(SpatialJob.First)),
+                ("units_pass", recorder.CountOf(SpatialJob.Pass)),
+                ("units_write", recorder.CountOf(SpatialJob.Write)),
+                ("units_density", recorder.CountOf(SpatialJob.Density)),
+                ("dispose_ms", disposed),
+                ("frames", frames.Length),
+                ("frame_p50_us", frames[frames.Length / 2]),
+                ("frame_p95_us", frames[(int)Math.Ceiling(frames.Length * 0.95) - 1]),
+                ("frame_p99_us", frames[(int)Math.Ceiling(frames.Length * 0.99) - 1]),
+                ("frame_max_us", frames[^1]),
+                ("frames_over_16ms", frames.Count(time => time > 16_700)),
+                ("collects", collects.Count),
+                ("collect_min_ms", collects.Count > 0 ? collects.Min() : 0),
+                ("collect_max_ms", collects.Count > 0 ? collects.Max() : 0),
+                ("competitor_alone_per_s", baseline),
+                ("competitor_beside_per_s", during),
+                ("competitor_percent", baseline > 0 ? 100 * during / baseline : 0),
+            ];
+            Scenes.Report(options, 1, completed ? [.. figures, .. recorder.Stages()] : figures);
+        }
+        finally
+        {
+            _ = NativeMethods.TimeEndPeriod(1);
+        }
+    }
+
+    /// <summary>
     /// The allocation job alone: makes the copy of <see cref="Options.Points"/> float points in a temporary file of
     /// <see cref="Options.Temp"/> as the index does, and disposes of it, three times. On Linux, a file system without
     /// <c>fallocate</c> makes glibc reserve the blocks another way (design §3.4 "一時ファイル"); the record names the file
@@ -642,6 +769,18 @@ internal static class SpatialScenes
 
         /// <summary>Gets the number of units of the writing that have ended.</summary>
         public int Writes => Volatile.Read(ref _writes);
+
+        /// <summary>Returns the number of jobs of a kind that have ended.</summary>
+        public int CountOf(SpatialJob job)
+        {
+            var count = 0;
+            for (var i = 0; i < Count; i++)
+            {
+                count += _jobs[i] == job ? 1 : 0;
+            }
+
+            return count;
+        }
 
         public void Add(SpatialJob job, long ticks)
         {

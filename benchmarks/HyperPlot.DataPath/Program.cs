@@ -13,12 +13,15 @@ using HyperPlot.DataPath;
 //   HyperPlot.DataPath spatial --file ... [--distribution ...] [--workers 8] [--cold] [--rows-per-unit N] [--density-split N] [--temp D:\...]
 //   HyperPlot.DataPath allocate --file - [--points N] [--temp /mnt/c/...]
 //   HyperPlot.DataPath touch --file - [--points N] [--temp D:\...]
+//   HyperPlot.DataPath burn [--seconds N]
+//   HyperPlot.DataPath yield --file ... [--priority normal|below|lowest] [--workers 8] [--competitor] [--collects] [--seconds N]
 // The data files live outside the repository and are deleted after the run. The spatial scenes read <file>.x and <file>.y.
 var options = Options.Parse(args);
 using var process = Process.GetCurrentProcess();
-if (OperatingSystem.IsWindows())
+if (OperatingSystem.IsWindows() && options.Scene is not ("burn" or "yield"))
 {
-    // Raising the priority on Linux needs a privilege the allocation scene runs without.
+    // Raising the priority on Linux needs a privilege the allocation scene runs without. The scenes of row S4 run as an
+    // app does, at the normal priority: they measure what the build leaves to a process beside it.
     process.PriorityClass = ProcessPriorityClass.High;
 }
 
@@ -59,6 +62,12 @@ switch (options.Scene)
         break;
     case "touch":
         SpatialScenes.Touch(options);
+        break;
+    case "burn":
+        YieldScenes.Burn(options);
+        break;
+    case "yield":
+        SpatialScenes.Yield(options);
         break;
     default:
         Console.Error.WriteLine($"Unknown scene '{options.Scene}'.");

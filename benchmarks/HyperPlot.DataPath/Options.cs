@@ -15,6 +15,10 @@ internal sealed record Options(
     string Distribution,
     int RowsPerUnit,
     long DensitySplit,
+    string Priority,
+    bool Competitor,
+    bool Collects,
+    int Seconds,
     string? Temp
 )
 {
@@ -23,11 +27,28 @@ internal sealed record Options(
         if (args.Length == 0)
         {
             throw new ArgumentException(
-                "Name a scene: generate, hash, build, provisional, cold-frame, generate-points, hash-points, spatial, or allocate."
+                "Name a scene: generate, hash, build, provisional, cold-frame, generate-points, hash-points, spatial, allocate, touch, burn, or yield."
             );
         }
 
-        var options = new Options(args[0], string.Empty, 1_000_000_000, SeriesFile.DefaultSeed, 0, false, false, false, "uniform", 0, 0, null);
+        var options = new Options(
+            args[0],
+            string.Empty,
+            1_000_000_000,
+            SeriesFile.DefaultSeed,
+            0,
+            false,
+            false,
+            false,
+            "uniform",
+            0,
+            0,
+            "below",
+            false,
+            false,
+            0,
+            null
+        );
         for (var i = 1; i < args.Length; i++)
         {
             options = args[i] switch
@@ -42,11 +63,15 @@ internal sealed record Options(
                 "--distribution" => options with { Distribution = args[++i] },
                 "--rows-per-unit" => options with { RowsPerUnit = int.Parse(args[++i], CultureInfo.InvariantCulture) },
                 "--density-split" => options with { DensitySplit = long.Parse(args[++i], CultureInfo.InvariantCulture) },
+                "--priority" => options with { Priority = args[++i] },
+                "--competitor" => options with { Competitor = true },
+                "--collects" => options with { Collects = true },
+                "--seconds" => options with { Seconds = int.Parse(args[++i], CultureInfo.InvariantCulture) },
                 "--temp" => options with { Temp = args[++i] },
                 _ => throw new ArgumentException($"Unknown option '{args[i]}'."),
             };
         }
 
-        return options.File.Length == 0 ? throw new ArgumentException("--file is required.") : options;
+        return options.File.Length == 0 && options.Scene != "burn" ? throw new ArgumentException("--file is required.") : options;
     }
 }
