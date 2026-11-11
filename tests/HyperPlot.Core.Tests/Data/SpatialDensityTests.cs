@@ -29,6 +29,7 @@ public sealed class SpatialDensityTests
     /// - A cell has a tile exactly when it is split, holds more points than the split, and its level is 24 or less.
     ///   TileCount is the number of such cells, and at least one cell has a tile. In "deep", a split cell below level
     ///   24 holds more points than the split and has no tile.
+    /// - The table has a capped leaf in "capped" and a coincident leaf in "coincident".
     /// - Bin (x, y) of the tile of a cell of level L is the number of points whose code lies in the cell and whose
     ///   cell at level L + 8 has x and y as its lower 8 bits on each axis.
     /// - The width of a tile is the least of 1, 2, 4, and 8 bytes that holds its largest bin, and ByteCount is the
@@ -91,6 +92,14 @@ public sealed class SpatialDensityTests
         Assert.True(expected > 0, "No cell has a tile.");
         Assert.Equal(expected, tiles.TileCount);
         Assert.Equal(bytes, tiles.ByteCount);
+
+        // The root has a tile, so a leaf of the kind the shape is named for lies under a cell with a tile.
+        var kinds = snapshot.Rows.ToArray().Select(row => (SpatialCellKind)row.Kind).ToHashSet();
+        if (shape is "capped" or "coincident")
+        {
+            Assert.Contains(shape == "capped" ? SpatialCellKind.CappedLeaf : SpatialCellKind.CoincidentLeaf, kinds);
+        }
+
         if (shape == "deep")
         {
             Assert.True(below > 0, "No split cell below level 24 holds more points than the split.");
@@ -156,22 +165,25 @@ public sealed class SpatialDensityTests
     /// <remarks>
     /// Preconditions:
     /// - <paramref name="same"/> float points at one place and 300 points spread evenly, leaves of 16 points, a density
-    ///   split of 64, and 3 workers: the bin of the place is the largest of the root's tile.
+    ///   split of 64, and 3 workers. None of the 300 points lies in the bin of the place, so that bin holds exactly
+    ///   <paramref name="same"/> points and is the largest of the root's tile.
     ///
     /// Steps:
     /// - Read the tile of the root and its largest bin.
     ///
     /// Expected:
-    /// - The largest bin holds at least <paramref name="same"/> points and is the number that the loop over the copy
-    ///   gives, and the tile's bins are <paramref name="width"/> bytes wide: 1 byte up to 255, 2 up to 65,535, and 4
-    ///   above.
-    /// - The function of the width gives 4 bytes at 4,294,967,295 and 8 at 4,294,967,296.
+    /// - The largest bin of the loop over the copy is exactly <paramref name="same"/>: 255, 256, 65,535, or 65,536.
+    /// - The tile's bin holds that number, and the tile's bins are <paramref name="width"/> bytes wide: 1 byte at 255,
+    ///   2 at 256 and at 65,535, and 4 at 65,536.
+    /// - The function of the width gives 4 bytes at 4,294,967,295 and 8 at 4,294,967,296, a number of points that no
+    ///   test holds.
     /// </remarks>
     [Theory]
-    [InlineData(100, 1)]
-    [InlineData(65_000, 2)]
-    [InlineData(66_000, 4)]
-    public void Tile_LargestBinAroundTheWidths_TakesTheNextWidthWithoutSaturating(int same, int width)
+    [InlineData(255, 1)]
+    [InlineData(256, 2)]
+    [InlineData(65_535, 2)]
+    [InlineData(65_536, 4)]
+    public void Tile_LargestBinAtTheEndsOfTheWidths_TakesTheNextWidthWithoutSaturating(int same, int width)
     {
         var (xs, ys) = SpatialData.Uniform(300 + same, seed: 81);
         for (var row = 300; row < xs.Length; row++)
@@ -183,15 +195,11 @@ public sealed class SpatialDensityTests
         Assert.True(built.Snapshot.Tiles!.TryGetTile(0, 0, out var root));
         var bins = Brute(Codes(built.Snapshot), 0, 0);
         var largest = bins.Max();
-        Assert.True(largest >= (ulong)same, $"The largest bin holds {largest} points.");
+        Assert.Equal((ulong)same, largest);
         Assert.Equal(width, root.BytesPerBin);
         var index = Array.IndexOf(bins, largest);
         Assert.Equal(largest, root[index % DensityTiles.Side, index / DensityTiles.Side]);
 
-        Assert.Equal(1, DensityTiles.BytesPerBinFor(255));
-        Assert.Equal(2, DensityTiles.BytesPerBinFor(256));
-        Assert.Equal(2, DensityTiles.BytesPerBinFor(65_535));
-        Assert.Equal(4, DensityTiles.BytesPerBinFor(65_536));
         Assert.Equal(4, DensityTiles.BytesPerBinFor(uint.MaxValue));
         Assert.Equal(8, DensityTiles.BytesPerBinFor((ulong)uint.MaxValue + 1));
     }

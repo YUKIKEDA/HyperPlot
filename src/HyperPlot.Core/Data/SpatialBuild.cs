@@ -179,7 +179,7 @@ internal sealed class SpatialBuild
         return joined;
     }
 
-    /// <summary>Gets or sets a value indicating whether the build made the index complete. Only the job that publishes the full snapshot writes it.</summary>
+    /// <summary>Gets or sets a value indicating whether the build made the index complete. Only the last job of the build, which publishes the density tiles, writes it.</summary>
     public bool Completed { get; set; }
 
     /// <summary>Enters the build, as every job does before it reads the build.</summary>

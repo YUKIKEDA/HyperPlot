@@ -284,7 +284,11 @@ internal abstract class SpatialIndex : IDisposable
                 }
 
                 var token = build.TryTakeSingle() ? SingleToken : build.TryTakeGroup();
-                if (token < 0)
+
+                // A unit that sees the stop leaves the rest of its rows and still ends its stage, which queues the single
+                // job that follows. This worker entered before the stop: it must not run that job over the half-done
+                // stage (PublishFull would publish a copy that was not written to the end).
+                if (token < 0 || (token == SingleToken && build.IsStopped))
                 {
                     build.Leave();
                     return -1;

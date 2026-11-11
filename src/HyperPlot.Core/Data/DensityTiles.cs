@@ -148,8 +148,9 @@ internal readonly ref struct DensityTile
     public int BytesPerBin { get; }
 
     /// <summary>
-    /// Gets the bins as little-endian unsigned integers of <see cref="BytesPerBin"/> bytes: 256 rows of 256 bins, the
-    /// row of the least y first, so the bin of column x and row y is at y × 256 + x.
+    /// Gets the bins as unsigned integers of <see cref="BytesPerBin"/> bytes in the byte order of the machine (little-endian
+    /// on every target of the engine): 256 rows of 256 bins, the row of the least y first, so the bin of column x and row
+    /// y is at y × 256 + x.
     /// </summary>
     public ReadOnlySpan<byte> Bins { get; }
 

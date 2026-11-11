@@ -362,7 +362,8 @@ internal sealed unsafe class DensityBuilder : IDisposable
             // A leaf that ends above the bins: the codes are made again from the stored values.
             while (from < to)
             {
-                // A stopped build publishes no tile, and Dispose waits for this unit.
+                // A stopped build publishes no tile (a worker does not take a single job of a stopped build), and
+                // Dispose waits for this unit.
                 if (build.IsStopped)
                 {
                     return;
