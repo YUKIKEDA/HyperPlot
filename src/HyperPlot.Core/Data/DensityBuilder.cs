@@ -14,9 +14,6 @@ namespace HyperPlot;
 /// </remarks>
 internal sealed unsafe class DensityBuilder : IDisposable
 {
-    /// <summary>The share of the source's bytes that the table and the tiles may take together (requirement P-8).</summary>
-    internal const double TotalShare = 0.10;
-
     private const int Groups = SpatialIndexTuning.GroupCount;
     private const int Half = DensityTiles.Side / 2;
     private const int Alignment = 64;
@@ -46,7 +43,8 @@ internal sealed unsafe class DensityBuilder : IDisposable
     /// <param name="densitySplit">The points above which a split cell has a tile.</param>
     /// <param name="rowsPerUnit">The most points of the copy that one unit reads of a quadrant with more points than <paramref name="densitySplit"/>.</param>
     /// <param name="sourceBytes">The bytes of the rows that the index reads in the two columns.</param>
-    public DensityBuilder(SpatialSnapshot snapshot, long densitySplit, int rowsPerUnit, long sourceBytes)
+    /// <param name="totalShare">The share of <paramref name="sourceBytes"/> that the table and the tiles may take together.</param>
+    public DensityBuilder(SpatialSnapshot snapshot, long densitySplit, int rowsPerUnit, long sourceBytes, double totalShare)
     {
         _snapshot = snapshot;
         _rowsPerUnit = rowsPerUnit;
@@ -58,7 +56,7 @@ internal sealed unsafe class DensityBuilder : IDisposable
         // in the order of the codes, since the children of the level above are listed in that order.
         var tiles = new List<int>();
         var starts = new List<int> { 0 };
-        var budget = (long)Math.Floor(TotalShare * sourceBytes) - ((long)rows.Length * sizeof(SpatialRow));
+        var budget = (long)Math.Min(Math.Floor(totalShare * sourceBytes), long.MaxValue / 2) - ((long)rows.Length * sizeof(SpatialRow));
         long estimated = 0;
         var from = 0;
         if (HasTile(rows[0], densitySplit))

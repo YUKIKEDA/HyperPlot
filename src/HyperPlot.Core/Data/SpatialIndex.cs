@@ -473,7 +473,7 @@ internal abstract class SpatialIndex : IDisposable
                 return PublishFull(build, builder) ? SpatialJob.PlanDensity : null;
             case SpatialJob.PlanDensity:
                 var bytes = (build.End - build.Start) * (_shape.XBytes + _shape.YBytes);
-                build.Density = new DensityBuilder(build.Full!, _tuning.DensitySplit, _tuning.RowsPerUnit, bytes);
+                build.Density = new DensityBuilder(build.Full!, _tuning.DensitySplit, _tuning.RowsPerUnit, bytes, _tuning.TotalShare);
                 return build.Density.NextLevel() ? SpatialJob.Density : SpatialJob.PublishDensity;
             case SpatialJob.EndDensityLevel:
                 return build.Density!.NextLevel() ? SpatialJob.Density : SpatialJob.PublishDensity;
