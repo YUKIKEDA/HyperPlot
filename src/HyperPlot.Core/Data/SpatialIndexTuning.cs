@@ -20,6 +20,18 @@ internal readonly record struct SpatialIndexTuning(int LeafCapacity, int RowsPer
     public static SpatialIndexTuning Default => new(LeafCapacity: 4096, RowsPerUnit: 1 << 14, TableShare: 0.02, WideRows: 1L << 32);
 
     /// <summary>
+    /// Gets the points above which a split cell has a density tile (design §3.4 "密度タイル"). The tests pass a small
+    /// value to get tiles with few points.
+    /// </summary>
+    public long DensitySplit { get; init; } = 1 << 18;
+
+    /// <summary>
+    /// Gets the share of the source's bytes that the table and the density tiles may take together (requirement P-8).
+    /// The tests pass a large value: a tile is 65,536 B at the least, more than a tenth of their few points.
+    /// </summary>
+    public double TotalShare { get; init; } = 0.10;
+
+    /// <summary>
     /// Gets what a worker calls after each job of a build that did not throw, with the job and its time in the ticks of
     /// <see cref="TimeProvider.GetTimestamp"/> of <see cref="TimeProvider.System"/>, before the jobs that follow it can
     /// be taken. The benchmarks time the stages with it, and the tests stop a build at a stage.

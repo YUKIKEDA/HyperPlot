@@ -26,7 +26,7 @@ public sealed class SpatialIndexStateTests
     /// - The snapshot has the stage None and is provisional, with 0 points and 0 excluded rows.
     /// - Both calls of Count answer 0 inside and <paramref name="rows"/> touching.
     /// - GetCells returns 0, CoarseDensity is empty, and ReadPoints throws InvalidOperationException.
-    /// - After the worker is let go, the index is complete at the version 2.
+    /// - After the worker is let go, the index is complete at the version 3.
     /// </remarks>
     [Theory]
     [InlineData(0, long.MaxValue, 5_000)]
@@ -65,12 +65,12 @@ public sealed class SpatialIndexStateTests
 
         Eventually.Completes(index.Completion);
         Assert.True(index.IsComplete);
-        Assert.Equal(2, index.Version);
+        Assert.Equal(3, index.Version);
     }
 
     /// <summary>
-    /// The first build goes Counting, Writing, Complete, and publishes the empty, the coarse, and the full snapshot in
-    /// that order, with the version one more at each.
+    /// The first build goes Counting, Writing, Density, Complete, and publishes the empty, the coarse, and the full
+    /// snapshot and then the density tiles in that order, with the version one more at each.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -84,14 +84,17 @@ public sealed class SpatialIndexStateTests
     ///
     /// Expected:
     /// - The jobs are Allocate, 20 Range, EndRange, 20 First, PublishCoarse, then 20 Pass and EndPass for each pass
-    ///   (at least one), Table, 20 Write, PublishFull.
-    /// - The state at the end of every job before Table is Counting, from Table to the last Write it is Writing, and
-    ///   at PublishFull it is Complete.
-    /// - The version is 0 before PublishCoarse, 1 from PublishCoarse to the last Write, and 2 at PublishFull.
-    /// - The current snapshot has the stage None, Coarse, and Full over the same three spans, and is provisional
-    ///   until the last.
-    /// - Completion has ended at the end of no job, PublishFull among them: it ends once the last job is reported, so
-    ///   every job is in the probe when the wait for Completion returns.
+    ///   (at least one), Table, 20 Write, PublishFull, PlanDensity, PublishDensity: 5,000 points are fewer than the
+    ///   density split, so no cell has a tile and no unit of the density runs.
+    /// - The state at the end of every job before Table is Counting, from Table to the last Write it is Writing, at
+    ///   PublishFull and PlanDensity it is Density, and at PublishDensity it is Complete.
+    /// - The version is 0 before PublishCoarse, 1 from PublishCoarse to the last Write, 2 at PublishFull and
+    ///   PlanDensity, and 3 at PublishDensity.
+    /// - The current snapshot has the stage None before PublishCoarse, Coarse to the last Write, and Full from
+    ///   PublishFull on, where it is no longer provisional. Its Tiles are null until PublishDensity, where they hold
+    ///   0 tiles.
+    /// - Completion has ended at the end of no job, PublishDensity among them: it ends once the last job is reported,
+    ///   so every job is in the probe when the wait for Completion returns.
     /// </remarks>
     [Fact]
     public void Build_FirstBuild_PassesTheStatesAndPublishesThreeSnapshots()
@@ -120,6 +123,7 @@ public sealed class SpatialIndexStateTests
         }
 
         jobs.AddRange([SpatialJob.Table, .. Enumerable.Repeat(SpatialJob.Write, Units), SpatialJob.PublishFull]);
+        jobs.AddRange([SpatialJob.PlanDensity, SpatialJob.PublishDensity]);
         var steps = rig.Probe.Steps;
         var sights = rig.Sights;
         Assert.Equal(jobs, steps.Select(step => step.Job));
@@ -127,23 +131,26 @@ public sealed class SpatialIndexStateTests
 
         var coarse = jobs.IndexOf(SpatialJob.PublishCoarse);
         var table = jobs.IndexOf(SpatialJob.Table);
+        var full = jobs.IndexOf(SpatialJob.PublishFull);
         var last = jobs.Count - 1;
         for (var i = 0; i <= last; i++)
         {
             var state =
                 i == last ? SpatialIndexState.Complete
+                : i >= full ? SpatialIndexState.Density
                 : i >= table ? SpatialIndexState.Writing
                 : SpatialIndexState.Counting;
             var version =
-                i == last ? 2
+                i == last ? 3
+                : i >= full ? 2
                 : i >= coarse ? 1
                 : 0;
             var stage =
-                i == last ? SpatialStage.Full
+                i >= full ? SpatialStage.Full
                 : i >= coarse ? SpatialStage.Coarse
                 : SpatialStage.None;
             var (step, sight) = (steps[i], sights[i]);
-            if (step.State != state || step.Version != version || sight.Stage != stage || sight.Provisional != (i != last) || sight.Ended)
+            if (step.State != state || step.Version != version || sight.Stage != stage || sight.Provisional != (i < full) || sight.Ended)
             {
                 Assert.Fail(
                     $"Job {i} ({jobs[i]}) ended as {step} with {sight}; the state {state}, the version {version}, and the stage {stage} were expected."
@@ -152,10 +159,15 @@ public sealed class SpatialIndexStateTests
         }
 
         Assert.True(index.IsComplete);
-        Assert.Equal(2, index.Version);
+        Assert.Equal(3, index.Version);
         Assert.NotSame(sights[coarse].Snapshot, sights[0].Snapshot);
-        Assert.NotSame(sights[last].Snapshot, sights[coarse].Snapshot);
-        Assert.Same(sights[coarse].Snapshot, sights[last - 1].Snapshot);
+        Assert.NotSame(sights[full].Snapshot, sights[coarse].Snapshot);
+        Assert.Same(sights[coarse].Snapshot, sights[full - 1].Snapshot);
+        Assert.Same(sights[full].Snapshot, sights[last].Snapshot);
+        Assert.Equal([false, false, true], sights[full..].Select(sight => sight.HasTiles));
+        var complete = index.Acquire();
+        Assert.Equal(0, complete.Tiles!.TileCount);
+        complete.Release();
         Assert.Single(rig.Allocator.Requests);
     }
 
@@ -175,7 +187,7 @@ public sealed class SpatialIndexStateTests
     /// Expected:
     /// - Each of the 20 ran Allocate once and asked for one copy.
     /// - While held, the first index is in Counting, its only job is the one Allocate, and its allocator got one request.
-    /// - When complete, it has still run Allocate once and asked for one copy, and its version is 2.
+    /// - When complete, it has still run Allocate once and asked for one copy, and its version is 3.
     /// </remarks>
     [Fact]
     public void Build_WhileABuildRuns_NoOtherWorkerBeginsOne()
@@ -212,7 +224,7 @@ public sealed class SpatialIndexStateTests
         Eventually.Completes(index.Completion);
         Assert.Equal(1, rig.Probe.CountOf(SpatialJob.Allocate));
         Assert.Single(rig.Allocator.Requests);
-        Assert.Equal(2, index.Version);
+        Assert.Equal(3, index.Version);
     }
 
     /// <summary>Each queued build is begun by one worker, however many free workers race for it.</summary>
@@ -226,7 +238,8 @@ public sealed class SpatialIndexStateTests
     ///
     /// Expected:
     /// - Allocate ran 401 times and the allocator got 401 requests: one per build, none begun twice.
-    /// - The index is complete at the version 402 (the first build published 2 snapshots, each rebuild 1), with no Fault.
+    /// - The index is complete at the version 803 (the first build published 2 snapshots and its tiles, each rebuild
+    ///   1 snapshot and its tiles), with no Fault.
     /// </remarks>
     [Fact]
     public void Build_QueuedToManyFreeWorkers_IsBegunOnce()
@@ -244,7 +257,7 @@ public sealed class SpatialIndexStateTests
         Assert.Equal(Rounds + 1, rig.Probe.CountOf(SpatialJob.Allocate));
         Assert.Equal(Rounds + 1, rig.Allocator.Requests.Length);
         Assert.True(index.IsComplete);
-        Assert.Equal(Rounds + 2, index.Version);
+        Assert.Equal((2 * Rounds) + 3, index.Version);
         Assert.Null(index.Fault);
     }
 
@@ -387,7 +400,7 @@ public sealed class SpatialIndexStateTests
         Eventually.Completes(index.Completion);
         var full = index.Acquire();
         Assert.NotSame(coarse, full);
-        Assert.Equal(2, index.Version);
+        Assert.Equal(3, index.Version);
 
         Assert.Equal(SpatialStage.Coarse, coarse.Stage);
         Assert.True(coarse.IsProvisional);

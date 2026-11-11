@@ -41,6 +41,7 @@ internal abstract unsafe class SpatialSnapshot
     private int _rowCount;
     private int _references = 1;
     private int _freed;
+    private DensityTiles? _tiles;
 
     /// <summary>Initializes a new instance of the <see cref="SpatialSnapshot"/> class that holds nothing.</summary>
     /// <param name="owner">The index.</param>
@@ -123,6 +124,12 @@ internal abstract unsafe class SpatialSnapshot
     /// that holds nothing has no cells.
     /// </summary>
     public ReadOnlySpan<long> CoarseDensity => _coarse == null ? default : _coarse.AsSpan(LevelOffset(CoarseLevel));
+
+    /// <summary>
+    /// Gets the density tiles, or <see langword="null"/> while the build has not made them (design §3.4 "密度タイル").
+    /// Only a full snapshot gets them, once, after every tile is made.
+    /// </summary>
+    public DensityTiles? Tiles => Volatile.Read(ref _tiles);
 
     /// <summary>Gets a value indicating whether the versions the build recorded are the columns' versions now.</summary>
     internal bool MatchesColumns => _xVersion == _owner.X.Version && _yVersion == _owner.Y.Version;
@@ -286,7 +293,7 @@ internal abstract unsafe class SpatialSnapshot
         return false;
     }
 
-    /// <summary>Frees the table and the copy. Only the first call does it.</summary>
+    /// <summary>Frees the table, the copy, and the density tiles. Only the first call does it.</summary>
     internal void Free()
     {
         if (Interlocked.Exchange(ref _freed, 1) != 0)
@@ -299,7 +306,17 @@ internal abstract unsafe class SpatialSnapshot
         NativeMemory.AlignedFree(_rows);
         _rows = null;
         _copy?.Dispose();
+        _tiles?.Dispose();
     }
+
+    /// <summary>Gives the snapshot its density tiles, which it owns from here on. The build calls it once, while it borrows the snapshot.</summary>
+    /// <param name="tiles">The tiles.</param>
+    internal void AttachTiles(DensityTiles tiles) => Volatile.Write(ref _tiles, tiles);
+
+    /// <summary>Makes the codes of points of the copy again from their stored values (design §3.4 "ビンの値").</summary>
+    /// <param name="first">The position of the first point: the points to read are in the copy.</param>
+    /// <param name="codes">Where the codes go: one for each point to read.</param>
+    internal void ReadCodes(long first, Span<ulong> codes) => EncodeCore(_copy!, first, in _xAxis, in _yAxis, codes);
 
     /// <summary>Returns where a level's counts begin in the counts of levels 0 to 8: (4^level − 1) / 3.</summary>
     /// <param name="level">The level, from 0 to <see cref="CoarseLevel"/>.</param>
@@ -313,6 +330,14 @@ internal abstract unsafe class SpatialSnapshot
     /// <param name="y">Where the y values go: as long as <paramref name="x"/>.</param>
     /// <param name="rows">Where the row numbers go: as long as <paramref name="x"/>.</param>
     private protected abstract void ReadCore(SpatialCopy copy, long first, Span<double> x, Span<double> y, Span<long> rows);
+
+    /// <summary>Makes the codes of points of the copy from their values of the stored types.</summary>
+    /// <param name="copy">The copy.</param>
+    /// <param name="first">The position of the first point: the points to read are in the copy.</param>
+    /// <param name="xAxis">The quantization of x.</param>
+    /// <param name="yAxis">The quantization of y.</param>
+    /// <param name="codes">Where the codes go: one for each point to read.</param>
+    private protected abstract void EncodeCore(SpatialCopy copy, long first, in SpatialAxis xAxis, in SpatialAxis yAxis, Span<ulong> codes);
 
     private static void CheckQuery(in SpatialRect rect, int maxLevel)
     {

@@ -27,10 +27,11 @@ public sealed class SpatialIndexRebuildTests
     /// Expected:
     /// - After Invalidate and before any read of the index: the borrowed snapshot is provisional, IsComplete is
     ///   false, and the state is still Complete.
-    /// - Acquire returns the same snapshot and moves the state to Waiting. The version stays 2, the build has run
+    /// - Acquire returns the same snapshot and moves the state to Waiting. The version stays 3, the build has run
     ///   Allocate once, and the snapshot reads the points it read before the change.
-    /// - After the task: IsComplete is true, the state is Complete, the version is 3, and Allocate ran twice.
-    /// - At the end of the second PublishCoarse the current snapshot was still the old full one, at the version 2.
+    /// - After the task: IsComplete is true, the state is Complete, the version is 5 (the full snapshot of the rebuild
+    ///   and its density tiles), and Allocate ran twice.
+    /// - At the end of the second PublishCoarse the current snapshot was still the old full one, at the version 3.
     /// - The new snapshot is another object, is not provisional, and agrees with the brute force over the new values.
     /// - The old snapshot is still provisional, reads the same points, and is not freed until it is given back; then it is.
     /// </remarks>
@@ -66,7 +67,7 @@ public sealed class SpatialIndexRebuildTests
             Assert.Same(old, again);
             again.Release();
             Assert.Equal(SpatialIndexState.Waiting, index.State);
-            Assert.Equal(2, index.Version);
+            Assert.Equal(3, index.Version);
             Assert.Equal(1, rig.Probe.CountOf(SpatialJob.Allocate));
             SpatialReference.AssertSamePoints(before, SpatialReference.ReadAll(old));
             Assert.Equal(counted, old.Count(new SpatialRect(10, 60, 100, 700), 32));
@@ -78,7 +79,7 @@ public sealed class SpatialIndexRebuildTests
         Eventually.Completes(waiting);
         Assert.True(index.IsComplete);
         Assert.Equal(SpatialIndexState.Complete, index.State);
-        Assert.Equal(3, index.Version);
+        Assert.Equal(5, index.Version);
         Assert.Equal(2, rig.Probe.CountOf(SpatialJob.Allocate));
         Assert.Null(index.Fault);
 
@@ -87,7 +88,7 @@ public sealed class SpatialIndexRebuildTests
         Assert.Equal(2, coarse.Length);
         Assert.Equal(SpatialStage.Coarse, coarse[0].Stage);
         Assert.Same(old, coarse[1].Snapshot);
-        Assert.Equal((long[])[1, 2], versions);
+        Assert.Equal((long[])[1, 3], versions);
 
         var fresh = index.Acquire();
         Assert.NotSame(old, fresh);
@@ -115,12 +116,13 @@ public sealed class SpatialIndexRebuildTests
     ///
     /// Expected:
     /// - Acquire returns the coarse snapshot, and the state stays Counting: a build that runs is not queued again.
-    /// - The first build runs every stage: at the end of its PublishFull the state is Waiting, the version is 2, the
-    ///   current snapshot is full and provisional, and Completion has not ended.
+    /// - The first build runs every stage: at the end of its PublishDensity the state is Waiting, the version is 3,
+    ///   the current snapshot is full and provisional, and Completion has not ended.
     /// - A second build follows without any call: Allocate ran twice. It publishes no coarse snapshot (the version is
-    ///   2 at the end of its PublishCoarse), and at the end of its PublishFull the state is Complete, the version is
-    ///   3, and Completion has not ended yet: it ends once that job is reported, and the wait for it finds both
-    ///   PublishFull jobs in the probe.
+    ///   3 at the end of its PublishCoarse), and the full snapshot of the first build is the current one until its
+    ///   own PublishFull. At the end of its PublishDensity the state is Complete, the version is 5, and Completion
+    ///   has not ended yet: it ends once that job is reported, and the wait for it finds both PublishDensity jobs in
+    ///   the probe.
     /// - The last snapshot is not provisional and agrees with the brute force over the new values.
     /// </remarks>
     [Theory]
@@ -158,30 +160,33 @@ public sealed class SpatialIndexRebuildTests
         Assert.Equal(2, rig.Probe.CountOf(SpatialJob.Allocate));
         var steps = rig.Probe.Steps;
         var sights = rig.Sights;
-        var ends = Enumerable.Range(0, steps.Length).Where(i => steps[i].Job == SpatialJob.PublishFull).ToArray();
+        var ends = Enumerable.Range(0, steps.Length).Where(i => steps[i].Job == SpatialJob.PublishDensity).ToArray();
         Assert.Equal(2, ends.Length);
         var (first, second) = (ends[0], ends[1]);
+        var fullAgain = Array.FindLastIndex(steps, step => step.Job == SpatialJob.PublishFull);
 
         Assert.Equal(SpatialIndexState.Waiting, steps[first].State);
-        Assert.Equal(2, steps[first].Version);
+        Assert.Equal(3, steps[first].Version);
         Assert.Equal(SpatialStage.Full, sights[first].Stage);
         Assert.True(sights[first].Provisional);
         Assert.False(sights[first].Ended);
 
         Assert.Equal(SpatialJob.Allocate, steps[first + 1].Job);
         Assert.Equal(SpatialIndexState.Counting, steps[first + 1].State);
-        Assert.Equal((long[])[1, 2], steps.Where(step => step.Job == SpatialJob.PublishCoarse).Select(step => step.Version));
-        Assert.Same(sights[first].Snapshot, sights[second - 1].Snapshot);
+        Assert.Equal((long[])[1, 3], steps.Where(step => step.Job == SpatialJob.PublishCoarse).Select(step => step.Version));
+        Assert.True(fullAgain > first, "The second build published no full snapshot.");
+        Assert.Same(sights[first].Snapshot, sights[fullAgain - 1].Snapshot);
+        Assert.NotSame(sights[first].Snapshot, sights[fullAgain].Snapshot);
 
         Assert.Equal(SpatialIndexState.Complete, steps[second].State);
-        Assert.Equal(3, steps[second].Version);
+        Assert.Equal(5, steps[second].Version);
         Assert.Equal(SpatialStage.Full, sights[second].Stage);
         Assert.False(sights[second].Provisional);
         Assert.False(sights[second].Ended);
         Assert.Equal(second, steps.Length - 1);
 
         Assert.True(index.IsComplete);
-        Assert.Equal(3, index.Version);
+        Assert.Equal(5, index.Version);
         var last = index.Acquire();
         Assert.False(last.IsProvisional);
         rig.Check(last);

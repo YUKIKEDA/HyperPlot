@@ -33,6 +33,15 @@ internal sealed class SpatialSnapshot<TX, TY> : SpatialSnapshot
         : base(owner, contents, builder, copy) { }
 
     /// <inheritdoc />
+    private protected override void EncodeCore(SpatialCopy copy, long first, in SpatialAxis xAxis, in SpatialAxis yAxis, Span<ulong> codes)
+    {
+        // Every point of the copy has finite values, so each gets a code.
+        var xs = copy.GetRegion<TX>(0).Read(first, codes.Length);
+        var ys = copy.GetRegion<TY>(1).Read(first, codes.Length);
+        _ = SpatialCode.Encode(xs, ys, in xAxis, in yAxis, codes);
+    }
+
+    /// <inheritdoc />
     private protected override void ReadCore(SpatialCopy copy, long first, Span<double> x, Span<double> y, Span<long> rows)
     {
         var xs = copy.GetRegion<TX>(0).Read(first, x.Length);

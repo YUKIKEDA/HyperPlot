@@ -12,6 +12,9 @@ internal enum SpatialIndexState
     /// <summary>A build writes the copy.</summary>
     Writing,
 
+    /// <summary>A build has published its full snapshot and makes the density tiles.</summary>
+    Density,
+
     /// <summary>The last build ended and published its snapshot.</summary>
     Complete,
 

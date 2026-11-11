@@ -10,7 +10,7 @@ using HyperPlot.DataPath;
 //   HyperPlot.DataPath cold-frame --file ... [--reads-only]
 //   HyperPlot.DataPath generate-points --file D:\...\points [--distribution uniform|clustered] [--points N] [--seed N]
 //   HyperPlot.DataPath hash-points --file ...
-//   HyperPlot.DataPath spatial --file ... [--distribution ...] [--workers 8] [--cold] [--rows-per-unit N] [--temp D:\...]
+//   HyperPlot.DataPath spatial --file ... [--distribution ...] [--workers 8] [--cold] [--rows-per-unit N] [--density-split N] [--temp D:\...]
 //   HyperPlot.DataPath allocate --file - [--points N] [--temp /mnt/c/...]
 //   HyperPlot.DataPath touch --file - [--points N] [--temp D:\...]
 // The data files live outside the repository and are deleted after the run. The spatial scenes read <file>.x and <file>.y.

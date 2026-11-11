@@ -319,7 +319,9 @@ public sealed class SpatialChangedColumnTests
         rig.Probe.AfterJob = null;
 
         Assert.Equal(builds + 1, rig.Probe.CountOf(SpatialJob.Allocate));
-        Assert.Equal(version + 1, index.Version);
+
+        // The full snapshot of the rebuild, and its density tiles.
+        Assert.Equal(version + 2, index.Version);
         return index.Acquire();
     }
 

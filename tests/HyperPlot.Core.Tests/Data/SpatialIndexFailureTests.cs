@@ -127,7 +127,7 @@ public sealed class SpatialIndexFailureTests
         Assert.Equal(SpatialIndexState.Complete, index.State);
         Assert.True(index.IsComplete);
         Assert.Equal(2, rig.Probe.CountOf(SpatialJob.Allocate));
-        Assert.Equal(whileWriting ? 3 : 2, index.Version);
+        Assert.Equal(whileWriting ? 4 : 3, index.Version);
         var full = index.Acquire();
         Assert.False(full.IsProvisional);
         rig.Check(full);
@@ -155,7 +155,7 @@ public sealed class SpatialIndexFailureTests
     /// - Fault and Completion hold the first exception, and the state is Failed after two runs of Allocate.
     /// - WhenComplete, called after the failure with the versions as they are, is faulted with the second exception
     ///   too: the one of the last build, not Fault.
-    /// - After the last Invalidate the index is complete at the version 2, and Fault still holds the first exception.
+    /// - After the last Invalidate the index is complete at the version 3, and Fault still holds the first exception.
     /// </remarks>
     [Fact]
     public void Build_FailsASecondTime_KeepsTheFirstFault()
@@ -187,7 +187,7 @@ public sealed class SpatialIndexFailureTests
         rig.X.Invalidate();
         Eventually.Completes(index.WhenComplete());
         Assert.True(index.IsComplete);
-        Assert.Equal(2, index.Version);
+        Assert.Equal(3, index.Version);
         Assert.Same(first, index.Fault);
         var full = index.Acquire();
         rig.Check(full);
@@ -208,9 +208,9 @@ public sealed class SpatialIndexFailureTests
     /// Expected:
     /// - The task is faulted with the exception of the transform, which Fault holds. The state is Failed.
     /// - Completion still ended without an exception: it ended with the first build.
-    /// - Acquire returns the old snapshot, at the version 2. It is provisional, is not freed, and reads the points it
+    /// - Acquire returns the old snapshot, at the version 3. It is provisional, is not freed, and reads the points it
     ///   read before. The copy of the failed build is released; the copy of the first build is not.
-    /// - After the last Invalidate the index is complete at the version 3 with another snapshot, and Fault still holds
+    /// - After the last Invalidate the index is complete at the version 5 with another snapshot, and Fault still holds
     ///   the exception.
     /// </remarks>
     [Fact]
@@ -235,7 +235,7 @@ public sealed class SpatialIndexFailureTests
         var again = index.Acquire();
         Assert.Same(old, again);
         again.Release();
-        Assert.Equal(2, index.Version);
+        Assert.Equal(3, index.Version);
         Assert.True(old.IsProvisional);
         Assert.False(old.IsFreed);
         SpatialReference.AssertSamePoints(before, SpatialReference.ReadAll(old));
@@ -248,7 +248,7 @@ public sealed class SpatialIndexFailureTests
         rig.X.Invalidate();
         Eventually.Completes(index.WhenComplete());
         Assert.True(index.IsComplete);
-        Assert.Equal(3, index.Version);
+        Assert.Equal(5, index.Version);
         Assert.Same(thrown, index.Fault);
         var fresh = index.Acquire();
         Assert.NotSame(old, fresh);

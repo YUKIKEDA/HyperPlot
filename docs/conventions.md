@@ -45,7 +45,7 @@ docs/                        要件・設計・判断・ロードマップ・規
 | `samples/SpecPlot` | `PlotSpec` で 2 系列（1e6 点、ns の time の x）を、軸・タイトル・凡例つきでライトとダークの 2 枚の PNG に書き、同じ系列から作った band・bar・step・errorbar を 3 枚目の PNG に書くサンプル（設計書 §4.6・§5.5.3・§7.5、行 G3・G4）。`HelloPlot` と並べて NativeAOT の検査に使う（`aot.mdc`、`--auto`、`--scale`） |
 | `samples/BillionSeries` | 1e9 点のメモリマップのファイル（なければシードから作る）の系列を、全体と拡大の表示で PNG に書くサンプル |
 | `samples/Shared` | サンプルと計測とテストが共有するもの: データから画素への写し方（倍精度、`PlotArea.cs`）、1e9 点の系列のファイル（シードからのランダムウォーク、`WalkFile.cs`）、`HelloPlot` の場面（`HelloScene.cs`、D3D11 のテストがゴールデン画像に 1e5 点で描く）。ライブラリの API ではない（スケールは行 G2） |
-| `benchmarks/HyperPlot.DataPath` | データの経路の計測（NativeAOT、GPU なし、設計書 §9）と、シードから系列のファイル（`SeriesFile.cs`）と散布の x と y のファイル（`PointFiles.cs`、一様と外れ値のある塊）をバッファなしで書く生成器。場面は構築・暫定が替わるまで・冷えた 1 フレーム（`Scenes.cs`）と、空間タイル索引（`SpatialScenes.cs`、行 C3a）。`watch-machine.ps1` は、計測の間の機械の状態（CPU の性能、空きメモリ、ほかのプロセスの CPU 時間）を書く。ゲートではない |
+| `benchmarks/HyperPlot.DataPath` | データの経路の計測（NativeAOT、GPU なし、設計書 §9）と、シードから系列のファイル（`SeriesFile.cs`）と散布の x と y のファイル（`PointFiles.cs`、一様と外れ値のある塊）をバッファなしで書く生成器。場面は構築・暫定が替わるまで・冷えた 1 フレーム（`Scenes.cs`）と、空間タイル索引とその密度タイル（`SpatialScenes.cs`、行 C3a・C3b。`run-c3a.ps1` と `run-c3b.ps1`）。`watch-machine.ps1` は、計測の間の機械の状態（CPU の性能、空きメモリ、ほかのプロセスの CPU 時間）を書く。ゲートではない |
 | `benchmarks/HyperPlot.E2E` | End-to-end のフレームの計測（NativeAOT、設計書 §9）: 1e9 点の系列（`samples/Shared/WalkFile.cs`）を、ズームとパンの台本で、抽出・写しと記録・描画の命令のフレームにし、段ごとの CPU 時間・GPU 時間（`LastFrameTime`）・フレームごとの確保・メモリを書く。要件 P-1 を測る。ゲートではない |
 
 予定しているプロジェクトの全体は設計書 §2.1 にある。

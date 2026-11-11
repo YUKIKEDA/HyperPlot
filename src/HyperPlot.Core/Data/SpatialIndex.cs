@@ -17,6 +17,7 @@ internal abstract class SpatialIndex : IDisposable
     private const int Waiting = (int)SpatialIndexState.Waiting;
     private const int Counting = (int)SpatialIndexState.Counting;
     private const int Writing = (int)SpatialIndexState.Writing;
+    private const int Density = (int)SpatialIndexState.Density;
     private const int Complete = (int)SpatialIndexState.Complete;
     private const int Failed = (int)SpatialIndexState.Failed;
     private const int Disposed = (int)SpatialIndexState.Disposed;
@@ -275,6 +276,7 @@ internal abstract class SpatialIndex : IDisposable
                 return Interlocked.CompareExchange(ref _state, counting, state) == state ? StartToken : -1;
             case Counting:
             case Writing:
+            case Density:
                 var build = Volatile.Read(ref _build);
                 if (build is null || !build.Enter())
                 {
@@ -282,7 +284,11 @@ internal abstract class SpatialIndex : IDisposable
                 }
 
                 var token = build.TryTakeSingle() ? SingleToken : build.TryTakeGroup();
-                if (token < 0)
+
+                // A unit that sees the stop leaves the rest of its rows and still ends its stage, which queues the single
+                // job that follows. This worker entered before the stop: it must not run that job over the half-done
+                // stage (PublishFull would publish a copy that was not written to the end).
+                if (token < 0 || (token == SingleToken && build.IsStopped))
                 {
                     build.Leave();
                     return -1;
@@ -305,7 +311,15 @@ internal abstract class SpatialIndex : IDisposable
             if (token < StartToken)
             {
                 var job = build!.UnitJob;
-                RunUnit(build, token, build.NextUnit(token));
+                if (job == SpatialJob.Density)
+                {
+                    build.Density!.RunUnit(token, build.NextUnit(token), build);
+                }
+                else
+                {
+                    RunUnit(build, token, build.NextUnit(token));
+                }
+
                 _tuning.JobEnded?.Invoke(job, TimeProvider.System.GetTimestamp() - began);
                 if (build.EndUnit(token))
                 {
@@ -395,6 +409,10 @@ internal abstract class SpatialIndex : IDisposable
             case SpatialJob.Write:
                 build.BeginUnits(next, SpatialJob.PublishFull);
                 break;
+            case SpatialJob.Density:
+                build.LayDensity(build.Density!);
+                build.BeginUnits(next, SpatialJob.EndDensityLevel);
+                break;
             default:
                 build.QueueSingle(next);
                 break;
@@ -455,8 +473,16 @@ internal abstract class SpatialIndex : IDisposable
 
                 // Only Dispose moves the state under the one job of the build.
                 return TryMove(build, Counting, Writing) ? SpatialJob.Write : null;
+            case SpatialJob.PublishFull:
+                return PublishFull(build, builder) ? SpatialJob.PlanDensity : null;
+            case SpatialJob.PlanDensity:
+                var bytes = (build.End - build.Start) * (_shape.XBytes + _shape.YBytes);
+                build.Density = new DensityBuilder(build.Full!, _tuning.DensitySplit, _tuning.RowsPerUnit, bytes, _tuning.TotalShare);
+                return build.Density.NextLevel() ? SpatialJob.Density : SpatialJob.PublishDensity;
+            case SpatialJob.EndDensityLevel:
+                return build.Density!.NextLevel() ? SpatialJob.Density : SpatialJob.PublishDensity;
             default:
-                PublishFull(build, builder);
+                PublishDensity(build);
                 return null;
         }
     }
@@ -507,7 +533,8 @@ internal abstract class SpatialIndex : IDisposable
         Publish(MakeCoarse(contents), unlessFull: true);
     }
 
-    private void PublishFull(SpatialBuild build, SpatialTableBuilder builder)
+    // Returns whether the build goes on to the density tiles: false when the index was disposed meanwhile.
+    private bool PublishFull(SpatialBuild build, SpatialTableBuilder builder)
     {
         builder.FinishWrite(build.Copy);
         var contents = new SpatialSnapshot.Contents(
@@ -524,15 +551,46 @@ internal abstract class SpatialIndex : IDisposable
 
         // The snapshot owns the copy from here on.
         build.Copy = null;
-        Publish(made, unlessFull: false);
+
+        // The build reads the table and the copy of its snapshot for the density tiles, so it borrows the snapshot as a
+        // query does: a Dispose that gives the index's reference back meanwhile does not free it under the units.
+        if (!Publish(made, unlessFull: false) || !made.TryAddReference())
+        {
+            return false;
+        }
+
+        build.Full = made;
+        return TryMove(build, Writing, Density);
+    }
+
+    private void PublishDensity(SpatialBuild build)
+    {
+        var tiles = build.Density!.Finish();
+        bool attached;
+        lock (_gate)
+        {
+            // As a snapshot, the tiles are not published after Dispose (rule 5).
+            attached = KindOf(Volatile.Read(ref _state)) != Disposed;
+            if (attached)
+            {
+                build.Full!.AttachTiles(tiles);
+                Volatile.Write(ref _version, _version + 1);
+            }
+        }
+
+        if (!attached)
+        {
+            tiles.Dispose();
+        }
+
         build.Stop();
         Interlocked.CompareExchange(ref _build, null, build);
         if (X.Version == build.XVersion && Y.Version == build.YVersion)
         {
             // The job that ran tells the waiters, after JobEnded: what waits for the index finds every job reported.
-            build.Completed = TryMove(build, Writing, Complete);
+            build.Completed = TryMove(build, Density, Complete);
         }
-        else if (TryMove(build, Writing, Waiting))
+        else if (TryMove(build, Density, Waiting))
         {
             // A column changed during the build: the index is built again (rule 2).
             Pool.Wake();
@@ -542,7 +600,8 @@ internal abstract class SpatialIndex : IDisposable
     private bool TryMove(SpatialBuild build, int from, int to) =>
         Interlocked.CompareExchange(ref _state, Pack(build.Sequence, to), Pack(build.Sequence, from)) == Pack(build.Sequence, from);
 
-    private void Publish(SpatialSnapshot made, bool unlessFull)
+    // Returns whether the snapshot became the current one.
+    private bool Publish(SpatialSnapshot made, bool unlessFull)
     {
         SpatialSnapshot? replaced = null;
         lock (_gate)
@@ -560,11 +619,11 @@ internal abstract class SpatialIndex : IDisposable
         if (replaced is null)
         {
             made.Free();
+            return false;
         }
-        else
-        {
-            replaced.Release();
-        }
+
+        replaced.Release();
+        return true;
     }
 
     private void Fail(SpatialBuild? build, Exception exception)
@@ -584,7 +643,10 @@ internal abstract class SpatialIndex : IDisposable
         Volatile.Write(ref _failedY, build?.YVersion ?? Y.Version);
         var state = Volatile.Read(ref _state);
         var kind = KindOf(state);
-        if ((kind != Counting && kind != Writing) || Interlocked.CompareExchange(ref _state, Pack(state >> KindBits, Failed), state) != state)
+        if (
+            (kind != Counting && kind != Writing && kind != Density)
+            || Interlocked.CompareExchange(ref _state, Pack(state >> KindBits, Failed), state) != state
+        )
         {
             // The index was disposed meanwhile.
             return;

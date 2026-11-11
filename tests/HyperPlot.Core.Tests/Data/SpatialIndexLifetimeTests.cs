@@ -126,7 +126,8 @@ public sealed class SpatialIndexLifetimeTests
     /// Expected:
     /// - No reader saw a freed snapshot, before or after its reads; every Count was 500 inside and 0 touching; every
     ///   ReadPoints returned the points of the first snapshot; no reader threw.
-    /// - The version is 302: one publication for each replacement after the two of the first build.
+    /// - The version is 603: the full snapshot and its density tiles for each replacement, after the three
+    ///   publications of the first build.
     /// - After Dispose, the copy of every build is released.
     /// </remarks>
     [Fact]
@@ -206,7 +207,7 @@ public sealed class SpatialIndexLifetimeTests
         }
 
         Assert.All(failures, Assert.Null);
-        Assert.Equal(2 + Rounds, index.Version);
+        Assert.Equal(3 + (2 * Rounds), index.Version);
         index.Dispose();
         var requests = rig.Allocator.Requests;
         Assert.Equal(1 + Rounds, requests.Length);
@@ -428,7 +429,8 @@ public sealed class SpatialIndexLifetimeTests
     /// - 2,000 seeded float points (8 units a stage) on a pool of 2 threads.
     /// - 200 rounds, each with an index of its own. A round calls Dispose on a thread of the .NET pool once a chosen
     ///   job has ended, after a pause of a few spins: the last First (so that Dispose meets PublishCoarse) in the even
-    ///   rounds, and one of the eight Write jobs (so that it meets PublishFull) in the odd ones. The job and the pause
+    ///   rounds, and one of the eight Write jobs (so that it meets PublishFull, or the PublishDensity that follows it
+    ///   and publishes the density tiles) in the odd ones. The job and the pause
     ///   change from round to round, so that Dispose lands before, inside, and after the publishing job. The test does
     ///   not need a round to land inside: the mutation check of the row shows that rounds do on the machine of the row.
     ///
