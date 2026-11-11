@@ -20,11 +20,14 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
 {
     private const int Groups = SpatialIndexTuning.GroupCount;
 
-    // Two kinds that only a table under construction has. An open cell waits for the next counting pass, and its
+    // Three kinds that only a table under construction has. An open cell waits for the next counting pass, and its
     // FirstChild is its place among the open cells. A pending cell is being split by the single job, and its FirstChild is
-    // the open cell whose counters cover it. A leaf's FirstChild is its slot of group counts until FinishWrite.
+    // the open cell whose counters cover it. A settled cell is a split cell with no open cell below it: a pass's walk stops
+    // there, since its points count for no open cell, and BuildTable makes it a split cell again. A leaf's FirstChild is
+    // its slot of group counts until FinishWrite.
     private const byte OpenKind = 4;
     private const byte PendingKind = 5;
+    private const byte SettledKind = 6;
 
     // The slot of every leaf without points: its groups have no room, so a point that turns up there is dropped.
     private const int EmptySlot = 0;
@@ -276,6 +279,14 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
     /// </summary>
     internal void BuildTable()
     {
+        foreach (ref var row in Table)
+        {
+            if (row.Kind == SettledKind)
+            {
+                row.Kind = (byte)SpatialCellKind.Inner;
+            }
+        }
+
         long position = 0;
         Number(Table, 0, ref position);
         PointCount = position;
@@ -422,7 +433,8 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
         }
     }
 
-    // Returns the row that a code's walk from the first level ends in: a leaf, or an open cell during the counting.
+    // Returns the row that a code's walk from the first level ends in: a leaf, or, during the counting, an open cell or a
+    // settled one.
     private int Descend(ReadOnlySpan<SpatialRow> rows, ReadOnlySpan<int> lookup, ulong code)
     {
         var index = lookup[(int)(code >> _firstShift)];
@@ -541,7 +553,41 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
 
         OpenCandidates();
         _pass++;
-        return _openCount > 0;
+        if (_openCount == 0)
+        {
+            return false;
+        }
+
+        Settle();
+        return true;
+    }
+
+    // Marks the split cells with no open cell below them, so that the next pass walks a point only down to the first of
+    // them. A cell's children come after it in the table, so one walk from the end sees the children first. A settled cell
+    // stays settled: only an open cell is split, and no open cell is below it.
+    private void Settle()
+    {
+        var rows = Table;
+        for (var r = rows.Length - 1; r >= 0; r--)
+        {
+            ref var row = ref rows[r];
+            if (row.Kind != (byte)SpatialCellKind.Inner)
+            {
+                continue;
+            }
+
+            var settled = true;
+            for (var c = 0; c < _layout.ChildCount && settled; c++)
+            {
+                var kind = rows[row.FirstChild + c].Kind;
+                settled = kind is not ((byte)SpatialCellKind.Inner or OpenKind);
+            }
+
+            if (settled)
+            {
+                row.Kind = SettledKind;
+            }
+        }
     }
 
     // Totals an open cell's counters. The cell is a leaf when it has few points or all its points have one code.
