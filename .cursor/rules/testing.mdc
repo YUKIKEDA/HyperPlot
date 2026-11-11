@@ -155,3 +155,5 @@ bool? renderingAfterFrame = null;
 RunFrames(host, frames: 1, afterFrame: () => renderingAfterFrame = host.IsRendering);
 Assert.False(renderingAfterFrame);
 ```
+
+A row that adds states that workers move through runs its tests three times in a row while the machine is loaded (a benchmark or another test run beside them) before the PR. Row C3a's two races, the order of completion and a group read while it was being laid out, showed only when the tests ran beside the 1e9-point measurement. A race that no test forces is listed in the PR body and gets an Issue (Issue #410).
