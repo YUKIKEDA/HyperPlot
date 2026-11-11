@@ -46,8 +46,8 @@ try {
         }
 
         $top = ($others | Sort-Object Used -Descending | Select-Object -First 3 | ForEach-Object { '{0}:{1:F1}' -f $_.Name, $_.Used }) -join ','
-        $line = 'at={0:HH:mm:ss} performance_percent={1} utility_percent={2} available_mb={3} modified_mb={4} pages_per_s={5} scene_cpu_s={6:F1} other_cpu_s={7:F1} top={8}' -f `
-            (Get-Date), $processor.PercentProcessorPerformance, $processor.PercentProcessorUtility, $memory.AvailableMBytes, `
+        $line = 'at_utc={0:HH:mm:ss} performance_percent={1} utility_percent={2} available_mb={3} modified_mb={4} pages_per_s={5} scene_cpu_s={6:F1} other_cpu_s={7:F1} top={8}' -f `
+            (Get-Date).ToUniversalTime(), $processor.PercentProcessorPerformance, $processor.PercentProcessorUtility, $memory.AvailableMBytes, `
             [long]($memory.ModifiedPageListBytes / 1MB), $memory.PagesPersec, $sceneSeconds, $otherSeconds, $top
         Add-Content -Path $Log -Value $line
         $before = $now

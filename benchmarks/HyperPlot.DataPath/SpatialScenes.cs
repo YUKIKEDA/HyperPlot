@@ -60,17 +60,7 @@ internal static class SpatialScenes
                     index.Completion.Wait();
                     var seconds = Stopwatch.GetElapsedTime(recorder.Start).TotalSeconds;
                     var common = Common(options, pool, tuning);
-                    Report(
-                        options,
-                        run,
-                        "build",
-                        [
-                            .. common,
-                            ("ended", TimeProvider.System.GetLocalNow().ToString("HH:mm:ss", CultureInfo.InvariantCulture)),
-                            ("seconds", seconds),
-                            .. recorder.Stages(),
-                        ]
-                    );
+                    Report(options, run, "build", [.. common, ("ended_utc", EndedUtc()), ("seconds", seconds), .. recorder.Stages()]);
                     foreach (var line in recorder.Jobs())
                     {
                         Report(options, run, "jobs", [.. common, .. line]);
@@ -422,6 +412,14 @@ internal static class SpatialScenes
             ("p99_us", microseconds[(int)Math.Ceiling(microseconds.Length * 0.99) - 1]),
             ("max_us", microseconds[^1]),
         ];
+    }
+
+    // The time of day in UTC, to find the build in the log of watch-machine.ps1. Formatted from its parts: the formats
+    // of a date bring the calendar data into the executable (100 KB).
+    private static string EndedUtc()
+    {
+        var now = TimeProvider.System.GetUtcNow();
+        return string.Create(CultureInfo.InvariantCulture, $"{now.Hour:00}:{now.Minute:00}:{now.Second:00}");
     }
 
     private static void Report(Options options, int run, string figure, (string Key, object Value)[] figures) =>
