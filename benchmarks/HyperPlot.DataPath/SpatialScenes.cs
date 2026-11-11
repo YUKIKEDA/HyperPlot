@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 
 namespace HyperPlot.DataPath;
 
@@ -59,7 +60,17 @@ internal static class SpatialScenes
                     index.Completion.Wait();
                     var seconds = Stopwatch.GetElapsedTime(recorder.Start).TotalSeconds;
                     var common = Common(options, pool, tuning);
-                    Report(options, run, "build", [.. common, ("seconds", seconds), .. recorder.Stages()]);
+                    Report(
+                        options,
+                        run,
+                        "build",
+                        [
+                            .. common,
+                            ("ended", TimeProvider.System.GetLocalNow().ToString("HH:mm:ss", CultureInfo.InvariantCulture)),
+                            ("seconds", seconds),
+                            .. recorder.Stages(),
+                        ]
+                    );
                     foreach (var line in recorder.Jobs())
                     {
                         Report(options, run, "jobs", [.. common, .. line]);
@@ -421,9 +432,15 @@ internal static class SpatialScenes
     {
         private readonly List<SpatialCopy> _made = [];
 
-        public override SpatialCopy Allocate(long capacity, ReadOnlySpan<int> valueWidths, bool mapped, string? tempFolder)
+        public override SpatialCopy Allocate(
+            long capacity,
+            ReadOnlySpan<int> valueWidths,
+            bool mapped,
+            string? tempFolder,
+            Func<bool>? stopped = null
+        )
         {
-            var copy = base.Allocate(capacity, valueWidths, mapped, tempFolder);
+            var copy = base.Allocate(capacity, valueWidths, mapped, tempFolder, stopped);
             lock (_made)
             {
                 _made.Add(copy);

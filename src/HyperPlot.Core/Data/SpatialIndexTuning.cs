@@ -17,7 +17,7 @@ internal readonly record struct SpatialIndexTuning(int LeafCapacity, int RowsPer
     public const int GroupCount = 8;
 
     /// <summary>Gets the constants that <see cref="PlotWorkerPool"/> builds an index with.</summary>
-    public static SpatialIndexTuning Default => new(LeafCapacity: 4096, RowsPerUnit: 1 << 16, TableShare: 0.02, WideRows: 1L << 32);
+    public static SpatialIndexTuning Default => new(LeafCapacity: 4096, RowsPerUnit: 1 << 14, TableShare: 0.02, WideRows: 1L << 32);
 
     /// <summary>
     /// Gets what a worker calls after each job of a build that did not throw, with the job and its time in the ticks of

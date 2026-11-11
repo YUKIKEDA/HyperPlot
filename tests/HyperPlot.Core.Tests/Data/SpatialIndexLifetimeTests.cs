@@ -669,6 +669,79 @@ public sealed class SpatialIndexLifetimeTests
         AssertDisposed(index);
     }
 
+    /// <summary>
+    /// A unit that is about to write the copy when the index or the pool is disposed writes nothing: the disposal stops
+    /// the build before it waits for the unit, and the unit looks at the stop before it writes.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 5,000 seeded float points on a pool of 1 thread, with a transform of x that copies its values. In the first
+    ///   call of the transform in the state Writing, which is inside the first unit that writes, the transform keeps
+    ///   the worker until the disposal has stopped the build: until the state is Disposed (<paramref name="disposed"/>
+    ///   is "index"), or until the thread that disposes the pool waits for the worker ("pool").
+    /// - While the worker is kept, every original position of the copy is set to 0xFFFFFFFF, which no unit writes.
+    ///
+    /// Steps:
+    /// - Dispose the index, or the pool, on another thread. At the end of the kept unit, on the worker, read the
+    ///   original positions of the copy. Wait for the disposal.
+    ///
+    /// Expected:
+    /// - Every original position is still 0xFFFFFFFF at the end of the unit: the unit wrote none of its 256 rows.
+    /// - That unit is the only unit of the writing that ended, PublishFull never ran, and the copy is released.
+    /// </remarks>
+    [Theory]
+    [InlineData("index")]
+    [InlineData("pool")]
+    public void Dispose_WhileAUnitIsAboutToWrite_LeavesTheCopyUnwritten(string disposed)
+    {
+        using var rig = new SpatialRig(seed: 68);
+        var gate = new StopGate();
+        Thread? disposer = null;
+        bool? untouched = null;
+        rig.Probe.AfterJob = (ended, _) =>
+        {
+            if (ended == SpatialJob.Write)
+            {
+                var positions = rig.Allocator.Requests[0].Copy!.GetRegion<uint>(2).Read(0, 5_000);
+                untouched ??= !positions.ContainsAnyExcept(uint.MaxValue);
+            }
+        };
+
+        SpatialIndex index;
+        using (rig.BlockWorker())
+        {
+            index = rig.Start(new SpatialIndexInput { Rows = RowRange.All, XTransform = gate });
+            gate.Writing = () => index.State == SpatialIndexState.Writing;
+            gate.Stopped =
+                disposed == "index"
+                    ? () => index.State == SpatialIndexState.Disposed
+                    : () => Volatile.Read(ref disposer) is { } thread && (thread.ThreadState & ThreadState.WaitSleepJoin) != 0;
+        }
+
+        gate.WaitForWorker();
+        var copy = Assert.Single(rig.Allocator.Requests).Copy!;
+        copy.GetRegion<uint>(2).Write(0, 5_000).Fill(uint.MaxValue);
+        var started = new Thread(() =>
+        {
+            if (disposed == "index")
+            {
+                index.Dispose();
+            }
+            else
+            {
+                rig.Pool.Dispose();
+            }
+        });
+        Volatile.Write(ref disposer, started);
+        started.Start();
+        Assert.True(started.Join(30_000), "The disposal did not end within the watchdog.");
+
+        Assert.True(untouched, "The kept unit wrote the copy after the build was stopped.");
+        Assert.Equal(1, rig.Probe.CountOf(SpatialJob.Write));
+        Assert.Equal(0, rig.Probe.CountOf(SpatialJob.PublishFull));
+        Assert.True(copy.IsDisposed);
+    }
+
     private static void AssertDisposed(SpatialIndex index)
     {
         Assert.Equal(SpatialIndexState.Disposed, index.State);
@@ -688,5 +761,33 @@ public sealed class SpatialIndexLifetimeTests
         {
             return true;
         }
+    }
+
+    // A transform that copies its values and keeps the worker, once, in its first call while the build writes the copy.
+    private sealed class StopGate : IScale
+    {
+        private readonly TaskCompletionSource _reached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _kept;
+
+        /// <summary>Gets or sets whether the index writes the copy now. Set while no job of the index runs.</summary>
+        public Func<bool>? Writing { get; set; }
+
+        /// <summary>Gets or sets whether the disposal has stopped the build. Set while no job of the index runs.</summary>
+        public Func<bool>? Stopped { get; set; }
+
+        /// <summary>Waits until the worker is kept.</summary>
+        public void WaitForWorker() => Assert.True(_reached.Task.Wait(30_000), "No unit of the writing called the transform within the watchdog.");
+
+        public void Forward(ReadOnlySpan<double> values, Span<double> destination)
+        {
+            values.CopyTo(destination);
+            if (Writing!() && Interlocked.Exchange(ref _kept, 1) == 0)
+            {
+                _reached.TrySetResult();
+                SpinWait.SpinUntil(Stopped!, 30_000);
+            }
+        }
+
+        public void Inverse(ReadOnlySpan<double> values, Span<double> destination) => values.CopyTo(destination);
     }
 }

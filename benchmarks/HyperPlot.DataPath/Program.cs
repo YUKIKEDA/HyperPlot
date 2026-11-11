@@ -15,7 +15,12 @@ using HyperPlot.DataPath;
 // The data files live outside the repository and are deleted after the run. The spatial scenes read <file>.x and <file>.y.
 var options = Options.Parse(args);
 using var process = Process.GetCurrentProcess();
-process.PriorityClass = ProcessPriorityClass.High;
+if (OperatingSystem.IsWindows())
+{
+    // Raising the priority on Linux needs a privilege the allocation scene runs without.
+    process.PriorityClass = ProcessPriorityClass.High;
+}
+
 switch (options.Scene)
 {
     case "generate":

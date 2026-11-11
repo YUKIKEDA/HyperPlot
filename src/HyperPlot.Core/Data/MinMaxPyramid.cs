@@ -49,6 +49,12 @@ internal abstract class PoolWork
     /// </summary>
     internal abstract void OnPoolDisposed();
 
+    /// <summary>
+    /// Called when the disposal of the pool begins, before the pool waits for its threads, for every work still
+    /// registered: a job in flight that can end early does. The default does nothing.
+    /// </summary>
+    internal virtual void OnPoolDisposing() { }
+
     private protected abstract int TryTake(bool requestedOnly);
 
     private protected abstract void Build(int chunk);

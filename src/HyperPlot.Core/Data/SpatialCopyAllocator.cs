@@ -18,6 +18,12 @@ internal class SpatialCopyAllocator
 
         /// <summary>Linux: the file's name is removed as soon as the file is open.</summary>
         Unlinked,
+
+        /// <summary>
+        /// Linux, on a file system that cannot reserve a file in one call: as <see cref="Unlinked"/>, with the blocks
+        /// reserved piece by piece. The engine finds such a file system by itself; the tests ask for it.
+        /// </summary>
+        UnlinkedInPieces,
     }
 
     /// <summary>Gets the allocator that the engine uses.</summary>
@@ -34,7 +40,13 @@ internal class SpatialCopyAllocator
     /// <param name="valueWidths">The bytes of one stored value of each axis.</param>
     /// <param name="mapped">Whether a column of the index is memory-mapped, so that the copy goes to a temporary file.</param>
     /// <param name="tempFolder">The folder of the temporary file, or <see langword="null"/> for <see cref="Path.GetTempPath"/>.</param>
+    /// <param name="stopped">
+    /// Returns whether the build that asks was stopped, or <see langword="null"/> when nothing stops it. An allocation
+    /// that takes long looks at it and throws <see cref="OperationCanceledException"/> (design §3.4 "一時ファイル").
+    /// </param>
     /// <returns>The copy. Its contents are not set.</returns>
-    public virtual SpatialCopy Allocate(long capacity, ReadOnlySpan<int> valueWidths, bool mapped, string? tempFolder) =>
-        mapped ? SpatialCopy.Map(capacity, valueWidths, tempFolder ?? Path.GetTempPath(), TempFile) : SpatialCopy.Allocate(capacity, valueWidths);
+    public virtual SpatialCopy Allocate(long capacity, ReadOnlySpan<int> valueWidths, bool mapped, string? tempFolder, Func<bool>? stopped = null) =>
+        mapped
+            ? SpatialCopy.Map(capacity, valueWidths, tempFolder ?? Path.GetTempPath(), TempFile, stopped)
+            : SpatialCopy.Allocate(capacity, valueWidths);
 }

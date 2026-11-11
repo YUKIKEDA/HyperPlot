@@ -313,6 +313,136 @@ public sealed class SpatialCopyTests
         SpatialReference.Check(built.Snapshot, SpatialAxisData.Of(xs), SpatialAxisData.Of(ys), new RowRange(0, Short), SpatialReference.Small);
     }
 
+    /// <summary>
+    /// A temporary file that the file system reserves piece by piece is reserved 1 MB at a time, with a look at the stop
+    /// of the build before each piece; a stop between two pieces ends the allocation and leaves no file.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Linux. A new folder, and the kind of temporary file that reserves in pieces (what the engine falls back to on a
+    ///   file system without fallocate).
+    /// - 300,000 points of two float axes: 3,600,000 B with the 4-byte positions, which is 4 pieces of 1 MB.
+    /// - The stop answers true at its third look when <paramref name="stops"/> is true, and never otherwise.
+    ///
+    /// Steps:
+    /// - Map the copy. Without the stop, write the first and the last element of every region and read them back.
+    ///
+    /// Expected:
+    /// - Without the stop: 4 looks, one before each piece, the copy has 3,600,000 B, and its elements read back.
+    /// - With the stop: OperationCanceledException after 3 looks, and no fourth.
+    /// - The folder is empty in both cases: the name of the file was removed before the reservation.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Map_ReservedInPieces_LooksAtTheStopBeforeEachPieceAndEndsOnIt(bool stops)
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "Only Linux reserves the temporary file with posix_fallocate.");
+        using var folder = new TempFolder();
+        var looks = 0;
+        bool Stopped() => ++looks == 3 && stops;
+
+        if (stops)
+        {
+            Assert.Throws<OperationCanceledException>(() =>
+                SpatialCopy.Map(300_000, [sizeof(float), sizeof(float)], folder.Path, SpatialCopyAllocator.TempFileKind.UnlinkedInPieces, Stopped)
+            );
+            Assert.Equal(3, looks);
+        }
+        else
+        {
+            using var copy = SpatialCopy.Map(
+                300_000,
+                [sizeof(float), sizeof(float)],
+                folder.Path,
+                SpatialCopyAllocator.TempFileKind.UnlinkedInPieces,
+                Stopped
+            );
+            Assert.Equal(4, looks);
+            Assert.Equal(3_600_000, copy.ByteCount);
+            for (var region = 0; region < 2; region++)
+            {
+                var values = copy.GetRegion<float>(region);
+                Assert.True(values.TryWrite(0, 1.5f + region));
+                Assert.True(values.TryWrite(299_999, 2.5f + region));
+                Assert.Equal(1.5f + region, values.Read(0, 1)[0]);
+                Assert.Equal(2.5f + region, values.Read(299_999, 1)[0]);
+            }
+
+            var positions = copy.GetRegion<uint>(2);
+            Assert.True(positions.TryWrite(299_999, 7u));
+            Assert.Equal(7u, positions.Read(299_999, 1)[0]);
+        }
+
+        Assert.Empty(Directory.GetFileSystemEntries(folder.Path));
+    }
+
+    /// <summary>
+    /// Dispose during a reservation in pieces stops it at the next piece: the allocation job ends without a copy and
+    /// without a fault, and Dispose returns.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Linux. 300,000 points of float x and y in memory-mapped columns on a pool of 1 thread, a new folder as the
+    ///   <c>TempFolder</c>, and the kind of temporary file that reserves in pieces (4 pieces of 1 MB).
+    /// - Before its second look at the stop, the allocation keeps the worker until the state of the index is Disposed.
+    ///
+    /// Steps:
+    /// - Start the build, wait until the worker is kept, and call Dispose.
+    ///
+    /// Expected:
+    /// - Dispose returns after 2 looks: the reservation made 1 piece and no more.
+    /// - The allocation seam made no copy, no job of the index ended, <c>Fault</c> is null, <c>Completion</c> is
+    ///   faulted with ObjectDisposedException, and the folder is empty.
+    /// </remarks>
+    [Fact]
+    public void Dispose_DuringAReservationInPieces_EndsTheAllocationAtTheNextPiece()
+    {
+        Assert.SkipUnless(OperatingSystem.IsLinux(), "Only Linux reserves the temporary file with posix_fallocate.");
+        var (xs, ys) = SpatialData.Uniform(300_000, seed: 44);
+        using var folder = new TempFolder();
+        using var xFile = TempFile.Write<float>(xs, 0);
+        using var yFile = TempFile.Write<float>(ys, 0);
+        var reached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        SpatialIndex? started = null;
+        var looks = 0;
+        var allocator = new RecordingCopyAllocator
+        {
+            Kind = SpatialCopyAllocator.TempFileKind.UnlinkedInPieces,
+            BeforeLook = () =>
+            {
+                if (Interlocked.Increment(ref looks) == 2)
+                {
+                    reached.TrySetResult();
+                    SpinWait.SpinUntil(() => Volatile.Read(ref started)?.State == SpatialIndexState.Disposed, 30_000);
+                }
+            },
+        };
+        var probe = new SpatialProbe();
+        using var pool = new PlotWorkerPool(1);
+        using var x = Column.MapFile<float>(xFile.Path);
+        using var y = Column.MapFile<float>(yFile.Path);
+        var index = SpatialReference.Start(
+            pool,
+            x,
+            y,
+            new SpatialIndexInput { Rows = RowRange.All, TempFolder = folder.Path },
+            allocator: allocator,
+            probe: probe
+        );
+        Volatile.Write(ref started, index);
+        Eventually.Completes(reached.Task);
+
+        index.Dispose();
+
+        Assert.Equal(2, Volatile.Read(ref looks));
+        Assert.Empty(allocator.Requests);
+        Assert.Empty(probe.Steps);
+        Assert.Null(index.Fault);
+        Assert.IsType<ObjectDisposedException>(Eventually.Faults(index.Completion));
+        Assert.Empty(Directory.GetFileSystemEntries(folder.Path));
+    }
+
     /// <summary>A build that fails after it made its temporary file closes the file, so that no name is left.</summary>
     /// <remarks>
     /// Preconditions:

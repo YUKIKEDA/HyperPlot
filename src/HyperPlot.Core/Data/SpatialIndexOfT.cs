@@ -16,6 +16,9 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
     where TX : unmanaged, INumber<TX>
     where TY : unmanaged, INumber<TY>
 {
+    // The rows a unit writes between two looks at whether its build was stopped (design §3.4 "寿命").
+    private const int StopCheckRows = 256;
+
     private readonly Column<TX> _x;
     private readonly Column<TY> _y;
 
@@ -259,11 +262,11 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
 
                 if (copy.Width(copy.RegionCount - 1) == sizeof(uint))
                 {
-                    Write<TXRead, TXStored, TYRead, TYStored, uint>(copy, first - build.Start, xs, ys, codes);
+                    Write<TXRead, TXStored, TYRead, TYStored, uint>(build, copy, first - build.Start, xs, ys, codes);
                 }
                 else
                 {
-                    Write<TXRead, TXStored, TYRead, TYStored, long>(copy, first - build.Start, xs, ys, codes);
+                    Write<TXRead, TXStored, TYRead, TYStored, long>(build, copy, first - build.Start, xs, ys, codes);
                 }
 
                 break;
@@ -271,6 +274,7 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
     }
 
     private static void Write<TXRead, TXStored, TYRead, TYStored, TPosition>(
+        SpatialBuild build,
         SpatialCopy copy,
         long offset,
         ReadOnlySpan<TXRead> xs,
@@ -291,21 +295,32 @@ internal sealed class SpatialIndex<TX, TY> : SpatialIndex
 
         // The places are in the order of the finite points. A column that changes under the build may show more finite
         // points here than the unit had codes: the loop ends with the places.
-        for (var i = 0; i < xs.Length && taken < places.Length; i++)
+        for (var from = 0; from < xs.Length && taken < places.Length; from += StopCheckRows)
         {
-            var x = xs[i];
-            var y = ys[i];
-            if (!TXRead.IsFinite(x) || !TYRead.IsFinite(y))
+            // A stopped build publishes nothing and its copy is thrown away, so the rest of the unit is left unwritten:
+            // Dispose waits for this unit, and a write that touches a page of the copy for the first time is slow.
+            if (build.IsStopped)
             {
-                continue;
+                return;
             }
 
-            // A dropped point has a place outside every region.
-            var place = places[taken++];
-            if (xRegion.TryWrite(place, TXStored.CreateTruncating(x)))
+            var to = Math.Min(from + StopCheckRows, xs.Length);
+            for (var i = from; i < to && taken < places.Length; i++)
             {
-                yRegion.TryWrite(place, TYStored.CreateTruncating(y));
-                positions.TryWrite(place, TPosition.CreateTruncating(offset + i));
+                var x = xs[i];
+                var y = ys[i];
+                if (!TXRead.IsFinite(x) || !TYRead.IsFinite(y))
+                {
+                    continue;
+                }
+
+                // A dropped point has a place outside every region.
+                var place = places[taken++];
+                if (xRegion.TryWrite(place, TXStored.CreateTruncating(x)))
+                {
+                    yRegion.TryWrite(place, TYStored.CreateTruncating(y));
+                    positions.TryWrite(place, TPosition.CreateTruncating(offset + i));
+                }
             }
         }
     }

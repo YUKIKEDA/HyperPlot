@@ -201,6 +201,10 @@ internal abstract class SpatialIndex : IDisposable
                 return;
             }
 
+            // A unit that writes the copy sees the stop at its next check and writes no more: its first units take
+            // 0.6 to 3.4 s over 1e9 points (docs/benchmarks/c3a-spatial-index.md). Before the state, so that whoever
+            // reads Disposed finds the build stopped.
+            Volatile.Read(ref _build)?.Stop();
             Interlocked.Exchange(ref _state, Pack(state >> KindBits, Disposed));
         }
 
@@ -401,7 +405,7 @@ internal abstract class SpatialIndex : IDisposable
         build.Builder = new SpatialTableBuilder(SpatialLayout.Plane, _tuning, rows, (long)Math.Clamp(share, 1, int.MaxValue));
         if (rows > 0)
         {
-            build.Copy = _allocator.Allocate(rows, [_shape.XStored, _shape.YStored], _shape.Mapped, Input.TempFolder);
+            build.Copy = _allocator.Allocate(rows, [_shape.XStored, _shape.YStored], _shape.Mapped, Input.TempFolder, () => build.IsStopped);
             build.AllocateScratch(Input.XTransform is not null, Input.YTransform is not null);
         }
 
@@ -681,6 +685,9 @@ internal abstract class SpatialIndex : IDisposable
     private sealed class WorkItem(SpatialIndex index) : PoolWork
     {
         internal override void OnPoolDisposed() => index.OnPoolDisposed();
+
+        // The pool waits for the unit in flight: one that writes the copy stops at its next check, as for Dispose.
+        internal override void OnPoolDisposing() => Volatile.Read(ref index._build)?.Stop();
 
         private protected override int TryTake(bool requestedOnly) => index.TryTake(requestedOnly);
 

@@ -19,6 +19,13 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
 {
     private const int Alignment = 64;
 
+    // The bytes that posix_fallocate reserves between two looks at whether the build was stopped.
+    private const long ReservePiece = 1 << 20;
+
+    // EINTR and EOPNOTSUPP on the Linux targets of the engine (x64 and arm64).
+    private const int Interrupted = 4;
+    private const int NotSupported = 95;
+
     private readonly int[] _widths;
     private readonly nint[] _regions;
     private readonly FileStream? _stream;
@@ -49,7 +56,7 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
         }
     }
 
-    private SpatialCopy(long capacity, ReadOnlySpan<int> valueWidths, string folder, SpatialCopyAllocator.TempFileKind kind)
+    private SpatialCopy(long capacity, ReadOnlySpan<int> valueWidths, string folder, SpatialCopyAllocator.TempFileKind kind, Func<bool>? stopped)
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(capacity);
         if (kind == SpatialCopyAllocator.TempFileKind.None)
@@ -89,8 +96,8 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
             }
             else
             {
-                // On Linux the name is removed at once, so the file is gone when the process ends, and posix_fallocate
-                // reserves the blocks: .NET's PreallocationSize ignores a file system that cannot reserve.
+                // On Linux the name is removed at once, so the file is gone when the process ends, and fallocate or
+                // posix_fallocate reserves the blocks: .NET's PreallocationSize ignores a file system that cannot reserve.
                 var options = new FileStreamOptions
                 {
                     Mode = FileMode.CreateNew,
@@ -100,7 +107,7 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
                 };
                 _stream = new FileStream(path, options);
                 File.Delete(path);
-                Reserve(_stream, size);
+                Reserve(_stream, size, atOnce: kind == SpatialCopyAllocator.TempFileKind.Unlinked, stopped);
             }
 
             _file = MemoryMappedFile.CreateFromFile(
@@ -174,11 +181,21 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
     /// <param name="valueWidths">The bytes of one value of each axis.</param>
     /// <param name="folder">The folder of the file.</param>
     /// <param name="kind">How this operating system keeps the file from outliving the process.</param>
+    /// <param name="stopped">
+    /// Returns whether the build that asked for the copy was stopped, or <see langword="null"/> when nothing stops it.
+    /// Read between the pieces of a file that the file system reserves piece by piece.
+    /// </param>
     /// <returns>The copy. Its contents are not set.</returns>
     /// <exception cref="PlatformNotSupportedException"><paramref name="kind"/> is <see cref="SpatialCopyAllocator.TempFileKind.None"/>.</exception>
     /// <exception cref="IOException">The file cannot be created, or the volume has no room for it.</exception>
-    public static SpatialCopy Map(long capacity, ReadOnlySpan<int> valueWidths, string folder, SpatialCopyAllocator.TempFileKind kind) =>
-        new(capacity, valueWidths, folder, kind);
+    /// <exception cref="OperationCanceledException"><paramref name="stopped"/> returned <see langword="true"/> between two pieces.</exception>
+    public static SpatialCopy Map(
+        long capacity,
+        ReadOnlySpan<int> valueWidths,
+        string folder,
+        SpatialCopyAllocator.TempFileKind kind,
+        Func<bool>? stopped = null
+    ) => new(capacity, valueWidths, folder, kind, stopped);
 
     /// <summary>Returns the bytes of one element of a region.</summary>
     /// <param name="region">The region.</param>
@@ -294,19 +311,24 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
         }
     }
 
-    private static void Reserve(FileStream stream, long size)
+    // Reserves the blocks of the file. With atOnce, fallocate reserves them in one call where the file system can.
+    private static void Reserve(FileStream stream, long size, bool atOnce, Func<bool>? stopped)
     {
         var handle = stream.SafeFileHandle;
         var held = false;
         try
         {
             handle.DangerousAddRef(ref held);
+            var descriptor = (int)handle.DangerousGetHandle();
+            var error = atOnce ? ReserveAtOnce(descriptor, size) : NotSupported;
+            if (error == NotSupported)
+            {
+                error = ReserveInPieces(descriptor, size, stopped);
+            }
 
-            // posix_fallocate returns the error number and does not set errno (posix_fallocate(3)).
-            var error = PosixFallocate((int)handle.DangerousGetHandle(), 0, size);
             if (error != 0)
             {
-                throw new IOException($"posix_fallocate could not reserve {size} bytes for the copy of a spatial tile index: error {error}.", error);
+                throw new IOException($"The file system could not reserve {size} bytes for the copy of a spatial tile index: error {error}.", error);
             }
         }
         finally
@@ -317,6 +339,52 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
             }
         }
     }
+
+    // Returns 0, or the error number of fallocate(2): EOPNOTSUPP where the file system cannot reserve.
+    private static int ReserveAtOnce(int descriptor, long size)
+    {
+        while (true)
+        {
+            if (Fallocate(descriptor, 0, 0, size) == 0)
+            {
+                return 0;
+            }
+
+            var error = Marshal.GetLastPInvokeError();
+            if (error != Interrupted)
+            {
+                return error;
+            }
+        }
+    }
+
+    // Where the file system has no fallocate (9p, some network file systems), glibc's posix_fallocate writes one byte
+    // into every block: 12 GB took 17.4 min on 9p (docs/benchmarks/c3a-spatial-index.md). Piece by piece, so that a
+    // stopped build does not wait for the whole file. Returns 0 or the error number.
+    private static int ReserveInPieces(int descriptor, long size, Func<bool>? stopped)
+    {
+        for (long offset = 0; offset < size; offset += ReservePiece)
+        {
+            if (stopped?.Invoke() == true)
+            {
+                throw new OperationCanceledException("The build of the spatial tile index was stopped while it reserved its temporary file.");
+            }
+
+            // posix_fallocate returns the error number and does not set errno (posix_fallocate(3)).
+            var error = PosixFallocate(descriptor, offset, Math.Min(ReservePiece, size - offset));
+            if (error != 0)
+            {
+                return error;
+            }
+        }
+
+        return 0;
+    }
+
+    // int fallocate(int fd, int mode, off_t offset, off_t len): −1 with errno set on failure (fallocate(2)). Mode 0
+    // reserves the blocks and sets the size, as posix_fallocate does.
+    [LibraryImport("libc", EntryPoint = "fallocate", SetLastError = true)]
+    private static partial int Fallocate(int fd, int mode, long offset, long length);
 
     // int posix_fallocate(int fd, off_t offset, off_t len): off_t is 64 bits on the 64-bit Linux targets of the engine.
     [LibraryImport("libc", EntryPoint = "posix_fallocate")]

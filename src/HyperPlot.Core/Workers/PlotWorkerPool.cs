@@ -461,6 +461,18 @@ public sealed class PlotWorkerPool : IDisposable
         }
 
         _disposed = true;
+        PoolWork[] running;
+        lock (_gate)
+        {
+            running = _works;
+        }
+
+        // Before the join, which waits for the jobs in flight.
+        foreach (var work in running)
+        {
+            work.OnPoolDisposing();
+        }
+
         _wake.Set();
         foreach (var thread in _threads)
         {
