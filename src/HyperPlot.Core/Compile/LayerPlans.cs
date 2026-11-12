@@ -151,6 +151,7 @@ internal abstract class LayerPlan
             RuleLayerSpec rule => new RulePlan(rule, rows),
             RectLayerSpec rect => new RectPlan(rect, rows),
             SegmentLayerSpec segment => new SegmentPlan(segment, rows),
+            PointLayerSpec point => new PointPlan(point, rows),
             TextLayerSpec text => new TextPlan(text, rows),
             ImageLayerSpec image => new ImagePlan(image, build),
             _ => new CustomPlan((CustomLayerSpec)spec),
@@ -204,6 +205,9 @@ internal abstract class LayerPlan
             case TextLayerSpec t:
                 into[0] = ofX ? t.X : t.Y;
                 return 1;
+            case PointLayerSpec p:
+                into[0] = ofX ? p.X : p.Y;
+                return 1;
             case RuleLayerSpec r:
                 var channel = ofX ? r.X : r.Y;
                 into[0] = channel;
@@ -253,6 +257,7 @@ internal abstract class LayerPlan
             case ErrorBarLayerSpec:
             case RectLayerSpec:
             case SegmentLayerSpec:
+            case PointLayerSpec:
             case TextLayerSpec:
             case ImageLayerSpec:
             case CustomLayerSpec:
@@ -369,6 +374,9 @@ internal abstract class LayerPlan
                 break;
             case TextLayerSpec t:
                 ValidateText(data, t, index);
+                break;
+            case PointLayerSpec p:
+                ValidatePoint(p, index);
                 break;
             case ImageLayerSpec image:
                 ValidateImage(image, index);
@@ -761,10 +769,14 @@ internal abstract class LayerPlan
                     $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3 draws more as a density."
                 );
             }
+            else if (layer is PointLayerSpec)
+            {
+                // A number colors each point of a layer the CPU maps (design §5.5.2): its rows are counted with the layer's.
+            }
             else if (layer is not (BarLayerSpec or RectLayerSpec))
             {
                 throw new ArgumentException(
-                    $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} is a {column.KindName}; a {layer.GetType().Name} is colored by categories only (design §4.1). Numbers color the elements of bars and rects."
+                    $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} is a {column.KindName}; a {layer.GetType().Name} is colored by categories only (design §4.1). Numbers color the elements of bars, rects, and points."
                 );
             }
         }
@@ -777,6 +789,7 @@ internal abstract class LayerPlan
             RuleLayerSpec r => r.ColorBy is not null && r.Style.Color is not null ? "Style.Color and ColorBy" : null,
             SegmentLayerSpec s => s.ColorBy is not null && s.Style.Color is not null ? "Style.Color and ColorBy" : null,
             TextLayerSpec t => t.ColorBy is not null && t.Color is not null ? "Color and ColorBy" : null,
+            PointLayerSpec p => p.ColorBy is not null && p.Color is not null ? "Color and ColorBy" : null,
             ErrorBarLayerSpec e => e.ColorBy is not null && e.Style.Color is not null ? "Style.Color and ColorBy" : null,
             AreaLayerSpec a => Fill(a.Fill, a.FillBy, a.ColorBy) ?? Outline(a.Outline, a.ColorBy),
             BandLayerSpec b => Fill(b.Fill, b.FillBy, b.ColorBy) ?? Outline(b.Outline, b.ColorBy),
@@ -1337,6 +1350,34 @@ internal abstract class LayerPlan
         }
     }
 
+    /// <summary>Checks a point layer's members and its rows (design §5.5.2, row R3a).</summary>
+    private static void ValidatePoint(PointLayerSpec point, int index)
+    {
+        if (!PointBuilder.IsSize(point.Size))
+        {
+            throw new ArgumentException($"The Size of layer {index} is {point.Size}; a point's size is finite, above 0, and at most 512 DIPs.");
+        }
+
+        if (!(point.Opacity is >= 0 and <= 1))
+        {
+            throw new ArgumentException($"The Opacity of layer {index} is {point.Opacity}; an opacity is from 0 to 1.");
+        }
+
+        if (!Enum.IsDefined(point.Shape))
+        {
+            throw new ArgumentException($"The Shape of layer {index} is {(int)point.Shape}; a shape is a named MarkerShape value.");
+        }
+
+        // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2).
+        var rows = point.X.Column.Length;
+        if (rows > MaxElements)
+        {
+            throw new InvalidOperationException(
+                $"Layer {index} has {rows} points; a point layer of more than {MaxElements} rows is drawn from a spatial index (design §5.5.2), which the second part of row R3a adds (Issue #438)."
+            );
+        }
+    }
+
     private static void CheckCount(long count, int layer)
     {
         if (count > MaxElements)
@@ -1530,6 +1571,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     private double[] _values = new double[64];
     private double[] _mapped = new double[64];
     private Vector2[] _points = new Vector2[64];
+    private Color[] _markerColors = [];
     private ColumnTrapezoid[] _trapezoids = new ColumnTrapezoid[64];
     private Vector2[] _polarPoints = new Vector2[256];
     private SectorTrapezoid[] _sectors = new SectorTrapezoid[64];
@@ -1645,6 +1687,52 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
         }
 
         list.DrawPolyline(points, guides.Scaled(style));
+    }
+
+    /// <summary>
+    /// Records markers at along × across points, moved in place to the target's points (swapped when flipped, on the circle
+    /// when polar), with the style's DIPs scaled. A point that does not map, or that falls in a polar hole, is NaN and draws
+    /// nothing. The caller does not use the points afterwards.
+    /// </summary>
+    public void DrawMarkers(Span<Vector2> points, ReadOnlySpan<Color> colors, in MarkerStyle style)
+    {
+        if (Polar)
+        {
+            foreach (ref var point in points)
+            {
+                var mapped = PolarMap.Map(point.X, point.Y);
+                point = new Vector2((float)mapped.X, (float)mapped.Y);
+            }
+        }
+        else if (Flipped)
+        {
+            foreach (ref var point in points)
+            {
+                point = new Vector2(point.Y, point.X);
+            }
+        }
+
+        // A cross's lines are as wide as an annotation's: a DIP, in whole pixels (design §5.1).
+        var scaled = style with
+        {
+            Size = style.Size * Scale,
+            Stroke = MathF.Max(1, MathF.Round(Scale)),
+        };
+        if (colors.IsEmpty)
+        {
+            list.DrawMarkers(points, scaled);
+        }
+        else
+        {
+            list.DrawMarkers(points, colors, scaled);
+        }
+    }
+
+    /// <summary>Returns a buffer of colors kept from frame to frame, for the markers of one layer.</summary>
+    public Span<Color> MarkerColors(int length)
+    {
+        Ensure(ref _markerColors, length);
+        return _markerColors.AsSpan(0, length);
     }
 
     /// <summary>Records a rectangle between two x pixels and two y pixels, in either order; nothing when one is not finite.</summary>

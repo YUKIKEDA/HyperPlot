@@ -318,6 +318,7 @@ internal sealed class FacetData : IDisposable, ISourceRows
             RectLayerSpec r => r with { XMin = M(r.XMin), XMax = M(r.XMax), YMin = M(r.YMin), YMax = M(r.YMax) },
             SegmentLayerSpec s => s with { X = M(s.X), Y = M(s.Y), XEnd = M(s.XEnd), YEnd = M(s.YEnd) },
             TextLayerSpec t => t with { X = M(t.X), Y = M(t.Y), Text = M(t.Text) },
+            PointLayerSpec p => p with { X = M(p.X), Y = M(p.Y) },
             _ => colored,
         };
     }

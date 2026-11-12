@@ -232,3 +232,27 @@ public sealed record TextLayerSpec : LayerSpec
     /// <summary>Gets the label's rotation.</summary>
     public TextRotation Rotation { get; init; }
 }
+
+/// <summary>
+/// Points at the values of two columns, each drawn as a marker (design §4.1, §5.5.2, row R3a): a scatter plot's layer.
+/// </summary>
+public sealed record PointLayerSpec : LayerSpec
+{
+    /// <summary>Gets the column of the points' x.</summary>
+    public required ColumnRef X { get; init; }
+
+    /// <summary>Gets the column of the points' y.</summary>
+    public required ColumnRef Y { get; init; }
+
+    /// <summary>Gets the points' color, or null for the layer's series color (design §4.1).</summary>
+    public Color? Color { get; init; }
+
+    /// <summary>Gets the diameter of a disc, the side of a square, or the span of a cross, in DIPs: above 0 and at most 512.</summary>
+    public float Size { get; init; } = 6;
+
+    /// <summary>Gets the points' shape.</summary>
+    public MarkerShape Shape { get; init; } = MarkerShape.Circle;
+
+    /// <summary>Gets the opacity, from 0 to 1, which multiplies the alpha of each point's color.</summary>
+    public double Opacity { get; init; } = 1;
+}

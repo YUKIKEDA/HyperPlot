@@ -479,6 +479,63 @@ internal ref struct HitScan
         }
     }
 
+    /// <summary>
+    /// Answers for a layer of points from the pixels its last recording mapped (design §6.3, row R3a):
+    /// <see cref="HitMode.X"/> takes, of the points within the radius along, the nearest along, and of those as near the
+    /// nearest across; <see cref="HitMode.XY"/> the point whose center is nearest among those within the radius and the
+    /// marker's own. Of equal distances the later row stays: it is drawn over. The x and y are the point's, in data units.
+    /// </summary>
+    public void Points(ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, long start, long end, Column x, Column y, double markerRadius)
+    {
+        if (_summing)
+        {
+            return;
+        }
+
+        // Plain comparisons: 131,072 points a call (design §9, P-5). A point that does not map (NaN) fails each test.
+        var (along, across, xMode) = (Along, Across, Mode == HitMode.X);
+        var reach = xMode ? (double)Radius : Radius + markerRadius;
+        var (bestAlong, bestAcross, bestRow) = (double.PositiveInfinity, double.PositiveInfinity, -1L);
+        var best = reach * reach;
+        var last = (int)Math.Min(end, Math.Min(xs.Length, ys.Length));
+        for (var i = (int)start; i < last; i++)
+        {
+            var dx = Math.Abs(xs[i] - along);
+            if (!(dx <= reach))
+            {
+                continue;
+            }
+
+            var dy = Math.Abs(ys[i] - across);
+            if (!(dy >= 0))
+            {
+                continue;
+            }
+
+            if (xMode)
+            {
+                if (dx < bestAlong || (dx == bestAlong && dy <= bestAcross))
+                {
+                    (bestAlong, bestAcross, bestRow) = (dx, dy, i);
+                }
+            }
+            else
+            {
+                var squared = (dx * dx) + (dy * dy);
+                if (squared <= best)
+                {
+                    (best, bestAlong, bestAcross, bestRow) = (squared, dx, dy, i);
+                }
+            }
+        }
+
+        if (bestRow >= 0)
+        {
+            var distance = Math.Sqrt((bestAlong * bestAlong) + (bestAcross * bestAcross));
+            Add(0, bestRow, ValueOf(X, x, bestRow), y.DifferenceAt(bestRow, 0), distance, derived: false, provisional: false);
+        }
+    }
+
     /// <summary>Returns the pixel distance from the cursor to a box given along and across: 0 inside it.</summary>
     public readonly double Box(double left, double right, double low, double high)
     {

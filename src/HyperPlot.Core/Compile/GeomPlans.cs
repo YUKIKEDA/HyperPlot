@@ -1050,3 +1050,84 @@ internal sealed class CustomPlan : LayerPlan
         }
     }
 }
+
+/// <summary>
+/// Points on the CPU path (design §5.5.2, row R3a): every point mapped in doubles each recording and recorded as a marker,
+/// for a layer of at most 131,072 rows.
+/// </summary>
+internal sealed class PointPlan : LayerPlan
+{
+    // The points' pixels of the last recording, along and across, kept for the hit test (design §6.3).
+    private double[] _x = [];
+    private double[] _y = [];
+    private long _mapped;
+    private double _radius;
+
+    public PointPlan(PointLayerSpec spec, RowRange rows)
+        : base(spec, rows) => SetColumns(AndColors(spec.X.Column, spec.Y.Column));
+
+    /// <summary>Answers from the pixels the last recording mapped: every point, up to 131,072 (design §6.3).</summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        var end = Math.Min(Rows.EndIn(_mapped), _mapped);
+        if (end > Rows.Start)
+        {
+            scan.Points(_x, _y, Rows.Start, end, Columns[0], Columns[1], _radius);
+        }
+    }
+
+    internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
+
+    public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
+    {
+        var point = (PointLayerSpec)Spec;
+        var channel = ofX ? point.X : point.Y;
+        AddColumn(sink, channel.Column, data.GetName(channel.Index));
+    }
+
+    public override void Record(RecordContext context)
+    {
+        var point = (PointLayerSpec)Spec;
+        var xs = context.ElementPixelsInto(point.X.Column, ofX: true, ref _x);
+        var ys = context.ElementPixelsInto(point.Y.Column, ofX: false, ref _y);
+        _mapped = Math.Min(xs.Length, ys.Length);
+        _radius = point.Size * context.Scale / 2;
+        var start = (int)Rows.Start;
+        var end = (int)Math.Min(Rows.EndIn(_mapped), _mapped);
+        if (end <= start)
+        {
+            return;
+        }
+
+        var centers = context.Points(end - start);
+        var style = new MarkerStyle(Faded(point.Color ?? SeriesColor, point.Opacity), point.Size, point.Shape);
+        if (ElementColors is not { } values)
+        {
+            // A point that does not map is NaN, which the list passes.
+            for (var i = start; i < end; i++)
+            {
+                centers[i - start] = new Vector2((float)xs[i], (float)ys[i]);
+            }
+
+            context.DrawMarkers(centers, default, style);
+            return;
+        }
+
+        // A point whose color value is NaN draws nothing (design §4.1): it is left out.
+        var colors = context.MarkerColors(end - start);
+        var count = 0;
+        for (var i = start; i < end; i++)
+        {
+            if (ElementColor(values, i) is { } color)
+            {
+                centers[count] = new Vector2((float)xs[i], (float)ys[i]);
+                colors[count++] = Faded(color, point.Opacity);
+            }
+        }
+
+        context.DrawMarkers(centers[..count], colors[..count], style);
+    }
+
+    /// <summary>Returns a color with its alpha multiplied by an opacity.</summary>
+    private static Color Faded(Color color, double opacity) => opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * opacity) };
+}

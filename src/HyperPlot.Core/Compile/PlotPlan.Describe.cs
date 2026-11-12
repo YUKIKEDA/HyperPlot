@@ -85,6 +85,7 @@ internal sealed partial class PlotPlan
             RuleLayerSpec => "rule",
             RectLayerSpec => "rectangle",
             SegmentLayerSpec => "segment",
+            PointLayerSpec => "point",
             TextLayerSpec => "text",
             ImageLayerSpec => "image",
             _ => "custom",
