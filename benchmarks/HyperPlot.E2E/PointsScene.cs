@@ -163,6 +163,14 @@ internal static class PointsScene
         Console.WriteLine(
             string.Create(CultureInfo.InvariantCulture, $"allocated after warm-up: {allocated.Skip(Warmup).Sum()} bytes over {frames} frames")
         );
+
+        // The script repeats every 300 frames: the last 300 show views that were drawn before, with no new tick label.
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"allocated in the last 300 frames: {allocated.TakeLast(300).Sum()} bytes; frames that allocated: {allocated.Skip(Warmup).Count(b => b > 0)}, the last at frame {Array.FindLastIndex(allocated, b => b > 0)}"
+            )
+        );
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
