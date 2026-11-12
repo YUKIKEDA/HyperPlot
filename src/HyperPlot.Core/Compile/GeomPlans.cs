@@ -1099,7 +1099,7 @@ internal sealed class PointPlan : LayerPlan
             return;
         }
 
-        var centers = context.Points(end - start);
+        var centers = context.Points(end - start)[..(end - start)];
         var style = new MarkerStyle(Faded(point.Color ?? SeriesColor, point.Opacity), point.Size, point.Shape);
         if (ElementColors is not { } values)
         {
