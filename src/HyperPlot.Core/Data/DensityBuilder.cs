@@ -172,7 +172,7 @@ internal sealed unsafe class DensityBuilder : IDisposable
     /// <returns>The unit.</returns>
     public long GroupStart(int group) => _groupStarts[group];
 
-    /// <summary>Counts one unit into the work tile of its group. Neither locks nor allocates. <see cref="EndUnit"/> follows it.</summary>
+    /// <summary>Runs one unit, and packs its tile when it is the tile's last.</summary>
     /// <param name="group">The group of the unit, which the calling worker has.</param>
     /// <param name="unit">The unit.</param>
     /// <param name="build">The build, whose stop ends a unit that reads the copy.</param>
@@ -191,17 +191,10 @@ internal sealed unsafe class DensityBuilder : IDisposable
         {
             Count(rows, child, work.First, work.Count, cell.Level + DensityTiles.BinLevels, bins, _codes[group], build);
         }
-    }
 
-    /// <summary>Packs the tile of a unit when the unit is the tile's last. Allocates the tile's block.</summary>
-    /// <param name="group">The group of the unit, which the calling worker has.</param>
-    /// <param name="unit">The unit, which <see cref="RunUnit"/> has counted.</param>
-    public void EndUnit(int group, long unit)
-    {
-        ref readonly var work = ref _units[unit];
         if (work.Last)
         {
-            Pack(work.Tile, _work[group]);
+            Pack(work.Tile, bins);
         }
     }
 

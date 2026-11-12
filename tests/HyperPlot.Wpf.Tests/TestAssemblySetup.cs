@@ -6,9 +6,9 @@ namespace HyperPlot.Wpf.Tests;
 internal static class TestAssemblySetup
 {
     /// <summary>
-    /// Keeps the background work of every worker pool at the normal priority: the tests run beside the workers on the few
-    /// processors of a CI runner, where a unit at a lower priority would be starved (design §10, row S4).
+    /// Keeps every worker pool from resting: the tests run side by side and fill the few processors of a CI runner,
+    /// where workers that rested would slow the tests that wait for a worker (design §10, row S4).
     /// </summary>
     [ModuleInitializer]
-    internal static void Initialize() => PlotWorkerPool.DefaultPriority = ThreadPriority.Normal;
+    internal static void Initialize() => PlotWorkerPool.DefaultYields = false;
 }

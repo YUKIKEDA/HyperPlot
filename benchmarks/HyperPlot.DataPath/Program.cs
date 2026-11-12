@@ -14,7 +14,7 @@ using HyperPlot.DataPath;
 //   HyperPlot.DataPath allocate --file - [--points N] [--temp /mnt/c/...]
 //   HyperPlot.DataPath touch --file - [--points N] [--temp D:\...]
 //   HyperPlot.DataPath burn [--seconds N]
-//   HyperPlot.DataPath yield --file ... [--priority normal|below|lowest] [--workers 8] [--competitor] [--collects] [--seconds N]
+//   HyperPlot.DataPath yield --file ... [--yields on|off] [--most-rest N] [--workers 8] [--competitor] [--collects] [--seconds N]
 // The data files live outside the repository and are deleted after the run. The spatial scenes read <file>.x and <file>.y.
 var options = Options.Parse(args);
 using var process = Process.GetCurrentProcess();

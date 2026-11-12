@@ -111,16 +111,8 @@ internal sealed class CategoryExtremesWork<T> : PoolWork
         var max = ArrayPool<double>.Shared.Rent(count);
         var minRows = ArrayPool<long>.Shared.Rent(count);
         var maxRows = ArrayPool<long>.Shared.Rent(count);
-
-        // The loop over the chunk neither locks nor allocates; the merge, which locks, runs at the normal priority again.
-        var priority = PlotWorkerPool.Lower();
         try
         {
-            if (IsDisposed)
-            {
-                priority.Restore();
-            }
-
             var low = min.AsSpan(0, count);
             var high = max.AsSpan(0, count);
             var lowRow = minRows.AsSpan(0, count);
@@ -157,17 +149,14 @@ internal sealed class CategoryExtremesWork<T> : PoolWork
                 }
             }
 
-            priority.Restore();
             _result.Merge(low, high, lowRow, highRow);
         }
         catch (Exception exception)
         {
-            priority.Restore();
             _result.Source.TrySetException(exception);
         }
         finally
         {
-            priority.Restore();
             ArrayPool<double>.Shared.Return(min);
             ArrayPool<double>.Shared.Return(max);
             ArrayPool<long>.Shared.Return(minRows);

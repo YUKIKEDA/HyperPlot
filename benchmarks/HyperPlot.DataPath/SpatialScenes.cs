@@ -113,9 +113,9 @@ internal static class SpatialScenes
     }
 
     /// <summary>
-    /// Builds the index over the files as they are, at the normal priority of the process, with the pool's background
-    /// priority from <see cref="Options.Priority"/>, and reports what the build leaves to others (design §9 "CPU を譲る
-    /// こと", requirement N-12): the speed of a competitor on every logical processor against its speed before the
+    /// Builds the index over the files as they are, at the normal priority of the process, with a pool that yields the
+    /// CPU or not (<see cref="Options.Yields"/>, and <see cref="Options.MostRest"/> for its greatest level), and reports
+    /// what the build leaves to others (design §9 "CPU を譲ること", requirement N-12): the speed of a competitor on every logical processor against its speed before the
     /// build (<see cref="Options.Competitor"/>), the frames' Acquire, Count, and Release each 16.7 ms, the processors the
     /// build took, and the time of GC.Collect from another thread (<see cref="Options.Collects"/>). With
     /// <see cref="Options.Seconds"/> the build is disposed of after that many seconds, and the units that ended and the
@@ -123,18 +123,12 @@ internal static class SpatialScenes
     /// </summary>
     internal static void Yield(Options options)
     {
-        var priority = options.Priority switch
-        {
-            "normal" => ThreadPriority.Normal,
-            "lowest" => ThreadPriority.Lowest,
-            "below" => ThreadPriority.BelowNormal,
-            "rest" => ThreadPriority.Normal,
-            _ => throw new ArgumentException($"Unknown priority '{options.Priority}': write normal, below, lowest, or rest."),
-        };
-        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), priority)
-        {
-            Yields = options.Priority == "rest",
-        };
+        var workers = options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1);
+        var resting = WorkerYieldTuning.Default;
+        var meter = options.Yields ? CpuMeter.TryCreate(workers) : null;
+        using var pool = meter is null
+            ? new PlotWorkerPool(workers, yields: false)
+            : new PlotWorkerPool(workers, meter, options.MostRest > 0 ? resting with { MostRest = options.MostRest } : resting);
         var (xPath, yPath) = PointFiles.Paths(options.File);
         using var x = Column.MapFile<float>(xPath);
         using var y = Column.MapFile<float>(yPath);
@@ -206,10 +200,12 @@ internal static class SpatialScenes
             copies.WaitClosed();
 
             var frames = times.ToArray();
+            var means = pool.Yield?.Means ?? default;
             Array.Sort(frames);
             (string Key, object Value)[] figures =
             [
-                ("priority", options.Priority),
+                ("yields", pool.Yield is not null),
+                ("most_rest", options.MostRest),
                 ("workers", pool.ThreadCount),
                 ("competitor", options.Competitor),
                 ("completed", completed),
@@ -231,12 +227,13 @@ internal static class SpatialScenes
                 ("collects", collects.Count),
                 ("collect_min_ms", collects.Count > 0 ? collects.Min() : 0),
                 ("collect_max_ms", collects.Count > 0 ? collects.Max() : 0),
-                ("samples", pool.Samples.Count),
-                ("idle_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Idle) : 0),
-                ("idle_min", pool.Samples.Count > 0 ? pool.Samples.Min(sample => sample.Idle) : 0),
-                ("others_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Others) : 0),
-                ("workers_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Workers) : 0),
-                ("rest_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Resting) : 0),
+                ("samples", means.Samples),
+                ("idle_share_mean", means.IdleShare),
+                ("other_cores_mean", means.OtherCores),
+                ("worker_cores_mean", means.WorkerCores),
+                ("level_mean", means.Level),
+                ("rests", pool.Yield?.RestCount ?? 0),
+                ("rest_s", pool.Yield?.RestTime.TotalSeconds ?? 0),
                 ("competitor_alone_per_s", baseline),
                 ("competitor_beside_per_s", during),
                 ("competitor_percent", baseline > 0 ? 100 * during / baseline : 0),

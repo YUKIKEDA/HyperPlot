@@ -80,29 +80,6 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
         return stats;
     }
 
-    /// <summary>
-    /// Returns a chunk's statistics as <see cref="GetStats(int)"/> does, for a worker that computes at a lower priority:
-    /// storing a new result allocates, so the worker's priority is set back before the store (design §8.1 "下げる範囲").
-    /// </summary>
-    /// <param name="chunkIndex">The chunk, from 0 to <see cref="Column.ChunkCount"/> - 1.</param>
-    /// <param name="low">The lower priority of the calling worker, which is given up when a result is stored.</param>
-    /// <returns>The statistics.</returns>
-    internal ChunkStats<T> GetStats(int chunkIndex, ref PlotWorkerPool.LowPriority low)
-    {
-        CheckChunkIndex(chunkIndex);
-        var generation = Volatile.Read(ref _generations[chunkIndex]);
-        var entry = Volatile.Read(ref _stats[chunkIndex]);
-        if (entry is not null && entry.Generation == generation)
-        {
-            return entry.Stats;
-        }
-
-        var stats = ChunkStatsKernel.Compute(_storage.GetChunk(chunkIndex, ChunkLengthOf(chunkIndex)));
-        low.Restore();
-        Volatile.Write(ref _stats[chunkIndex], new StatsEntry(generation, stats));
-        return stats;
-    }
-
     /// <summary>Returns the statistics of the whole column, combined from every chunk's.</summary>
     /// <returns>The statistics. For an empty column, <see cref="ChunkStats{T}.Count"/> is 0.</returns>
     public ChunkStats<T> GetTotalStats()

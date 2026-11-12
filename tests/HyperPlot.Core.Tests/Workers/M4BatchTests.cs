@@ -113,7 +113,7 @@ public sealed class M4BatchTests
     [InlineData(false)]
     public void Extract_FirstWaitOnTheLock_IsMadeByTheWarmUp(bool warm)
     {
-        using var pool = new PlotWorkerPool(1, warm);
+        using var pool = PlotWorkerPool.CreateWithGate(1, warm);
         using var fixture = new Fixture(pool, 4);
         var batch = fixture.Batch(4);
         M4Batch[] batches = [batch];

@@ -5,8 +5,8 @@ namespace HyperPlot.Tests;
 /// <summary>Settings the test assembly makes before any test runs.</summary>
 internal static class TestAssemblySetup
 {
-    /// <summary>Gets the priority of background work that the engine ships with, read before the tests' own was set.</summary>
-    internal static ThreadPriority ShippedPriority { get; private set; }
+    /// <summary>Gets a value indicating whether the engine ships with pools that yield the CPU, read before the tests' own was set.</summary>
+    internal static bool ShippedYields { get; private set; }
 
     /// <summary>
     /// Has each new worker pool make its lock's wait event when it is made (Issue #304), so that the Zero-Alloc tests do not
@@ -17,9 +17,9 @@ internal static class TestAssemblySetup
     {
         PlotWorkerPool.WarmsGate = true;
 
-        // The tests run beside the workers on the few processors of a CI runner: a unit at a lower priority would be
-        // starved there, and a test that waits for a worker would time out (design §10, row S4).
-        ShippedPriority = PlotWorkerPool.DefaultPriority;
-        PlotWorkerPool.DefaultPriority = ThreadPriority.Normal;
+        // The tests run side by side and fill the few processors of a CI runner: workers that rested there would slow
+        // the tests that wait for a worker (design §10, row S4).
+        ShippedYields = PlotWorkerPool.DefaultYields;
+        PlotWorkerPool.DefaultYields = false;
     }
 }
