@@ -37,6 +37,8 @@ if (fxc is null)
     ("LineMask.hlsl", "PieceMaskPS", "ps_5_0"),
     ("LineMask.hlsl", "PieceVS", "vs_5_0"),
     ("LineMask.hlsl", "SegmentMaskPS", "ps_5_0"),
+    ("Markers.hlsl", "MarkerPS", "ps_5_0"),
+    ("Markers.hlsl", "MarkerVS", "vs_5_0"),
     ("Rect.hlsl", "RectPS", "ps_5_0"),
     ("Rect.hlsl", "RectVS", "vs_5_0"),
     ("Sectors.hlsl", "SectorBoundsVS", "vs_5_0"),

@@ -29,6 +29,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly D3D11GlyphPipeline _glyphs;
     private readonly D3D11RectPipeline _rects;
     private readonly D3D11ColumnPipeline _columns;
+    private readonly D3D11MarkerPipeline _markers;
     private readonly D3D11SectorPipeline _sectors;
     private readonly D3D11ImagePipeline _images;
     private readonly DWriteTextBackend? _directWrite;
@@ -50,6 +51,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _glyphs = new D3D11GlyphPipeline(this);
         _rects = new D3D11RectPipeline(this);
         _columns = new D3D11ColumnPipeline(this);
+        _markers = new D3D11MarkerPipeline(this);
         _sectors = new D3D11SectorPipeline(this);
         _images = new D3D11ImagePipeline(this);
         _timer = new D3D11FrameTimer(this);
@@ -128,6 +130,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     internal D3D11RectPipeline Rects => _rects;
 
     internal D3D11ColumnPipeline Columns => _columns;
+
+    /// <summary>Gets the pipeline of the markers, for the tests of its buffer.</summary>
+    internal D3D11MarkerPipeline Markers => _markers;
 
     /// <summary>Gets the polar trapezoids' pipeline, for the tests of its buffer.</summary>
     internal D3D11SectorPipeline Sectors => _sectors;
@@ -225,6 +230,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _lines.Upload(list);
         _rects.Upload(list.Rects);
         _columns.Upload(list.Columns);
+        _markers.Upload(list.Markers);
         _sectors.Upload(list.Sectors);
         var polylines = list.Polylines;
         var sectorCalls = list.SectorCalls;
@@ -252,6 +258,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     case DrawStepKind.Images:
                         _images.Bind(own);
                         break;
+                    case DrawStepKind.Markers:
+                        _markers.Bind(own);
+                        break;
                     default:
                         _columns.Bind(own);
                         break;
@@ -276,6 +285,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     break;
                 case DrawStepKind.Images:
                     _images.Draw(own, step);
+                    break;
+                case DrawStepKind.Markers:
+                    _markers.Draw(own, step);
                     break;
                 default:
                     _columns.Draw(own, step);
@@ -329,6 +341,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                 break;
             case DrawStepKind.Images:
                 _images.Unbind();
+                break;
+            case DrawStepKind.Markers:
+                _markers.Unbind();
                 break;
             default:
                 break;
@@ -496,6 +511,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             _glyphs.Make();
             _rects.Make();
             _columns.Make();
+            _markers.Make();
             _sectors.Make();
             _images.Make();
             _timer.Make();
@@ -610,6 +626,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _images.Release();
         _sectors.Release();
         _columns.Release();
+        _markers.Release();
         _rects.Release();
         _glyphs.Release();
         _lines.Release();

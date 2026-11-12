@@ -160,6 +160,19 @@ public sealed class TextEngine
                 // Each call is its own shape (design §5.1): never joined with the call before.
                 AddStep(new DrawStep(DrawStepKind.Sectors, command.Index, 1, 0, list.SectorCalls[command.Index].Clip));
             }
+            else if (command.Kind == RenderCommandKind.Markers)
+            {
+                // Calls that follow one another under one clip are one step: their records are in order (row R3a).
+                var call = list.MarkerCalls[command.Index];
+                if (_stepCount > 0 && _steps[_stepCount - 1] is { Kind: DrawStepKind.Markers } last && last.Clip == call.Clip)
+                {
+                    _steps[_stepCount - 1] = last with { Count = last.Count + call.Count };
+                }
+                else
+                {
+                    AddStep(new DrawStep(DrawStepKind.Markers, call.Start, call.Count, 0, call.Clip));
+                }
+            }
             else if (command.Kind == RenderCommandKind.Image)
             {
                 // Tiles of one page under one clip are one step (design §5.3, row G9).
@@ -502,6 +515,9 @@ internal enum DrawStepKind : byte
 
     /// <summary>Image tiles of one page of the residency cache under one clip: a range of <see cref="RenderList.Images"/> (row G9).</summary>
     Images,
+
+    /// <summary>Markers under one clip: a range of <see cref="RenderList.Markers"/> (row R3a).</summary>
+    Markers,
 }
 
 /// <summary>One step of a backend's <c>Draw</c>, in the order of the list's commands.</summary>
