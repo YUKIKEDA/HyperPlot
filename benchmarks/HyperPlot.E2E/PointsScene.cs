@@ -10,19 +10,19 @@ namespace HyperPlot.E2E;
 /// The scene of the raw points (design §9 "散布の生の点（行 R3a）", requirement P-4): a <see cref="PlotEngine"/> over one
 /// point layer at 1,920 × 1,080 on the hardware, zoomed and panned by a script, a frame every 16.7 ms or more. Each frame's
 /// CPU time (the view's change and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and its allocations; then the time
-/// of a hit test at seeded pixels in both modes. In the first part of row R3a a layer has at most 131,072 rows (the CPU path).
+/// of a hit test at seeded pixels in both modes. A layer of at most 131,072 rows takes the CPU path, and a larger one the index path.
 /// </summary>
 internal static class PointsScene
 {
     private const int Warmup = 30;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", and the frames measured (600 by default).</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), and the categories the layer is split by (0 by default).</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         if (args.Length < 4)
         {
-            Console.Error.WriteLine("points <count> <diameter> <opacity> <uniform|cluster> [frames]");
+            Console.Error.WriteLine("points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories]");
             return 2;
         }
 
@@ -31,6 +31,7 @@ internal static class PointsScene
         var opacity = double.Parse(args[2], CultureInfo.InvariantCulture);
         var cluster = args[3] == "cluster";
         var frames = args.Length > 4 ? int.Parse(args[4], CultureInfo.InvariantCulture) : 600;
+        var categories = args.Length > 5 ? int.Parse(args[5], CultureInfo.InvariantCulture) : 0;
 
         // Seeded: uniform over [0, 100]², or a normal blob of a tenth of the side around the middle.
         var random = new Random(1);
@@ -51,21 +52,49 @@ internal static class PointsScene
 
         using var x = Column.Wrap(xs);
         using var y = Column.Wrap(ys);
-        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        var builder = DataTable.Create().Add("x", x).Add("y", y);
+        if (categories > 0)
+        {
+            var names = Enumerable.Range(0, categories).Select(i => $"k{i:D3}").ToArray();
+            builder = builder.Add("c", Column.Categorical(Enumerable.Range(0, count).Select(i => (string?)names[i % categories]).ToArray()));
+        }
+
+        var table = builder.Build();
         var plot = Plot.Create(table)
-            .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Size(diameter).Opacity(opacity))
+            .Point(
+                table.Col<double>("x"),
+                table.Col<double>("y"),
+                p => _ = categories > 0 ? p.Size(diameter).Opacity(opacity).ColorBy(table.Cat("c")) : p.Size(diameter).Opacity(opacity)
+            )
             .ScaleX(Scale.Linear().WithDomain(0, 100))
             .ScaleY(Scale.Linear().WithDomain(0, 100))
             .Build();
         using var backend = D3D11Backend.Create();
         using var engine = new PlotEngine(backend, 1920, 1080);
+
+        // The first display: frames until the index is built and every page the whole view draws is on the GPU.
+        var shown = Stopwatch.StartNew();
         engine.SetPlot(plot);
         engine.RenderFrame();
+        var (waited, firstRuns, pageFrames) = (0, -1.0, 0);
         while (engine.IsProvisional)
         {
-            Thread.Sleep(5);
+            Thread.Sleep(1);
             engine.RenderFrame();
+            waited++;
+            if (backend.Images.Points.PagesInUse > 0)
+            {
+                firstRuns = firstRuns < 0 ? shown.Elapsed.TotalSeconds : firstRuns;
+                pageFrames++;
+            }
         }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"first display: {shown.Elapsed.TotalSeconds:F3} s over {waited} frames; first pages at {firstRuns:F3} s; frames that sent pages: {pageFrames}; pages on the GPU: {backend.Images.Points.PagesInUse} ({backend.Images.Points.BytesInUse} bytes)"
+            )
+        );
 
         // The script: zoom in to a tenth of the side around a point that drifts, and out again, 300 frames a round. The
         // views are made before the frames: a view is an object of the scene's own.
