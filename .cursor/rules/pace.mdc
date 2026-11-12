@@ -50,6 +50,7 @@ A benchmark, a NativeAOT publish, a profile, or the generation of a billion-poin
 - Run it in the background, never in the foreground with a wait loop.
 - Run it on a copy of the tree (`git worktree add` for a committed state) with its own `bin/` and `obj/`. Two worktrees never share build output.
 - While it runs, do what does not depend on its result. Name that work before starting the run.
+- A PR's own CI is such a run. Watch it in the background and go on with the next work (the next row's facts, the Grill round) in the same turn; read its result before reporting it. After the chore PR of PR #181's retrospective the agent waited on its CI in the foreground before the Grill of row G8, and the owner called it wasted time.
 - Runs that need a quiet machine (compared benchmarks) do not overlap each other.
 
 A CI run started for an experiment (`gh workflow run`, `gh run rerun`) is a long run too: while it runs, go on with work that does not need its result, on another branch. Do not wait on rounds of reruns with the next row's research undone.
