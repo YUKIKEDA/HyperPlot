@@ -27,6 +27,8 @@ public sealed class RenderList
     private (int Page, ClipRect Clip)[] _imageCalls = new (int, ClipRect)[4];
     private MarkerInstance[] _markers = new MarkerInstance[16];
     private MarkerCall[] _markerCalls = new MarkerCall[4];
+    private ResidentMarkerRun[] _residentRuns = new ResidentMarkerRun[4];
+    private ResidentCellRecord[] _residentCells = new ResidentCellRecord[64];
     private int _polylineCount;
     private int _segmentCount;
     private int _pieceCount;
@@ -38,6 +40,8 @@ public sealed class RenderList
     private int _imageCount;
     private int _markerCount;
     private int _markerCallCount;
+    private int _residentRunCount;
+    private int _residentCellCount;
     private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
@@ -83,6 +87,12 @@ public sealed class RenderList
     /// <summary>Gets the calls of <see cref="DrawMarkers(ReadOnlySpan{Vector2}, in MarkerStyle)"/>, in order: each a range of <see cref="Markers"/> under one clip.</summary>
     internal ReadOnlySpan<MarkerCall> MarkerCalls => _markerCalls.AsSpan(0, _markerCallCount);
 
+    /// <summary>Gets the recorded runs of resident markers, in order (row R3a).</summary>
+    internal ReadOnlySpan<ResidentMarkerRun> ResidentRuns => _residentRuns.AsSpan(0, _residentRunCount);
+
+    /// <summary>Gets the cells' records of the frame's resident markers: each run names where its cells begin.</summary>
+    internal ReadOnlySpan<ResidentCellRecord> ResidentCells => _residentCells.AsSpan(0, _residentCellCount);
+
     /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, a sector call, an image tile, or a call of markers.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
@@ -101,8 +111,46 @@ public sealed class RenderList
         _imageCount = 0;
         _markerCount = 0;
         _markerCallCount = 0;
+        _residentRunCount = 0;
+        _residentCellCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
+    }
+
+    /// <summary>
+    /// Makes room for the cells' records of one part's resident markers (design §5.5.2 "GPU での写し方と精度") and returns
+    /// where they begin: the caller fills them before it records the part's runs.
+    /// </summary>
+    /// <param name="count">The number of cells.</param>
+    /// <param name="cells">The records to fill.</param>
+    /// <returns>The index of the first record among the frame's.</returns>
+    internal int AddResidentCells(int count, out Span<ResidentCellRecord> cells)
+    {
+        if (_residentCellCount + count > _residentCells.Length)
+        {
+            Array.Resize(ref _residentCells, Math.Max(_residentCellCount + count, _residentCells.Length * 2));
+        }
+
+        var first = _residentCellCount;
+        _residentCellCount += count;
+        cells = _residentCells.AsSpan(first, count);
+        return first;
+    }
+
+    /// <summary>
+    /// Records markers of one look at points that stay on the GPU (design §5.1 "常駐の点", row R3a): a run of a page of the
+    /// residency cache, placed by the cells' records. Internal: it names data that only Core puts on the GPU.
+    /// </summary>
+    /// <param name="run">The run. Its clip is the list's current clip.</param>
+    internal void DrawResidentMarkers(in ResidentMarkerRun run)
+    {
+        if (_residentRunCount == _residentRuns.Length)
+        {
+            Array.Resize(ref _residentRuns, _residentRuns.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.ResidentMarkers, _residentRunCount));
+        _residentRuns[_residentRunCount++] = run with { Clip = _clip };
     }
 
     /// <summary>
@@ -1044,6 +1092,9 @@ internal enum RenderCommandKind : byte
 
     /// <summary>One call of markers: the index is into <see cref="RenderList.MarkerCalls"/> (row R3a).</summary>
     Markers,
+
+    /// <summary>One run of resident markers: the index is into <see cref="RenderList.ResidentRuns"/> (row R3a).</summary>
+    ResidentMarkers,
 }
 
 /// <summary>
@@ -1125,6 +1176,42 @@ public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape S
 /// </summary>
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
 internal readonly record struct MarkerInstance(Vector2 Center, float Size, uint Kind, Vector4 Color);
+
+/// <summary>
+/// A resident cell as the GPU reads it for one frame (design §5.5.2 "GPU での写し方と精度"): a base position in the cell,
+/// the base's pixel, and the pixels of one unit, on each axis. A point of the cell is at the base's pixel plus its
+/// distance from the base in units times the scale. 24 bytes, laid out as the HLSL structure of Markers.hlsl.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float PixelX, float PixelY, float ScaleX, float ScaleY);
+
+/// <summary>
+/// A run of resident markers: points of one page of the residency cache, drawn with one look (design §5.1 "常駐の点").
+/// </summary>
+/// <param name="Slot">The page's slot in <see cref="PointPages"/>.</param>
+/// <param name="First">The first point of the run in the page.</param>
+/// <param name="Count">The number of points.</param>
+/// <param name="Cells">Where the part's cells begin in <see cref="RenderList.ResidentCells"/>: a point's cell number is added to it.</param>
+/// <param name="Size">The size of each marker, in physical pixels.</param>
+/// <param name="Kind">The shape and a cross's stroke, as <see cref="MarkerInstance.Kind"/>.</param>
+/// <param name="Color">The premultiplied color.</param>
+/// <param name="Swap">Whether x runs down the target and y across it: a flipped plot.</param>
+/// <param name="ClampLow">The least pixel a center takes on each of the data's axes: an axis that holds values to its domain.</param>
+/// <param name="ClampHigh">The greatest pixel a center takes on each of the data's axes.</param>
+/// <param name="Clip">The clip when the run was recorded.</param>
+internal readonly record struct ResidentMarkerRun(
+    int Slot,
+    int First,
+    int Count,
+    int Cells,
+    float Size,
+    uint Kind,
+    Vector4 Color,
+    bool Swap,
+    Vector2 ClampLow,
+    Vector2 ClampHigh,
+    ClipRect Clip
+);
 
 /// <summary>One call of markers: a range of <see cref="RenderList.Markers"/> and the clip when it was recorded.</summary>
 internal readonly record struct MarkerCall(int Start, int Count, ClipRect Clip);

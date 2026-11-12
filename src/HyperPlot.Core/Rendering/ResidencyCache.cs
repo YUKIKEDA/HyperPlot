@@ -45,7 +45,16 @@ public sealed class ResidencyCache
     private int _stagingFaces;
     private long _frame;
 
-    internal ResidencyCache() { }
+    internal ResidencyCache() => Points = new PointPages(this);
+
+    /// <summary>Gets the pages of points (row R3a), which share the budget and a frame's upload with the tiles.</summary>
+    internal PointPages Points { get; }
+
+    /// <summary>Gets the number of the current frame: what is asked for in it is not let go of for another in it.</summary>
+    internal long Frame => _frame;
+
+    /// <summary>Gets the bytes on the GPU or staged for it: the tiles' slots and the pages of points.</summary>
+    internal long BytesInUse => ((long)SlotsInUse * FaceBytes) + Points.BytesInUse;
 
     /// <summary>The format of a tile.</summary>
     internal enum Format
@@ -66,8 +75,8 @@ public sealed class ResidencyCache
     /// <summary>Gets the color tables to send before the frame draws.</summary>
     internal ReadOnlySpan<(int Row, ColorMap Map)> TableUploads => CollectionsMarshal.AsSpan(_tableUploads);
 
-    /// <summary>Gets the number of bytes the current frame sends. Tests only.</summary>
-    internal long BytesThisFrame => (long)_stagingFaces * FaceBytes;
+    /// <summary>Gets the number of bytes the current frame sends: its tiles and its pages of points.</summary>
+    internal long BytesThisFrame => ((long)_stagingFaces * FaceBytes) + Points.BytesThisFrame;
 
     /// <summary>Gets the number of slots in use over both formats. Tests only.</summary>
     internal int SlotsInUse => _pools[0].InUse + _pools[1].InUse;
@@ -87,6 +96,7 @@ public sealed class ResidencyCache
         _uploads.Clear();
         _tableUploads.Clear();
         _stagingFaces = 0;
+        Points.Sent();
     }
 
     /// <summary>Forgets every slot and table after the device was lost: they are sent again from Core (invariant 10).</summary>
@@ -98,6 +108,7 @@ public sealed class ResidencyCache
         }
 
         _tables.Clear();
+        Points.Reset();
         Sent();
     }
 
@@ -114,12 +125,13 @@ public sealed class ResidencyCache
             return slot;
         }
 
-        if (!Unbounded && (long)(_stagingFaces + 1) * FaceBytes > FrameUpload)
+        if (!Unbounded && BytesThisFrame + FaceBytes > FrameUpload)
         {
             return -1;
         }
 
-        slot = pool.Take(_frame, SlotCapacity - _pools[1 - (int)key.Format].InUse);
+        // The slots the budget leaves beside the pages of points and the other format's tiles.
+        slot = pool.Take(_frame, (int)((DefaultBudget - Points.BytesInUse) / FaceBytes) - _pools[1 - (int)key.Format].InUse);
         if (slot < 0)
         {
             return -1;
