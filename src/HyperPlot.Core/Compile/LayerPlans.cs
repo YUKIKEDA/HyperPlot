@@ -769,11 +769,7 @@ internal abstract class LayerPlan
                     $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3e draws more as a density."
                 );
             }
-            else if (layer is PointLayerSpec)
-            {
-                // A number colors each point of a layer the CPU maps (design §5.5.2): its rows are counted with the layer's.
-            }
-            else if (layer is not (BarLayerSpec or RectLayerSpec))
+            else if (layer is not (BarLayerSpec or RectLayerSpec or PointLayerSpec))
             {
                 throw new ArgumentException(
                     $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} is a {column.KindName}; a {layer.GetType().Name} is colored by categories only (design §4.1). Numbers color the elements of bars, rects, and points."

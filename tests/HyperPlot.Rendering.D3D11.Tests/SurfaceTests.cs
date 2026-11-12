@@ -481,7 +481,12 @@ public sealed class SurfaceTests
         var pixels = new byte[Width * Height * 4];
         for (var i = 0; i < pixels.Length; i += 4)
         {
-            (pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]) = (color.R, color.G, color.B, color.A);
+            // Four statements, not one tuple assignment: in the Release build of this project the tuple form left R at 0 in
+            // every pixel of a reference (RectTests.Reference; Issue #117).
+            pixels[i] = color.R;
+            pixels[i + 1] = color.G;
+            pixels[i + 2] = color.B;
+            pixels[i + 3] = color.A;
         }
 
         return pixels;

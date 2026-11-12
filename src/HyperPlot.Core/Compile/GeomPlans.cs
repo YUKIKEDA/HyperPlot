@@ -966,6 +966,11 @@ internal sealed class RectPlan : LayerPlan
                 {
                     context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], color);
                 }
+                else
+                {
+                    // Not drawn, so not hit either (design §6.3): the hit test passes a rectangle with a NaN corner.
+                    _x0[i] = double.NaN;
+                }
 
                 continue;
             }
@@ -1122,6 +1127,11 @@ internal sealed class PointPlan : LayerPlan
             {
                 centers[count] = new Vector2((float)xs[i], (float)ys[i]);
                 colors[count++] = Faded(color, point.Opacity);
+            }
+            else
+            {
+                // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.
+                _x[i] = double.NaN;
             }
         }
 

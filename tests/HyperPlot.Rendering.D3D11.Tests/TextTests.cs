@@ -321,7 +321,7 @@ public sealed class TextTests
         for (var i = 0; i < image.Length; i += 4)
         {
             // Four statements, not one tuple assignment: in the Release build of this project the tuple form left R at 0 in every
-            // pixel (RectTests.Reference has the same note; Issue #287).
+            // pixel (RectTests.Reference has the same note; Issues #117 and #287).
             image[i] = Background.R;
             image[i + 1] = Background.G;
             image[i + 2] = Background.B;

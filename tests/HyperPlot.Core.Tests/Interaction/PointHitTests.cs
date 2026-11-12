@@ -10,6 +10,8 @@ public sealed class PointHitTests
     private static readonly PanelId Panel = new(0, 0);
     private static readonly double[] OneX = [2.0];
     private static readonly double[] OneY = [3.0];
+    private static readonly double[] TwoXs = [2.0, 8.0];
+    private static readonly double[] TwoValues = [double.NaN, 1.0];
 
     /// <summary>
     /// Points answer from the pixels last drawn (design §6.3): in X mode the nearest along within the radius, and of those as
@@ -92,6 +94,33 @@ public sealed class PointHitTests
         var found = hits[..split.HitTest(Pixel(split, 8, 6), 8, HitMode.XY, hits)];
         var hit = Assert.Single(found);
         Assert.Equal((1, 2L), (hit.Series, hit.Row));
+    }
+
+    /// <summary>A point whose color value is NaN is not drawn, and the hit test does not answer with it (design §4.1, §6.3).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Points (2, 2) and (8, 8) colored by the numbers NaN and 1 through a sequential scale.
+    ///
+    /// Steps:
+    /// - XY with a radius of 8 pixels at the pixel of each point.
+    ///
+    /// Expected:
+    /// - Nothing at (2, 2); row 1 at (8, 8).
+    /// </remarks>
+    [Fact]
+    public void Points_WithoutAColor_AreNotHit()
+    {
+        using var xs = Column.Wrap(TwoXs);
+        using var values = Column.Wrap(TwoValues);
+        var table = DataTable.Create().Add("x", xs).Add("v", values).Build();
+        var x = table.Col<double>("x");
+        using var engine = Drawn(
+            Domains(Plot.Create(table).Point(x, x, p => p.ColorBy(table.Col<double>("v")))).ScaleColor(Scale.Sequential()).Build()
+        );
+        var hits = new SeriesHit[2];
+
+        Assert.Equal(0, engine.HitTest(Pixel(engine, 2, 2), 8, HitMode.XY, hits));
+        Assert.Equal(1, Assert.Single(hits[..engine.HitTest(Pixel(engine, 8, 8), 8, HitMode.XY, hits)]).Row);
     }
 
     /// <summary>The hover's tooltip names a point layer "point", and its marker takes the layer's color made opaque (design §6.3).</summary>

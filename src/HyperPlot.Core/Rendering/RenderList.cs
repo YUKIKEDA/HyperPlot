@@ -1112,8 +1112,9 @@ public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape S
     internal const float MaxStroke = 4096;
 
     /// <summary>
-    /// Returns whether a shape is a named value. Not <see cref="Enum.IsDefined{TEnum}(TEnum)"/>: its table of the enum is
-    /// made again after a collection drops it, 248 bytes in a frame that records markers (PR of Issue #437).
+    /// Returns whether a shape is a named value. Not <see cref="Enum.IsDefined{TEnum}(TEnum)"/>: with it, the first
+    /// <c>DrawMarkers</c> of a frame allocated 248 bytes in 1 to 3 of 5 frames when the D3D11 tests ran beside a build, and
+    /// nothing with this comparison (PR #439). Why it allocates was not confirmed.
     /// </summary>
     internal static bool IsShape(MarkerShape shape) => shape is MarkerShape.Circle or MarkerShape.Square or MarkerShape.Cross;
 }
