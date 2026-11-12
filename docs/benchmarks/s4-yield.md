@@ -7,7 +7,7 @@
 | 項目 | 値 |
 | --- | --- |
 | 機械 | 参照機（要件 §5）: Intel Core i5-13400F（16 スレッド）、48 GB、Windows 11 |
-| ビルド | `HyperPlot.DataPath` の NativeAOT Release（win-x64、2,358,272 B、発行の警告 0）、.NET SDK 10.0.403、ブランチ `feat/421-yield` のコミット `2c83dc7`（main には入れていない）。プロセスの優先度は通常 |
+| ビルド | `HyperPlot.DataPath` の NativeAOT Release（win-x64、2,358,272 B、発行の警告 0）、.NET SDK 10.0.403、ブランチ `feat/421-yield` のコミット `2c83dc7`（タグ `s4-yield-measurement`。main には入れていない）。プロセスの優先度は通常 |
 | データ | 一様な分布の 1e9 点の `float` の x と y（`generate-points` の既定の種）。ページキャッシュに載った状態 |
 | ワーカー | 8 本 |
 | 競合 | `burn` の場面: 論理プロセッサと同じ数（16 本）のスレッドが通常の優先度で空回りし、1 秒ごとに回った数を書く子プロセス。構築の前の 8 秒の速さを 100 % とする |
@@ -17,7 +17,7 @@
 ## 再現
 
 ```powershell
-git switch feat/421-yield
+git switch --detach s4-yield-measurement
 $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\Installer;" + $env:PATH
 dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64 -o .dev/s4-datapath
 .dev/s4-datapath/HyperPlot.DataPath.exe generate-points --file .dev/s4-points --points 1000000000
@@ -42,7 +42,8 @@ dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64 -o .dev/s4-da
 - フレームは、構築中の 16.7 ms ごとの `Acquire`・`Count`・`Release` の時間である。`GC.Collect()` は、別のスレッドから 2 秒ごとに呼んだ
 - 競合の速さが 100 % を超える回があるので、この値には数 % のゆれがある
 - 休むプールの読みでは、ほかが 15.4〜15.5 コア、ワーカーが 0.5〜0.6 コアを使い、休みの段は上限に張り付いていた
-- 上限 1 の 1 巡目は、休みが 17,700 回で合計 300.4 秒だった。ワーカー 8 本の延べは 6,285 秒、構築のプロセスが使った CPU は約 310 秒である。残りの約 5,670 秒をワーカーがどこで待ったかは、突き止めていない
+- 上限 1 の 1 巡目は、休みが 17,700 回で合計 300.4 秒だった。ワーカー 8 本の延べは 6,285 秒、構築のプロセスが使った CPU は約 310 秒である。残りの約 5,670 秒をワーカーがどこで待ったかは分かっていない
+- 休みの規則から計算した時間と合わない。休まないプールは 3.65 コアを使ったので、段が 1（走った時間と同じだけ休む）なら約 1.8 コア、構築は約 200 秒になるはずである。実測はその 4〜6 倍で、休みの合計は延べの 5 % しかない。差が休む方式の性質か、この実装の誤りかは分かっていない。調べないと決めた（`docs/adr/0003-no-yield.md` の Decision 6）
 - 段ごとの時間は、どの段も同じ程度に延びた（上限 1 の 1 巡目と休まない 1 巡目の比: 範囲 5.7 倍、最初の走査 7.3 倍、書き込み 8.9 倍、密度タイル 6.3 倍）
 
 ## 競合の横での構築（1e8 点）
@@ -67,7 +68,7 @@ dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64 -o .dev/s4-da
 | 休む | 75.2 秒 | 0 回 | 0（0.4 ms） |
 | 休まない | 51.4 秒 | | 0（0.2 ms） |
 | 休む | 60.4 秒 | 1,551 回、26.6 秒 | 0（0.2 ms） |
-| 休まない | 63.1 秒 | | 1（86.4 ms） |
+| 休まない | 63.1 秒 | | 1（86.4 ms。原因は分かっていない。Issue #428） |
 | 休む | 61.5 秒 | 858 回、16.1 秒 | 0（7.4 ms） |
 | 休まない | 55.0 秒 | | 0（8.3 ms） |
 
