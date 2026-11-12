@@ -205,6 +205,8 @@ A design that lowers a thread's priority, parks it, or slows it lists everyone w
 
 A wait on that list that nobody has measured is measured in a scratch prototype before the design PR is merged, when a long wait would replace the mechanism. PR #418's review marked the GC's suspension as not confirmed and the design was merged; the implementation then measured `GC.Collect()` at 2.1 to 2.2 s under a competitor on every logical processor, and the mechanism was designed again (PR #423).
 
+A prototype's figure that a mechanism rests on is taken at the size the requirement names, and is set beside the figure the mechanism's own rule gives, before the design PR is merged. Row S4's resting rule gives a build at most 1 + `MostRest` times as long; its prototype measured 1e8 points at `MostRest` 4 and wrote 55 to 87 s beside 4.4 to 5.4 s, ten times and more, and the design called it load that is not guaranteed. The design was merged, the mechanism was built with its tests, and only then 1e9 points were measured: 786 and 1,179 s at level 1, where the rule gives about 200 s. The mechanism was dropped (PR #427, ADR 0003).
+
 A rule that decides from a reading of the machine (idle CPU, a thread's CPU time, free memory) writes three things beside the rule:
 
 - The step in which the reading advances, measured on the reference machine, next to the window and the thresholds. Row S4's prototype read `GetSystemTimes` and `GetThreadTimes`, which advance by 15.6 ms: over its 50 ms window the machine's total read 469 to 1,031 ms where 800 ms was right, as coarse as its thresholds of 2 % and 1.5 cores (PR #423's review).
