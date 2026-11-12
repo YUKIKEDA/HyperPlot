@@ -203,6 +203,14 @@ A constant that a requirement fixes (a share of the source, a time) is checked a
 
 A design that lowers a thread's priority, parks it, or slows it lists everyone who can wait for that thread and what bounds each wait: the jobs it has taken, the locks it holds (a `lock`, the native heap under `NativeMemory`, the allocator under `new`), a `Dispose` that waits for its job, and the runtime's suspension for a GC. "It takes no lock" is written after a search of the code under it: PR #418 wrote it of the background units and then found two locks at the end of a unit (`_waiterGate` of a pyramid, the merge of the category extremes), and its review found the native allocation in `DensityBuilder.Pack`.
 
+A wait on that list that nobody has measured is measured in a scratch prototype before the design PR is merged, when a long wait would replace the mechanism. PR #418's review marked the GC's suspension as not confirmed and the design was merged; the implementation then measured `GC.Collect()` at 2.1 to 2.2 s under a competitor on every logical processor, and the mechanism was designed again (PR #423).
+
+A rule that decides from a reading of the machine (idle CPU, a thread's CPU time, free memory) writes three things beside the rule:
+
+- The step in which the reading advances, measured on the reference machine, next to the window and the thresholds. Row S4's prototype read `GetSystemTimes` and `GetThreadTimes`, which advance by 15.6 ms: over its 50 ms window the machine's total read 469 to 1,031 ms where 800 ms was right, as coarse as its thresholds of 2 % and 1.5 cores (PR #423's review).
+- For a quantity made by subtraction (the others' CPU is the machine's less the workers'), that both terms are read over the same window. The prototype added a worker's CPU time when its job ended, so a job longer than the window counted as someone else's until then.
+- The configuration in which the rule would decide wrongly, and a measurement that runs it. The prototype was measured with 8 workers on 16 logical processors, where half the machine is idle and the rule cannot rest; the wrong rest is with the default 15 workers filling the machine.
+
 ```text
 # BAD — the design says "as datashader does" for the density path, and its PR body says datashader was not read
 # GOOD — the design names datashader's file and lines for each step it shares, and the steps it does not share are HyperPlot's own
