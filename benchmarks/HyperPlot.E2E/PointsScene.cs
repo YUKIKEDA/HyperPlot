@@ -12,7 +12,7 @@ namespace HyperPlot.E2E;
 /// CPU time (the view's change and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and its allocations; then the time
 /// of a hit test at seeded pixels in both modes. A layer of at most 131,072 rows takes the CPU path, and a larger one the index path.
 /// </summary>
-internal static class PointsScene
+internal static partial class PointsScene
 {
     private const int Warmup = 30;
 
@@ -22,7 +22,7 @@ internal static class PointsScene
     {
         if (args.Length < 4)
         {
-            Console.Error.WriteLine("points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories]");
+            Console.Error.WriteLine("points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole]");
             return 2;
         }
 
@@ -32,6 +32,7 @@ internal static class PointsScene
         var cluster = args[3] == "cluster";
         var frames = args.Length > 4 ? int.Parse(args[4], CultureInfo.InvariantCulture) : 600;
         var categories = args.Length > 5 ? int.Parse(args[5], CultureInfo.InvariantCulture) : 0;
+        var whole = args.Length > 6 && args[6] == "whole";
 
         // Seeded: uniform over [0, 100]², or a normal blob of a tenth of the side around the middle.
         var random = new Random(1);
@@ -104,8 +105,12 @@ internal static class PointsScene
         for (var f = 0; f < total; f++)
         {
             var t = (f % 300) / 300.0;
-            var span = 100 * Math.Pow(10, -Math.Sin(t * Math.PI));
-            var (cx, cy) = (50 + (20 * Math.Sin(t * 2 * Math.PI)), 50 + (10 * Math.Cos(t * 2 * Math.PI)));
+
+            // "whole": the whole data stays in view, moved by a hundredth of the side, so that every frame draws every point.
+            var span = whole ? 102 : 100 * Math.Pow(10, -Math.Sin(t * Math.PI));
+            var (cx, cy) = whole
+                ? (50 + Math.Sin(t * 2 * Math.PI), 50 + Math.Cos(t * 2 * Math.PI))
+                : (50 + (20 * Math.Sin(t * 2 * Math.PI)), 50 + (10 * Math.Cos(t * 2 * Math.PI)));
             views[f] = new PanelView2D(
                 ViewRange.FromValues(cx - (span / 2), cx + (span / 2)),
                 ViewRange.FromValues(cy - (span / 2), cy + (span / 2))
@@ -117,6 +122,9 @@ internal static class PointsScene
         var gpu = new List<double>(frames);
         long lastTimed = -1;
         var period = TimeSpan.FromMilliseconds(1000.0 / 60);
+
+        // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
+        _ = TimeBeginPeriod(1);
         var began = Stopwatch.GetTimestamp();
         for (var f = 0; f < total; f++)
         {
@@ -141,6 +149,7 @@ internal static class PointsScene
         }
 
         var seconds = Stopwatch.GetElapsedTime(began).TotalSeconds;
+        _ = TimeEndPeriod(1);
 
         // Hit tests at seeded pixels of the whole view, each timed alone.
         engine.Views.SetView(panel, new PanelView2D(ViewRange.FromValues(0, 100), ViewRange.FromValues(0, 100)));
@@ -174,7 +183,7 @@ internal static class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} categories={categories} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(
@@ -208,6 +217,12 @@ internal static class PointsScene
         );
         return 0;
     }
+
+    [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+    private static partial uint TimeBeginPeriod(uint period);
+
+    [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
+    private static partial uint TimeEndPeriod(uint period);
 
     private static double Percentile(double[] values, double share)
     {

@@ -42,10 +42,10 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
             _vertexShader = shader;
         }
 
-        fixed (byte* code = Shaders.MarkerPS)
+        fixed (byte* code = Shaders.ResidentMarkerPS)
         {
             ID3D11PixelShader* shader;
-            _backend.Check(device->CreatePixelShader(code, (nuint)Shaders.MarkerPS.Length, null, &shader), "CreatePixelShader");
+            _backend.Check(device->CreatePixelShader(code, (nuint)Shaders.ResidentMarkerPS.Length, null, &shader), "CreatePixelShader");
             _pixelShader = shader;
         }
 
@@ -231,6 +231,9 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY.D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
         var constants = _constants;
         context->VSSetConstantBuffers(1, 1, &constants);
+
+        // The pixel shader reads the run's look from the same constants.
+        context->PSSetConstantBuffers(1, 1, &constants);
         var cellView = _cellView;
         context->VSSetShaderResources(2, 1, &cellView);
         context->VSSetShader(_vertexShader, null, 0);

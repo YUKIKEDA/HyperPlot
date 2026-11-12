@@ -5,6 +5,8 @@
     <RootNamespace>HyperPlot.E2E</RootNamespace>
     <!-- Figures are taken from the NativeAOT Release build (.cursor/rules/bench.mdc). -->
     <PublishAot>true</PublishAot>
+    <!-- The points scene raises the timer resolution through a LibraryImport (row R3a). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\HyperPlot.Rendering.D3D11\HyperPlot.Rendering.D3D11.csproj" />

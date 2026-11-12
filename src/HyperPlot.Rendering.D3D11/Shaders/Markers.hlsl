@@ -127,22 +127,57 @@ float UnitsFrom(uint position, uint base)
     return position >= base ? (float)(position - base) : -(float)(base - position);
 }
 
-MarkerVertex ResidentMarkerVS(uint vertex : SV_VertexID, uint instance : SV_InstanceID)
+// A run has one look, so the size, the shape, and the color reach the pixel shader from the run's constants, not through
+// every vertex: a frame of 1e7 points has 4 × 10^7 vertices, and with the look carried by each vertex its GPU time was
+// 12.8 ms where it is 7.3 ms without (discs of 2 pixels, the whole view; Issue #438).
+struct ResidentVertex
+{
+    float4 Position : SV_Position;
+    nointerpolation float2 Center : CENTER;
+};
+
+ResidentVertex ResidentMarkerVS(uint vertex : SV_VertexID, uint instance : SV_InstanceID)
 {
     ResidentPoint p = Points[ResidentFirst + instance];
     ResidentCell cell = Cells[ResidentCells + p.Cell];
     float2 along = cell.Pixel + float2(UnitsFrom(p.X, cell.Base.x), UnitsFrom(p.Y, cell.Base.y)) * cell.Scale;
     along = clamp(along, ResidentClampLow, ResidentClampHigh);
     float2 center = ResidentSwap != 0 ? along.yx : along;
-    float radius = ResidentSize * 0.5;
-    float2 low = floor(center - radius - 0.5);
-    float2 high = ceil(center + radius + 0.5);
+    float reach = ResidentSize * 0.5 + 0.5;
+    float2 low = floor(center - reach);
+    float2 high = ceil(center + reach);
     float2 corner = float2((vertex & 2) != 0 ? high.x : low.x, (vertex & 1) != 0 ? high.y : low.y);
-    MarkerVertex output;
+    ResidentVertex output;
     output.Position = float4(corner.x * ResidentInverseSize.x * 2 - 1, 1 - corner.y * ResidentInverseSize.y * 2, 0, 1);
     output.Center = center;
-    output.Extent = float2(radius, (ResidentKind >> 8) * (0.5 / 16.0));
-    output.Shape = ResidentKind & 0xFF;
-    output.Color = ResidentColor;
     return output;
+}
+
+float4 ResidentMarkerPS(ResidentVertex input) : SV_Target
+{
+    float radius = ResidentSize * 0.5;
+    uint shape = ResidentKind & 0xFF;
+    float coverage;
+    if (shape == 0)
+    {
+        coverage = saturate(radius + 0.5 - length(input.Position.xy - input.Center));
+    }
+    else
+    {
+        float2 pixel = floor(input.Position.xy);
+        if (shape == 1)
+        {
+            coverage = BoxCoverage(pixel, input.Center, float2(radius, radius));
+        }
+        else
+        {
+            float stroke = (ResidentKind >> 8) * (0.5 / 16.0);
+            coverage =
+                BoxCoverage(pixel, input.Center, float2(radius, stroke))
+                + BoxCoverage(pixel, input.Center, float2(stroke, radius))
+                - BoxCoverage(pixel, input.Center, float2(stroke, stroke));
+        }
+    }
+
+    return ResidentColor * coverage;
 }

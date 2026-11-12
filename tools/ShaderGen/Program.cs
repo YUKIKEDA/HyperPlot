@@ -39,6 +39,7 @@ if (fxc is null)
     ("LineMask.hlsl", "SegmentMaskPS", "ps_5_0"),
     ("Markers.hlsl", "MarkerPS", "ps_5_0"),
     ("Markers.hlsl", "MarkerVS", "vs_5_0"),
+    ("Markers.hlsl", "ResidentMarkerPS", "ps_5_0"),
     ("Markers.hlsl", "ResidentMarkerVS", "vs_5_0"),
     ("Rect.hlsl", "RectPS", "ps_5_0"),
     ("Rect.hlsl", "RectVS", "vs_5_0"),
