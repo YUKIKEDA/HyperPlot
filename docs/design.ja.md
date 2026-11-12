@@ -327,9 +327,9 @@ public readonly struct MinMax<T> where T : unmanaged, INumber<T>
 
 ### 3.4 空間タイル索引（散布）
 
-X が単調でない列（散布図）では、点を空間の順に並べ直した写しと、四分木の表と、密度タイルを作る（要件 D-4・R-3）。行 C3a が写し・表・問い合わせを、行 C3b が密度タイルを作る。point の Geom、密度と生の点の切り替え、GPU への常駐、ヒットテストの配線は行 R3 で作る（Issue #401 の決定 1）。
+X が単調でない列（散布図）では、点を空間の順に並べ直した写しと、四分木の表と、密度タイルを作る（要件 D-4・R-3）。行 C3a が写し・表・問い合わせを、行 C3b が密度タイルを作る。point の Geom、密度と生の点の切り替え、GPU への常駐、ヒットテストの配線は行 R3a〜R3d で作る（Issue #401 の決定 1、Issue #431。§5.5.2）。
 
-**型と持ち主**（行 C3a）。索引は列とは別のオブジェクトで、ワーカー（§8.1）が作る。型は internal で、公開するかどうかは行 R3 で決める（試験と `HyperPlot.DataPath` は `InternalsVisibleTo` で使う）。internal の間は、不変条件 12（§11）の公開の契約に当たらない。`SpatialRect` は 2 次元の矩形なので、公開するときは不変条件 12 の抽象に合わせる。
+**型と持ち主**（行 C3a）。索引は列とは別のオブジェクトで、ワーカー（§8.1）が作る。型は internal で、行 R3a でも公開しない（使い手は Core の中だけである。Issue #431。試験と `HyperPlot.DataPath` は `InternalsVisibleTo` で使う）。internal の間は、不変条件 12（§11）の公開の契約に当たらない。`SpatialRect` は 2 次元の矩形なので、公開するときは不変条件 12 の抽象に合わせる。
 
 ```csharp
 public sealed class PlotWorkerPool
@@ -389,7 +389,7 @@ internal enum SpatialCellKind { Inner, Leaf, CoincidentLeaf, CappedLeaf }
 ```
 
 - `BuildSpatialIndex` はすぐに返り、構築をワーカーに積む。引数の誤りはその場で投げる: 列が null なら `ArgumentNullException`、2 つの列の長さが違う・`Rows` の `Start` が負か `End` より大きい・渡した範囲の `Lower` か `Upper` が有限でないか `Lower` が `Upper` より大きいなら `ArgumentException`、プールが破棄済みなら `ObjectDisposedException`。この順に確かめる。一時ファイルを作れない、メモリを確保できないといった構築の中の失敗は投げずに `Fault` に入れる（下の「失敗」）
-- **入力と鍵**（決定 4）: 索引を決めるのは、x と y の列、それぞれの変換、範囲、行の範囲である。変換は索引の入力なので、linear と time（どちらも変換なし）は同じ索引を使える。変換が同じかどうかは、今のコンパイル（`PlotPlan` の軸の比べ方）と同じく参照で比べる。どの仕様がどの索引を使い回すかは、索引を持つ行 R3 の保管庫が決める
+- **入力と鍵**（決定 4）: 索引を決めるのは、x と y の列、それぞれの変換、範囲、行の範囲である。変換は索引の入力なので、linear と time（どちらも変換なし）は同じ索引を使える。変換が同じかどうかは、今のコンパイル（`PlotPlan` の軸の比べ方）と同じく参照で比べる。どの仕様がどの索引を使い回すかは、索引の保管庫が決める（行 R3a、§5.5.2 の「索引の保管庫」）
 - **追記する列は対象外**（決定 6）: 索引は、構築を始めたときの `Rows.EndIn(列の長さ)` までの行を持つ。索引への追記は v1 で作らない（§3.5、要件 §7）
 - **破棄の順**: 索引は列より先に破棄する。構築中の索引は列のチャンクを読むので、列を先に破棄すると、ネイティブとメモリマップのストレージでは列の契約（§3.1、`Dispose` と読み出しを並行させない）を破る。借りたスナップショットは列を読まない
 - **`IScale` を呼ぶスレッド**: 構築は `IScale.Forward` をワーカーのスレッドから呼び、複数のワーカーが同時に呼ぶ（1 回に最大 `RowsPerUnit` 個の値）。組み込みの変換（log・symlog・pow）は状態を持たない。利用者の `IScale` は、今の XML ドキュメントでは「描くスレッドだけが呼ぶ」としているので、行 C3a で「散布の索引を作るときは、ワーカーのスレッドから同時に呼ぶ。`Forward` は複数のスレッドから同時に呼べること」に書き換える。`Inverse` は索引からは呼ばない。`Forward` が投げた例外は構築の失敗になる
@@ -443,7 +443,7 @@ internal enum SpatialCellKind { Inner, Leaf, CoincidentLeaf, CappedLeaf }
 
 **写しと置き場所**（決定 2・3・9・13）。
 
-- **写し**: x の値、y の値、元の位置の 3 つの領域を、それぞれ 64 バイト境界に置く。値はスケールの空間の値である（型は上の「スケールの空間」）。元の位置は行の範囲の先頭からの行の数（行 − `Rows.Start`）で、n が 2^32 以下なら `uint`（4 バイト）、超えれば `long`（8 バイト）で持つ。領域を分けるのは、密度タイルの構築と行 R3 の描画が x と y だけを読み、元の位置の領域（1e9 点で 4 GB）に触れずに済むようにするためである
+- **写し**: x の値、y の値、元の位置の 3 つの領域を、それぞれ 64 バイト境界に置く。値はスケールの空間の値である（型は上の「スケールの空間」）。元の位置は行の範囲の先頭からの行の数（行 − `Rows.Start`）で、n が 2^32 以下なら `uint`（4 バイト）、超えれば `long`（8 バイト）で持つ。領域を分けるのは、密度タイルの構築と行 R3a の描画が x と y だけを読み、元の位置の領域（1e9 点で 4 GB）に触れずに済むようにするためである
   - 大きさは n × (x の幅 + y の幅 + 元の位置の幅) バイトで（一時ファイルでは、各領域の先頭を 64 の倍数のバイトに置くので、これより 126 バイトまで大きい。70,001 点の `float` の x, y で 840,132 バイト）、1e9 点の `float` の x, y（変換なし）では 1e9 × (4 + 4 + 4) = 12 GB（元データの 150 %、要件 P-8 の例外）になる。`float` の列に変換があるときも同じである。`float` のほかの型の列に変換があると、その軸は `double` の 8 バイトになる
   - 有限でない点は写しに入らないので、使うのは先頭の `PointCount` 点分である
   - n = 0 の索引は写しを持たず、一時ファイルもネイティブのブロックも作らない。大きさ 0 の写像は作れない（長さ 0 のメモリマップの列がビューを持たないのと同じである）。空のファイルに大きさ 0 を渡した `MemoryMappedFile.CreateFromFile` は `ArgumentException` を投げ（下の「確かめたこと」）、`posix_fallocate` は 0 以下の大きさに `EINVAL` を返す（man-pages の `posix_fallocate(3)`）
@@ -514,8 +514,8 @@ internal enum SpatialCellKind { Inner, Leaf, CoincidentLeaf, CappedLeaf }
 - **矩形**: `SpatialRect` は、そのスナップショットの原点（`XRange.Origin`・`YRange.Origin`）からの差である。ビューの範囲から作るときは、ビューの原点と索引の原点の差を `Int128` で正確に引いてから `double` にする（§3.6 のチャンクの原点と同じ）。作り直しで範囲が変わると原点も変わるので、呼び出し側は借りたスナップショットの原点を使う。端を量子化の式で格子に写し、セルと比べる。端が NaN か、最小が最大より大きい矩形は `ArgumentException`、`maxLevel` が 0 より小さいか 32 より大きいと `ArgumentOutOfRangeException` である。範囲を引数で渡した索引では、範囲の外の点は端の目に入っているので、問い合わせはその点を範囲の端にある点として数える
 - **`Count(rect, maxLevel)`**（矩形の中の点の数）: 根から降り、矩形に完全に入るセルの点の数を `Inside` に足す。矩形に一部だけかかるセルは、葉か水準が `maxLevel` なら点の数を `Touching` に足し、そうでなければ子へ降りる。矩形の中の点の数は `Inside` 以上、`Inside + Touching` 以下である。ここで矩形の中の点は、格子の目が、矩形を格子に写した範囲に入る点である。量子化した目で決めるので、矩形の端の近くの点は、値が矩形の外でも中に数えることがあり、その逆もある。写しは読まない。呼び出し側がセルを 1 画素ほどにする水準を選ぶと、降りるセルは矩形の周の画素の数に比例する。粗いスナップショットは水準 8 までの点の数で同じように答える（`maxLevel` が 8 より大きければ 8 として扱う）。空のスナップショットは `Inside` 0、`Touching` n を返す
 - **`GetCells(rect, maxLevel, destination)`**（矩形にかかるセル、半径にかかる葉）: 矩形にかかる点のあるセルのうち、葉か、水準が `maxLevel` のものを、符号の順に `destination` に書く。戻り値は条件に合うセルの数で、`destination` の長さを超える分は書かない（呼び出し側は、持ち続けるバッファを大きくするか、`maxLevel` を下げて呼び直す）。半径にかかる葉は、矩形を [x − rx, x + rx] × [y − ry, y + ry]、`maxLevel` を 32 にして引く。`SpatialCell` の `First` と `Count` は写しの中の範囲である。確定でないスナップショットは 0 を返す（決定 5。呼び出し側は `IsProvisional` で暫定と知る）
-- **`ReadPoints(first, x, y, rows)`**（写しの点と元の行）: 写しの `first` 番目から、3 つのスパンの長さ分の点を読む。x と y はスナップショットの原点からの差 d(v) を `double` で、`rows` は元の列の行の番号（元の位置 + `Rows.Start`）で返す。ツールチップの値は、この行で元の列から読む（決定 9）。3 つのスパンの長さが違えば `ArgumentException`、範囲が `PointCount` を超えれば `ArgumentOutOfRangeException`、確定でないスナップショットでは `InvalidOperationException` である。写しは列の型のままなので、変換のない `long` の列でも、差が 2^53 未満なら戻り値に誤りがない（§3.6、不変条件 6）。GPU へ送るための `float32` の差と型のままの読み出しは、行 R3 で足す（決定 9）
-- **点の多い葉**: `CoincidentLeaf` と `CappedLeaf` は `LeafCapacity` を超える点を持つ。ヒットテスト（行 R3、§6.3）は、葉の先頭の `LeafCapacity` 点だけを調べる（決定 8・14）
+- **`ReadPoints(first, x, y, rows)`**（写しの点と元の行）: 写しの `first` 番目から、3 つのスパンの長さ分の点を読む。x と y はスナップショットの原点からの差 d(v) を `double` で、`rows` は元の列の行の番号（元の位置 + `Rows.Start`）で返す。ツールチップの値は、この行で元の列から読む（決定 9）。3 つのスパンの長さが違えば `ArgumentException`、範囲が `PointCount` を超えれば `ArgumentOutOfRangeException`、確定でないスナップショットでは `InvalidOperationException` である。写しは列の型のままなので、変換のない `long` の列でも、差が 2^53 未満なら戻り値に誤りがない（§3.6、不変条件 6）。GPU へ送るための読み出し（`ReadBlock`）は、行 R3a で足す（決定 9、§5.5.2 の「常駐のセルとページ」。`float32` の差でなく、セルの中の整数の位置で書く）。型のままの読み出しは作らない（使い手がない）
+- **点の多い葉**: `CoincidentLeaf` と `CappedLeaf` は `LeafCapacity` を超える点を持つ。ヒットテスト（行 R3c、§6.3）は、葉の先頭の `LeafCapacity` 点だけを調べる（決定 8・14）
 
 **密度タイル**（行 C3b、決定 12）。
 
@@ -564,7 +564,9 @@ internal readonly ref struct DensityTile
 | `DensitySplit` | 2^18 | セルがタイルを持つ点の数 | C3b |
 | タイルの大きさ | 256 × 256 | 1 つのタイルのビンの数 | C3b |
 
-**行 R3 で決めること**（Issue #401）。半径のヒットテストで `GetCells` に渡す `maxLevel` を画素の大きさで止めるか（今は 32 で、行 C3a の計測では、塊の中心の半径 8 画素に中央値 7,378〜54,241 個、最大 145,497 個の葉がかかり、点を全部読むと p99 が 10〜19 ms で要件 P-5 に届かない。`docs/benchmarks/c3a-spatial-index.md`）。範囲を索引が求めた索引で、範囲と重ならない矩形の `Count` を 0 にするか（今は矩形の両端が端の目に写り、どれだけ離れていても端の列のセルを数える）。上限で止まったセルと、タイルを持たない疎なセルの描き方。`SeriesHit` に密度の領域の点の数を入れる形。軸の定義域を索引の範囲として渡すか。選択部分の密度（§6.4）。エンコードの列を元の位置で Morton 順に並べ直した派生データ（決定 10）。カテゴリごとの密度。色の写像（datashader の eq_hist を含む）。索引を持つ保管庫（どの散布が索引を作るか、仕様の間の索引の使い回し）。切り替えの判定に使う点の数（`Inside` の下限か、`Inside + Touching` の上限か）。GPU へ送る `float32` の値と型のままの読み出し（決定 9）。型を公開するか（決定 1）。
+**行 R3a で決めたこと**（Issue #431）。索引を持つ保管庫と、どの散布が索引を作るか（§5.5.2 の「索引の保管庫」）。GPU へ送る点の読み出し（`ReadBlock`。セルの中の整数の位置）と、位置の基準になる常駐のセルの表（§5.5.2 の「常駐のセルとページ」）。軸の定義域は索引の範囲として渡さない: 索引は列の値から自分で範囲を求めるので、ズームとパンで作り直さない。型は公開しない（決定 1）。
+
+**行 R3a より後で決めること**（Issue #401）。行 R3b: 上限で止まったセルと、タイルを持たない疎なセルの描き方。色の写像（datashader の eq_hist を含む）。切り替えの判定に使う点の数（`Inside` の下限か、`Inside + Touching` の上限か）。行 R3c: 半径のヒットテストで `GetCells` に渡す `maxLevel` を画素の大きさで止めるか（今は 32 で、行 C3a の計測では、塊の中心の半径 8 画素に中央値 7,378〜54,241 個、最大 145,497 個の葉がかかり、点を全部読むと p99 が 10〜19 ms で要件 P-5 に届かない。`docs/benchmarks/c3a-spatial-index.md`）。範囲を索引が求めた索引で、範囲と重ならない矩形の `Count` を 0 にするか（今は矩形の両端が端の目に写り、どれだけ離れていても端の列のセルを数える）。`SeriesHit` に密度の領域の点の数を入れる形。選択部分の密度（§6.4）。行 R3d: エンコードの列を元の位置で Morton 順に並べ直した派生データ（決定 10）。カテゴリごとの密度。
 
 ### 3.5 ストリーミング
 
@@ -592,6 +594,7 @@ CPU の `double` でも同じことが起きる。2026 年の .NET のティッ�
   - `float`・`double` の列と、`double` の `UniformColumn`: `(double)v − (double)o`。v 自身の精度より細かくはならないが、原点の近くの値の差は正確である（Sterbenz の補題: y/2 ≤ x ≤ 2y なら x − y は丸めなしで表せる）。o が 2^53 を超えると `(double)o` 自体が ulp(o)/2 以下だけ丸まり（2026 年のティックで最大 64）、その列のすべての点が境界（原点からの正確な差）に対して同じ量だけずれる。ずれは原点の近くの v の 1 ulp の半分以下で、列自身の分解能の中にある。総当たりのテストも同じ式の値で判定する（PR #86 のレビュー）
   - 原点 0 では、`double` の値は今の値と同じになる。0〜1 のような普通のデータでは原点は 0 か −1 で、原点 −1 でも画素の位置は丸めの最後のビットほどしか変わらない
 - GPU には「原点からの差」を float32 で送る。原点はチャンク（またはタイル）ごとに CPU が `long` で持ち、フレームごとに「チャンクの原点 − ビューの原点」を `Int128` で正確に引いて `double` にし、ビューの下端の差を引いた値を定数として渡す
+  - 散布の常駐の点（行 R3a）は別の形である。セルの中の位置を 32 ビットの整数で送り、頂点シェーダが、画面の中の基準の位置との差を整数のまま引いてから画素にする（§5.5.2）。`float32` の差は、原点からの広がりの 2^-24 までしか表せず、x と y の拡大の度合いが違う画面を守れない（PR #432 のレビュー）
 - M4 の経路（§5.5.1）では、CPU が原点からの差から画素の座標まで倍精度で計算してから頂点を作るので、float32 の問題は起きない
 
 ### 3.7 ラスタ（行 G9）
@@ -1025,6 +1028,16 @@ public sealed record SegmentLayerSpec : LayerSpec
     public StrokeSpec Style { get; init; }
 }
 
+public sealed record PointLayerSpec : LayerSpec          // 行 R3a。散布の点（§5.5.2）
+{
+    public required ColumnRef X { get; init; }
+    public required ColumnRef Y { get; init; }
+    public Color? Color { get; init; }                  // null は系列の色
+    public float Size { get; init; } = 6;               // 直径、DIP。0 より大きく 512 以下
+    public MarkerShape Shape { get; init; } = MarkerShape.Circle;   // 注釈と同じ列挙（円・正方形・十字）
+    public double Opacity { get; init; } = 1;           // 0 以上 1 以下。点の色のアルファに掛ける
+}
+
 public sealed record ErrorBarLayerSpec : LayerSpec
 {
     public required ColumnRef X { get; init; }          // 単調非減少
@@ -1323,6 +1336,7 @@ public sealed class PlotBuilder
     public PlotBuilder Bar<TY>(CategoryRef x, ColumnRef<TY> y, double baseline = 0, Action<FillBuilder>? configure = null);
                                                         // 行 G7b。棒の幅は band の幅（Width は null）
     public PlotBuilder Rect<TX, TY>(ColumnRef<TX> xMin, ColumnRef<TX> xMax, ColumnRef<TY> yMin, ColumnRef<TY> yMax, Action<FillBuilder>? configure = null);
+    public PlotBuilder Point<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, Action<PointBuilder>? configure = null);   // 行 R3a
     public PlotBuilder VRule<T>(ColumnRef<T> x, Action<LineBuilder>? configure = null);
     public PlotBuilder HRule<T>(ColumnRef<T> y, Action<LineBuilder>? configure = null);
     public PlotBuilder Segment<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, ColumnRef<TX> xEnd, ColumnRef<TY> yEnd, Action<LineBuilder>? configure = null);
@@ -1400,6 +1414,19 @@ public sealed class FillBuilder                          // 行 G4。Bar と Rec
     public FillBuilder SecondaryY();   // 行 G6a。層を ScaleY2 に載せる
 }
 
+public sealed class PointBuilder                         // 行 R3a。Point
+{
+    public PointBuilder Color(Color color);
+    public PointBuilder Size(float size);               // 直径、DIP
+    public PointBuilder Shape(MarkerShape shape);
+    public PointBuilder Opacity(double opacity);        // 0 以上 1 以下
+    public PointBuilder Label(string? label);
+    public PointBuilder ColorBy(CategoryRef category);  // カテゴリで部分に分ける
+    public PointBuilder ColorBy<T>(ColumnRef<T> values) where T : unmanaged, INumber<T>;   // 点ごとの連続の色。行の数が 131,072 以下の層だけ
+    public PointBuilder SecondaryX();
+    public PointBuilder SecondaryY();
+}
+
 public sealed class TextBuilder                          // 行 G8。Text
 {
     public TextBuilder Color(Color color);
@@ -1443,8 +1470,8 @@ public sealed class ImageBuilder                         // 行 G9。Image
     - `OkabeIto`: Okabe と Ito の 8 色。原典のページ（jfly）の表は画像なので、値は R の `palette.colors()`（`src/library/grDevices/R/colorstuff.R`）から取り、R の順にする: 000000・E69F00・56B4E9・009E73・F0E442・0072B2・D55E00・CC79A7。R が足した 9 色めの灰色（999999）は入れない
 - **行 G7c の色のチャネル**（Issue #168）: 列の値で色を分けるチャネル `ColorBy`・`FillBy` と、それが共有する色のスケール `PlotSpec.ScaleColor`
   - **意味**: `ColorBy` は、線の Geom（line・step・rule・segment・errorbar）では線の色、塗りの Geom（area・band・bar・rect）では塗りの色と縁（area・band の `Outline`）の色を分ける（Vega-Lite の `color` と同じ）。`FillBy` は塗りの Geom の塗りだけを分け、`ColorBy` より優先する（area の塗りを `FillBy`、縁を `ColorBy` で分けられる）
-  - **カテゴリの列**（`CategoryRef.ToColumnRef()` で入れる）: 層を、カテゴリごとの系列に分ける。どの Geom でも使え、分けた系列は Geom のふだんの道（M4、画素列ごとの道、要素ごとの道）でそのまま描く（§5.5.3）。系列の色は ordinal のスケールで、カテゴリの番号 i に対して `Palette[i mod n]`。分けるのは 256 カテゴリまで（列の `CategoryCount`。使われないカテゴリも数える）で、超えたら、数と上限と「カテゴリの多いデータは密度（行 R3）で描く」ことを書いた `ArgumentException`。1 フレームの仕事は系列の数 × 画素で、256 カテゴリ・1,920 画素列の線で M4 の点は約 200 万（256 × 4 × 1,920）になる。線分の記録は 20 B なので 1 フレームの転送は約 39 MB、GPU は行 R4 の計測（丸の M4 の線 16 本、約 12 万の線分で約 0.68 ms、`docs/benchmarks/r4-lines.md`）から線分の数に比べて 10 ms を超える見込みである。不変条件 2（画素数と系列数で抑える）は守るが、要件 R-1 の「1 フレームの転送は数 MB 以下」は系列が少ないときの数で、256 は上限であって目標の系列数ではない。ロードマップの計測（256 カテゴリの線）の結果で、上限を下げるか、多い系列を行 R3 に送るかを決める（PR #169 のレビュー）。行 G7c の実装の計測（`docs/benchmarks/g7c-color.md`、1e8 行の混ざる線）で、1 フレームの CPU は系列 1 本あたり約 0.17 ms 増え（8 カテゴリで中央値 4.9 ms、256 で 50 ms）、要件 P-1（1 系列で p95 8 ms 以下）に収まるのは約 12 系列までだった。P-1 は 1 系列の要件なので上限は 256 のままとし、この費用を XML に書く（オーナーの決定、Issue #172）
-  - **数の列**: 塗りの bar と rect だけが取り、要素ごとに sequential か diverging の色を付ける。要素ごとの色は画素列ごとにまとめられない（まとめた棒の色が決まらない）ので、数の x の bar は見える棒の数、rect は要素の総数が 131,072 以下なら要素ごとに描き、超えたら要素の数と上限を書いた `InvalidOperationException`（rect と segment の上限と同じ数、§5.5.3。大きなデータの道は行 R3）。カテゴリの x の bar（行 G7b）では、行の総数が 131,072 以下なら行ごとの棒を番号の順に重ねて描く。線の Geom（M4 の line・step・area・band と、rule・segment・errorbar）は数の列を取らない（`ArgumentException`）。M4 は画素列ごとに点を選ぶので、線に沿った色の値が決まらない。rule・segment・errorbar は描けるが、線の記録は折れ線ごとに 1 回の描画（§5.3 の 3 つの段）で色も 1 つなので、要素ごとの色は要素ごとの折れ線、131,072 本で約 39 万回の描画になる。線分ごとの色は、点ごとの色と一緒に行 R3 で線のパイプラインに足す（オーナーの決定、Issue #168）
+  - **カテゴリの列**（`CategoryRef.ToColumnRef()` で入れる）: 層を、カテゴリごとの系列に分ける。どの Geom でも使え、分けた系列は Geom のふだんの道（M4、画素列ごとの道、要素ごとの道）でそのまま描く（§5.5.3）。系列の色は ordinal のスケールで、カテゴリの番号 i に対して `Palette[i mod n]`。分けるのは 256 カテゴリまで（列の `CategoryCount`。使われないカテゴリも数える）で、超えたら、数と上限と「カテゴリの多いデータは密度（行 R3d）で描く」ことを書いた `ArgumentException`。1 フレームの仕事は系列の数 × 画素で、256 カテゴリ・1,920 画素列の線で M4 の点は約 200 万（256 × 4 × 1,920）になる。線分の記録は 20 B なので 1 フレームの転送は約 39 MB、GPU は行 R4 の計測（丸の M4 の線 16 本、約 12 万の線分で約 0.68 ms、`docs/benchmarks/r4-lines.md`）から線分の数に比べて 10 ms を超える見込みである。不変条件 2（画素数と系列数で抑える）は守るが、要件 R-1 の「1 フレームの転送は数 MB 以下」は系列が少ないときの数で、256 は上限であって目標の系列数ではない。ロードマップの計測（256 カテゴリの線）の結果で、上限を下げるか、多い系列を行 R3d に送るかを決める（PR #169 のレビュー）。行 G7c の実装の計測（`docs/benchmarks/g7c-color.md`、1e8 行の混ざる線）で、1 フレームの CPU は系列 1 本あたり約 0.17 ms 増え（8 カテゴリで中央値 4.9 ms、256 で 50 ms）、要件 P-1（1 系列で p95 8 ms 以下）に収まるのは約 12 系列までだった。P-1 は 1 系列の要件なので上限は 256 のままとし、この費用を XML に書く（オーナーの決定、Issue #172）
+  - **数の列**: 塗りの bar と rect だけが取り、要素ごとに sequential か diverging の色を付ける。要素ごとの色は画素列ごとにまとめられない（まとめた棒の色が決まらない）ので、数の x の bar は見える棒の数、rect は要素の総数が 131,072 以下なら要素ごとに描き、超えたら要素の数と上限を書いた `InvalidOperationException`（rect と segment の上限と同じ数、§5.5.3。大きなデータの道は行 R3e）。カテゴリの x の bar（行 G7b）では、行の総数が 131,072 以下なら行ごとの棒を番号の順に重ねて描く。線の Geom（M4 の line・step・area・band と、rule・segment・errorbar）は数の列を取らない（`ArgumentException`）。M4 は画素列ごとに点を選ぶので、線に沿った色の値が決まらない。rule・segment・errorbar は描けるが、線の記録は折れ線ごとに 1 回の描画（§5.3 の 3 つの段）で色も 1 つなので、要素ごとの色は要素ごとの折れ線、131,072 本で約 39 万回の描画になる。線分ごとの色は、行 R3e で線のパイプラインに足す（オーナーの決定、Issue #168）
   - **定数の色との関係**: 同じ層で、定数の色と、同じものを分けるチャネルの両方を与えたら `ArgumentException`（線の Geom の `Style.Color` と `ColorBy`、塗りの Geom の `Fill` と `FillBy`、`Fill` と `ColorBy`（`FillBy` がないとき）、area・band の `Outline` の色と `ColorBy`）。`FillBy` を線の Geom に与えたら `ArgumentException`
   - **両方を与えた area と band**: 塗りは `FillBy` の列で、縁（`Outline`）は `ColorBy` の列で、それぞれ別に分ける。塗りと縁はもともと別に記録するので（§5.5.3）、組み合わせの系列は作らない
   - **層の数え方**: 行 G7a の系列の色は層の位置で数える。分けた層も位置は 1 つで、ある層を分けても外しても、ほかの層の色は変わらない
@@ -1453,7 +1480,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **独自 Geom**: `CustomLayerSpec` に `ColorBy`・`FillBy` を与えたら `ArgumentException`。`IGeom` は自分で列を読み、系列に分ける口を持たない。`GeomFrame` から色のスケールを引く口は、使い手が出てから足す
   - **重なり**: 分けた bar と area は、同じ x の棒や塗りが重なり、カテゴリの番号の順に描く（ggplot2 の `position = "identity"`）。行 G5a から、分けた bar と area の既定は積み上げで、この重ね描きは `Position.Identity` を与えたときになる（下の「行 G5a の Position」）
   - **ビルダ**: `LineBuilder.ColorBy(CategoryRef)`、`AreaBuilder.ColorBy`・`FillBy(CategoryRef)`、`FillBuilder.ColorBy(CategoryRef)` と `ColorBy<T>(ColumnRef<T>)`。列が `Create` に渡した表の列でない、`default` の参照なら `ArgumentException`（ほかのチャネルと同じ）。線と area のビルダに数の列の口を作らないのは、取らないものを型で書けるからである
-  - **色の写像の値**（Grill の決定）: 12 の写像はすべて matplotlib から取る。viridis・plasma・inferno・magma・cividis は `lib/matplotlib/_cm_listed.py` の `_viridis_data` などの 256 色の表（0〜1 の実数）をそのまま 256 段にする。Blues・Greens・Oranges・Reds・RdBu・BrBG・PuOr は `lib/matplotlib/_cm.py` の `_Blues_data` などの色の並び（9 色か 11 色）を、`LinearSegmentedColormap.from_list` と同じく 0〜1 に等間隔に置いて 256 段（`image.lut` の既定 256、`lib/matplotlib/cm.py`）に線形に補間する。バイトへは matplotlib の `bytes=True` と同じく ⌊v · 255⌋（`colors.py` の `(lut * 255).astype(np.uint8)`）。値 t から位置へは `Colormap.__call__` と同じく ⌊t · 256⌋ で、t = 1 は 255、範囲の外は端の色、NaN は透明（`colors.py` の `_get_rgba_and_mask`）。d3-scale-chromatic の ColorBrewer の写像は B スプラインで補間するので値が違い、使わない（`design-decisions.md`）。`ColorMap` のコンストラクタも、与えた色を同じ形で 256 段にする。コードの中では、viridis など 5 つの数を 10^6 倍した `int` の表（matplotlib は小数 6 桁で書くので、n / 10^6 が解析と同じ double になる）、ColorBrewer の数を書かれたままの `double` の表で持つ。文字列で持って起動のときに解析すると、NativeAOT の実行ファイルが約 70 KB 大きくなった（行 G7c の実装、`docs/benchmarks/g7c-color.md`）。表は CPU の色の写しに使い、行 R3 の密度タイル（`DrawDensityTiles`）が同じ表を 256 × 1 のテクスチャにする（§4.2）
+  - **色の写像の値**（Grill の決定）: 12 の写像はすべて matplotlib から取る。viridis・plasma・inferno・magma・cividis は `lib/matplotlib/_cm_listed.py` の `_viridis_data` などの 256 色の表（0〜1 の実数）をそのまま 256 段にする。Blues・Greens・Oranges・Reds・RdBu・BrBG・PuOr は `lib/matplotlib/_cm.py` の `_Blues_data` などの色の並び（9 色か 11 色）を、`LinearSegmentedColormap.from_list` と同じく 0〜1 に等間隔に置いて 256 段（`image.lut` の既定 256、`lib/matplotlib/cm.py`）に線形に補間する。バイトへは matplotlib の `bytes=True` と同じく ⌊v · 255⌋（`colors.py` の `(lut * 255).astype(np.uint8)`）。値 t から位置へは `Colormap.__call__` と同じく ⌊t · 256⌋ で、t = 1 は 255、範囲の外は端の色、NaN は透明（`colors.py` の `_get_rgba_and_mask`）。d3-scale-chromatic の ColorBrewer の写像は B スプラインで補間するので値が違い、使わない（`design-decisions.md`）。`ColorMap` のコンストラクタも、与えた色を同じ形で 256 段にする。コードの中では、viridis など 5 つの数を 10^6 倍した `int` の表（matplotlib は小数 6 桁で書くので、n / 10^6 が解析と同じ double になる）、ColorBrewer の数を書かれたままの `double` の表で持つ。文字列で持って起動のときに解析すると、NativeAOT の実行ファイルが約 70 KB 大きくなった（行 G7c の実装、`docs/benchmarks/g7c-color.md`）。表は CPU の色の写しに使い、行 R3b の密度タイル（`DrawDensityTiles`）が同じ表を 256 × 1 のテクスチャにする（§4.2）
   - **スクラッチのコンパイル**: この形（3 つのスケールの型と `Scale` の 3 つの口、`ColorMap(params ReadOnlySpan<Color>)`、`LayerSpec.ColorBy`・`FillBy`、`PlotSpec.ScaleColor`、ビルダの口、§4.9 の例）を Core の中のスクラッチと、それを使うスクラッチの実行ファイルでコンパイルし、NativeAOT の発行でも警告 0 だった。`OrdinalScaleSpec` は、汎用の `WithTitle<T>` の制約（`ContinuousScaleSpec`）を満たさないので、band と同じく専用の多重定義が要る（CS0311）。`UniformColumn` は破棄する型でない（`using` は CS1674）
 - **行 G8 の text**（Issue #184）: データの行ごとに、文字列のラベルを 1 つ置く Geom（要件 G-3）
   - **ラベルの元**: `Text` は、カテゴリの列（`CategoryRef.ToColumnRef()`）ならカテゴリの名前、数の列（`Column<T>` か `UniformColumn`）なら値を `Format` で書いた文字列である。文字列の列の型は作らない。行ごとに違う文字列が無数にありうる列は、整形のキャッシュ（§5.6）に収まらず、描くたびに整形して確保する。カテゴリの列なら文字列の種類はカテゴリの数で抑えられ、名前の文字列は列が持つ（`design-decisions.md`）。数の列の値は、整数の列（`long`・`int`・`byte` の `Column<T>` と整数の `UniformColumn`）も `double` にして書く。2^53 を超える `long` は丸まり、`long` の日時も数として書かれる（日時の書式は軸の time のスケールだけで、§4.6）
@@ -1494,7 +1521,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - **スクラッチのコンパイル**: この形（`PositionSpec` と 4 つの派生、`Position`、`LayerSpec.Position`、3 つのビルダの `Position`、`PlotBuilder.ErrorBar(CategoryRef, …)`・`VRule(CategoryRef, …)`、`with` で `Padding` を変える写し）を Core の中のスクラッチと、それを使うスクラッチの実行ファイルでコンパイルし、NativeAOT の発行でも警告 0 で動いた。`private protected` のコンストラクタの summary は StyleCop の SA1642 の決まった文で始める
 - **行 G5b の Stat**（Issue #214）: 層の列から、描く値の表を作る（要件 G-4）。Stat の結果は、ワーカーが列の版ごとにデータ全体から作る派生の表で、層はその表の上で、Geom のふだんの道と Position（行 G5a）で描く（§4.3・§5.5.3）。ggplot2 と同じく、Stat を層に置き（`geom_bar(stat = "count")`、`geom_histogram` は bar と bin、`R/stat-.R`）、Vega-Lite のようにチャネルの `bin` と `aggregate` には書かない（`design-decisions.md`）
   - **y**: Stat を持つ層は、y を Stat の出力から取る。bin と count の層は `Y` を持たない（`default`。与えたら `ArgumentException`）。summary の層は、まとめる値の列を `Y`（bar）か `YMin`（errorbar。`YMax` は `default` か `YMin` と同じ列）に持つ。そのため step・area・bar の `Y` は、行 G5b から `required` でない。Stat のない層で `Y` が `default` なら、コンパイルが層の番号を書いた `ArgumentException`
-  - **Geom**: bin は bar・area・step、count はカテゴリの x の bar、summary はカテゴリの x の bar（`Value` の 1 つの値）と errorbar（`Low` から `High`）が取る。ほかの組（数の x の count・summary、カテゴリの x の bin、line・band・rect・rule・segment・text・image・独自 Geom の Stat）は、層の番号と Geom と Stat の種類を書いた `ArgumentException`。Stat を持つ層の `ColorBy`・`FillBy` はカテゴリの列に限り、数の列（要素ごとの連続の色、行 G7c）なら層の番号を書いた `ArgumentException`（Stat の出力には行ごとの値がなく、数の色の列で塗れない）。ggplot2 の `stat_count` は数の x でも値ごとに数える（`R/stat-count.R`）が、1e9 行では値の種類に上限がないので取らない。ggplot2 の `stat_summary` の既定の Geom は pointrange（`R/stat-summary.R`）だが、点の Geom は行 R3 で、そのときに足す
+  - **Geom**: bin は bar・area・step、count はカテゴリの x の bar、summary はカテゴリの x の bar（`Value` の 1 つの値）と errorbar（`Low` から `High`）が取る。ほかの組（数の x の count・summary、カテゴリの x の bin、line・band・rect・rule・segment・text・image・独自 Geom の Stat）は、層の番号と Geom と Stat の種類を書いた `ArgumentException`。Stat を持つ層の `ColorBy`・`FillBy` はカテゴリの列に限り、数の列（要素ごとの連続の色、行 G7c）なら層の番号を書いた `ArgumentException`（Stat の出力には行ごとの値がなく、数の色の列で塗れない）。ggplot2 の `stat_count` は数の x でも値ごとに数える（`R/stat-count.R`）が、1e9 行では値の種類に上限がないので取らない。ggplot2 の `stat_summary` の既定の Geom は pointrange（`R/stat-summary.R`）だが、点の Geom は行 R3a で作り、pointrange は行 R3e で足す
   - **グループと Position**: Stat は層の色のグループ（`ColorBy` か `FillBy` のカテゴリ、行 G5a）ごとに計算し、その後で Position を当てる。ggplot2 も、グループごとに Stat を計算してから Position を当てる（`R/plot-build.R` の `compute_statistic` の後の `compute_position`）。そのため、色で分けたヒストグラムは既定で積み上がる
   - **bin の区切り**: Vega の刻み（`vega-statistics/src/bin.js`）で選ぶ。範囲の幅 span から level = ⌈log₁₀ `MaxBins`⌉、刻み = 10^(round(log₁₀ span) − level) とし、⌈span / 刻み⌉ が `MaxBins` を超える間は 10 倍する。次に、刻みを 5 で割って区切りの数が `MaxBins` 以下に収まればそれを取り、続けてその刻みを 2 で割って収まればそれを取る（`divide` [5, 2] を順に試す）。端は刻みの倍数に丸める（下端は ⌊min / 刻み⌋ · 刻み、上端は ⌈max / 刻み⌉ · 刻み）。`Step` を与えたらそれを刻みに、`Anchor` を与えたら端がその値を通るようにずらす。Vega-Lite の既定 `maxbins` 10 と `nice` と同じで、端が軸の目盛りと同じきりのよい数になる。ggplot2 の既定 30 個（範囲から決め、使うよう促す表示を出す、`R/bin.R` の `fix_bin_params`）と、numpy・matplotlib の 10 個（範囲の端そのもの）は取らない（`design-decisions.md`）
   - **区間**: [a, b) とし、最後の区間だけ [a, b]（最大の値は最後の区間に入る）。numpy（`histogram` の「The last bin includes the right edge」）、matplotlib、Vega（最大の値を最後の区間に寄せる、`Bin.js`）と同じ。ggplot2 は (a, b]（`closed = "right"`）
@@ -1554,7 +1581,7 @@ public sealed class ImageBuilder                         // 行 G9。Image
   - 写像は差で計算する: 値 v の画素は `(d(v) − 下端の差) / (上端の差 − 下端の差)` に幅を掛けた値で、d(v) は §3.6 の差である。点と domain は同じ原点で引く
 - **位置のスケール**は、データの値を「スケールの空間」（log なら log10 した値、日時なら time のスケールの単位の値）に写す。スケールの空間の値は §3.6 の原点と差の組で持つ。ズームとパンはスケールの空間でのビュー範囲（§6.2）を変えるだけで、データを写し直さない。画面の座標は、ビューから座標系の変換（§4.4）で求める
 - **行 G2 の位置のスケール**（Issue #94）: 連続の位置のスケールは、linear・log・symlog・pow（sqrt を含む）・time と、`IScale` で足した変換である。カテゴリのスケール（band・point）は行 G7b、色のスケール（ordinal・sequential・diverging）は行 G7c、目盛りと nice は行 G3
-- **行 G7b のカテゴリ**（Issue #159）: カテゴリの位置のスケールは band で、カテゴリの x の bar が使う。point のスケールとカテゴリの x の line・step は、散布の point と一緒に行 R3、カテゴリの x の errorbar・rule は、並べ（dodge）と一緒に行 G5a で作る（§4.1 の「行 G5a の Position」）。y はカテゴリを取らない（横の棒は flip の bar で描く）
+- **行 G7b のカテゴリ**（Issue #159）: カテゴリの位置のスケールは band で、カテゴリの x の bar が使う。point のスケールとカテゴリの x の line・step は、行 R3e、カテゴリの x の errorbar・rule は、並べ（dodge）と一緒に行 G5a で作る（§4.1 の「行 G5a の Position」）。y はカテゴリを取らない（横の棒は flip の bar で描く）
   - **列**: `CategoricalColumn` は、行ごとのカテゴリの番号（`int` のチャンク）と名前の並びを持つ。メモリの上で不変で、`Version` は変わらない（追記とメモリマップのファイルはストリーミングの行 C4）。`Column.Categorical(values)` のカテゴリは、値の名前を序数の比較で昇順に並べたもの（R の `factor` の既定の水準と Vega-Lite の既定の並びが昇順。`src/library/base/R/factor.R`・`src/sort.ts`）。`Column.Categorical(values, categories)` は与えた順で、並びにない値は `ArgumentException`。カテゴリの名前の null・空・重複は `ArgumentException`。値の null は欠け（番号 −1）で、描かない（数の列の NaN と同じ）
   - **参照**: `ColumnRef<T>` は数の型に限るので、カテゴリの列は `CategoryRef`（`table.Cat("name")`）で指す。仕様の `BarLayerSpec.X` は型を忘れた `ColumnRef` のままで、カテゴリの列を指したら band で読む
   - **写像**（d3-scale の `src/band.js` と同じ意味）: カテゴリの数 n、x に沿った画素の数 W（flip では縦、polar では伸ばした空間の沿う向き）で、step = W / max(1, n − `PaddingInner` + 2 · `PaddingOuter`)、始まり = (W − step · (n − `PaddingInner`)) · `Align`、band の幅 = step · (1 − `PaddingInner`)。番号 i の band は [始まり + step · i, その + band の幅]。`Reverse` なら番号の順を逆にする（n − 1 − i）。既定の余白は Vega-Lite の bar の既定（`barBandPaddingInner` 0.1、`bandPaddingOuter` は内側の半分、`src/config.ts`・`src/scale.ts`）。d3 の既定は余白 0 で、棒が隙間なく並ぶ
@@ -1579,8 +1606,8 @@ public sealed class ImageBuilder                         // 行 G9。Image
 - **行 G6a の学習**（Issue #230）: 二次のスケール（`ScaleX2`・`ScaleY2`）の domain は、そこに載る層（`SecondaryX`・`SecondaryY`）だけから、主のスケールと同じ規則（与えた domain、学習、nice、zero、基準線、無限大の端の例外）で学ぶ。主のスケールは載らない層だけから学ぶ。x と y の学びは向きごとに独立で、`SecondaryY` だけの層は x を主の `ScaleX` から学ぶ
 - **非線形のスケール**（log、symlog、sqrt、power）
   - M4 の経路（時系列）: ピラミッドは単調変換に対して不変なので（§3.3）、CPU が出力の頂点ごとに変換する
-  - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない。空間タイル索引を使う散布は、索引の写し（§3.4。スケールの空間の値を持つ）を読み、チャンクごとの写しを作らない。どの散布が索引を使うかは行 R3 で決める
-- 色・大きさ・形のスケールの写像は SIMD のカーネルで行い、結果はチャンクごとに持つ。色のスケールのうち連続のものは、GPU では 256 色のテクスチャの参照で行う。行 G7c の連続の色は、要素の数が 131,072 以下に限られるので、フレームごとに CPU で写す（下）。チャンクごとに持つ形は、点の数で色を写す行 R3 で作る。行 G9 の数のラスタは、GPU で写す最初の形で、タイルの値（R32_FLOAT）を、シェーダが中のスケールの変換（linear・log・symlog・pow の 4 つ）でスケールの空間へ写し、下の sequential か diverging の式で t を求め、色の表のテクスチャの、写像の行を点で引く。CPU の `ColorMap.Map`（⌊t · 256⌋、t = 1 は 255、範囲の外は端の色、NaN は透明）と同じ添字になるよう、シェーダも t から ⌊t · 256⌋ を整数で求めて表を引く（テクスチャの補間を使わない）。利用者の `IScale` はシェーダで走らせられないので、数のラスタを塗る色のスケールが `TransformScaleSpec` なら、層の番号を書いた `ArgumentException`（Issue #196）
+  - 生の点の経路（散布）: スケールの空間の値の写しをチャンクごとに遅延して作り、版を付けて持つ。シェーダでは変換しない。空間タイル索引を使う散布は、索引の写し（§3.4。スケールの空間の値を持つ）を読み、チャンクごとの写しを作らない。索引を使うのは、行の数が 131,072 を超える層である（行 R3a、§5.5.2）。チャンクごとの写しを GPU に置く道は作らない（Issue #431 の決定 3）
+- 色・大きさ・形のスケールの写像は SIMD のカーネルで行い、結果はチャンクごとに持つ。色のスケールのうち連続のものは、GPU では 256 色のテクスチャの参照で行う。行 G7c の連続の色は、要素の数が 131,072 以下に限られるので、フレームごとに CPU で写す（下）。チャンクごとに持つ形は、点の数で色を写す行 R3d で作る。行 G9 の数のラスタは、GPU で写す最初の形で、タイルの値（R32_FLOAT）を、シェーダが中のスケールの変換（linear・log・symlog・pow の 4 つ）でスケールの空間へ写し、下の sequential か diverging の式で t を求め、色の表のテクスチャの、写像の行を点で引く。CPU の `ColorMap.Map`（⌊t · 256⌋、t = 1 は 255、範囲の外は端の色、NaN は透明）と同じ添字になるよう、シェーダも t から ⌊t · 256⌋ を整数で求めて表を引く（テクスチャの補間を使わない）。利用者の `IScale` はシェーダで走らせられないので、数のラスタを塗る色のスケールが `TransformScaleSpec` なら、層の番号を書いた `ArgumentException`（Issue #196）
 - **行 G7c の色のスケール**（Issue #168）: `ColorBy`・`FillBy`（§4.1）の値を色に写す。3 種で、すべての層の `ColorBy`・`FillBy` が 1 つの `PlotSpec.ScaleColor` を共有する
   - **既定**: `ScaleColor` が null なら、色の列がカテゴリなら `Scale.Ordinal()`、数（time の `long` を含む）なら `Scale.Sequential()`（viridis、linear）。色の列がなければ使わない
   - **検査**: ordinal に数の列、sequential か diverging にカテゴリの列を与えたら、列の名前とスケールの種類を書いた `ArgumentException`。色の列がカテゴリと数で混ざっても同じ。カテゴリなら、色の列はどれも同じカテゴリの並び（同じ列か、名前の並びが序数で同じ列）で、違えば `ArgumentException`（行 G7b の band と同じ）。中のスケールの検査（`with` の domain など）は位置のスケールと同じ（§4.8）。中のスケールが time なら、色の列は `long` の日時
@@ -1605,10 +1632,10 @@ public sealed class ImageBuilder                         // 行 G9。Image
 座標系の契約は「スケールの空間の位置（x, y, z）からクリップ空間への写像」で、倍精度の 4×4 の変換と、その変換の原点（§3.6）で表す。非線形の座標系は、変換に加えて頂点ごとの写像を持つ。
 
 - cartesian: ビリオン級のすべての経路に対応する。z = 0 の正射影の変換を返す。flip は x と y の役割を入れ替える（行 G10、下）
-- polar: 線と面は、x に沿った画素の区切りで M4 を引き、伸ばした（角度の画素, 半径の画素）の空間で cartesian と同じに計算して、記録の段で CPU が極座標へ写す（行 G11、下）。画素で抑えるので、要件 G-7 の 1e7 点を超えても 1 フレームの仕事は増えない。点は頂点シェーダで写す（行 R3 の point の Geom）
+- polar: 線と面は、x に沿った画素の区切りで M4 を引き、伸ばした（角度の画素, 半径の画素）の空間で cartesian と同じに計算して、記録の段で CPU が極座標へ写す（行 G11、下）。画素で抑えるので、要件 G-7 の 1e7 点を超えても 1 フレームの仕事は増えない。点は、層の行の数が 131,072 以下なら CPU で写し（行 R3a）、それを超える層は頂点シェーダで写す（行 R3e。それまでは例外、§5.5.2）
 - 3D の cartesian（v1.x、§13.2）は、同じ契約で透視または正射影の変換を返す。v1 の契約を変えずに足せる（不変条件 12）
-- **行 G4**（Issue #120）: cartesian の変換を Core の internal の型として作る。倍精度の 4×4 の変換を軸ごとの因子（domain の下端だけ動かす、domain の幅からパネルの幅への拡大、反転、パネルの端へ動かす）で持ち、x・y の原点（`long`、§3.6）と合わせて、スケールの空間の原点からの差を描画先の物理画素へ写す（パネルの矩形、reverse を含む。clamp は写す前に差に当てる）。Geom の CPU の写し方（§5.5.3）と `GeomFrame` が、これを使う。因子は今の線の写し方（§4.8 の「描く」）の式と同じ順に当てるので、画素は変わらない。因子を掛け合わせた行列の要素で写すと丸めが変わり、行 G1〜G3 の厳密に比べるテストで画素が 1e-14 ずれた（Issue #124）。行列の要素は、GPU に渡す行 R3 で因子から作る。公開の契約（`CoordSpec` と flip）は行 G10、polar は行 G11、GPU でこの行列を当てる `SetTransform` はデータを GPU に置き続ける行 R3 で作る
-- **行 G10**（Issue #136）: 座標系の公開の仕様は `PlotSpec.Coord`（`CoordSpec`）で、行 G10 は `CartesianCoordSpec` の flip を作る。ggplot2 の `coord_flip` と同じく（リファレンスの `coord_flip` のページ: 「`scale_x_*()` functions apply to the vertical direction, whereas `scale_y_*()` functions apply to the horizontal direction」）、flip は x のデータを縦の軸（パネルの左、値が増えると上へ）、y のデータを横の軸（パネルの下、右へ）に置く。`ScaleX` は x のデータに当たったままで、reverse・clamp もデータの側に付いたまま、軸の場所だけが替わる。変換は、x のデータを縦の画素へ、y のデータを横の画素へ写す因子で持つ（cartesian の内部の型のまま）。4×4 の変換の公開の契約（不変条件 12）は、最初の公開の使い手である行 R3 の `SetTransform` と一緒に出す。G10 の公開の口に 2D だけの型は足さない
+- **行 G4**（Issue #120）: cartesian の変換を Core の internal の型として作る。倍精度の 4×4 の変換を軸ごとの因子（domain の下端だけ動かす、domain の幅からパネルの幅への拡大、反転、パネルの端へ動かす）で持ち、x・y の原点（`long`、§3.6）と合わせて、スケールの空間の原点からの差を描画先の物理画素へ写す（パネルの矩形、reverse を含む。clamp は写す前に差に当てる）。Geom の CPU の写し方（§5.5.3）と `GeomFrame` が、これを使う。因子は今の線の写し方（§4.8 の「描く」）の式と同じ順に当てるので、画素は変わらない。因子を掛け合わせた行列の要素で写すと丸めが変わり、行 G1〜G3 の厳密に比べるテストで画素が 1e-14 ずれた（Issue #124）。行 R3a の常駐の点は、行列でなく、セルごとの基準の画素と倍率（因子を倍精度で畳んだ値）を GPU に渡す（§5.5.2 の「GPU での写し方と精度」）。公開の契約（`CoordSpec` と flip）は行 G10、polar は行 G11、GPU で 4×4 の行列を当てる公開の `SetTransform` は、最初の公開の使い手になる 3D の行 K1 で作る（Issue #431 の決定 11。行 R3 で作るとしていた Issue #136 の決定を変えた）
+- **行 G10**（Issue #136）: 座標系の公開の仕様は `PlotSpec.Coord`（`CoordSpec`）で、行 G10 は `CartesianCoordSpec` の flip を作る。ggplot2 の `coord_flip` と同じく（リファレンスの `coord_flip` のページ: 「`scale_x_*()` functions apply to the vertical direction, whereas `scale_y_*()` functions apply to the horizontal direction」）、flip は x のデータを縦の軸（パネルの左、値が増えると上へ）、y のデータを横の軸（パネルの下、右へ）に置く。`ScaleX` は x のデータに当たったままで、reverse・clamp もデータの側に付いたまま、軸の場所だけが替わる。変換は、x のデータを縦の画素へ、y のデータを横の画素へ写す因子で持つ（cartesian の内部の型のまま）。4×4 の変換の公開の契約（不変条件 12）は、最初の公開の使い手になる行 K1 の `SetTransform` と一緒に出す（行 R3a の常駐の点の命令は internal で、公開の使い手にならない。Issue #431 の決定 11）。G10 の公開の口に 2D だけの型は足さない
   - **仕様として持つ理由**: ggplot2 のリファレンスは `coord_flip` を superseded とし、Geom と Stat の `orientation` で x と y を入れ替える形を勧める（同じページ: 「`coord_flip()` can easily be replaced by swapping the x and y aesthetics」）。HyperPlot の Geom は向きを推定しない。x に沿う Geom は x の単調性と画素の境界で大きなデータを抑えるので（§5.5）、向きを Geom ごとに持たせると、その道を Geom ごとに 2 通り持つことになる。座標系の 1 か所で向きを決め、Geom の計算は 1 通りに保つ
   - **大きなデータの道**: Geom は「沿う向き（x のデータの軸）× 横切る向き（y のデータの軸）」の座標で、flip によらず同じに計算する（§5.5.1・§5.5.3）。flip では沿う向きが縦になり、M4 と画素列ごとの Geom は画素行（H 本、境界は H + 1）ごとになり、4W の上限は 4H になる。記録の段で座標を入れ替える: 折れ線と矩形は CPU で点の横と縦を入れ替え、area と band の台形は `RenderList.DrawColumns` の向き `ColumnAxis.Horizontal`（辺が横の台形）で記録する（§5.1）。切り抜きはパネルの矩形のまま
   - **Geom の意味**: データの意味を保ち、画面の向きだけを入れ替える。bar は横向きの棒（`Baseline` は縦の線）、errorbar の端は縦の短い線、`VRule`（x の列）は横の線、`HRule`（y の列）は縦の線、step の `Mode` はデータの順（After は x に沿って進んでから y）。凡例の見本は変えない
@@ -1918,7 +1945,7 @@ public sealed record Theme                    // コンストラクタは privat
 - **差分（要件 G-13）**: 前のコンパイルの結果があれば、新しい仕様とノードの `Id` で比べ、変わった段だけをやり直す。`Id` が同じノードは変わっていない。違うノードは中身で分ける。表かレイヤーの列の参照が変わったら「データ」で、新しく要る Y の列のピラミッドを作り、要らなくなったものを解放し、domain を学び直す。スケールの種類か中身（`Domain`・`Zero`・symlog の C・pow の k・time の単位と起点・transform の `IScale` の参照）が変わったら「スケール」で、domain を決め直して M4 を引き直す。線の見た目（`Style`）か、スケールの `Reverse`・`Clamp` だけが変わったら「見た目」で、M4 の出力をそのまま使って記録し直す（reverse と clamp は画素への写像だけを変え、境界を変えない、§4.2）。レイヤーの数か並びが変わったら、残ったレイヤーの索引を使い回して、ほかの段をやり直す。差分は、作ったピラミッドの数・M4 を引いた数・記録した数を internal の数え口で数え、テストがそれを見る
 - **ヘッドレスの待ち方**: `HeadlessRenderer.Render(PlotSpec)`（§7.5）は、描くたびに、使うピラミッドと X の統計が列の今の世代でそろうのを待ってから描く。ヘッドレスの出力は、いつ描いても同じでなければならないからである。ヘッドレスは UI のスレッドではないので、不変条件 7 に触れない。上の段落の暫定の表示とホストへの通知は、`PlotEngine` の行 W1b1・W1b2 で作る（下の「`PlotEngine` の待たない描き方」）
   - ピラミッドは internal の `MinMaxPyramid<T>.WhenComplete()`（§3.3）で待つ。`Completion` は最初の構築だけを表し、`Invalidate` の後の作り直しを知らせないからである。`WhenComplete` は、`IsComplete` が真ならすでに終わった `Task` を返し、偽なら世代の古いチャンクをすべて要求して、それらができて `IsComplete` が真になったときに終わる `Task` を返す
-  - 散布の空間タイル索引は internal の `SpatialIndex.WhenComplete()`（§3.4）で待つ。配線は行 R3 で作る
+  - 散布の空間タイル索引は internal の `SpatialIndex.WhenComplete()`（§3.4）で待つ。配線は行 R3a で作る（§5.5.2 の「索引ができるまで」）
   - X が `Column<T>` なら、統計のないチャンク（`Invalidate` で捨てられたものを含む）があるときだけ `PlotWorkerPool.PrecomputeStats` を出して待つ
   - 版: 待つ前に、各レイヤーの X と Y の列の `Version` を読み、M4 を引いた後にその値を「引いたときの版」として持つ。次の `Render` は、読んだ版が引いたときの版と違えば引き直す。`Invalidate` は読み出しと並行してよい（`Column<T>` の XML ドキュメントの契約）ので、待ちや抽出の途中に来ることがある。そのとき持つ版は列の版より古いままなので、次の `Render` が引き直す。抽出の後に版を読むと、古い値で引いた結果に新しい版が付き、次の `Render` が引き直さない（PR #82 のレビュー）
   - 失敗: ピラミッドが `Fault` を持つか、`WhenComplete` か `PrecomputeStats` の `Task` が例外で終わったら、`Render` はその例外を包まずに投げ直す（`ExceptionDispatchInfo`）。失敗したチャンクは列の世代が進むまで作り直されない（§3.3 の規則 3）ので、`Render` は暫定の画像を描かない。`Fault` はピラミッドに残り、`WhenComplete` は呼ぶ前の `Fault` で終わる（§3.3）。そのため列を `Invalidate` しても、`HeadlessRenderer` がその列のピラミッドを持つ間（その列を描く仕様が続く間）は、その列を描けない。ホストで同じことが困るので、`PlotEngine` は行 W1b1 から、失敗を投げずに通知し、列の版が変わったら作り直す（下の「`PlotEngine` の待たない描き方」、Issue #282 の決定 15。`HeadlessRenderer` はこのまま。PR #82 のレビュー）
@@ -2028,8 +2055,8 @@ var hover = (HoverTool)view.Engine.Bindings.First(b => b.Tool is HoverTool).Tool
 
 // 散布図: カテゴリで色分けし、地域ごとのファセット
 var scatter = Plot.Create(points)
-    .Point(x: px, y: py, p => p.Color(category).Size(2).Opacity(0.6))
-    .ScaleColor(Scale.Categorical(Palettes.Tableau10))
+    .Point(x: px, y: py, p => p.ColorBy(category).Size(2).Opacity(0.6))
+    .ScaleColor(Scale.Ordinal(Palettes.Tableau10))
     .FacetWrap(region, columns: 3)
     .Build();
 ```
@@ -2040,7 +2067,7 @@ var scatter = Plot.Create(points)
 - データ層の核（列の型、`PlotWorkerPool`・`MinMaxPyramid<T>`・`MinMax<T>`・`M4`・`M4Batch`、§3.3・§5.5.1）も公開する。行 S1（1e9 点の時系列をヘッドレスで描くサンプル）が G1 の `DataTable` より前に来るので、利用者とサンプルが列・ピラミッド・M4 を直接つなげる必要がある（オーナーの決定、2026-10-28）。ジェネリックの公開の型が NativeAOT のサンプルの大きさに与える分（`.cursor/rules/aot.mdc`）は、サンプルのできる S1 で最初に測る
 - 色の型 `Color`（§5.2）は利用者の書く型なので公開する（`HyperPlot` 名前空間）。GPU の契約（`IGpuBackend`・`IRenderTarget`・`RenderTargetDescription`・`DepthFormat`・`GpuDeviceLostException`・`GpuFrameTime`・`FrameScope`、`HyperPlot.Rendering`）は「バックエンドが実装する契約」として、`HeadlessRenderer`（`HyperPlot.Rendering`、§7.5）は画像の出力とテストに使う型として、`GoldenImage`・`ImageTolerance`・`ImageDifference`・`ImageMismatchException`（`HyperPlot.Testing`、§10.1、行 S3）は利用者のテストが描いた画像を比べる型として、`RenderList`・`LineStyle`・`LineDash`（§5.1、行 R2）は S1 のサンプルが GoG の層より前に線を描く型として、`D3D11Backend`（`HyperPlot.Rendering.D3D11`、§5.3）は D3D11 のバックエンドとして公開する（行 R1）
 - 行 G4 は、Geom の仕様（`StepLayerSpec`・`StepMode`・`AreaLayerSpec`・`BandLayerSpec`・`BarLayerSpec`・`RectLayerSpec`・`RuleLayerSpec`・`SegmentLayerSpec`・`ErrorBarLayerSpec`・`CustomLayerSpec`）、Geom を足す口（`IGeom`・`GeomRanges`・`GeomFrame`）、ビルダ（`PlotBuilder` の Geom のメソッド、`AreaBuilder`・`FillBuilder`）、`LayerSpec.Label`、`RenderList.DrawColumns` と `ColumnTrapezoid`（§5.1）を公開する（Issue #120）。`LineLayerSpec.Label` は基底に移る。行 G4 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした
-- 行 G10 は、座標系の仕様（`CoordSpec`・`CartesianCoordSpec`・`Coord`、`PlotSpec.Coord`、`PlotBuilder.Coord`）、`GeomFrame.Flipped`・`Map`、`RenderList.DrawColumns` の向き（`ColumnAxis`）を公開する（Issue #136）。4×4 の変換の型は R3 で公開する
+- 行 G10 は、座標系の仕様（`CoordSpec`・`CartesianCoordSpec`・`Coord`、`PlotSpec.Coord`、`PlotBuilder.Coord`）、`GeomFrame.Flipped`・`Map`、`RenderList.DrawColumns` の向き（`ColumnAxis`）を公開する（Issue #136）。4×4 の変換の型は、行 K1 で公開する（Issue #431 の決定 11）
 - 行 G11 は、polar の仕様（`PolarCoordSpec`・`PolarTheta`・`Coord.Polar`）、`GeomFrame.Polar`、`RenderList.DrawSectors` と `SectorTrapezoid` を公開する（Issue #145）
 - 行 G7a は、仕様の線 `StrokeSpec`、名前つきの色 `Colors`、パレット `Palette`・`Palettes`、`Theme.Palette`、`GeomFrame.SeriesColor` を公開する（Issue #153）。線の Geom の `Style` の型は `LineStyle` から `StrokeSpec` に、塗りの `Fill` は `Color` から `Color?` に、`AreaBuilder.Outline` の引数は `StrokeSpec?` に替わる（仕様の型を直接書く使い手だけが影響を受ける）
 - 行 G7b は、カテゴリの列 `CategoricalColumn`（`Column.Categorical`）、`CategoryRef`・`DataTable.Cat`、`BandScaleSpec`・`Scale.Band`・`ScaleSpecExtensions.WithTitle(BandScaleSpec, string?)`、`PlotBuilder.Bar(CategoryRef, …)`、`GeomFrame.BandX`・`BandWidth` を公開する（Issue #159）
@@ -2285,7 +2312,7 @@ renderer.Render(plot with { Theme = Theme.Dark });      // 見た目だけが変
 - 行 T1 は、テキストの型（`HyperPlot.Rendering` の `TextStyle`・`FontWeight`・`TextAlign`・`TextBaseline`・`TextRotation`・`TextMetrics`・`TextEngine`・`ITextBackend`・`ShapedText`・`PlacedGlyph`・`TextLine`・`GlyphBox`）と、`RenderList.DrawText`・`IGpuBackend.Text`・`HeadlessRenderer.MeasureText` を公開する（§5.6、Issue #103）。`ITextBackend` とその型は、`IGpuBackend` と同じく「バックエンドが実装する契約」である
 - 行 G2 は、位置のスケールの型（`ContinuousScaleSpec`・`LogScaleSpec`・`SymlogScaleSpec`・`PowScaleSpec`・`TimeScaleSpec`・`TimeUnit`・`TransformScaleSpec`、§4.1）と、変換を足す口 `IScale`（§4.2、要件 N-6）を公開する（Issue #94）。`LinearScaleSpec` は基底が `ContinuousScaleSpec` に変わり、`Zero`・`Reverse`・`Clamp` を持つ
 - 行 D2 は、M4 の原点の型 `ScaleOrigin`（§5.5.1）と、整数の等間隔の列の口 `Column.UniformInteger`・`UniformColumn.IsInteger`・`UniformColumn.TryGetInteger`（§3.1）を公開する（Issue #11）。`M4.Extract`・`M4Batch`・`PlotWorkerPool.Extract` はもともと公開で、引数に `ScaleOrigin` が加わる
-- 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色、G7）と `.WithTitle`（G3）、`.Interact`（I1）、`.Point`（R3）と `.ScaleColor`（G7）、`.FacetWrap`（G6b）、`view.Spec`（W1a）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
+- 行 G1 は、表（`DataTable`・`DataTableBuilder`・`ColumnRef`・`ColumnRef<T>`、§3.1）と、仕様とビルダ（`SpecId`・`SpecNode`・`PlotSpec`・`LayerSpec`・`LineLayerSpec`・`ScaleSpec`・`LinearScaleSpec`・`Scale`・`Plot`・`PlotBuilder`・`LineBuilder`、§4.1）を公開する。上の例は将来の形で、`Colors.Blue`（名前つきの色、G7）と `.WithTitle`（G3）、`.Interact`（I1）、`.Point`（R3a）と `.ScaleColor`（G7）、`.FacetWrap`（G6b）、`view.Spec`（W1a）は、それを作る行で足す。行 G1 で書ける形は次のとおりで、これを `src/` と同じ設定のスクラッチでコンパイルした（Issue #76、PR #77）
 
 ```csharp
 // 行 G1: 表から線のプロットを宣言し、ヘッドレスで描く
@@ -2315,9 +2342,9 @@ Core はフレームごとに、層（§5.4）ごとの `RenderList` を作る�
 
 | コマンド | 内容 |
 | --- | --- |
-| `SetClip` / `SetTransform` | パネルの矩形、スケールの空間からクリップ空間への 4×4 の変換（倍精度から作った float の行列と原点、§3.6）。2D では z を使わない。行 R2 は `SetClip` だけを持ち、座標は物理画素である。`SetTransform` は、データを GPU に置き続けて GPU で写す最初の行 R3（生の点の常駐）で足す。行 G1 の線と行 G4 の Geom は、CPU が倍精度で画素まで計算するので（§3.6・§5.5.3）使わない（Issue #76、#120） |
+| `SetClip` / `SetTransform` | パネルの矩形、スケールの空間からクリップ空間への 4×4 の変換（倍精度から作った float の行列と原点、§3.6）。2D では z を使わない。行 R2 は `SetClip` だけを持ち、座標は物理画素である。`SetTransform` は、行 K1 で足す。行 R3a の常駐の点は、internal の命令が自分のセルの表を持つ（Issue #431 の決定 11）。行 G1 の線と行 G4 の Geom は、CPU が倍精度で画素まで計算するので（§3.6・§5.5.3）使わない（Issue #76、#120） |
 | `DrawPolyline` | 折れ線。線分のインスタンスに展開する（アンチエイリアス・太さ・破線、行 R2。結合は丸・マイター・面取り、端は丸・平ら・四角、破線は 8 区間まで、行 R4） |
-| `DrawMarkers` | 点のインスタンス（形・大きさ・色。SDF） |
+| `DrawMarkers` | 点のインスタンス（形・大きさ・色）。点 1 つを 1 個の四角にして、ピクセルシェーダが形を切り抜く（行 R3a、下の「マーカー」） |
 | `DrawRects` | 矩形のインスタンス（棒・タイル・背景・選択範囲）。行 G3 は塗りつぶしの `DrawRect` を足す（パネルの背景、§4.6） |
 | `DrawColumns` | 画素列ごとの台形のインスタンス（area・band の塗り、行 G4、§5.5.3） |
 | `DrawSectors` | 極座標の台形のインスタンス（polar の bar・rect・area・band の塗り、行 G11、§4.4） |
@@ -2326,7 +2353,8 @@ Core はフレームごとに、層（§5.4）ごとの `RenderList` を作る�
 | `DrawText` | 文字列・位置・`TextStyle`。描くときにバックエンドが整形し、アトラスのグリフを並べる（§5.6、行 T1） |
 
 - **3D への備え**: 各コマンドは深度のモード（なし・検査・検査と書き込み）を持つ。位置が 3 成分のインスタンスは、2 成分のものとは別の記録の形（別のストリーム）に入れる。1 つの記録に使わない z を持たせないので、2D のマークの記録は大きくならない。v1 の 2D はすべて深度のモード「なし」と 2 成分の記録を使う。深度のモードの欄は最初から記録に持ち（v1 は「なし」だけ）、3 成分の記録のストリームは行 K1 で足す（§13、不変条件 12）
-- **常駐キャッシュ**（行 G9 から。GPU にデータを置き続ける最初の行。行 R3 の予定だったが、ラスタのタイルが先に要るので行 G9 で作り、行 R3 は生の点のチャンクと密度タイルでそれを使う、Issue #196）: GPU に置くもの（ラスタのタイル、生の点のチャンク、密度タイル、色の表）は Core の `ResidencyCache` が、バイトの予算と LRU で管理する（§5.2。グリフのアトラスは行 T1 の `TextEngine` が持つまま）。資源は「何から作ったか」（列・チャンク・版）を記述子として持ち、GPU 側が失われても Core の状態から作り直せる（不変条件 10、要件 N-9）
+- **常駐キャッシュ**（行 G9 から。GPU にデータを置き続ける最初の行。行 R3 の予定だったが、ラスタのタイルが先に要るので行 G9 で作り、行 R3a が生の点のページで、行 R3b が密度タイルでそれを使う、Issue #196）: GPU に置くもの（ラスタのタイル、生の点のチャンク、密度タイル、色の表）は Core の `ResidencyCache` が、バイトの予算と LRU で管理する（§5.2。グリフのアトラスは行 T1 の `TextEngine` が持つまま）。資源は「何から作ったか」（列・チャンク・版）を記述子として持ち、GPU 側が失われても Core の状態から作り直せる（不変条件 10、要件 N-9）
+  - **生の点のページ**（行 R3a）: キャッシュは、タイルの 2 つのプールに続けて、点のページのプールを持つ。ページは、索引の Morton 順の写しの 65,536 点の並び（最後のページは残りの点）で、1 点が 12 バイト（セルの中の x と y の位置の整数と、セルの番号。§5.5.2 の「常駐のセルとページ」）、ページ 1 つが 786,432 バイトである。最後のページは、残りの点だけの大きさの自分のバッファに置く。鍵は、索引、索引の版、ページの番号。バックエンドは、65,536 点のページを、構造化バッファの決まった大きさの枠に置く。予算（256 MB）は中身のバイトで数え、3 つのプールで分け合う。1 フレームに送る量の上限（`FrameUpload`、4 MB）もタイルと分け合い、点だけなら 1 フレームに 5 ページである。セルの表（部分ごと、毎フレーム。1 つ 24 バイト）は、予算と上限に数えない動的なバッファである。失われた装置の後は、ほかの資源と同じく Core の状態から送り直す（不変条件 10）
 - バックエンドは記述子に従って資源を作り、コマンドを描くだけで、どのデータを置くかは決めない
 
 **折れ線（行 R2）**: 公開の `RenderList` に、線を描く命令を記録する。GoG の層（行 G1）より前の行 S1 のサンプルも、これで M4 の線を描く（オーナーの決定、2026-10-28、Issue #42）。
@@ -2401,6 +2429,25 @@ public enum ColumnAxis { Vertical, Horizontal }    // 行 G10。Horizontal: Left
   - 意味は SVG 2 §13.5.7（Computing the shape of the stroke）と同じ（行 R4）: 線をオンの区間で切り、各区間の両端に `Cap` を付け、区間の内側にある結合だけに `Join` を付ける。奇数個の繰り返しは SVG 1.1 §11.4 の `stroke-dasharray` と、Canvas の `setLineDash` の手順 2 と同じ。結合の点の累計の長さがオンの区間の内側（端ちょうどは除く）にあるときだけ結合の部品を作る。区間がちょうど結合の点で終わるときは、そこが端になる
   - 長さ 0 のオンの区間（`On` 0 の点の列）は、`Round` なら円、`Square` なら線分の向きにそろった一辺 2r の正方形を描き、`Butt` なら描かない（SVG 2 §13.5.7 の、始まりと終わりが同じ位置の区間に 2 つの端を付ける形。XylemUI の `QuadShaders.cs` 276 行目の `DashDrawn` も、長さ 0 の区間を平らな端でだけ描かない）
   - 丸の結合と丸の端の 2 区間の破線（既定）は、行 R2 のとおり各区間がカプセルになる。3 区間以上なら、丸でも部品の和集合で描き、結合は円、端は円になる
+
+**マーカー（行 R3a、Issue #431）**: 公開の `RenderList` に、点の印を描く命令を足す。座標と大きさは、ほかの命令と同じ物理画素である。
+
+```csharp
+namespace HyperPlot.Rendering;                // Core
+
+public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape Shape = MarkerShape.Circle);   // Size は直径、物理画素
+
+public sealed class RenderList
+{
+    public void DrawMarkers(ReadOnlySpan<Vector2> centers, in MarkerStyle style);                              // 同じ見た目の点
+    public void DrawMarkers(ReadOnlySpan<Vector2> centers, ReadOnlySpan<Color> colors, in MarkerStyle style);  // 点ごとの色（style.Color は使わない）
+}
+```
+
+- **記録**: 点 1 つが 32 バイトの `MarkerInstance`（中心 8、直径 4、形 4、乗算済みの色 16）で、rect の記録と同じ大きさである。大きさと形も点ごとに持つので、行 R3f の点ごとの大きさと形は、記録の形を変えずに足せる。続く `DrawMarkers` は、切り抜きが同じなら 1 回の `DrawInstanced` にまとまる（rect と同じ）
+- **引数**: 中心が有限でない点は描かない（欠損）。`Size` は 0 より大きい有限の値、`Shape` は名前のある値でなければ `ArgumentOutOfRangeException`。`colors` の長さが `centers` と違えば `ArgumentException`
+- **形**: 円は中心からの距離、正方形は rect と同じ面積の重なり、十字は 2 本の帯（太さは max(1, round(s)) 物理画素。注釈と同じ）で、画素の被覆を求める。円は `saturate(半径 + 0.5 − 距離)` で、標本を取らない。注釈とホバーの印（今は扇形と矩形と折れ線）は、この行では変えない
+- **常駐の点**（internal）: `DrawResidentMarkers(in ResidentMarkerRun run)` は、`ResidencyCache` のページ（下の「常駐キャッシュ」）の中の点の並びを、1 つの見た目で描く。記録は、ページの番号、ページの中の最初の点と数、セルの表、x と y の入れ替え、画素を留める範囲、直径・形・色、切り抜きである（§5.5.2 の「GPU での写し方と精度」）。常駐のデータを指す命令なので、画像の `DrawImage` と同じく公開しない
 
 ### 5.2 GPU の抽象
 
@@ -2683,17 +2730,110 @@ public sealed class PlotWorkerPool
 
 #### 5.5.2 散布: 密度タイルと生の点
 
+point の層（`PointLayerSpec`、§4.1）は、行 R3a で生の点を、行 R3b で密度を描く。行 R3a の間は、1e7 点までの散布を描く。
+
+| 行 | 作るもの |
+| --- | --- |
+| R3a（Issue #431） | point の仕様とビルダ、`DrawMarkers`、2 つの道（CPU の道と索引の道）、生の点の常駐、索引の保管庫、CPU の道のヒットテスト |
+| R3f | 大きさと形を列から決めるチャネル、そのスケールと凡例 |
+| R3b | 密度タイルの描画（`DrawDensityTiles`）、点の数での切り替え、索引ができるまでの粗い密度 |
+| R3c | 索引の道と密度のヒットテスト、選択した点の強調 |
+| R3d | 数の列で点ごとに色を付ける索引の道、カテゴリごとの密度 |
+| R3e | 索引の道の polar、point のスケール（カテゴリの x と y） |
+
+**2 つの道（行 R3a、Issue #431 の決定 3・25）**
+
+- 道は層ごとに選ぶ。層の行の数（分ける前。X の列の長さ）で決める。segment と rect の上限と同じく、総数で決める（§5.5.3）。部分ごとに選ぶと、1e7 行を 256 のカテゴリに分けた層は、どの部分も 131,072 点以下なので、毎フレーム 1e7 点を写すことになる（PR #432 のレビュー）
+- **CPU の道**: 層の行の数が 131,072（`LayerPlan.MaxElements`）以下なら、segment や rect と同じく、記録のたびにすべての点を倍精度で画素へ写し、`DrawMarkers` に記録する。派生データを作らないので、最初のフレームから描ける。カテゴリの `ColorBy` とファセットで分けた部分（`SplitPlan`、§5.5.3 の「分けた系列」と同じ）も、flip と polar（`PolarMap.Map`。パネルの外と穴の中の点は描かない。text と同じ）も、ほかの Geom と同じ写し方である
+- **索引の道**: 層の行の数が 131,072 を超えたら、分けた後の部分ごとに、その部分の x と y に空間タイル索引（§3.4）を作る。点の少ない部分にも作る（部分の数の上限は下）。Morton 順の写しを GPU に常駐させて、頂点シェーダで画素へ写す。部分は、`SplitPlan` が行を集めた列か、列の行の範囲なので、索引の入力（列と行の範囲）にそのままなる。カテゴリの色は、部分ごとに 1 つなので、索引の道でも描ける
+- 描く順は、CPU の道が行の順、常駐の点が Morton 順である。索引の道の部分は色が 1 つなので（下の「見た目」）、重なった半透明の点の結果は順によらない
+
+**上限と例外（行 R3a、決定 5・6・12）**。どれもコンパイルの検査（§4.8）で、層の番号と数と上限を書く。型は、segment と rect の上限と同じ `InvalidOperationException` である。
+
+- 層の行の数が `RawThreshold`（1e7）を超える: 「密度は行 R3b」
+- 数の列の `ColorBy` を持つ層の行の数が 131,072 を超える: 「行 R3d」
+- 索引の道の層の部分（カテゴリ × ファセットのパネル）が 64（`MaxIndexedParts`）を超える: 「行 R3d」（決定 31）。索引は、点の数によらず、水準 0〜8 の点の数（699,048 B、§3.4）を持つ。64 の部分で約 45 MB、256 で約 179 MB、6 パネル × 256 カテゴリの 1,536 で約 1 GB になる（PR #432 のレビュー）。カテゴリの多い大きな散布は、1 つの索引で点ごとに色を付ける行 R3d の形で描く
+- polar のパネルの層の行の数が 131,072 を超える: 「行 R3e」
+- カテゴリの x か y: point のスケールは行 R3e なので、ほかの Geom と同じ検査で断る
+- `Position`（identity のほか）と `Stat` と `FillBy` は取らない。`Size` は 0 より大きく 512 以下、`Opacity` は 0 以上 1 以下、`Shape` は名前のある値
+
+**見た目（行 R3a、決定 6・8）**
+
+- 色は、`Color`、なければ系列の色（カテゴリで分けた部分はパレットの色）。数の列の `ColorBy` は、CPU の道だけが取り、プロットの色のスケール（sequential か diverging）で点ごとに写す（rect の要素ごとの色と同じ。NaN の点は描かない）。`Opacity` は、どの色にもアルファとして掛ける
+- 大きさと形は層で 1 つである。`Size`（DIP）に倍率 s を掛けた直径で描く。列から決めるチャネル（`SizeBy`・`ShapeBy`）とスケールと凡例は行 R3f
+- 凡例の見本は、層の形と色の印である（大きさは行の高さまで）。カテゴリの凡例とカラーバーは、ほかの Geom と同じ
+
+**索引の保管庫（行 R3a）**
+
+- `SpatialIndexStore` は、ピラミッドの保管庫（`PyramidStore`、§4.8）と同じ場所に同じ寿命で持つ（1 つのプロットなら計画ごと、図ならプロットで共有する 1 つ）。鍵は、x の列、y の列、それぞれの変換、行の範囲で、参照で比べる（§3.4 の決定 4）。同じ鍵の部分は 1 つの索引を使い回す
+- 索引は、層を作る仕事（行 W1b2）が予約して `BuildSpatialIndex` を呼び、計画が層を受け取るときに計画の持ち分に変える（ピラミッドの `Reserve`・`Install` と同じ）。使う計画も予約もなくなれば `Dispose` する
+- 範囲は渡さない（索引が列から求める）。ワーカーは 1 つの索引に最大 8 本（§8.1）
+- 1 つの層の部分の索引は、1 つずつ順に作る。構築の間のカウンタ（12.6 MB、§3.4）が、部分の数だけ同時に要らないようにするためである。`SplitPlan` が行を集めた部分の列はメモリの上にあるので、その索引は一時ファイルを作らない（一時ファイルができるのは、メモリマップの列の行の範囲をそのまま使う部分だけである）
+
+**索引ができるまでと、失敗（行 R3a、決定 9）**
+
+- 索引の道の部分は、スナップショットが `Full` になるまで描かない（`LayerReadiness.Pending`）。暫定の印が立ち、ホストは `ProvisionalChanged` で知る。ヘッドレスは `WhenComplete()` を待つ（§4.8）
+- 列の版が変わったら、保管庫が索引を作り直す。新しい索引ができるまで、前のスナップショットを描いて暫定の印を立てる（`LayerReadiness.Previous`）
+- **構築の失敗**（§3.4 の「失敗」。一時ファイルを作れない、メモリを確保できない、利用者の `IScale` の例外）は、ピラミッドの失敗と同じ扱いにする（§4.8）。エンジンは、その層を失敗にして描かず、`WorkFailed` を 1 回出す。失敗は層の全体で、ほかの部分の索引ができていても描かない。暫定の印は、失敗した層のためには立てない。列の版が進んだら、もう一度作る（§3.4 の規則 4）。ヘッドレスの `Render` は、索引の `Fault` の例外を包まずに投げ直す
+- 粗い密度（`CoarseDensity`）での代わりの表示は行 R3b
+
+**常駐のセルとページ（行 R3a、決定 26・30）**
+
+- **セル**: 点の位置の基準は、点の並びではなく、四分木のセルごとに持つ。常駐のセルは、点の数が 32,768（`CellCapacity`）以下の最大のセル（親は 32,768 を超える）で、それより上で葉になったセルは葉がそのままセルになる。セルは Morton 順で互いに重ならず、写しの全部を並びの順に覆う。スナップショットは、`Full` になったときに、セルの表（最初の点、点の数、角のスケールの空間の差、広がり）を 1 度作る。セルの数は、索引の表の行の数（1e7 点の `float` で最大 50,000）より多くならない
+- **点**: 常駐の点は 12 バイトで、`uint` が 3 つである。セルの中の x の位置、y の位置（セルの広がりを 2^32 に分けた目盛り。角からの差を倍精度で求め、広がりで割って 2^32 を掛け、切り捨てる）と、セルの番号である。`SpatialSnapshot.ReadBlock(long first, Span<ResidentPoint> points)` が、写しの `first` 番目から書く
+- **ページ**: GPU に置く単位は、写しの 65,536 点の並び（786,432 バイト）である（§5.1 の「生の点のページ」）。最後のページは残りの点だけの大きさで置く。記録のたびに、画面にかかる葉の並びをページの番号に直し、まだ常駐していないページをキャッシュに求める。1 フレームに送るのは 4 MB（5 ページ）までで、残りは次のフレームに回る。常駐していないページがある間は、常駐しているページだけを描いて、暫定の印を立てる（1e7 点は 153 ページ、120 MB で、31 フレームほどで全部が常駐する）
+- 読み出しは、フレームのスレッドが行う。量は 1 フレーム 4 MB（327,680 点）で抑えられる（不変条件 2）。写しがページキャッシュにない場合（メモリマップの列の索引。写しは一時ファイル）は、読むフレームがディスクを待つ。その時間は、行 R3a の計測（§9）で測る。1e9 点の写しを読む行 R3b で、ワーカーに移すかを決める。フレームのスレッドが写しを読むのは、この読み出しだけである
+- 予算（256 MB、約 2,200 万点）は、ページの中身のバイトで数える。点の少ない部分のページは、その点の数だけを数える。予算に入らないページは描けず、暫定の印が残る。画面内の点が常駐できる数を超える場合の表示は、密度に切り替える行 R3b で決める
+
+**GPU での写し方と精度（行 R3a、決定 11・30）**
+
+- **セルの表**: 記録のたびに、すべてのセルについて、軸ごとに 3 つの値を倍精度で求めて表にし、動的なバッファで送る（1 つ 24 バイト。1e7 点で最大 1.2 MB）
+  - 基準の目盛り a（`uint`）: ビューの下端のセルの中の位置を、0 から 2^32 − 1 に留めた値。画面にかかるセルでは画面の中の位置、かからないセルではセルの端になる
+  - 基準の画素（`float32`）: 目盛り a の位置を、CPU の `CartesianTransform` の因子（domain の幅からパネルの幅への拡大、反転、パネルの端）で写した画素
+  - 倍率（`float32`）: 1 目盛りの画素の数（セルの広がりの画素 ÷ 2^32。反転の軸は負）
+- **頂点シェーダ**: 点のセルの番号で表を引き、軸ごとに「基準の画素 + (点の目盛り − a) × 倍率」を求める。差は `uint` のまま引き（大きい方から小さい方を引いて符号を付ける）、それから `float32` にする。flip は x と y の入れ替えの印、値を定義域に留める軸（`Clamp`）は画素を留める範囲として渡す。4×4 の行列は使わない（公開の `SetTransform` は、行 K1 で作る）
+- **精度**: 誤りは 3 つの和である。目盛りへの切り捨て（セルの広がりの 2^-32 まで）、差を `float32` にする丸め（差の 2^-24 まで。画面の中の点は基準から 1 画面以内なので、2,000 画素 × 2^-24 ≈ 0.0001 画素）、基準の画素の丸め（パネルの中か端の値なので同じ程度）。画面の中の点の誤りは、セルの広がりが 2^31 画素（1,920 画素の画面の約 110 万倍）以下なら 0.5 画素以下である。x と y の拡大の度合いが違っても、軸ごとに同じことが言える
+- 画面の外の点は、差が大きいので丸めが大きくなるが、誤りは基準からの距離の 2^-24 までで、画面の中へは入らない
+- **限界**: セルの広がりが 2^31 画素を超えるまで拡大すると、点は目盛りに寄る。一様な 1e7 点（セルは水準 5）では、全体表示から 3,600 万倍の拡大である。点の密なところはセルが小さいので、もっと深くまで持つ。行 R3a は、それより深い拡大でも同じ形で描く（倍精度で写す道は持たない）
+- 前の 2 つの形は取らない（PR #432 のレビュー）。原点を 65,536 点の並びごとに取る `float32` の差は、並びが塊の縁で遠くの外れ値と塊の点を一緒に持つので、塊を拡大した画面で数万点が 1 画素以上ずれる。原点をセルの角に取る `float32` の差と、広いセル（2^23 画素を超える）を CPU で写す形は、x だけを深く拡大した画面で、縦に並んだセルがどれも広くなり、CPU で読む点が抑えられない（一様な 1e7 点で x だけ 14 万倍に拡大すると約 156,000 点。縦の線に点が並ぶデータでは数百万点）
+- シェーダは `Markers.hlsl` の 1 つで、頂点シェーダが 2 つ（記録の点、常駐の点）、ピクセルシェーダが 1 つである
+
+**試作の計測（行 R3a の設計、Issue #431）**。設計の前に、常駐の点の描画と索引の構築を試作で測った（参照機、RTX 3060 Ti、1,920 × 1,080、JIT の Release）。試作は、12 バイトの点（セルの角からの `float32` の差 2 つとセルの番号）、セルの角の表を毎フレーム作って送る、65,536 点ごとに 1 回の `DrawInstanced` で 153 回、の形で、セルは 32 × 32 の 1,024 個、切り抜きは 1 つである。上の整数の形（決定 30）では測り直していない。試作との違いは、頂点シェーダが `float32` の乗算の前に `uint` の引き算と変換を 1 つずつ行うことと、表が 1 つ 8 バイトから 24 バイトになることである。行 R3a の実装は、最初にこの形の GPU 時間を測る（§9）
+
+| 場面（1e7 点） | フレームを続けて流す: GPU 時間（p50 / 最大） | フレームの間を 30 ms 空ける: GPU 時間（p50 / 最大） |
+| --- | --- | --- |
+| 直径 2 画素、不透明、一様 | 7.0 ms / 8.6 ms、7.1 ms / 7.7 ms | 10.4 ms / 12.6 ms |
+| 直径 2 画素、アルファ 0.6、一様 | 7.0 ms / 7.4 ms | 測っていない |
+| 直径 6 画素、不透明、一様 | 9.0 ms / 9.3 ms | 測っていない |
+| 直径 6 画素、アルファ 0.6、一様 | 9.0 ms / 9.5 ms、9.1 ms / 9.5 ms、8.9 ms / 10.5 ms | 10.7 ms / 11.7 ms、10.4 ms / 11.7 ms |
+| 直径 6 画素、アルファ 0.6、一様、セル 50,176 個 | 9.2 ms / 9.7 ms | 11.4 ms / 12.5 ms |
+| 直径 2 画素、不透明、中央の塊 | 7.2 ms / 7.7 ms | 測っていない |
+| 直径 6 画素、アルファ 0.6、中央の塊 | 10.1 ms / 10.1 ms | 測っていない |
+| 直径 6 画素、アルファ 0.6、一様、4 倍に拡大 | 7.2 ms / 7.6 ms | 測っていない |
+| 直径 6 画素、アルファ 0.6、中央の塊、8 倍に拡大 | 7.6 ms / 7.9 ms | 測っていない |
+
+- GPU 時間は、タイムスタンプの問い合わせ（`LastFrameTime`）の値である。続けて流す実行は 1 回（300 フレーム）につき 14〜18 フレーム、間を空ける実行は 170〜220 フレームの標本である
+- **GPU のクロック**: 続けて流す実行は 1,905〜1,965 MHz、間を空ける実行は 1,575〜1,695 MHz だった（`nvidia-smi`、直径 6・アルファ 0.6・一様の 1 回ずつ）。60 fps のアプリは GPU が空く時間を持つので、間を空ける実行の値（10.4〜11.4 ms、最大 12.6 ms）で見る。要件 P-4 の 16.7 ms に対して、残りは約 4 ms である
+- **フレームの CPU 時間**（セルの表を作って送る、153 回の描画の呼び出し）: 間を空ける実行で p50 0.25〜0.31 ms、p95 0.50〜0.65 ms。セルが 50,176 個のときは p50 0.54 ms、p95 1.1 ms。続けて流す実行では、フレームの CPU 時間が GPU 時間と同じ値になった（7.0〜10.1 ms）。前のフレームの GPU の仕事を待っているためで、間を空けるとこの待ちはなくなった
+- 画面の外の点も頂点シェーダを通る。4 倍と 8 倍に拡大した場面でも 7.2〜7.6 ms かかるので、GPU 時間の約 7 ms は 4 × 10^7 個の頂点の分である
+- 1e7 点を 1 つの構造化バッファ（120 MB）に置いた。バッファを作る時間は 20〜35 ms だった。1e6 点（直径 6 画素、アルファ 0.6）は 0.87 ms / 0.89 ms だった
+- 最初の試作（1 点 8 バイト、原点 1 つ、1 回の `DrawInstanced`）は、続けて流す実行で、直径 2 画素が 7.3 ms / 7.6〜8.6 ms、直径 6 画素が 9.8〜9.9 ms / 10.4 ms だった。セルの表を引く形にしても、GPU 時間は増えていない
+- 1e7 点の索引の構築（メモリマップの列、ワーカー 15 本）は、`Full` の公開まで、一様な分布で 0.15〜0.27 秒（6 つの構築）、塊の分布で 0.83〜0.89 秒（2 つの構築）だった
+- 試作で測っていないもの（行 R3a の実装の場面で測る、§9）: 整数の位置の頂点シェーダ、索引から作ったセルとページ、NativeAOT の値、ページの読み出しの時間
+
+**行 R3b から先**
+
 | 画面内の点の数（`SpatialSnapshot.Count` で求める、§3.4） | 描き方 |
 | --- | --- |
-| `RawThreshold`（既定 1e7）以下 | 生の点を描く。Morton 順の写しの範囲を GPU に常駐させ（LRU）、`DrawMarkers` で描く |
-| それより多い | 密度タイルを描く。画面の解像度に合う水準のタイルを選び、`DrawDensityTiles` で色の写像（線形・log・立方根）をシェーダで行う |
+| `RawThreshold`（既定 1e7）以下 | 生の点を描く（行 R3a の索引の道） |
+| それより多い | 密度タイルを描く。画面の解像度に合う水準のタイルを選び、`DrawDensityTiles` で色の写像（線形・log・立方根）をシェーダで行う（行 R3b） |
 
-- 画面内の点の数は、`SpatialSnapshot.Count`（§3.4）に、画面の矩形と、セルが 1 画素ほどになる水準を渡して求める。答えは下限（`Inside`）と上限（`Inside + Touching`）の組で、降りるセルの数は矩形の周の画素の数に比例する。どちらを `RawThreshold` と比べるかは行 R3 で決める
-- **索引ができるまで**（Issue #401 の決定 5）: 索引のスナップショットが粗い（`Coarse`）間は、`CoarseDensity`（水準 8 の 256 × 256 の点の数、§3.4）をいちばん粗い密度として暫定で描く。その間、生の点とヒットテストは暫定の印だけを返す。配線は行 R3 で作る
-- 上限で止まった葉のセルと、密度タイルを持たない疎なセル（§3.4）の描き方は行 R3 で決める
-- 切り替えは利用者が無効にできる（常に生の点、常に密度。要件 R-3）
-- 色をカテゴリで分ける散布図の密度は、カテゴリごとの密度の合成で表す（行 R3 で決める。v1 はカテゴリの数を上限付きにする）
-- 色の写像の種類（上の線形・log・立方根に、datashader の eq_hist を足すか）は行 R3 で決める（`docs/references.md`）
+- 画面内の点の数は、`SpatialSnapshot.Count`（§3.4）に、画面の矩形と、セルが 1 画素ほどになる水準を渡して求める。答えは下限（`Inside`）と上限（`Inside + Touching`）の組で、降りるセルの数は矩形の周の画素の数に比例する。どちらを `RawThreshold` と比べるかは行 R3b で決める
+- **索引ができるまで**（Issue #401 の決定 5）: 索引のスナップショットが粗い（`Coarse`）間は、`CoarseDensity`（水準 8 の 256 × 256 の点の数、§3.4）をいちばん粗い密度として暫定で描く。その間、生の点とヒットテストは暫定の印だけを返す。配線は行 R3b で作る
+- 上限で止まった葉のセルと、密度タイルを持たない疎なセル（§3.4）の描き方は行 R3b で決める
+- 切り替えは利用者が無効にできる（常に生の点、常に密度。要件 R-3）。口は行 R3b で作る
+- 色をカテゴリで分ける散布図の密度は、カテゴリごとの密度の合成で表す（行 R3d で決める。v1 はカテゴリの数を上限付きにする）
+- 色の写像の種類（上の線形・log・立方根に、datashader の eq_hist を足すか）は行 R3b で決める（`docs/references.md`）
 - 生の点と密度の中間（1e7〜1e8 点を GPU で毎フレーム集計する）は、計測で必要になったときに compute のパイプラインで足す
 
 #### 5.5.3 その他の Geom
@@ -2714,7 +2854,7 @@ public sealed class PlotWorkerPool
     - **学習**: 位置の domain は、系列ごとの Geom の範囲の和である。区間の道の系列は、その区間の範囲を読む（行 G6b で直した、Issue #243。行 G7c の実装は列の全体の統計（§3.2）を読み、区間ごとの統計を持たなかったので、ファセットの free の domain がパネルでなく列の全体になった）: `UniformColumn` は区間の最初と最後の行の値、値を持つ列（Y、並んだ X、bar の x、Stat の x、rect・segment・text・rule の列など、どれも同じ道）は、区間が覆うチャンクの統計（§3.2）と、区間の端の 2 つのチャンクの区間の行をなめた値から作る（O(チャンクの数 + チャンクの長さ)）。その結果を列の版ごとに層の計画が覚え、同じ版では読み直さない（実装で、ピラミッドに問い合わせる道とワーカーがなめる道を、この 1 つの道にまとめた。ピラミッドを持たない列にも使え、学習のたびに読まない）。欠けたカテゴリ（−1）の行はどの区間にも入らないので、domain に入らない。集める道の系列は、そのカテゴリの行だけを読む。行 G6b のこの変更は場面 (1)〜(35) の基準を変えない（色で分ける場面 (14) の区間は欠けの行を持たず、区間の和が列の全体と同じ）
     - **フレーム**: 系列ごとに Geom のふだんの道（M4 は系列ごとに 4W 点、bar の画素列ごとの道も系列ごと）。仕事は系列の数（256 以下）× 画素で抑えられる。記録は系列ごとに 1 本の折れ線か、1 回の塗りの呼び出し
     - **segment と rect**: ほかの Geom と同じく、区間に並ぶカテゴリは区間で、混ざるカテゴリは集めた列で描く（行 G7c の実装）。設計では記録の段で毎フレーム要素をなめて分ける形だったが、どの Geom も同じ 2 つの道に乗せると、分けた層の計画が Geom の種類によらず 1 つで済む。要素は 131,072 以下なので、集める列は 1 列あたり 1 MB 以下である
-    - **カテゴリの x の bar**（行 G7b）を色のカテゴリで分けるときは、カテゴリごとの最小・最大（行 G7b のワーカーの仕事）を、色のカテゴリごとに作る（x のカテゴリの数 nx の並びを色のカテゴリの数 nk 本、1 度なめで）。メモリは nk × nx × 16 B とそのピラミッドで、行の数によらない（1e6 行でも nk = 256・nx = 1e5 なら約 410 MB で、ほとんどが空のセル）。そのため nk × nx ≤ 2^24（16,777,216。並び 2 本で 256 MB）を上限にし、超えたら nk・nx・上限と「密度（行 R3）で描く」ことを書いた `ArgumentException` にする（PR #169 のレビュー、256 カテゴリの上限と同じ形でコンパイルが確かめる）。nk = 256 なら nx ≤ 65,536、nx = 1e5 なら nk ≤ 167 である。空のセルを持たない形（カテゴリの組ごとに詰める）は、画素列ごとにまとめる道がピラミッドの連続した区間に頼るので使わない
+    - **カテゴリの x の bar**（行 G7b）を色のカテゴリで分けるときは、カテゴリごとの最小・最大（行 G7b のワーカーの仕事）を、色のカテゴリごとに作る（x のカテゴリの数 nx の並びを色のカテゴリの数 nk 本、1 度なめで）。メモリは nk × nx × 16 B とそのピラミッドで、行の数によらない（1e6 行でも nk = 256・nx = 1e5 なら約 410 MB で、ほとんどが空のセル）。そのため nk × nx ≤ 2^24（16,777,216。並び 2 本で 256 MB）を上限にし、超えたら nk・nx・上限と「密度（行 R3d）で描く」ことを書いた `ArgumentException` にする（PR #169 のレビュー、256 カテゴリの上限と同じ形でコンパイルが確かめる）。nk = 256 なら nx ≤ 65,536、nx = 1e5 なら nk ≤ 167 である。空のセルを持たない形（カテゴリの組ごとに詰める）は、画素列ごとにまとめる道がピラミッドの連続した区間に頼るので使わない
   - **連続の色の要素**（行 G7c）: 数の色の列を持つ bar と rect は、要素ごとに色を写して `DrawRect` で記録する（§4.2）。数の x の bar は、見える棒が 4W を超えても画素列ごとにまとめず、131,072 まで要素ごとに描く。rect は今の上限のまま。カテゴリの x の bar は、カテゴリごとの最小・最大の代わりに、行ごとの棒を番号の順に重ねる（総数 131,072 以下）。1 フレームの記録は 131,072 × 32 B = 4 MB 以下で、rect の上限と同じ
   - **Position**（行 G5a、Issue #204）: 積み上げと並べ（§4.1 の「行 G5a の Position」）を、今の Geom の道に乗せる。1 フレームの仕事は、ほかの道と同じく画素の数とカテゴリの数で抑え、行の数で増えない。行の数で働くのはワーカーだけである
     - **カテゴリの x の積み上げ**: ワーカーが、x のカテゴリの番号・色のカテゴリの番号・Y のチャンクを 1 度なめ（O(N)、§8.1）、(色 k, x i) のセルごとに正の値の和と負の値の和を `double` で作る。和を足す順は、チャンクを決まった数（セルの数だけで決まる 8 以下。部分の和が 256 MB を超えない数）の組に分け、組ごとにチャンクの順に足してから、組の順に足し合わせる。ワーカーの数や終わる順で和が変わらない（どの機械でも同じ値）。格子は行 G7b の「色のカテゴリで分ける」最小・最大と同じで、上限 nk × nx ≤ 2^24 も同じである。続けて、色の番号の大きい方から累積し、正の側の P_k(i) = Σ_{t ≥ k} 正の和(t, i) と、負の側の N_k(i) = Σ_{t ≥ k} 負の和(t, i) を作る（P_{nk} = N_{nk} = 0）。色 k の段は、正の側が [P_{k+1}(i), P_k(i)]、負の側が [N_k(i), N_{k+1}(i)] である。並びは色ごとに長さ nx の 2 本で、メモリは nk × nx × 16 B（行 G7b の最小と最大の並びと同じ）。`Fill` は、累積を作るときに、x ごとに P_0(i) と |N_0(i)| で割る（0 なら割らない）。分けない層の `Stack` は nk = 1 で、カテゴリごとの行の和の棒になる
@@ -2771,12 +2911,12 @@ public sealed class PlotWorkerPool
     - **計測**（Issue #222）: NativeAOT の Release、1,920 × 1,080、3 回で、要件 P-2 と P-1 と比べる。1e9 点の `float`（メモリマップ）の density（1 群と 8 群、帯域幅の自動と数）、smooth（x は `UniformColumn`、y は `float`、1 群）、bin 2D（x と y の `float`、既定の区切りと 300 × 300）を作る時間と、それぞれの 1 フレームの CPU と GPU の時間。記録は `docs/benchmarks/g5c-stat.md`
   - **errorbar**: X は単調非減少。見える要素が 4W 以下なら、要素ごとに YMin から YMax への縦の線と、`CapWidth` · s の幅の端の横線 2 本を記録する。4W を超えたら、画素列ごとに YMin の min から YMax の max への縦の線を記録し、端は描かない
   - **rule**: 縦の線（X）は X が単調非減少で、見える線が 4W 以下なら線ごとにパネルの高さいっぱいに、4W を超えたら、要素のある画素列ごとに列の中央に 1 本を記録する（境界の二分探索で、列に要素があるかを数える）。横の線（Y）は Y が単調非減少で、同じことを画素の行ごと（4H）に行う
-  - **segment と rect**: 並びを求めない。要素の総数が 131,072（2^17）以下なら、毎フレームすべての要素を写して記録する（走査と記録は定数で抑えられ、rect の記録で 4 MB。要件 R-1 の「1 フレームの転送は数 MB 以下」は画素の数でなく量の条件なので、上限はパネルの大きさに依らない。パネルの大きさに依ると、ウィンドウを縮めただけで投げることになり、行 G3 の小さい描画先の扱いと逆になる。PR #121 のレビュー、オーナーの決定 2026-10-30）。超えたら、要素の数と上限を書いた `InvalidOperationException`。見える要素だけを数えると毎フレーム全要素の走査になり、不変条件 2 を破るので、総数で決める（Issue #120）。大きなデータの道（密度）は行 R3。rect は 2 つの角を写し、小さい方を左上にして `DrawRect` で記録する（reverse と log でも向きによらない）
+  - **segment と rect**: 並びを求めない。要素の総数が 131,072（2^17）以下なら、毎フレームすべての要素を写して記録する（走査と記録は定数で抑えられ、rect の記録で 4 MB。要件 R-1 の「1 フレームの転送は数 MB 以下」は画素の数でなく量の条件なので、上限はパネルの大きさに依らない。パネルの大きさに依ると、ウィンドウを縮めただけで投げることになり、行 G3 の小さい描画先の扱いと逆になる。PR #121 のレビュー、オーナーの決定 2026-10-30）。超えたら、要素の数と上限を書いた `InvalidOperationException`。見える要素だけを数えると毎フレーム全要素の走査になり、不変条件 2 を破るので、総数で決める（Issue #120）。大きなデータの道（密度）は行 R3e。rect は 2 つの角を写し、小さい方を左上にして `DrawRect` で記録する（reverse と log でも向きによらない）
   - **線のまとめ方**: segment・rule・errorbar の多数の線は、NaN の点で区切った 1 本の折れ線として記録する（§5.1 の欠損の切れ目）。折れ線は 1 本につき 3 回描くので（§5.3）、1 本ずつだと描画の呼び出しが線の数の 3 倍になる。1 本にまとめると、重なった半透明の線は 1 つの形として 1 回だけ塗られる（線の Geom と同じ）
   - **`IGeom`**: `CustomLayerSpec` の `Learn` は domain を学ぶたびに 1 回、`Record` は記録するたびに 1 回呼ぶ。`Record` はパネルで切り抜かれた `RenderList` に記録し、`GeomFrame` の写し方で画素を求める。呼び出しはレイヤーごとで、点ごとには呼ばない（§4.1）。記録する量を画素の数で抑えるのは実装する側の責任で、XML に書く。呼ぶのは `Render` のスレッドだけで、投げた例外は `Render` からそのまま出る（`IScale` と同じ）。組み込みの Geom も同じ形の internal の実装で、コンパイルはレイヤーの種類によらず 1 つの道で扱う
   - **凡例**（§4.6）: 塗りの Geom（area・band・bar・rect）の見本は、行の高さの正方形を塗りの色で塗る（`DrawRect`）。線の Geom（step・rule・segment・errorbar）は線と同じ見本。`CustomLayerSpec` は線の見本を、行 G7a から系列の色（`GeomFrame.SeriesColor`、§4.1）の太さ 1 で描く（それまでは黒）。text の見本（行 G8）は、層の色の「a」の 1 文字を `LegendSize` で、見本の長さの真ん中・行の真ん中に置く。image の層（行 G9）は見本と行を出さない（数のラスタはカラーバー、§4.6）。見本の色は、コンパイルが決めた色（指定がなければパレットの色）。行 G7c の分けた層は、層の行の代わりにカテゴリの行を出し、連続の色はカラーバーにする（§4.6 の「色の凡例」）
   - **text**（行 G8、Issue #184）: 行ごとに、基準点（x と y を座標系で写した画面の点）にラベルを 1 つ置く。並びは求めない
-    - **上限**: プロットのすべての text の層の行の総和（各層の X の列の長さの和。`ColorBy` で分けても分ける前の数）が 4,096 以下なら、毎フレームすべての行を写して記録する。超えたら、層ごとの行の数と和と上限と「多くの点は散布（行 R3）で描く」ことを書いた `InvalidOperationException`。総数で決めるのは segment・rect と同じ理由（見える行を数えると、毎フレーム全行の走査になる）である。上限を segment・rect の 131,072 にしないのは、文字列はグリフごとに転送するからで、1 ラベル 8 文字なら 131,072 × 8 × 48 B（グリフの記録、§5.3）= 約 50 MB を毎フレーム送り、要件 R-1 の「1 フレームの転送は数 MB 以下」を破る。4,096 なら同じ 8 文字で約 1.6 MB である（`design-decisions.md`）。層ごとでなくプロットの和で数えるのは、転送の量も整形のキャッシュ（§5.6、プロットに 1 つ）もフレームの総量で決まるからで、層ごとに数えると、text の層が 3 つで 1 フレームの文字列が 8,192 を超え、描くたびに整形し直して確保する（PR #185 のレビュー、オーナーの決定）
+    - **上限**: プロットのすべての text の層の行の総和（各層の X の列の長さの和。`ColorBy` で分けても分ける前の数）が 4,096 以下なら、毎フレームすべての行を写して記録する。超えたら、層ごとの行の数と和と上限と「多くの点は散布（point の層）で描く」ことを書いた `InvalidOperationException`。総数で決めるのは segment・rect と同じ理由（見える行を数えると、毎フレーム全行の走査になる）である。上限を segment・rect の 131,072 にしないのは、文字列はグリフごとに転送するからで、1 ラベル 8 文字なら 131,072 × 8 × 48 B（グリフの記録、§5.3）= 約 50 MB を毎フレーム送り、要件 R-1 の「1 フレームの転送は数 MB 以下」を破る。4,096 なら同じ 8 文字で約 1.6 MB である（`design-decisions.md`）。層ごとでなくプロットの和で数えるのは、転送の量も整形のキャッシュ（§5.6、プロットに 1 つ）もフレームの総量で決まるからで、層ごとに数えると、text の層が 3 つで 1 フレームの文字列が 8,192 を超え、描くたびに整形し直して確保する（PR #185 のレビュー、オーナーの決定）
     - **文字列を作る時**: カテゴリのラベルは、列が持つ名前をそのまま記録する（確保しない）。数のラベルは、層ごとに行の数の文字列の配列（4,096 以下）を持ち、`Text` の列の版か `Format` が変わったときに全行を書き直す（NaN の行は書かない）。フレームの道では書かない。書き直すフレームは文字列を確保するが、それは定常状態のフレームではない（不変条件 3）
     - **測る**: 横の揃えが `Left` でなければ、記録の段でラベルを `TextEngine.Measure` で測る（整形のキャッシュに当たり、2 回目からは整形も確保もしない）。`TextStyle` の横の揃えは行の束の中だけに当たり、束の左はいつも `Position` にある（§5.6）ので、基準点に当てる点は Geom が測った幅で決める
     - **記録**: 行ごとに基準点 p を求め、p がパネルの矩形の中（端を含む）なら、`Position` = p + (`OffsetX`, −`OffsetY`) · s − a · w · u で `DrawText` する。w は測った束の幅、a は `Left` 0・`Center` 0.5・`Right` 1、u は文字の進む向きの単位ベクトル（`None` は (1, 0)、`Clockwise90` は (0, 1)、`CounterClockwise90` は (0, −1)）である。`TextStyle` は（色、`Size` · s、テーマの書体、`Normal`、`Horizontal`、`Vertical`、`Rotation`、テーマのロケール）で、`Horizontal` は複数行のラベルの行を束の中でそろえる。縦の揃えと回転は `TextStyle` が当てる（回転は、揃えた束を `Position` の周りに回す、§5.6）ので、u の向きに a · w だけ戻すと、回した箱の揃えの点が p に来る。パネルからはみ出す箱は、パネルで切り抜く（`Record` の `RenderList` はパネルで切り抜かれている）
@@ -2794,7 +2934,7 @@ public sealed class PlotWorkerPool
     - **記録**: タイルごとに、`Extent` の座標からタイルの 4 つの角をデータの単位で求め、x と y のスケールで画素へ写し（倍精度、flip は向きを入れ替える、§4.4）、`DrawImage` に記録する（§5.1）。`Origin` と `Extent` の裏返しは、角とテクセルの対応で表す。数のタイルは、色のスケールの変換・domain・中点（diverging）と色の表を、RGBA は前乗算を記録する
     - **量**: 1 フレームの仕事は見えるタイルの数（1,920 × 1,080 で 160 以下）で、ラスタの大きさによらない（不変条件 2）。転送は 1 フレーム 4 MB まで（要件 R-1）。ミップマップを作る仕事（O(N)）はワーカーが行い、フレームは待たない（ヘッドレスは待つ、§4.8）
     - **計測**: 2 万 × 2 万の `float` のラスタ（1.6 GB、メモリマップ）で、ミップマップを作る時間、全体を表示したフレームと、パンとズームの 1 フレームの CPU と GPU の時間と、1 フレームの転送量と、仮の描画が消えるまでのフレームの数（NativeAOT の Release、1,920 × 1,080、交互に 3 回、要件 P-1）。記録は `docs/benchmarks/g9-image.md`
-- **ほかの行**: point（散布）は行 R3、カテゴリの x の bar は行 G7b
+- **ほかの行**: point（散布）は §5.5.2（行 R3a）、カテゴリの x の bar は行 G7b
 
 ### 5.6 テキスト
 
@@ -2961,8 +3101,9 @@ public interface ITextBackend                 // バックエンドが実装す�
 | --- | --- | --- |
 | 時系列、X の最近傍 | カーソルの X をスケールの空間へ戻し、X の二分探索（等間隔なら計算） | O(log N) |
 | 時系列、XY の最近傍 | 半径内の画素列それぞれで、カーソルの Y を含む min / max のバケットをピラミッドで降りて探す | O(列の数 × 水準 × バケットの幅) |
-| 散布（生の点の領域） | `SpatialSnapshot.GetCells`（§3.4）でカーソルの半径にかかる葉を引き、葉ごとに先頭の `LeafCapacity` 点までを `ReadPoints` で読んで調べる。配線は行 R3 で作る | O(log N + 葉の大きさ) |
-| 散布（密度の領域） | カーソルの下のビンの点の数を返す。点そのものは返さない。タイルは `DensityTiles.TryGetTile`（§3.4）が目次の二分探索で引く。`SeriesHit` に点の数を入れる形は行 R3 で決める | O(log タイルの数) |
+| 散布（CPU の道の層、行 R3a） | 最後の記録で写した画素の並びを全部調べる（rect と同じ。131,072 点まで）。X のモードは、カーソルからの x の差が半径以内の点のうち、x の差が最も小さい点（同じなら y の差が小さい点）。XY のモードは、半径 + 点の半径の中で中心が最も近い点。同じ距離なら後の行（上に描かれた点）。答えは点の x と y の値と行。polar のパネルは答えない（ほかの Geom と同じ）。索引の道の層は、行 R3c まで答えない | O(層の点の数) |
+| 散布（生の点の領域） | `SpatialSnapshot.GetCells`（§3.4）でカーソルの半径にかかる葉を引き、葉ごとに先頭の `LeafCapacity` 点までを `ReadPoints` で読んで調べる。配線は行 R3c で作る | O(log N + 葉の大きさ) |
+| 散布（密度の領域） | カーソルの下のビンの点の数を返す。点そのものは返さない。タイルは `DensityTiles.TryGetTile`（§3.4）が目次の二分探索で引く。`SeriesHit` に点の数を入れる形は行 R3c で決める | O(log タイルの数) |
 | 棒・エラーバー（数の x） | X の最近傍は系列と同じ二分探索。XY は半径の窓の行の矩形、多ければピラミッドの極値で最も伸びた棒（行 I2c） | O(log N) |
 | 棒・エラーバー（カテゴリの x） | カーソルの下のカテゴリ、なければ最も近いカテゴリの極値の行（行 I2c） | O(1) |
 | 矩形 | 最後の記録で写した画素の矩形を全部調べる（131,072 要素まで、行 I2c） | O(要素の数) |
@@ -2995,7 +3136,7 @@ public interface ITextBackend                 // バックエンドが実装す�
     - rule・segment・text・custom は答えない。必要になったら行を立てる
   - **行の位置**（決定 3）: 分けた系列とファセットの集めた列は、元の表の行に戻す（§3.4 の「元の位置」）。Stat の層は元の行がないので、派生の表の行（ビンなど）を返し、派生の印を立てる
   - **二次のスケール**（決定 8）: `SecondaryX`・`SecondaryY` の層は、その層の組のスケールで画素からスケールの空間へ戻し、x と y をその層のデータの単位で返す。距離は画面の上で測るので、どの層も同じ物差し
-  - **索引がまだないとき**（決定 5）: 待たない（不変条件 7）。ピラミッドを作っている途中の系列は、作ってある水準と統計で答え、暫定の印を立てる。X の統計がまだない層は、まだ描いていない（Pending）ので答えない。描いていない層に答えると、画面にない点を指すからである（Issue #341 の決定 4）。散布の層は、空間タイル索引のスナップショットが確定（`Full`）になるまで、暫定の印だけを返す（§3.4 の `GetCells`、Issue #401 の決定 5。配線は行 R3 で作る）
+  - **索引がまだないとき**（決定 5）: 待たない（不変条件 7）。ピラミッドを作っている途中の系列は、作ってある水準と統計で答え、暫定の印を立てる。X の統計がまだない層は、まだ描いていない（Pending）ので答えない。描いていない層に答えると、画面にない点を指すからである（Issue #341 の決定 4）。散布の層は、空間タイル索引のスナップショットが確定（`Full`）になるまで、暫定の印だけを返す（§3.4 の `GetCells`、Issue #401 の決定 5。配線は行 R3c で作る）
   - **バッファが足りないとき**（決定 9）: 層の順、系列の順に入るだけ書き、戻り値は見つけた数の合計。戻り値がバッファの長さより大きければ、呼び手は足りなかったと分かる
 - POC の QuadTree（点ごとのノード）は、10 億点ではノードのメモリが元データより大きくなるため使わず、Morton 順の範囲の表（§3.4）に置き換える
 
@@ -3003,7 +3144,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 
 行 I3 は、選択の行 I3a とリンクの行 I3b に分けた（Issue #364 の決定 1。どちらも大きく、計測も別である）。
 
-- 選択は Vega-Lite の selection（param）に当たる。中身はまず「述語」（範囲・多角形・点）として持つ。散布の点の強調（シェーダが述語で判定する生の点、ワーカーが作る選択部分の密度）は行 R3 で作る（Issue #401 の決定 1）
+- 選択は Vega-Lite の selection（param）に当たる。中身はまず「述語」（範囲・多角形・点）として持つ。散布の点の強調（シェーダが述語で判定する生の点、ワーカーが作る選択部分の密度）は行 R3c で作る（Issue #401 の決定 1。行 R3a の point の層は、どちらの道も選択に入らない）
 - 矩形と投げ縄で選んだ点の位置の集合が API で要るときは、ワーカーがチャンクごとにビット列（1 ビット/点）を作る。10 億点で 125 MB になるので、要求されたときだけ作る（X の範囲は区間で返す。下の「行の集合」）
 - **選択（行 I3a、Issue #364）**:
   - **種類**（決定 3）: `SelectionKind` の `Rectangle`（x と y の範囲）、`XRange`（x だけの範囲、ブラシ）、`Lasso`（多角形）、`Points`（クリックで当たった点の集合）。どれもスケールの空間の述語で、選んだパネルについて持つ。polar のパネルは選ばない（ヒットテストと同じく、画素が軸に沿わない）
@@ -3298,7 +3439,7 @@ public interface ITextBackend                 // バックエンドが実装す�
     - 構築の時間: `BuildSpatialIndex` から `Completion` までの全体と、段ごと（確保、範囲、数え上げの走査ごと、表、書き込み）。粗いスナップショットの公開までの時間も測る。要件 P-15 の値は、この最初の計測から決めた（一様 75 秒、塊 180 秒、粗いスナップショット 10 秒。`docs/adr/0001-spatial-index-build-time.md`）
     - 仕事の長さ: 走査の 1 つの単位の時間の中央値と p99 を、1 チャンクのピラミッドの構築（762 µs）と比べ、`RowsPerUnit` を 2^20 以下の 2 の冪から決める。単位に分けない仕事（確保、粗い公開、走査ごとのカウンタの足し合わせ、表、確定の公開）の時間を段ごとに測る。確保の仕事は、Linux で glibc が代わりの手順で確保するとき（`fallocate` のないファイルシステム）の時間も測り、測ったファイルシステムを記録に書く。`Dispose` の待ちと確保の手順は、P-15 の値と同じ ADR で決めた（`RowsPerUnit` は 16,384。`Dispose` は待つ前に構築を止める。`fallocate` のないファイルシステムの確保は 1 MB ずつ）。書き込みを始めた直後の `Dispose` の時間と、写しのページに初めて書く時間（`touch` の場面）も測る
     - メモリ: 写しと表の大きさの、元データ（8 GB）に対する割合。表が `MaxTableRows` に届いたか、上限で止まった葉の数とその点の数。`TableShare` はこの結果で 0.02 のままにした（表は元データの 0.14 % と 0.28 %）
-    - 問い合わせ: シードつきの 1,000 か所で、`Count`（全体の表示と 1% を拡大した表示の矩形、1,920 × 1,080 でセルが 1 画素ほどになる水準）、`GetCells`（カーソルの半径にかかる葉）とその葉の先頭の `LeafCapacity` 点までの `ReadPoints` の p50 と p99。半径にかかる葉を引いて点を読むまでの時間を、要件 P-5（p99 で 1 ms 以下）と比べる。確保は 0 B。結果: 一様な分布は p99 で 0.08 ms 以下で、P-5 の内である。塊の分布は、カーソルが塊の中心にあると半径の中に 185 万〜358 万の点があり、全部読むと p99 が 10〜19 ms で届かない。P-5 の判定は、ヒットテストを索引につなぐ行 R3 で、密度の領域で答える形にしてから測る（§3.4 の「行 R3 で決めること」）
+    - 問い合わせ: シードつきの 1,000 か所で、`Count`（全体の表示と 1% を拡大した表示の矩形、1,920 × 1,080 でセルが 1 画素ほどになる水準）、`GetCells`（カーソルの半径にかかる葉）とその葉の先頭の `LeafCapacity` 点までの `ReadPoints` の p50 と p99。半径にかかる葉を引いて点を読むまでの時間を、要件 P-5（p99 で 1 ms 以下）と比べる。確保は 0 B。結果: 一様な分布は p99 で 0.08 ms 以下で、P-5 の内である。塊の分布は、カーソルが塊の中心にあると半径の中に 185 万〜358 万の点があり、全部読むと p99 が 10〜19 ms で届かない。P-5 の判定は、ヒットテストを索引につなぐ行 R3c で、密度の領域で答える形にしてから測る（§3.4 の「行 R3a より後で決めること」）
     - 構築中の問い合わせ: 構築の間、16.7 ms ごとに `Acquire`・`Count`・`Release` を呼ぶ時間（空・粗い・確定のスナップショット）
   - **密度タイル（行 C3b、Issue #401 の決定 7・12）**: 行 C3a と同じ 2 種類のデータと条件で、確定のスナップショットの公開から密度タイルが付くまでを測る。比べるのは要件 P-8 の 10 % と §3.4 の計算である。記録は `docs/benchmarks/c3b-density-tiles.md`
     - 構築の時間: 全体と、1 つの仕事（1 つのタイルの 1 つの象限）の時間の中央値と p99
@@ -3306,6 +3447,14 @@ public interface ITextBackend                 // バックエンドが実装す�
     - `DensitySplit`: 2^17・2^18・2^19 で構築の時間とメモリの割合を測り、値を決める。結果: 2^18 のまま。密度タイルが付くまでは一様 3.2〜4.6 秒、塊 4.7〜5.9 秒で、要件 P-15 に 10 秒を足した（`docs/adr/0002-density-tiles.md`）。計測は 1 周で止めた（記録の「条件」）
     - 問い合わせ: `TryGetTile` の p50 と p99。確保は 0 B
   - **CPU の配分（行 S4、要件 N-12、Issue #421）**: 全論理プロセッサで空回りして、1 秒ごとに回った数を書く競合プロセス（通常の優先度）と、1e9 点の一様な分布の索引の構築（ワーカー 8 本、ページキャッシュに載ったファイル、構築のプロセスの優先度は通常）を並べて測った。測ったのは、競合の速さ（構築の間の 1 秒あたりの回数の、構築のないときに対する割合）、構築の時間と使ったコアの数、構築中の 16.7 ms ごとの `Acquire`・`Count`・`Release` の時間、別のスレッドから 2 秒ごとに呼ぶ `GC.Collect()` の時間である。記録は `docs/benchmarks/s4-yield.md`。場面のコード（`burn` と `yield`）は、休む方式の実装と一緒にブランチ `feat/421-yield`（コミット `2c83dc7`、タグ `s4-yield-measurement`）にあり、main には入れていない
+- **散布の生の点（行 R3a、要件 P-4、Issue #431）**: `benchmarks/HyperPlot.E2E` の `points` の場面。NativeAOT、1,920 × 1,080、ヘッドレス。1e7 点の `float` の x と y（一様な分布と、外れ値のある塊の分布。`HyperPlot.DataPath` の `generate-points` と同じ種）を 1 つの point の層で描き、全体からの拡大とパンの台本を 1,200 フレーム以上流す。直径 2 と 6 DIP、不透明とアルファ 0.6。記録は `docs/benchmarks/r3a-points.md`
+  - **実装の最初に測るもの**: 整数の位置の頂点シェーダ（決定 30）で、1e7 点の GPU 時間が試作（§5.5.2）の値より増えていないこと。増えていたら、ほかの実装に進む前に Issue に書いて形を見直す
+  - フレーム: CPU 時間（葉を引く、ページを求める、セルの表、読み出し、記録、描画の呼び出しの段ごと）と GPU 時間の、p50・p95・p99・最大。確保は 0 B
+  - **P-4 の判定**（Issue #431 の決定 27、オーナーの決定）: 1 フレームの CPU 時間と GPU 時間の和が、p95 で 16.7 ms 以下（60 fps）。全部のページが常駐した後のフレームで見る。フレームは 16.7 ms の間隔で流し（続けて流すと GPU のクロックが上がり、GPU 時間が短く出る。§5.5.2 の試作）、GPU のクロックを並べて書く（`.cursor/rules/bench.mdc`）。試作の GPU 時間は最大 12.6 ms だったので、CPU に残るのは約 4 ms である
+  - 最初の表示まで: 仕様を渡してから、索引が `Full` になるまでと、全部のページが常駐するまでの時間とフレームの数。ページの読み出し（`ReadBlock`）の時間は、写しがページキャッシュにある場合と、ない場合（メモリマップの列）の両方を、最大まで書く
+  - 精度: 常駐の点の画像を、同じ点を全部倍精度で写した画像と比べた差（0.5 画素より大きくずれた点がないこと）。x と y を同じだけ拡大した画面、x だけを深く拡大した画面（y は全体のまま、x を 14 万倍と 1,000 万倍）、外れ値のある塊の分布で塊を拡大して見える点が 131,072 を超える画面で比べる。セルの広がりが 2^31 画素になる拡大まで測る
+  - CPU の道: 131,072 点の層の 1 フレームの CPU 時間と GPU 時間、ヒットテストの p99（要件 P-5 の 1 ms と比べる）
+  - 分けた層: 1e7 点を 8 つと 64 のカテゴリに分けた層と、6 パネル × 8 カテゴリに分けた層の、索引の構築の時間、メモリ（集めた列、写し、スナップショットの固定の分、構築の間のカウンタ）、常駐のバイト数、フレームの時間
 - **End-to-end**（`benchmarks/HyperPlot.E2E`、NativeAOT、行 S2）: ヘッドレス描画で、表示の範囲の列を台本どおりに流し、フレームの CPU 時間（段ごと）・GPU 時間（`LastFrameTime`）・アロケーション・メモリを測る。入力のモデル（行 I1）とホバー（行 I2b）はまだないので、ズームとパンは表示の範囲の列で表す: 全体からの拡大（各段で 2 倍、全体の 100 万分の 1 まで）、拡大の各段でのパン、全体へ戻る、で約 600 フレーム。P-1 の p95 は、台本を 2 回以上続けて流した 1,200 フレーム以上（最初の 30 フレームは捨てる）から取る。GPU 時間はクロックの段で動くので、少ないフレームの p95 は段の一時の値になりうる（`.cursor/rules/bench.mdc`、R2 の記録）。1 フレームは `samples/BillionSeries` と同じ手順（`PlotWorkerPool.Extract` → 画素へ写す → `RenderList` → `IGpuBackend.Draw`）で、描画先は 1,920 × 1,080。ホバーの場面（要件 P-6）は、行 I2b で足す。ヒットテストの時間（要件 P-5）は、行 I2a が「ヒットテスト（行 I2a）」の項で測る（Issue #337 の決定 1・10）
   - **P-1 の判定**: 1 系列（1e9 点の `float` のメモリマップ、X は `UniformColumn`、ピラミッドは構築済み、ファイルはページキャッシュに載った状態）で、フレームの CPU 時間と GPU 時間のそれぞれの p95 を 8 ms と比べる。4 系列と 16 系列は、目標なしの参考として記録する
   - **満たさないとき**: CPU のプロファイル（`.agents/skills/cpu-profile`）で段と関数の内訳を測る。p95 が 8 ms を超えたら、PR の前に、直し方の選択肢と推奨をオーナーに出す（`.cursor/rules/consent.mdc`）。設計に関わる直しは S2 の中で黙って入れない。「1 系列を画素列の範囲で分けるか」（§5.5.1）の判断の材料も、この内訳から出す
@@ -3400,6 +3549,7 @@ public interface ITextBackend                 // バックエンドが実装す�
 | アクセシビリティ（W1c） | `Describe`（Core）: 1 枚の図・ファセット・図の各々で、プロットの種類、タイトル、各軸のタイトルと今のビューの範囲（軸の書式、time の軸の日時）、系列のラベルと Geom、ファセットのパネルの数。カテゴリの軸の最初と最後の見えるカテゴリ名と数、polar の角と半径、flip でも x と y の名前。失敗した層と作っている途中の層に「not drawn」、全部の層を作っている間は軸を書かず全部「not drawn」。二次の軸も書く。暫定のフレームの後に「(provisional)」。ビューを動かすと範囲が変わる。描く前は `InvalidOperationException`。要約を作った後のフレームが温まった後 0 B（Issue #323 の決定 5。計測は置かない）。`HyperPlotView` の `AutomationPeer`: 種類が `Image`、`Name` が `Describe` の文、`AutomationProperties.Name` を置くとそちら、聞き手がいるときだけ知らせる。仕様の変化はそれを描いた最初のフレームの後、null の仕様は空の `Name` ですぐ、ビューの変化は偽の時刻で最後の変化から 500 ms の後に 1 回だけ（その間のフレームでは知らせない）、暫定でなくなったときにもう一度 |
 | ガイドと配置（G3） | 目盛り（Core、偽の `ITextBackend` で測る）: 拡張アルゴリズムの探し方が、枝刈りなしの総当たり（j ≤ 8、k ≤ 30、z は §5 の最初から 6 つ上まで、start は §5 の範囲）と同じ候補を選ぶ（乱数の範囲・軸の長さ・目標の間隔で 100 通り）。点数の 4 項が §4.6 の式の値で、重みが 0.25・0.2・0.5・0.05（疑似コードの入れ替えた重みと違う候補になる範囲を 1 つ含める）、v が 0 を含む目盛りで 1。`Nice` が偽で目盛りがすべて domain の中にあり「埋める」条件を満たし、真で domain を覆い、domain が [lmin, lmax] になる。軸が短くてすべて重なるとき目盛りを描かない。重なりの値の 3 つの場合（1.5 em ちょうど、その間、重なり）。値が M · 10^e で正確（0.1 刻みの 0.3 が "0.3"）。負の範囲・0 をまたぐ範囲・1e300 と 1e-300 の大きさ。pow と sqrt と利用者の `IScale` の目盛りの画素が `Forward` の位置。log: 1 桁に満たない範囲で linear の選び方、3 桁に満たない範囲で {1, 2, 5} · 10^k、多い桁で j 個おき、重ならない、目盛りが 2 つを下回る j で止まる、nice が 10 の冪に広げる、nice の候補の当たる条件を広げた domain の画素で測る（広げる前の画素では当たり、広げた後は重なる候補を選ばない。symlog と time も）、広げた domain で当たる候補がなければ nice なしの選び方になり domain は学習したまま（log の 0.3〜3,000 を 250 画素、間隔 90）。symlog: 0 を含み両側、10 · C に届かない domain で linear。time: 各段（ns から年まで）が選ばれる範囲、置き方（7 日が月曜、月の 3 と 6 が 1 月から、年が倍数、日の 2 が 0001 年からの日数）、ns の単位で 2262 年の近くまで正確、`Ticks` の単位で 100 ns の倍数でない刻みを使わず、ms の単位で ms より細かい刻みを使わない、起点より前（1969 年）が ⌊⌋ で分かれる、`boundary` が目盛りごとに最も粗い境、`DateTime` の範囲の外の domain が `InvalidOperationException`（`ShowAxes` と `ShowGrid` が偽なら投げない）、nice が刻みの目盛りに広げる。書式: 拡張アルゴリズムの軸で小数の桁がそろう、log で目盛りごと、12 文字を超えると軸のすべてが指数の形、負の 0 を書かない、time の 9 つの境の形。利用者の書式: 偽・64 を超える `charsWritten`・負の `charsWritten` が `InvalidOperationException`、投げた例外がそのまま出る、0 文字のラベル（`DrawText` を記録せず、重なりでは幅 0 として隣のラベルとの間を測る）。（行 G3 の「文字列の表」の項は、行 I1c で表を消したので外した。ラベルの文字の置き場のテストは I1c の行）。配置（偽の `ITextBackend` で、パネルの矩形が §4.6 の式の値）: タイトルあり・なし、凡例あり・なし、軸のタイトルあり・なし、倍率 1 と 1.5（丸め）、`ShowAxes` が偽、y を x より先に選ぶ（y のラベルの幅が W を決める）、小さい描画先で背景だけを描き例外を投げない。記録（`RenderList` の命令の列を見る）: §4.6 の描く順、パネルの切り抜き、太さ 1 と 2 の線の位置（奇数は ⌊p⌋ + 0.5、偶数は ⌊p + 0.5⌋）、太さ 1 と 2 の軸の線がパネルの画素に重ならない（WARP で、パネルの最後の行と最初の列が軸の色を持たず、そのすぐ外が持つ）、目盛りが軸の線の中心から始まり、丸い端を含めた外の端がパネルの辺から T、凡例の見本が `Style` の s 倍、文字のスタイルが `Foreground`・大きさ · s・`FontFamily`・`Locale`。テーマの検査（メンバーごとの範囲の外、s を掛けて 512 を超える大きさ、null のテーマ）。`HeadlessRenderer` の `scale` の 0・負・NaN・∞。倍率: 1.5 でデータの線の太さと破線の長さ（`On`・`Off`・`Offset`）が 1.5 倍で記録され、1 で行 G1 と同じ値で記録される。倍率 1.5 の `HeadlessRenderer` の `Render(RenderList)` の画素と `MeasureText` の値が、倍率 1 のものと同じ。`WithTitle` の null の scale と `PlotBuilder.Theme(null)` が `ArgumentNullException`。`PlotSpec.Title`・`Label`・スケールの `Title` が null のときと空のときのどちらも「なし」で、タイトルの帯・凡例の行・軸のタイトルの帯を取らない。差分（数え口）: 同じ仕様の描き直しは配置 0・M4 0・記録 0、タイトル・テーマ・ラベル・書式・軸のタイトルだけは配置 1・M4 0・記録 1、W を変えるテーマ（`Padding`）は M4 1、`Nice` は M4 1。矩形（WARP）: CPU の基準（§5.1 の ox · oy を背景の上に 8 ビットで合成したもの）と各チャネル 1 以内で一致する（整数の端、端数の端、1 画素より小さい矩形、半透明の 2 つの重なり）。幅か高さ 0 は何も描かない、切り抜き、§5.1 の引数の例外、温まった後の記録と描画が確保しない、喪失の後に同じ画素。確保: 温まった後、同じ仕様の描き直しが確保しない。2 つの domain を交互に描くと、両方を一度描いた後は確保しない。ゴールデン画像: §10.1 の場面 (6) と (7)。サンプル（`SpecPlot`）は NativeAOT で発行して警告 0、実行して 2 枚の PNG を書く。行 G1 と G2 の行の「手で組んだ記録との比較」と確保のテストは、§4.8 のガイドのないテーマで描く |
 | 空間タイル索引（C3a） | `BuildSpatialIndex`（Core、自分のスレッドを持つ `PlotWorkerPool`）: 引数の例外（null の列、長さの違う列、`Rows` の `Start` が負か `End` より大きい、有限でない範囲と `Lower` が `Upper` より大きい範囲、破棄済みのプール）。総当たりとの一致（乱数のデータ: 一様、入れ子の塊、同じ位置に `LeafCapacity` を超える点、NaN と ±∞、x が有限で y が NaN の点、範囲の外の点、hi = lo の軸、列の一部の行の範囲。長さはチャンクと単位の境界をまたぐ）: 写しが有限な点をちょうど 1 回ずつ持ち、元の位置で元の列を読んだ値と合う。表のどのセルも写しの連続した範囲で、その点の符号がセルに入り、分けたセルの範囲が子の範囲をつないだものになる。葉の中の点が元の行の順に並ぶ。`PointCount` と `ExcludedCount`。有限でない値: 変換のある `float` の列で、`Forward` の結果が `float` に丸めると ±∞ になる点（k = 2 の pow の 1e30）が `ExcludedCount` に入り、範囲と写しに入らない。相手の軸が有限でない点の値（x が有限で y が NaN の点の x）が範囲に入る。点のない索引: n = 0（空の行の範囲と長さ 0 の列。メモリマップの列とネイティブメモリの列）で確保の口が呼ばれず、空 → 粗い → 確定の順に公開して状態が「完了」になり、`Fault` が null、`PointCount` と `ExcludedCount` が 0、範囲が両軸とも原点 0 で差が 0、表が根の 1 行、`Count` が `Inside` 0・`Touching` 0、`GetCells` が 0、長さ 0 の `ReadPoints` が例外を投げない。すべての値が NaN の列（n > 0）で `ExcludedCount` が n、ほかは同じ。`Count` は `Inside` ≤ 総当たりの数 ≤ `Inside + Touching` で、矩形がセルの境界に合うとき `Touching` が 0。`GetCells` は矩形にかかる葉をすべて符号の順に返し、`destination` が短いときも戻り値は条件に合うセルの数である。`ReadPoints` の x・y・行。量子化: 単調で、v = hi が 2^32 − 1、範囲の外が端の目。幅が `double` に収まらない範囲（`-double.MaxValue` から `double.MaxValue`）でも単調で、両端が 0 と 2^32 − 1。`RowsPerUnit` が 2^20 以下の 2 の冪。原点と差（不変条件 6）: 2026 年の .NET のティック（約 6.39e17）の `Column<long>` の x で、範囲の幅が 2^32 ティック以下のとき、1 ティックずつ違う点が別の格子の目に入り、`ReadPoints` の x が `Int128` で引いた差と一致する。範囲の原点が、整数の列で最小、`double` の列で ⌊最小⌋。変換のある `float` の列で、写しの値から作り直した符号が同じセルになる。写しの値の型（変換なしは列の型、変換ありは `float` の列が `float`、ほかが `double`）と、元の位置の幅（幅を決める関数を n = 2^32 と 2^32 + 1 で見る）。数え上げ: 一様なデータが 2 回の走査で終わる。k が 1 と 4 の端。水準ごとに入れ子になった塊のデータで、走査が 25 回以下。同じ目に重なった点のセルを分け続けず `CoincidentLeaf` にする。表の上限: `TableShare` を小さくした入れ子の塊で、行の数が `MaxTableRows` 以下、浅い水準から分かれ、残りが `CappedLeaf` になる。カウンタと作業用の領域の大きさが §3.4 の「メモリ」の表の上限以下（internal の数え口）。D = 3 の部品（量子化・符号・数え上げ・表・書き込み）が 3 次元の総当たりと一致する。ワーカー 1・3・8 本で表と写しがバイトまで同じ。`IScale.Forward` が複数のワーカーのスレッドから呼ばれても結果が同じ。置き場所: メモリマップの列で一時ファイル、ほかはネイティブメモリ。一時ファイル: 子プロセスが索引を作っている途中で止められた後、`TempFolder` にファイルが残らない（Windows と Linux の CI）。確保の失敗（存在しない `TempFolder`、確保の口を差し替えた空きの不足、OS の判定を差し替えた `PlatformNotSupportedException`）が `Fault` に入る。状態: §3.4 の許す遷移をすべてと、許さない遷移を 1 つ（2 つ目のワーカーが構築を始めない。構築中にも、空いた 8 本のワーカーが 1 つの構築を競うときにも）。公開: 空 → 粗い → 確定の順で、そのたびに `Version` が増える。空のスナップショットの `Count` が `Inside` 0・`Touching` n。粗いスナップショットは `CoarseDensity` と `Count` が水準 8 までの総当たりと合い、`GetCells` が 0、`ReadPoints` が `InvalidOperationException`。`IsProvisional` の 3 つの条件。問い合わせの引数の例外（NaN の端、最小が最大より大きい矩形、範囲の外の `maxLevel`、長さの違うスパン、`PointCount` を超える範囲）。作り直し: `Invalidate` の後の `Acquire` が構築を積み、古い確定のスナップショットが暫定で答え、粗いスナップショットを公開せず、`IsComplete` が偽から真になる。構築中の x か y の `Invalidate` では、最後まで走ってから続けて作り直す。走査の間に値が変わる列（テスト用のストレージ）で、範囲を切る・点を捨てる・空きを埋めるのそれぞれが起き、どの位置にも実際の点が入り、スナップショットが暫定になる。失敗: 利用者の `IScale` の例外とチャンクを読む例外で状態が「失敗」になり、`Fault` が最初の例外を持ち、`Completion` がその例外で終わり、今のスナップショットが残る。版が進むまで積み直さず、進めば積み直し、成功しても `Fault` が残る。参照の数: 借りたスナップショットが差し替えと `Dispose` の後も読め、最後の `Release` の後に解放され、もう参照を足せない（internal の数え口）。`Acquire` と差し替えを数百回競わせて、解放済みのスナップショットを読まない。`Dispose`: 構築中の破棄、2 度目、破棄の後の `Acquire`、終わっていない `Completion` と `WhenComplete()` が `ObjectDisposedException`、破棄の後に公開しない。写しを閉じる: 一時ファイルの写しの `Closed` は、最後の参照を返す前には終わっておらず、終わった後は `TempFolder` が空である（確定の後の解放と、確保の後の失敗）。破棄で止まる仕事: 書き込みの単位に入ったワーカーを変換の中で止めておき、索引の `Dispose` かプールの `Dispose` が構築を止めた後に進めると、その単位は写しに 1 行も書かず、ほかの書き込みの単位も確定の公開も走らない。`fallocate` のないファイルシステムの確保（OS の判定を差し替える。Linux）は、1 MB ごとに止まったかを確かめ、4 つに分かれる確保の 2 つ目の前で `Dispose` を呼ぶと、3 つ目を確保せずに終わり、`Fault` は null で、`TempFolder` は空である。完了の順: 確定の公開の仕事の `JobEnded` の時点で、状態は「完了」で、`Completion` と `WhenComplete()` の `Task` は終わっておらず、`Task` を待った後にはすべての仕事が記録されている。プールの破棄: `Fault` と `Task`（すでにある `Fault` は替えない）。`WhenComplete()`: 完了した索引で終わった `Task`、`Invalidate` の後に作り直して終わる、版の進まない失敗で `Fault` の例外、待つ間の失敗、同時の呼び出しが同じ `Task`。`Acquire`・`Count`・`GetCells`・`ReadPoints`・`Release` が 0 B。テストは `Completion` を上限つきの watchdog で待ってから片付ける |
+| 散布の生の点（R3a） | ビルダと検査（Core）: `Point` の引数の検査（別の表、`default` の参照）、`Size`・`Opacity`・`Shape` の範囲、§5.5.2 の「上限と例外」の各例外（1e7 行を超える層、数の列の色と 131,072 行を超える層、polar と 131,072 行を超える層、索引の道の 65 の部分の層（64 は通る）、カテゴリの x、`Position`・`Stat`・`FillBy`）。`DrawMarkers`: 記録の中身（中心・直径・形・乗算済みの色）、有限でない中心を描かないこと、引数の例外、続く命令が 1 つの段にまとまること。道: 131,072 行の層は CPU の道で索引を作らず、131,073 行の層は、カテゴリで分けた点の少ない部分も含めて、どの部分も索引を作って `DrawMarkers` に記録しないこと（64 のカテゴリに分けた層で確かめる）。点の少ない部分のページを、その点の数だけの大きさで予算に数えること。索引の道: 索引ができるまで描かず暫定の印が立ち、できたら消えること。ヘッドレスが待つこと。常駐していないページがある間は暫定で、1 フレームに 5 ページまでしか送らないこと。列の版が変わったら前のスナップショットを暫定で描くこと。装置が失われた後に送り直すこと。構築の失敗（確保を失敗させる割り当て）: エンジンは層の全部の部分を描かず `WorkFailed` を 1 回出し、暫定の印を立てず、列の版が進んだら作り直すこと。ヘッドレスの `Render` が `Fault` の例外を投げること。セルの表: セルが写しの全部を重ならずに覆い、点の数が 32,768 以下か葉であること。`ReadBlock`: 書いた目盛りをセルの角と広がりで戻した値が、`ReadPoints` の値とセルの広がりの 2^-32 まで合うこと（チャンクとページとセルの境界をまたぐ並び、最後のページ、セルの端の点）。索引の道の層は、どの拡大でも `DrawMarkers` に記録せず、`ReadPoints` を呼ばないこと。WARP のゴールデン画像: 3 つの形、不透明と半透明、flip、polar（CPU の道）、数の列の色、カテゴリの色。精度: 範囲の 1 万分の 1 の幅の塊に 100 万点と、範囲いっぱいの外れ値を持つデータで、塊を画面いっぱいに拡大した画面（見える点は 131,072 を超える）と、一様な点で x だけを 14 万倍と 1,000 万倍に拡大した画面の、常駐の点の画素が、同じ点を倍精度で写した画素と 0.5 画素より大きくずれないこと（シェーダと同じ計算を CPU で行う試験と、WARP の画像）。ヒットテスト（CPU の道）: X と XY のモード、同じ距離の点、半径の外、分けた層の系列の番号、polar が答えないこと、索引の道の層が答えないこと。凡例の見本。Zero-Alloc: 2 つの道 |
 | 密度タイル（C3b） | `DensityTiles`（Core）: すべてのタイルのすべてのビンが、写しの点を総当たりで数えた値と一致する（一様、入れ子の塊、同じ位置の点の葉、上限で止まった葉、有限でない点を含むデータ。葉 16 点、単位 256 行、`TotalShare` は上限なし。入れ子の塊は水準 24 より深いセルにも `DensitySplit` を超える点を持ち、象限を 256 点ずつの仕事に分ける）。タイルを持つのは、点の数が `DensitySplit` を超え、水準が 24 以下の `Inner` のセルだけである。親のタイルの象限が子のタイルの 2 × 2 の和と一致する。幅: いちばん大きいビンがちょうど 255・256・65,535・65,536 のタイル（その数の点を 1 か所に置き、ほかの点はそのビンに入れない）で幅が 1・2・2・4 バイトになり、どの幅でも値が総当たりと同じ（飽和しない）。`uint` と `ulong` の境は、幅を決める関数で見る。上限: `DensitySplit` を小さくして見積もりが 10 % を超えるデータで、表と密度タイルの合計が元データの 10 % 以下、粗い水準から割り当て、止めた水準より深いセルがタイルを持たず、実際の大きさが見積もり以下。`TileCount` と `ByteCount`。`TryGetTile`: タイルを持つセルで真とそのタイル、持たないセルで偽、範囲の外の `level` で `ArgumentOutOfRangeException`、0 B。公開: 付く前は `Tiles` が null で、すべてできてから 1 度だけ付き、`Version` が増える。タイルを持つセルのない索引（点の数が `DensitySplit` 以下、点のない索引）で、`TileCount` が 0 の `DensityTiles` が付き、`Version` が増え、状態が「完了」になる。状態が「書き込み」→「密度タイル」→「完了」と進み、`Completion` と `IsComplete` は密度タイルの後になる。密度タイルの間の `Invalidate`（続けて作り直す）、失敗（確定のスナップショットはタイルなしで残る）、`Dispose`（公開せず、版が進まず、借りていた確定のスナップショットが読める）。ワーカー 1・3・8 本でタイルがバイトまで同じ |
 | ゼロアロケーション | 定常状態のフレームの経路のアロケーションが 0 バイトであること |
 | ホスト | WPF のコントロールを実際のウィンドウで動かし、描画と入力を確かめる。Windows のみ |
@@ -3465,17 +3615,17 @@ public sealed class ImageMismatchException : Exception
 ## 11. 不変条件
 
 1. `HyperPlot.Core` は描画のバックエンドもホストも参照しない
-2. フレームの経路は、データの点数に比例する走査をしない。1 フレームに GPU へ送る量は画素数と系列数で抑えられる。行 G4 の segment と rect は、要素の総数が 131,072 以下のときだけ毎フレームすべてを走査する（走査は定数で抑えられる。超えれば例外で、大きなデータの道は行 R3、§5.5.3）
+2. フレームの経路は、データの点数に比例する走査をしない。1 フレームに GPU へ送る量は画素数と系列数で抑えられる。行 G4 の segment と rect は、要素の総数が 131,072 以下のときだけ毎フレームすべてを走査する（走査は定数で抑えられる。超えれば例外で、大きなデータの道は行 R3e、§5.5.3）。行 R3a の point が毎フレーム写すのは、行の数が 131,072 以下の層の点だけである。索引の道は点を写さない。常駐のための読み出しは、1 フレーム 4 MB（`FrameUpload`）までである。毎フレーム引く葉と、作るセルの表は、索引の表の行の数（1e7 点で最大 50,000）で抑えられ、点の数に比例しない。1e9 点（表は最大 500 万行）では行 R3b で考え直す（§5.5.2）
 3. 定常状態のフレームの経路は、マネージドのアロケーションをしない。ランタイムがプロセスで 1 回だけ行う初期化の確保（NativeAOT で `Lock` を初めて待つときの 56 バイト）は除き、その出どころを記録に書く（要件 P-9、`.cursor/rules/bench.mdc`、オーナーの判断 PR #63）。行 G3 から行 I1c の前までの例外: 新しい目盛りの値が出るとき、そのラベルの `string` と整形の結果を確保する（§4.6 の「確保」。同じ仕様の描き直しと、すでに描いた domain に戻る描き直しは確保しない）。行 I1c からは、新しいラベルでも確保しない（目盛りの書式は既定も利用者のものも span に書く、§4.6）。行 W1a からの例外: WPF のホストの 1 フレームで WPF の API（`D3DImage.Lock`・`SetBackBuffer`、`WriteableBitmap.Lock`）が中で確保する分と、WPF のスレッドでエンジンが待つ間に走る WPF の処理の分（§7.2 の「確保」、オーナーの決定 2026-11-07）
 4. 派生のデータ（統計・LOD・タイル・Stat の結果）は元の列の版を持つ。古い版の結果を描くときは、それを「暫定」として扱い、ホストへ通知する
 5. M4 の間引きは、各画素列の first・min・max・last を誤差なしで保つ。点の位置と値は元の要素のものである
-6. スケールの空間の値は CPU では `long` の原点と `double` の差の組で扱う（§3.6、行 D2）。GPU には原点からの差の float32 だけを送る
+6. スケールの空間の値は CPU では `long` の原点と `double` の差の組で扱う（§3.6、行 D2）。GPU には原点からの差の float32 を送る。行 R3a の常駐の点だけは、四分木のセルの中の位置を 32 ビットの整数で送り、シェーダが整数のまま差を引く（§5.5.2 の「GPU での写し方と精度」、Issue #431 の決定 30）
 7. UI のスレッドは、ワーカーと GPU の完了を待たない。例外は 3 つで、ヘッドレス描画の readback を明示的に求めた場合、ピラミッド・空間タイル索引・ワーカーのプールの `Dispose` が処理中の仕事（ピラミッドはチャンク 1 つ分の構築、索引は多くても 8 つの単位か単位に分けない 1 つの仕事）を待つ場合（§8.1）、フレームの中で画素数で抑えた仕事（系列ごとの M4）の fork-join を待つ場合（§8.1）。`PlotEngine.RenderFrame` の待ちは、フレームの中の待ちを行 W1b1、層を作る段の待ちを行 W1b2、ラスタのミップマップの更新の待ちを行 W1b3 でなくした（§4.8・§7.1）
 8. 時刻は `TimeProvider` からだけ取る
 9. `src/` のコードはリフレクションと実行時のコード生成を使わない
 10. GPU の資源は、Core の状態（常駐キャッシュの記述子）から作り直せる
 11. 同じ入力（データ・仕様・入力の列・時刻）から、WARP 上で同じ画素が出る。例外は DirectWrite で描いたテキストの画素で、OS のフォントと DirectWrite の版に依る（§5.6、行 T1）。テキストの画素の比較は、偽の `ITextBackend` の場面で行う（§10 の T1 の行）
-12. 座標系・ビュー・描画 IR・ヒットテスト・空間索引の公開の契約は、引数と戻り値を抽象（`PanelView`、4×4 の変換、画面の位置とビュー）で表す。2 次元を前提にした型（x と y だけの範囲・3×3 の行列など）を契約の引数や戻り値にしない。2D の範囲はその抽象の 1 つの種類（§6.2）として持ってよい。3D（§13）は、契約を変えずに種類を足して入れる。例外は 2 つ。1 つめは、行 G4 の `IGeom` の口（`GeomFrame`・`GeomRanges`）で、x と y の成分ごとのメソッドである。3D では z の成分のメソッドを sealed class に足して広げる（§4.1、PR #121 のレビュー）。2 つめは、行 I2a の `SeriesHit` の x と y の欄で、確保しない構造体のまま値を読めるようにするためである。3D では z の欄を足す（§6.3、Issue #337 の決定 11） 選択（§6.4、行 I3a）も、ビューと同じく抽象の `Selection` と 2D の `Selection2D` で表し、例外にしない（Issue #364 の決定 14）。計測（§6.5、行 I4b）も、選択と同じく抽象の `Measurement` と 2D の `Measurement2D` で表し、例外にしない（Issue #390 の決定 7）。注釈（§4.1、行 I4a）は仕様のモデルで、この不変条件の契約ではない（層の X と Y のチャネルと同じ。§6.5 の「注釈」、Issue #382）。行 C3a・C3b の空間タイル索引の型（§3.4）は internal で、この不変条件の公開の契約ではない。公開するときは、2 次元の `SpatialRect` を抽象に合わせる（行 R3、Issue #401 の決定 1）。
+12. 座標系・ビュー・描画 IR・ヒットテスト・空間索引の公開の契約は、引数と戻り値を抽象（`PanelView`、4×4 の変換、画面の位置とビュー）で表す。2 次元を前提にした型（x と y だけの範囲・3×3 の行列など）を契約の引数や戻り値にしない。2D の範囲はその抽象の 1 つの種類（§6.2）として持ってよい。3D（§13）は、契約を変えずに種類を足して入れる。例外は 2 つ。1 つめは、行 G4 の `IGeom` の口（`GeomFrame`・`GeomRanges`）で、x と y の成分ごとのメソッドである。3D では z の成分のメソッドを sealed class に足して広げる（§4.1、PR #121 のレビュー）。2 つめは、行 I2a の `SeriesHit` の x と y の欄で、確保しない構造体のまま値を読めるようにするためである。3D では z の欄を足す（§6.3、Issue #337 の決定 11） 選択（§6.4、行 I3a）も、ビューと同じく抽象の `Selection` と 2D の `Selection2D` で表し、例外にしない（Issue #364 の決定 14）。計測（§6.5、行 I4b）も、選択と同じく抽象の `Measurement` と 2D の `Measurement2D` で表し、例外にしない（Issue #390 の決定 7）。注釈（§4.1、行 I4a）は仕様のモデルで、この不変条件の契約ではない（層の X と Y のチャネルと同じ。§6.5 の「注釈」、Issue #382）。行 C3a・C3b の空間タイル索引の型（§3.4）は internal で、この不変条件の公開の契約ではない。公開するときは、2 次元の `SpatialRect` を抽象に合わせる（Issue #401 の決定 1。行 R3a では公開しない）。
 
 ## 12. 対象外
 
@@ -3492,8 +3642,8 @@ public sealed class ImageMismatchException : Exception
 | C3a（空間タイル索引） | 量子化・符号・数え上げ・表・写しへの書き込みの部品が次元の数 D を引数に取り、D = 3 を試験する（§3.4、§10） |
 | R1・R2（D3D11・線分） | `IGpuBackend` の資源の種類が、描画先に深度のテクスチャを付けられる形である。コマンドの記録が深度のモードの欄を持つ（v1 は「なし」だけ、§5.1）。3 成分の記録は行 K1 で足す。シェーダは 2 成分・深度なしだけで、3D の値を持つコマンドは `NotSupportedException`（§5.2） |
 | G1（仕様モデル） | 仕様の型を init のプロパティで持ち、エンコーディングのチャネル（`z` を含む）を後から足しても既存のコードが壊れない（§4.1） |
-| G4（Geom 一式） | 座標系の 4×4 の変換の形（倍精度の因子と原点）を Core の internal の型として作り、CPU の写し方が使う（§4.4）。座標系の公開の仕様 `CoordSpec` は G10、4×4 の変換の公開の契約と GPU で行列を当てる `SetTransform` は R3 で作る（Issue #76、#120、#136） |
-| G10（座標系の flip） | 公開の仕様 `CoordSpec` を作り、変換は internal のまま（§4.4）。4×4 の変換の公開の契約は R3 の `SetTransform` と一緒に出す。`GeomFrame.Map` は描画先の点を返す 2D の画面の口で、3D は z の口を足す（不変条件 12 の例外の `GeomFrame` と同じ扱い、Issue #136） |
+| G4（Geom 一式） | 座標系の 4×4 の変換の形（倍精度の因子と原点）を Core の internal の型として作り、CPU の写し方が使う（§4.4）。座標系の公開の仕様 `CoordSpec` は G10、4×4 の変換の公開の契約と GPU で行列を当てる `SetTransform` は、行 K1 で作る（Issue #76、#120、#136、#431 の決定 11） |
+| G10（座標系の flip） | 公開の仕様 `CoordSpec` を作り、変換は internal のまま（§4.4）。4×4 の変換の公開の契約は、行 K1 の `SetTransform` と一緒に出す（Issue #431 の決定 11）。`GeomFrame.Map` は描画先の点を返す 2D の画面の口で、3D は z の口を足す（不変条件 12 の例外の `GeomFrame` と同じ扱い、Issue #136） |
 | G11（座標系の polar） | 公開の仕様 `PolarCoordSpec` を作り、伸ばした空間から描画先への写しは internal のまま（§4.4）。`DrawSectors` は `DrawColumns` と同じ 2D の塗りの命令で、3D は描画 IR の深度の口（§5.1 の「3D への備え」）で広げる。`GeomFrame.Polar` は `Flipped` と同じ 2D の画面の口で、不変条件 12 の例外の `GeomFrame` と同じ扱い（Issue #145） |
 | I1・I2a（ビューとヒットテスト） | ビューが `PanelView` の抽象で、ヒットテストが画面の位置とビューを受け取る（§6.2・§6.3） |
 

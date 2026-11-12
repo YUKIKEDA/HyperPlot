@@ -50,6 +50,12 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | M4 集約 | M4 aggregation |
 | 密度集約 | density aggregation |
 | 空間タイル索引、タイル | spatial tile index, tile |
+| 生の点 | raw points |
+| 点の印（マーカー） | marker |
+| 分けた層の部分 | part (of a split layer) |
+| CPU の道、索引の道（散布） | CPU path, index path |
+| 常駐、生の点のページ、常駐のセル | resident, point page, resident cell |
+| セルの中の位置（目盛り） | position in the cell (in units of 2^-32 of its extent) |
 | 並べ直した写し（索引が持つ x、y、元の位置） | reordered copy |
 | 元の位置（写しの点の、行の範囲の先頭からの行の数） | original position |
 | Morton 符号 | Morton code |
