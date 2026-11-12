@@ -853,6 +853,43 @@ public sealed class TextEngineTests
     }
 
     /// <summary>
+    /// Calls of markers that follow one another under one clip are one step over their records, and a command of another
+    /// kind or another clip starts a new step (design §5.3, row R3a).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A list with two calls of 2 and 3 markers, a rectangle, a call of 1 marker, and, under another clip, a call of 2.
+    ///
+    /// Steps:
+    /// - Prepare the list.
+    ///
+    /// Expected:
+    /// - The steps (Markers, 0, 5), (Rects, 0, 1), (Markers, 5, 1), (Markers, 6, 2); the last under the new clip.
+    /// </remarks>
+    [Fact]
+    public void Prepare_MarkerCallsJoinUnderOneClip()
+    {
+        var engine = new TextEngine(new FakeTextBackend());
+        var list = new RenderList();
+        var style = new MarkerStyle(new Color(0, 0, 0, 255), 4);
+        list.DrawMarkers([new(1, 1), new(2, 2)], style);
+        list.DrawMarkers([new(3, 3), new(4, 4), new(5, 5)], style with { Shape = MarkerShape.Square });
+        list.DrawRect(0, 0, 2, 2, style.Color);
+        list.DrawMarkers([new(6, 6)], style);
+        list.SetClip(0, 0, 50, 50);
+        list.DrawMarkers([new(7, 7), new(8, 8)], style);
+        engine.Prepare(list, 100, 100);
+
+        var steps = engine.Steps.ToArray();
+        Assert.Equal(
+            [(DrawStepKind.Markers, 0, 5), (DrawStepKind.Rects, 0, 1), (DrawStepKind.Markers, 5, 1), (DrawStepKind.Markers, 6, 2)],
+            steps.Select(s => (s.Kind, s.Index, s.Count)).ToArray()
+        );
+        Assert.Equal(ClipRect.All, steps[2].Clip);
+        Assert.Equal(new ClipRect(0, 0, 50, 50), steps[3].Clip);
+    }
+
+    /// <summary>
     /// Rectangles that follow one another under one clip are one step, and a polyline, a text, or another clip starts a new
     /// one (design §5.3).
     /// </summary>
