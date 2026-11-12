@@ -12,6 +12,9 @@ namespace HyperPlot.Tests;
 public sealed class ElementHitTests
 {
     private static readonly PanelId Panel = new(0, 0);
+    private static readonly double[] UncoloredLows = [0.0, 6.0];
+    private static readonly double[] UncoloredHighs = [2.0, 8.0];
+    private static readonly double[] UncoloredValues = [double.NaN, 1.0];
 
     /// <summary>
     /// A numeric x's bars answer in <see cref="HitMode.X"/> with the row whose x is nearest the cursor's, in the gaps between
@@ -597,6 +600,39 @@ public sealed class ElementHitTests
         Assert.Equal(Premultiplied(green with { A = 255 }), discs[1].Color);
         Assert.Equal(Premultiplied(red), discs[3].Color);
         Assert.Equal(Premultiplied(red), discs[5].Color);
+    }
+
+    /// <summary>A rectangle whose color value is NaN is not drawn, and the hit test does not answer with it (design §4.1, §6.3).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Rectangles [0, 2] × [0, 2] and [6, 8] × [6, 8] colored by the numbers NaN and 1 through a sequential scale.
+    ///
+    /// Steps:
+    /// - X mode at (1, 1) and at (7, 7).
+    ///
+    /// Expected:
+    /// - Nothing at (1, 1); row 1 at (7, 7).
+    /// </remarks>
+    [Fact]
+    public void Rects_WithoutAColor_AreNotHit()
+    {
+        using var low = Column.Wrap(UncoloredLows);
+        using var high = Column.Wrap(UncoloredHighs);
+        using var values = Column.Wrap(UncoloredValues);
+        var table = DataTable.Create().Add("lo", low).Add("hi", high).Add("v", values).Build();
+        var (lo, hi) = (table.Col<double>("lo"), table.Col<double>("hi"));
+        using var engine = Drawn(
+            Plot.Create(table)
+                .Rect(lo, hi, lo, hi, r => r.ColorBy(table.Col<double>("v")))
+                .ScaleColor(Scale.Sequential())
+                .ScaleX(Scale.Linear().WithDomain(-1, 9))
+                .ScaleY(Scale.Linear().WithDomain(-1, 9))
+                .Build()
+        );
+        var hits = new SeriesHit[2];
+
+        Assert.Equal(0, engine.HitTest(Pixel(engine, 1, 1), 0, HitMode.X, hits));
+        Assert.Equal(1, Assert.Single(hits[..engine.HitTest(Pixel(engine, 7, 7), 0, HitMode.X, hits)]).Row);
     }
 
     /// <summary>A rectangle's marker takes its fill made opaque (row I2b's markers, PR #360's review).</summary>

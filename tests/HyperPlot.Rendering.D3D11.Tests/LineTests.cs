@@ -299,7 +299,12 @@ public sealed class LineTests
         var expected = new byte[Size * Size * 4];
         for (var i = 0; i < expected.Length; i += 4)
         {
-            (expected[i], expected[i + 1], expected[i + 2], expected[i + 3]) = (Background.R, Background.G, Background.B, Background.A);
+            // Four statements, not one tuple assignment: in the Release build of this project the tuple form left R at 0 in every
+            // pixel (RectTests.Reference has the same note; Issues #117 and #287).
+            expected[i] = Background.R;
+            expected[i + 1] = Background.G;
+            expected[i + 2] = Background.B;
+            expected[i + 3] = Background.A;
         }
 
         LineReference.Draw(expected, Size, Size, polylines);

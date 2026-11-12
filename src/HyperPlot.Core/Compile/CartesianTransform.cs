@@ -4,13 +4,13 @@ namespace HyperPlot;
 
 /// <summary>
 /// The cartesian transform of a panel (design §4.4, row G4): from a point's differences from the domains' origins in the
-/// scale space to the target's physical pixels; the origins come with the domains (row R3 adds them when it hands the
-/// transform to the GPU). It is the 4×4 transform written as its factors on
+/// scale space to the target's physical pixels; the origins come with the domains. It is the 4×4 transform written as its factors on
 /// each axis (a move by the domain's lower end, a scale from the domain's width to the panel's, a reversal, a move to the
 /// panel's edge), which it applies in the order of the formula of rows G1 to G3: a product of the factors rounds
 /// differently and would move pixels. Clamp is applied to a difference before it is mapped. Each axis maps to the pixels
 /// along its own side of the panel: with flip (row G10), x to the vertical pixels and y to the horizontal ones, and the
-/// record swaps them back. The public 4×4 contract and the GPU's use of it come in row R3 (<c>SetTransform</c>).
+/// record swaps them back. The public 4×4 contract and <c>SetTransform</c> come in row K1; the resident points of row R3a take the factors folded
+/// for each cell (design §5.5.2).
 /// </summary>
 internal readonly struct CartesianTransform
 {

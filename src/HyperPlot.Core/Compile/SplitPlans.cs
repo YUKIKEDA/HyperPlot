@@ -716,6 +716,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             (RuleLayerSpec b, RuleLayerSpec a) => b.Style == a.Style,
             (RectLayerSpec b, RectLayerSpec a) => b.Fill == a.Fill,
             (SegmentLayerSpec b, SegmentLayerSpec a) => b.Style == a.Style,
+            (PointLayerSpec b, PointLayerSpec a) => b.Color == a.Color && b.Size.Equals(a.Size) && b.Shape == a.Shape && b.Opacity.Equals(a.Opacity),
             (TextLayerSpec b, TextLayerSpec a) => b.Color == a.Color
                 && b.Size.Equals(a.Size)
                 && b.Horizontal == a.Horizontal
@@ -810,6 +811,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             RectLayerSpec r => r with { XMin = map(r.XMin), XMax = map(r.XMax), YMin = map(r.YMin), YMax = map(r.YMax) },
             SegmentLayerSpec s => s with { X = map(s.X), Y = map(s.Y), XEnd = map(s.XEnd), YEnd = map(s.YEnd) },
             TextLayerSpec t => t with { X = map(t.X), Y = map(t.Y), Text = map(t.Text) },
+            PointLayerSpec p => p with { X = map(p.X), Y = map(p.Y) },
             _ => throw new InvalidOperationException($"A {spec.GetType().Name} is not split by categories."),
         };
     }

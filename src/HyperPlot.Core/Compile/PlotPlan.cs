@@ -982,7 +982,7 @@ internal sealed partial class PlotPlan : IDisposable
         }
 
         throw new InvalidOperationException(
-            $"The text layers have {total} rows together ({counts}); a plot draws at most {LayerPlan.MaxTextRows} labels (design §5.5.3). Many points are drawn as a scatter (row R3)."
+            $"The text layers have {total} rows together ({counts}); a plot draws at most {LayerPlan.MaxTextRows} labels (design §5.5.3). Many points are drawn as a scatter (a point layer)."
         );
     }
 

@@ -13,7 +13,16 @@ using HyperPlot.Samples;
 //     [--csv <file for one row a frame>] [--min-span <points: keep only the views at least this wide, for a profile>]
 //     [--hover | --hover-whole: the hover's scene of row I2b instead, 300 frames of the mouse alone, or as many drawn whole]
 //     [--hover-frames <frames of the hover's scene, 300 by default>]
+//   <dir>/HyperPlot.E2E.exe points <count> <diameter DIPs> <opacity> <uniform|cluster> [frames]: the scene of the raw points
+//     of row R3a instead, with no data file (PointsScene).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
+if (args.Length > 0 && args[0] == "points")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.PointsScene.Run(args.AsSpan(1));
+}
+
 string? directory = null;
 string? csv = null;
 var minSpan = 0.0;

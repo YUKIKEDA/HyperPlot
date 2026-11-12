@@ -25,6 +25,8 @@ public sealed class RenderList
     private SectorCall[] _sectorCalls = new SectorCall[4];
     private ImageInstance[] _images = new ImageInstance[4];
     private (int Page, ClipRect Clip)[] _imageCalls = new (int, ClipRect)[4];
+    private MarkerInstance[] _markers = new MarkerInstance[16];
+    private MarkerCall[] _markerCalls = new MarkerCall[4];
     private int _polylineCount;
     private int _segmentCount;
     private int _pieceCount;
@@ -34,6 +36,8 @@ public sealed class RenderList
     private int _sectorCount;
     private int _sectorCallCount;
     private int _imageCount;
+    private int _markerCount;
+    private int _markerCallCount;
     private int _commandCount;
     private ClipRect _clip = ClipRect.All;
 
@@ -73,7 +77,13 @@ public sealed class RenderList
     /// <summary>Gets the page of the residency cache each recorded image tile reads, and its clip.</summary>
     internal ReadOnlySpan<(int Page, ClipRect Clip)> ImageCalls => _imageCalls.AsSpan(0, _imageCount);
 
-    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, a sector call, or an image tile.</summary>
+    /// <summary>Gets the recorded markers, in order (row R3a).</summary>
+    internal ReadOnlySpan<MarkerInstance> Markers => _markers.AsSpan(0, _markerCount);
+
+    /// <summary>Gets the calls of <see cref="DrawMarkers(ReadOnlySpan{Vector2}, in MarkerStyle)"/>, in order: each a range of <see cref="Markers"/> under one clip.</summary>
+    internal ReadOnlySpan<MarkerCall> MarkerCalls => _markerCalls.AsSpan(0, _markerCallCount);
+
+    /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, a sector call, an image tile, or a call of markers.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
@@ -89,6 +99,8 @@ public sealed class RenderList
         _sectorCount = 0;
         _sectorCallCount = 0;
         _imageCount = 0;
+        _markerCount = 0;
+        _markerCallCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
     }
@@ -401,6 +413,39 @@ public sealed class RenderList
     }
 
     /// <summary>
+    /// Records markers of one look at the given centers, in physical pixels (design §5.1, row R3a): a disc, a square, or a
+    /// cross around each center. A pixel is covered by the share of it that the shape takes; markers that overlap are each
+    /// blended over what is below, in the order of the centers. A center that is not finite draws nothing.
+    /// </summary>
+    /// <param name="centers">The centers.</param>
+    /// <param name="style">The color, the size, and the shape.</param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The style's size or stroke is not finite or not above 0, the stroke is above 4,096, or the shape is not a named value.
+    /// </exception>
+    public void DrawMarkers(ReadOnlySpan<Vector2> centers, in MarkerStyle style) => AddMarkers(centers, default, style, perMarker: false);
+
+    /// <summary>
+    /// Records markers of one size and shape, each with its own color (design §5.1, row R3a). The style's color is not used.
+    /// A center that is not finite draws nothing.
+    /// </summary>
+    /// <param name="centers">The centers.</param>
+    /// <param name="colors">The color of each marker, as many as the centers.</param>
+    /// <param name="style">The size and the shape.</param>
+    /// <exception cref="ArgumentException"><paramref name="colors"/> is not as long as <paramref name="centers"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The style's size or stroke is not finite or not above 0, the stroke is above 4,096, or the shape is not a named value.
+    /// </exception>
+    public void DrawMarkers(ReadOnlySpan<Vector2> centers, ReadOnlySpan<Color> colors, in MarkerStyle style)
+    {
+        if (colors.Length != centers.Length)
+        {
+            throw new ArgumentException("There is one color for each center.", nameof(colors));
+        }
+
+        AddMarkers(centers, colors, style, perMarker: true);
+    }
+
+    /// <summary>
     /// Records column trapezoids filled with one color, in physical pixels (design §5.1): each covers x from Left to Right
     /// and y between its top and bottom edges, the straight lines through their values at the left and right sides. A
     /// pixel is covered by the area it shares with the region between the two edges, in either order, so edges that cross
@@ -625,6 +670,65 @@ public sealed class RenderList
 
         ArgumentException.ThrowIfNullOrEmpty(style.FontFamily, nameof(style));
         ArgumentException.ThrowIfNullOrEmpty(style.Locale, nameof(style));
+    }
+
+    private static Vector4 Premultiply(Color color) =>
+        new(
+            Premultiplied.Multiply(color.R, color.A) / 255f,
+            Premultiplied.Multiply(color.G, color.A) / 255f,
+            Premultiplied.Multiply(color.B, color.A) / 255f,
+            color.A / 255f
+        );
+
+    private void AddMarkers(ReadOnlySpan<Vector2> centers, ReadOnlySpan<Color> colors, in MarkerStyle style, bool perMarker)
+    {
+        if (!float.IsFinite(style.Size) || style.Size <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Size, "The size is finite and above 0.");
+        }
+
+        if (!float.IsFinite(style.Stroke) || style.Stroke <= 0 || style.Stroke > MarkerStyle.MaxStroke)
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Stroke, "The stroke is finite, above 0, and at most 4,096.");
+        }
+
+        if (!MarkerStyle.IsShape(style.Shape))
+        {
+            throw new ArgumentOutOfRangeException(nameof(style), style.Shape, "The shape is a named MarkerShape value.");
+        }
+
+        if (_markerCount + centers.Length > _markers.Length)
+        {
+            Array.Resize(ref _markers, Math.Max(_markerCount + centers.Length, _markers.Length * 2));
+        }
+
+        // The shape in the low 8 bits, and the stroke of a cross above them in sixteenths of a pixel, as Markers.hlsl reads it.
+        var kind = (uint)style.Shape | ((uint)MathF.Round(style.Stroke * 16) << 8);
+        var one = perMarker ? default : Premultiply(style.Color);
+        var first = _markerCount;
+        for (var i = 0; i < centers.Length; i++)
+        {
+            var center = centers[i];
+            if (!float.IsFinite(center.X) || !float.IsFinite(center.Y))
+            {
+                continue;
+            }
+
+            _markers[_markerCount++] = new MarkerInstance(center, style.Size, kind, perMarker ? Premultiply(colors[i]) : one);
+        }
+
+        if (_markerCount == first)
+        {
+            return;
+        }
+
+        if (_markerCallCount == _markerCalls.Length)
+        {
+            Array.Resize(ref _markerCalls, _markerCalls.Length * 2);
+        }
+
+        AddCommand(new RenderCommand(RenderCommandKind.Markers, _markerCallCount));
+        _markerCalls[_markerCallCount++] = new MarkerCall(first, _markerCount - first, _clip);
     }
 
     private void AddCommand(RenderCommand command)
@@ -937,6 +1041,9 @@ internal enum RenderCommandKind : byte
 
     /// <summary>A tile of an image: the index is into <see cref="RenderList.Images"/> (row G9).</summary>
     Image,
+
+    /// <summary>One call of markers: the index is into <see cref="RenderList.MarkerCalls"/> (row R3a).</summary>
+    Markers,
 }
 
 /// <summary>
@@ -993,6 +1100,34 @@ internal struct ImageInstance
     /// <summary>Pads the record to 96 bytes.</summary>
     public Vector3 Padding;
 }
+
+/// <summary>The look of the markers of one <see cref="RenderList.DrawMarkers(ReadOnlySpan{Vector2}, in MarkerStyle)"/> call (design §5.1, row R3a).</summary>
+/// <param name="Color">The color. Not used by the call that takes a color for each marker.</param>
+/// <param name="Size">The diameter of a disc, the side of a square, or the span of a cross's arms, in physical pixels: finite and above 0.</param>
+/// <param name="Shape">The shape.</param>
+/// <param name="Stroke">The width of a cross's two lines, in physical pixels: finite, above 0, and at most 4,096. Other shapes do not use it.</param>
+public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape Shape = MarkerShape.Circle, float Stroke = 1)
+{
+    /// <summary>The greatest stroke: the record holds it in sixteenths of a pixel in 24 bits.</summary>
+    internal const float MaxStroke = 4096;
+
+    /// <summary>
+    /// Returns whether a shape is a named value. Not <see cref="Enum.IsDefined{TEnum}(TEnum)"/>: with it, the first
+    /// <c>DrawMarkers</c> of a frame allocated 248 bytes in 1 to 3 of 5 frames when the D3D11 tests ran beside a build, and
+    /// nothing with this comparison (PR #439). Why it allocates was not confirmed.
+    /// </summary>
+    internal static bool IsShape(MarkerShape shape) => shape is MarkerShape.Circle or MarkerShape.Square or MarkerShape.Cross;
+}
+
+/// <summary>
+/// One marker as the GPU reads it (design §5.1, §5.3, row R3a): its center and size in physical pixels, its shape with a
+/// cross's stroke, and its premultiplied color. 32 bytes, laid out as the HLSL structure of Markers.hlsl.
+/// </summary>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly record struct MarkerInstance(Vector2 Center, float Size, uint Kind, Vector4 Color);
+
+/// <summary>One call of markers: a range of <see cref="RenderList.Markers"/> and the clip when it was recorded.</summary>
+internal readonly record struct MarkerCall(int Start, int Count, ClipRect Clip);
 
 /// <summary>One recorded command: its kind and the index of its record.</summary>
 internal readonly record struct RenderCommand(RenderCommandKind Kind, int Index);

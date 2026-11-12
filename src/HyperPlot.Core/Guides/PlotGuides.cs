@@ -2055,6 +2055,23 @@ internal sealed class PlotGuides
             return lineHeight;
         }
 
+        if (layer is PointLayerSpec point)
+        {
+            // The layer's marker in the middle of the swatch, no larger than the row (design §5.5.2).
+            var color = point.Color ?? series;
+            _segment[0] = new Vector2(x + (swatch / 2f), y + (lineHeight / 2));
+            list.DrawMarkers(
+                _segment.AsSpan(0, 1),
+                new MarkerStyle(
+                    point.Opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * point.Opacity) },
+                    MathF.Min(point.Size * _scale, lineHeight),
+                    point.Shape,
+                    MathF.Max(1, MathF.Round(_scale))
+                )
+            );
+            return lineHeight;
+        }
+
         if (Fill(layer, series, out var fill))
         {
             list.DrawRect(x, y, lineHeight, lineHeight, fill);

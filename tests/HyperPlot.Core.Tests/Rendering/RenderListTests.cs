@@ -257,4 +257,78 @@ public sealed partial class RenderListTests
         Assert.Equal(new ClipRect(1, 2, 4, 6), list.RectClips[0]);
         Assert.Equal(new RenderCommand(RenderCommandKind.Rect, 0), list.Commands[0]);
     }
+
+    /// <summary>
+    /// The arguments of DrawMarkers and its records (design §5.1, row R3a): a size or a stroke that is not finite or not above
+    /// 0, a stroke above 4,096, a shape that is not named, and colors of another length throw; a center that is not finite
+    /// records nothing; a record holds the center, the size, the shape with the stroke, and the premultiplied color.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An empty list.
+    ///
+    /// Steps:
+    /// - Draw markers with sizes of 0, NaN, and ∞, strokes of 0 and 4,097, a shape of 3, and two colors for one center.
+    /// - Draw only centers that are not finite. Under a clip, draw three centers of which the second is NaN, as crosses of
+    ///   stroke 2.5 in one half-transparent color; then two squares with a color each.
+    ///
+    /// Expected:
+    /// - ArgumentOutOfRangeException naming style, and ArgumentException naming colors.
+    /// - No record and no command for the centers that are not finite.
+    /// - Two records and one call of (0, 2) under the clip, with the shape 2 and the stroke 40 sixteenths; then two records
+    ///   with their own premultiplied colors and a call of (2, 2); two commands.
+    /// </remarks>
+    [Fact]
+    public void DrawMarkers_ArgumentsAndRecords()
+    {
+        var list = new RenderList();
+        var black = new Color(0, 0, 0, 255);
+        System.Numerics.Vector2[] one = [new(1, 2)];
+        foreach (
+            var style in new[]
+            {
+                new MarkerStyle(black, 0),
+                new MarkerStyle(black, float.NaN),
+                new MarkerStyle(black, float.PositiveInfinity),
+                new MarkerStyle(black, 4, MarkerShape.Cross, 0),
+                new MarkerStyle(black, 4, MarkerShape.Cross, 4097),
+                new MarkerStyle(black, 4, (MarkerShape)3),
+            }
+        )
+        {
+            Assert.Equal("style", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawMarkers(one, style)).ParamName);
+            Assert.Equal("style", Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawMarkers(one, [black], style)).ParamName);
+        }
+
+        Assert.Equal("colors", Assert.Throws<ArgumentException>(() => list.DrawMarkers(one, [black, black], new MarkerStyle(black, 4))).ParamName);
+        list.DrawMarkers([new(float.NaN, 0), new(0, float.NegativeInfinity)], new MarkerStyle(black, 4));
+        list.DrawMarkers([], new MarkerStyle(black, 4));
+        Assert.Equal(0, list.Markers.Length);
+        Assert.Equal(0, list.Commands.Length);
+
+        list.SetClip(1, 2, 3, 4);
+        list.DrawMarkers([new(1.5f, 2.5f), new(float.NaN, 1), new(7, 8)], new MarkerStyle(new Color(255, 128, 0, 128), 6, MarkerShape.Cross, 2.5f));
+        list.DrawMarkers(
+            [new(3, 4), new(5, 6)],
+            [new Color(255, 0, 0, 255), new Color(0, 255, 0, 128)],
+            new MarkerStyle(black, 2, MarkerShape.Square)
+        );
+
+        var orange = new System.Numerics.Vector4(128 / 255f, 64 / 255f, 0, 128 / 255f);
+        Assert.Equal(
+            [
+                new MarkerInstance(new(1.5f, 2.5f), 6, 2 | (40u << 8), orange),
+                new MarkerInstance(new(7, 8), 6, 2 | (40u << 8), orange),
+                new MarkerInstance(new(3, 4), 2, 1 | (16u << 8), new System.Numerics.Vector4(1, 0, 0, 1)),
+                new MarkerInstance(new(5, 6), 2, 1 | (16u << 8), new System.Numerics.Vector4(0, 128 / 255f, 0, 128 / 255f)),
+            ],
+            list.Markers.ToArray()
+        );
+        Assert.Equal([new MarkerCall(0, 2, new ClipRect(1, 2, 4, 6)), new MarkerCall(2, 2, new ClipRect(1, 2, 4, 6))], list.MarkerCalls.ToArray());
+        Assert.Equal([new RenderCommand(RenderCommandKind.Markers, 0), new RenderCommand(RenderCommandKind.Markers, 1)], list.Commands.ToArray());
+
+        list.Clear();
+        Assert.Equal(0, list.Markers.Length);
+        Assert.Equal(0, list.MarkerCalls.Length);
+    }
 }

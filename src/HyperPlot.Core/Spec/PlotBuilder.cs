@@ -282,6 +282,41 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Adds a point layer: a marker at each pair of an x and a y (design §5.5.2, row R3a).</summary>
+    /// <typeparam name="TX">The element type of the x column.</typeparam>
+    /// <typeparam name="TY">The element type of the y column.</typeparam>
+    /// <param name="x">The column of the points' x.</param>
+    /// <param name="y">The column of the points' y.</param>
+    /// <param name="configure">Sets the color, the size, the shape, the opacity, and the label; called once, here.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder Point<TX, TY>(ColumnRef<TX> x, ColumnRef<TY> y, Action<PointBuilder>? configure = null)
+        where TX : unmanaged, INumber<TX>
+        where TY : unmanaged, INumber<TY>
+    {
+        ThrowIfBuilt();
+        CheckReference(x, nameof(x));
+        CheckReference(y, nameof(y));
+        var point = new PointBuilder();
+        configure?.Invoke(point);
+        _layers.Add(
+            new PointLayerSpec
+            {
+                X = x,
+                Y = y,
+                Color = point.ColorValue,
+                Size = point.SizeValue,
+                Shape = point.ShapeValue,
+                Opacity = point.OpacityValue,
+                Label = point.LabelText,
+                ColorBy = Channel(point.ColorByRef),
+            }
+        );
+        Secondary(point.SecondaryXValue, point.SecondaryYValue);
+        return this;
+    }
+
     /// <summary>Adds a rect layer: rectangles from four columns (design §5.5.3).</summary>
     /// <typeparam name="TX">The element type of the x columns.</typeparam>
     /// <typeparam name="TY">The element type of the y columns.</typeparam>
