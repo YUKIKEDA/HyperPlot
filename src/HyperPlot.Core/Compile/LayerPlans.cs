@@ -751,14 +751,14 @@ internal abstract class LayerPlan
                 if (categories.CategoryCount > MaxCategories)
                 {
                     throw new ArgumentException(
-                        $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {categories.CategoryCount} categories; a layer is split into at most {MaxCategories} (design §4.1). Data of more categories is drawn as a density (row R3)."
+                        $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {categories.CategoryCount} categories; a layer is split into at most {MaxCategories} (design §4.1). Data of more categories is drawn as a density (row R3d)."
                     );
                 }
 
                 if (CategoricalX(layer) is { } x && (long)categories.CategoryCount * x.CategoryCount > MaxCategoryCells)
                 {
                     throw new ArgumentException(
-                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the cells of bars, error bars, and rules over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3)."
+                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the cells of bars, error bars, and rules over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3d)."
                     );
                 }
             }
@@ -766,7 +766,7 @@ internal abstract class LayerPlan
             {
                 // Bars over categories colored by numbers are a bar a row (design §4.1): their rows are counted here.
                 throw new InvalidOperationException(
-                    $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3 draws more as a density."
+                    $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3e draws more as a density."
                 );
             }
             else if (layer is PointLayerSpec)
@@ -1363,7 +1363,7 @@ internal abstract class LayerPlan
             throw new ArgumentException($"The Opacity of layer {index} is {point.Opacity}; an opacity is from 0 to 1.");
         }
 
-        if (!Enum.IsDefined(point.Shape))
+        if (!MarkerStyle.IsShape(point.Shape))
         {
             throw new ArgumentException($"The Shape of layer {index} is {(int)point.Shape}; a shape is a named MarkerShape value.");
         }
@@ -1383,7 +1383,7 @@ internal abstract class LayerPlan
         if (count > MaxElements)
         {
             throw new InvalidOperationException(
-                $"Layer {layer} has {count} elements; a segment or a rect layer draws at most {MaxElements} (design §5.5.3). Row R3 draws more as a density."
+                $"Layer {layer} has {count} elements; a segment or a rect layer draws at most {MaxElements} (design §5.5.3). Row R3e draws more as a density."
             );
         }
     }

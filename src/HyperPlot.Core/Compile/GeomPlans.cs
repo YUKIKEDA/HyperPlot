@@ -412,7 +412,7 @@ internal sealed class BarPlan : LayerPlan
             if (end - first > MaxElements)
             {
                 throw new InvalidOperationException(
-                    $"{end - first} bars are in view, colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3 draws more as a density."
+                    $"{end - first} bars are in view, colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3e draws more as a density."
                 );
             }
 

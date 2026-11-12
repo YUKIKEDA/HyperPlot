@@ -141,8 +141,8 @@ public sealed class PointHitTests
     /// - A point layer of 131,072 rows, drawn once.
     ///
     /// Steps:
-    /// - Hit test in both modes once to warm; then 20 times each, and render 5 frames after moving the view, counting the
-    ///   thread's allocations.
+    /// - Hit test in both modes once and draw five views once to warm; then hit test 20 times in each mode and draw the
+    ///   five views again, counting the thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -162,9 +162,11 @@ public sealed class PointHitTests
 
         // The views are made before the count: a view is an object of the test's own.
         var views = Enumerable.Range(0, 5).Select(i => new PanelView2D(ViewRange.FromValues(1 + (0.1 * i), 9), ViewRange.FromValues(1, 9))).ToArray();
-        for (var i = 0; i < 2; i++)
+
+        // Each view is drawn once before the count: a view's tick labels are shaped the first time they appear (row I1c).
+        foreach (var view in views)
         {
-            Move(views[i]);
+            Move(view);
         }
 
         var before = GC.GetAllocatedBytesForCurrentThread();

@@ -61,7 +61,7 @@ public sealed class PointBuilder
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="shape"/> is not a named value.</exception>
     public PointBuilder Shape(MarkerShape shape)
     {
-        if (!Enum.IsDefined(shape))
+        if (!HyperPlot.Rendering.MarkerStyle.IsShape(shape))
         {
             throw new ArgumentOutOfRangeException(nameof(shape), shape, "The shape is a named MarkerShape value.");
         }

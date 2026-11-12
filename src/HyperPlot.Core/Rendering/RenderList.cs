@@ -692,7 +692,7 @@ public sealed class RenderList
             throw new ArgumentOutOfRangeException(nameof(style), style.Stroke, "The stroke is finite, above 0, and at most 4,096.");
         }
 
-        if (!Enum.IsDefined(style.Shape))
+        if (!MarkerStyle.IsShape(style.Shape))
         {
             throw new ArgumentOutOfRangeException(nameof(style), style.Shape, "The shape is a named MarkerShape value.");
         }
@@ -1110,6 +1110,12 @@ public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape S
 {
     /// <summary>The greatest stroke: the record holds it in sixteenths of a pixel in 24 bits.</summary>
     internal const float MaxStroke = 4096;
+
+    /// <summary>
+    /// Returns whether a shape is a named value. Not <see cref="Enum.IsDefined{TEnum}(TEnum)"/>: its table of the enum is
+    /// made again after a collection drops it, 248 bytes in a frame that records markers (PR of Issue #437).
+    /// </summary>
+    internal static bool IsShape(MarkerShape shape) => shape is MarkerShape.Circle or MarkerShape.Square or MarkerShape.Cross;
 }
 
 /// <summary>
