@@ -145,7 +145,13 @@ public sealed class IndexedPointTests
     /// - The first frame is provisional and records no run.
     /// - The first frame that records runs sends the 5 whole pages and the short last page that fit in 4 MB, and is
     ///   provisional; the next sends the sixth whole page.
-    /// - The last frame is not provisional and its runs hold the 400,000 points; 7 pages are in use.
+    /// - The last frame is not provisional; 7 pages are in use, and its 7 runs are the 7 pages, each whole and once.
+    ///
+    /// Steps:
+    /// - Zoom to [50, 50.5] × [50, 50.5] and render.
+    ///
+    /// Expected:
+    /// - Fewer runs than 7, and each is still a whole page.
     /// </remarks>
     [Fact]
     public void Frames_DrawNothingUntilTheIndexAndSendPagesByTheBudget()
@@ -197,7 +203,27 @@ public sealed class IndexedPointTests
             sent
         );
         Assert.Equal(7, pages.PagesInUse);
-        Assert.Equal(Count, backend.LastList!.ResidentRuns.ToArray().Sum(r => r.Count));
+        var runs = backend.LastList!.ResidentRuns.ToArray();
+        Assert.Equal(7, runs.Select(r => r.Slot).Distinct().Count());
+        Assert.Equal(
+            [
+                PointPages.PagePoints,
+                PointPages.PagePoints,
+                PointPages.PagePoints,
+                PointPages.PagePoints,
+                PointPages.PagePoints,
+                PointPages.PagePoints,
+                Count - (6 * PointPages.PagePoints),
+            ],
+            runs.Select(r => r.Count).OrderDescending()
+        );
+
+        engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(50, 50.5), ViewRange.FromValues(50, 50.5)));
+        engine.RenderFrame();
+        var zoomed = backend.LastList!.ResidentRuns.ToArray();
+        Assert.InRange(zoomed.Length, 1, 6);
+        Assert.Equal(zoomed.Length, zoomed.Select(r => r.Slot).Distinct().Count());
+        Assert.All(zoomed, r => Assert.Contains(runs, whole => whole.Slot == r.Slot && whole.Count == r.Count));
     }
 
     /// <summary>

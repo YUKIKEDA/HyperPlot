@@ -6,7 +6,8 @@ namespace HyperPlot.Rendering;
 /// The pages of points a backend keeps on the GPU (design §5.1 "生の点のページ", §5.5.2, row R3a): a page is a run of 65,536
 /// points of a spatial snapshot's copy, or the rest of it, 12 bytes a point. Core decides which pages stay, by the byte
 /// budget it shares with the tiles and least-recently-used order, and reads the pages a frame sends; the backend makes a
-/// buffer for each and draws from it.
+/// buffer for each and draws from it. A page holds its points in steps of <see cref="Stride"/> through the copy's order,
+/// so a page is drawn whole.
 /// </summary>
 /// <remarks>One thread at a time. After the staging has grown to a frame's size, a request allocates nothing.</remarks>
 internal sealed class PointPages
@@ -17,10 +18,22 @@ internal sealed class PointPages
     /// <summary>The bytes of a point on the GPU.</summary>
     internal const int PointBytes = 12;
 
+    /// <summary>
+    /// The step through a page's points in the copy's order: point k of the page on the GPU is point k × 104,729 modulo the
+    /// page's count. The step is a prime above the points of a page, so every point is taken once.
+    /// </summary>
+    /// <remarks>
+    /// In the copy's order a point's neighbors lie within a pixel of it, and markers drawn one after another over the same
+    /// pixels cost the GPU more: 1e7 discs of 6 pixels at alpha 0.6 took 15.9 ms a frame in the copy's order and 11.3 to
+    /// 12.0 ms in steps through the page (RTX 3060 Ti, 1,920 × 1,080; Issue #438).
+    /// </remarks>
+    internal const int Stride = 104_729;
+
     private readonly ResidencyCache _owner;
     private readonly Dictionary<Key, int> _slots = [];
     private readonly List<PointUpload> _uploads = [];
     private readonly List<int> _dropped = [];
+    private readonly ResidentPoint[] _ordered = new ResidentPoint[PagePoints];
     private Key?[] _keys = [];
     private long[] _lastUsed = [];
     private int[] _counts = [];
@@ -109,7 +122,16 @@ internal sealed class PointPages
             Array.Resize(ref _staging, Math.Max(_staged + count, _staging.Length * 2));
         }
 
-        snapshot.ReadBlock((long)page * PagePoints, _staging.AsSpan(_staged, count));
+        var ordered = _ordered.AsSpan(0, count);
+        snapshot.ReadBlock((long)page * PagePoints, ordered);
+        var staged = _staging.AsSpan(_staged, count);
+        var from = 0;
+        for (var k = 0; k < staged.Length; k++)
+        {
+            staged[k] = ordered[from];
+            from = (int)((from + (long)Stride) % count);
+        }
+
         _uploads.Add(new PointUpload(slot, _staged, count));
         _staged += count;
         (_keys[slot], _lastUsed[slot], _counts[slot]) = (key, frame, count);

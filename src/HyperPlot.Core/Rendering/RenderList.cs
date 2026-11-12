@@ -1186,11 +1186,11 @@ internal readonly record struct MarkerInstance(Vector2 Center, float Size, uint 
 internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float PixelX, float PixelY, float ScaleX, float ScaleY);
 
 /// <summary>
-/// A run of resident markers: points of one page of the residency cache, drawn with one look (design §5.1 "常駐の点").
+/// A run of resident markers: the points of one page of the residency cache, drawn with one look (design §5.1 "常駐の点").
+/// A run is a whole page: a page's points are not in the copy's order (<see cref="PointPages.Stride"/>).
 /// </summary>
 /// <param name="Slot">The page's slot in <see cref="PointPages"/>.</param>
-/// <param name="First">The first point of the run in the page.</param>
-/// <param name="Count">The number of points.</param>
+/// <param name="Count">The number of points of the page.</param>
 /// <param name="Cells">Where the part's cells begin in <see cref="RenderList.ResidentCells"/>: a point's cell number is added to it.</param>
 /// <param name="Size">The size of each marker, in physical pixels.</param>
 /// <param name="Kind">The shape and a cross's stroke, as <see cref="MarkerInstance.Kind"/>.</param>
@@ -1201,7 +1201,6 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// <param name="Clip">The clip when the run was recorded.</param>
 internal readonly record struct ResidentMarkerRun(
     int Slot,
-    int First,
     int Count,
     int Cells,
     float Size,

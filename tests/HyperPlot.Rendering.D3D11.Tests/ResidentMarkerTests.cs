@@ -169,7 +169,6 @@ public sealed class ResidentMarkerTests
             list.DrawResidentMarkers(
                 new ResidentMarkerRun(
                     slot,
-                    0,
                     PointPages.PointsOf(snapshot, page),
                     offset,
                     Style.Size,

@@ -266,7 +266,6 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         var values = new RunConstants
         {
             InverseSize = new Vector2(1f / width, 1f / height),
-            First = (uint)run.First,
             Cells = (uint)run.Cells,
             Size = run.Size,
             Kind = run.Kind,
@@ -322,12 +321,12 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
     private struct RunConstants
     {
         public Vector2 InverseSize;
-        public uint First;
         public uint Cells;
+        public uint Unused0;
         public float Size;
         public uint Kind;
         public uint Swap;
-        public uint Unused;
+        public uint Unused1;
         public Vector4 Color;
         public Vector2 ClampLow;
         public Vector2 ClampHigh;

@@ -93,12 +93,12 @@ float4 MarkerPS(MarkerVertex input) : SV_Target
 cbuffer ResidentMarkers : register(b1)
 {
     float2 ResidentInverseSize;   // 1 / target size
-    uint ResidentFirst;           // the run's first point in Points
     uint ResidentCells;           // where the part's cells begin in Cells
+    uint ResidentUnused0;
     float ResidentSize;           // the markers' size
     uint ResidentKind;            // as Marker.Kind
     uint ResidentSwap;            // not 0 when x runs down the target: a flipped plot
-    uint ResidentUnused;
+    uint ResidentUnused1;
     float4 ResidentColor;         // premultiplied, 0..1
     float2 ResidentClampLow;      // the least and the greatest pixel of a center on each of the data's axes
     float2 ResidentClampHigh;
@@ -138,7 +138,7 @@ struct ResidentVertex
 
 ResidentVertex ResidentMarkerVS(uint vertex : SV_VertexID, uint instance : SV_InstanceID)
 {
-    ResidentPoint p = Points[ResidentFirst + instance];
+    ResidentPoint p = Points[instance];
     ResidentCell cell = Cells[ResidentCells + p.Cell];
     float2 along = cell.Pixel + float2(UnitsFrom(p.X, cell.Base.x), UnitsFrom(p.Y, cell.Base.y)) * cell.Scale;
     along = clamp(along, ResidentClampLow, ResidentClampHigh);

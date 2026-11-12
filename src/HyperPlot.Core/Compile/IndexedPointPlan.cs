@@ -173,7 +173,6 @@ internal sealed class IndexedPointPlan : LayerPlan
         var color = point.Color ?? SeriesColor;
         var style = new ResidentMarkerRun(
             Slot: -1,
-            First: 0,
             Count: 0,
             Cells: offset,
             Size: point.Size * context.Scale,
@@ -185,7 +184,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             Clip: default
         );
         var pages = context.Images.Points;
-        var (runPage, runFirst, runEnd, slot) = (-1L, 0, 0, -1);
+        var drawn = -1L;
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
@@ -197,30 +196,20 @@ internal sealed class IndexedPointPlan : LayerPlan
                 continue;
             }
 
-            // The cell's points lie in one or more pages: one run a page, from the first point seen to the last.
+            // The cell's points lie in one or more pages, and each page is drawn whole, once: the cells come in the
+            // copy's order, so a page seen before is the last one drawn.
             var end = cell.First + cell.Count;
-            for (var page = cell.First / PointPages.PagePoints; page * PointPages.PagePoints < end; page++)
+            for (var page = Math.Max(cell.First / PointPages.PagePoints, drawn + 1); page * PointPages.PagePoints < end; page++)
             {
-                var start = page * PointPages.PagePoints;
-                if (page != runPage)
+                drawn = page;
+                var slot = pages.Request(snapshot, (int)page);
+                if (slot < 0)
                 {
-                    Flush();
-                    (runPage, runFirst) = (page, (int)(Math.Max(cell.First, start) - start));
-                    slot = pages.Request(snapshot, (int)page);
-                    _missing |= slot < 0;
+                    _missing = true;
+                    continue;
                 }
 
-                runEnd = (int)(Math.Min(end, start + PointPages.PagePoints) - start);
-            }
-        }
-
-        Flush();
-
-        void Flush()
-        {
-            if (runPage >= 0 && slot >= 0)
-            {
-                list.DrawResidentMarkers(style with { Slot = slot, First = runFirst, Count = runEnd - runFirst });
+                list.DrawResidentMarkers(style with { Slot = slot, Count = PointPages.PointsOf(snapshot, (int)page) });
             }
         }
     }
