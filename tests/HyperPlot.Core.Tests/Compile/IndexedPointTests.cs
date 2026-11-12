@@ -227,6 +227,69 @@ public sealed class IndexedPointTests
     }
 
     /// <summary>
+    /// A layer split by a categorical color stays provisional until the pages of every part are sent (design §5.5.2
+    /// "索引ができるまでと、失敗"): a part that waits for its pages keeps the frame provisional as a layer of its own does.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A point layer of 600,000 seeded rows colored by a column of 3 categories, 200,000 rows each: 4 pages a part, 12
+    ///   pages of 7,200,000 bytes, more than a frame sends. An engine that does not wait, on the null backend.
+    ///
+    /// Steps:
+    /// - Render frames, saying before each that the last frame's uploads were sent, until a frame is not provisional.
+    ///
+    /// Expected:
+    /// - The first frame that is not provisional has 12 pages in use, and its runs hold the 600,000 points.
+    /// - Pages were sent in at least 2 frames, each within 4 MB.
+    /// </remarks>
+    [Fact]
+    public void SplitFrames_StayProvisionalUntilEveryPartsPagesAreSent()
+    {
+        const int Count = 600_000;
+        var random = new Random(29);
+        using var xs = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("y", ys)
+            .Add("c", Column.Categorical(Enumerable.Range(0, Count).Select(i => (string?)Three[i % 3]).ToArray()))
+            .Build();
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360);
+        engine.SetPlot(
+            Plot.Create(table)
+                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.ColorBy(table.Cat("c")))
+                .ScaleX(Scale.Linear().WithDomain(0, 100))
+                .ScaleY(Scale.Linear().WithDomain(0, 100))
+                .Build()
+        );
+        var pages = backend.Images.Points;
+        engine.RenderFrame();
+        var sending = 0;
+        var clock = Stopwatch.StartNew();
+        while (engine.IsProvisional)
+        {
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The indexes were not built in 60 s.");
+            backend.Images.Sent();
+            engine.RenderFrame();
+            Assert.True(pages.BytesThisFrame <= ResidencyCache.FrameUpload);
+            if (pages.BytesThisFrame > 0)
+            {
+                sending++;
+            }
+            else
+            {
+                Thread.Sleep(2);
+            }
+        }
+
+        Assert.Equal(12, pages.PagesInUse);
+        Assert.Equal(Count, backend.LastList!.ResidentRuns.ToArray().Sum(r => r.Count));
+        Assert.True(sending >= 2);
+    }
+
+    /// <summary>
     /// A build that fails fails the layer: the engine draws nothing of it and says so once, without staying provisional, and
     /// a render that waits throws the build's exception (design §5.5.2 "構築の失敗").
     /// </summary>

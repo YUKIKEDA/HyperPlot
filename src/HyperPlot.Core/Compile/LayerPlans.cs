@@ -1069,8 +1069,8 @@ internal abstract class LayerPlan
 
     /// <summary>
     /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
-    /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer
-    /// keeps none of its code.
+    /// image's tile from an ancestor, or nothing for a page of points (row R3a). The frame is then provisional. A virtual
+    /// member, so that a plot without the layer keeps none of its code.
     /// </summary>
     public virtual bool RecordedProvisional => false;
 
