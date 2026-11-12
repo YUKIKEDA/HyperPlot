@@ -5,7 +5,7 @@ using HyperPlot.DataPath;
 //   dotnet publish benchmarks/HyperPlot.DataPath -c Release -r win-x64
 //   HyperPlot.DataPath generate --file D:\...\series.bin [--points 1000000000] [--seed N]
 //   HyperPlot.DataPath hash --file ...
-//   HyperPlot.DataPath build --file ... [--workers 8] [--cold]
+//   HyperPlot.DataPath build --file ... [--workers 8] [--cold] [--yields on|off]
 //   HyperPlot.DataPath provisional --file ... [--zoom] [--cold]
 //   HyperPlot.DataPath cold-frame --file ... [--reads-only]
 //   HyperPlot.DataPath generate-points --file D:\...\points [--distribution uniform|clustered] [--points N] [--seed N]

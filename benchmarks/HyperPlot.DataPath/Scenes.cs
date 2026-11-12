@@ -16,8 +16,8 @@ internal static class Scenes
     /// <summary>The pyramid build, from <c>BuildPyramid</c> to <c>Completion</c> (requirement P-2).</summary>
     internal static void Build(Options options)
     {
-        using var ownPool = options.Workers > 0 ? new PlotWorkerPool(options.Workers) : null;
-        var pool = ownPool ?? PlotWorkerPool.Shared;
+        // A pool of the scene's own, as many threads as the shared one when none is named, so that --yields decides whether it rests.
+        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), options.Yields);
         Prepare(options);
         for (var run = 1; run <= 2; run++)
         {
@@ -31,8 +31,12 @@ internal static class Scenes
                 options,
                 run,
                 ("workers", pool.ThreadCount),
+                ("yields", pool.Yield is not null),
                 ("seconds", seconds),
                 ("gb_per_s", bytes / seconds / 1e9),
+                ("level_mean", pool.Yield?.Means.Level ?? 0),
+                ("rests", pool.Yield?.RestCount ?? 0),
+                ("rest_s", pool.Yield?.RestTime.TotalSeconds ?? 0),
                 ("pyramid_bytes", pyramid.BlockBytes),
                 ("pyramid_percent", 100.0 * pyramid.BlockBytes / bytes)
             );

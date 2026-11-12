@@ -128,11 +128,15 @@ public sealed class PlotWorkerPoolYieldTests
     /// - At level 0, compute the statistics of the first column ahead and wait.
     /// - Raise the level to 2 with 2 readings of a full machine, compute the statistics of the second column, and wait
     ///   for the task and for the third rest.
+    /// - With a second pool of the same kind at level 1, compute the statistics of the first column and wait for the
+    ///   task and for a rest.
     ///
     /// Expected:
     /// - After the first column there was no rest.
     /// - After the second there were 3 rests of 48 ms in all: 2 times the 24 ms of the 3 jobs.
     /// - No rest was cut short.
+    /// - At level 1 there was 1 rest of 16 ms: the 8 ms of the first job and of the third are less than the step, so
+    ///   the worker waits only after the second.
     /// </remarks>
     [Fact]
     public void BackgroundJobs_AtALevel_AreFollowedByRestsOfTheLevelTimesTheirCpuTime()
@@ -152,6 +156,17 @@ public sealed class PlotWorkerPoolYieldTests
 
         Assert.Equal(48, rule.RestTime.TotalMilliseconds, 0.01);
         Assert.Equal(0, rule.RestsCutShort);
+
+        var slowMeter = new ScriptedMeter { JobCpu = Milliseconds(8) };
+        using var slow = new PlotWorkerPool(1, slowMeter, Tuning);
+        Raise(slowMeter, slow.Yield!, 1);
+        var done = 0;
+        slow.TestTook = _ => Interlocked.Increment(ref done);
+        Eventually.Completes(slow.PrecomputeStats(first));
+        Eventually.True(() => Volatile.Read(ref done) == 3 && slow.Yield!.RestCount >= 1, "the worker's record of its 3 jobs and its rest");
+        slow.TestTook = null;
+        Assert.Equal(1, slow.Yield!.RestCount);
+        Assert.Equal(16, slow.Yield.RestTime.TotalMilliseconds, 0.01);
     }
 
     /// <summary>A worker does not rest after a frame's jobs or after a chunk a query asked for.</summary>
@@ -203,7 +218,7 @@ public sealed class PlotWorkerPoolYieldTests
     /// <summary>The disposal of a pyramid and of the pool do not wait for a worker's rest.</summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread with a meter that gives each job 10 minutes of CPU time, and constants whose longest rest
+    /// - A pool of 1 thread with a meter that gives each job 20 minutes of CPU time, and constants whose longest rest
     ///   is 10 minutes: a rest outlasts the watchdog of the test.
     /// - A pyramid of 1 chunk.
     ///
@@ -214,12 +229,12 @@ public sealed class PlotWorkerPoolYieldTests
     /// Expected:
     /// - Both disposals return within the watchdog: the rest is outside the job a disposal waits for, and the pool's
     ///   disposal ends it.
-    /// - The one rest was cut short.
+    /// - The one rest was cut short, and it was asked for 10 minutes: the longest rest, not the 20 minutes saved up.
     /// </remarks>
     [Fact]
     public void Dispose_WhileAWorkerRests_DoesNotWaitForTheRest()
     {
-        var meter = new ScriptedMeter { JobCpu = Milliseconds(600_000) };
+        var meter = new ScriptedMeter { JobCpu = Milliseconds(1_200_000) };
         var pool = new PlotWorkerPool(1, meter, Tuning with { LongestRest = TimeSpan.FromMinutes(10) });
         var rule = pool.Yield!;
         using var column = Column.Wrap(new float[1000]);
@@ -295,22 +310,29 @@ public sealed class PlotWorkerPoolYieldTests
         Assert.Equal(results[0].Ranges, results[1].Ranges);
     }
 
-    /// <summary>The meter of the operating system counts the CPU of a worker whose job has not ended as the workers', and gives no sample before it can.</summary>
+    /// <summary>
+    /// The meter of the operating system counts the CPU of a worker whose job has not ended as the workers', and gives
+    /// no sample while it has no earlier reading or does not know the length of a unit.
+    /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - Windows or Linux. The meter of the operating system for 1 worker, and a thread attached as that worker.
     ///
     /// Steps:
-    /// - Take a sample before the thread attached, and one right after.
+    /// - Take a sample before the thread attached, and two right after it attached, before any job.
     /// - On the thread, spin for 20 ms as a first job and tell the meter of it; then spin until told to stop, without
     ///   ending a job.
     /// - While it spins, take a sample, wait 300 ms, and take another.
+    /// - Have the thread detach, take a sample, have it attach again, and take a sample.
     ///
     /// Expected:
-    /// - The sample before the thread attached gives nothing, and the first sample after gives nothing (no earlier reading).
+    /// - The sample before the thread attached gives nothing, and the first after gives nothing: no earlier reading.
+    /// - The second after gives nothing on Windows, where no job has told the meter the cycles of a second yet.
     /// - The thread's CPU time grew over the first job, and converts to between 5 and 40 ms.
-    /// - The last sample gives the workers between 0.3 and 1.3 cores although no job ended in it, idle cores between 0
-    ///   and the processors, and 1 processor or more.
+    /// - The second sample of the spin gives the workers between 0.3 and 1.3 cores although no job ended in it, idle
+    ///   cores between 0 and the processors, and 1 processor or more.
+    /// - The sample with the thread detached gives nothing, and the first after it attached again gives nothing: the
+    ///   failed reading left no earlier one, although the meter knows the length of a unit.
     /// </remarks>
     [Fact]
     public void SystemMeter_AWorkerInALongJob_IsCountedAsTheWorkers()
@@ -320,14 +342,21 @@ public sealed class PlotWorkerPoolYieldTests
         Assert.NotNull(meter);
         Assert.False(meter.TrySample(TimeProvider.System.GetTimestamp(), out _));
 
+        var token = TestContext.Current.CancellationToken;
         using var attached = new ManualResetEventSlim();
+        using var start = new ManualResetEventSlim();
         using var spinning = new ManualResetEventSlim();
+        using var detached = new ManualResetEventSlim();
+        using var again = new ManualResetEventSlim();
+        using var attachedAgain = new ManualResetEventSlim();
+        using var end = new ManualResetEventSlim();
         var stop = false;
         long firstJob = 0;
         var thread = new Thread(() =>
         {
             meter.Attach(0);
             attached.Set();
+            start.Wait();
             var startedAt = TimeProvider.System.GetTimestamp();
             var cpu = meter.ThreadTime();
             while (TimeProvider.System.GetElapsedTime(startedAt) < TimeSpan.FromMilliseconds(20)) { }
@@ -338,6 +367,12 @@ public sealed class PlotWorkerPoolYieldTests
             while (!Volatile.Read(ref stop)) { }
 
             meter.Detach(0);
+            detached.Set();
+            again.Wait();
+            meter.Attach(0);
+            attachedAgain.Set();
+            end.Wait();
+            meter.Detach(0);
         })
         {
             IsBackground = true,
@@ -345,27 +380,42 @@ public sealed class PlotWorkerPoolYieldTests
         thread.Start();
         try
         {
-            Assert.True(attached.Wait(30_000, TestContext.Current.CancellationToken));
+            Assert.True(attached.Wait(30_000, token));
             Assert.False(meter.TrySample(TimeProvider.System.GetTimestamp(), out _));
-            Assert.True(spinning.Wait(30_000, TestContext.Current.CancellationToken));
+            var beforeAnyJob = meter.TrySample(TimeProvider.System.GetTimestamp(), out _);
+            if (OperatingSystem.IsWindows())
+            {
+                Assert.False(beforeAnyJob);
+            }
+
+            start.Set();
+            Assert.True(spinning.Wait(30_000, token));
             Assert.InRange(TimeProvider.System.GetElapsedTime(0, meter.ToTicks(firstJob)).TotalMilliseconds, 5, 40);
 
             _ = meter.TrySample(TimeProvider.System.GetTimestamp(), out _);
             using var never = new ManualResetEventSlim();
-            _ = never.Wait(300, TestContext.Current.CancellationToken);
+            _ = never.Wait(300, token);
             Assert.True(meter.TrySample(TimeProvider.System.GetTimestamp(), out var sample));
 
             Assert.InRange(sample.WorkerCores, 0.3, 1.3);
             Assert.InRange(sample.Processors, 1, 4096);
             Assert.InRange(sample.IdleCores, 0, sample.Processors);
+
+            Volatile.Write(ref stop, true);
+            Assert.True(detached.Wait(30_000, token));
+            Assert.False(meter.TrySample(TimeProvider.System.GetTimestamp(), out _));
+            again.Set();
+            Assert.True(attachedAgain.Wait(30_000, token));
+            Assert.False(meter.TrySample(TimeProvider.System.GetTimestamp(), out _));
         }
         finally
         {
             Volatile.Write(ref stop, true);
+            start.Set();
+            again.Set();
+            end.Set();
             thread.Join();
         }
-
-        Assert.False(meter.TrySample(TimeProvider.System.GetTimestamp(), out _));
     }
 
     // Gives readings of a full machine that others use until the level is the one asked for.

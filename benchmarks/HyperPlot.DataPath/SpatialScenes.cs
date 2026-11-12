@@ -34,8 +34,8 @@ internal static class SpatialScenes
     /// <summary>Builds the index twice in a row (the first over cold files with <see cref="Options.Cold"/>) and reports each.</summary>
     internal static void Build(Options options)
     {
-        using var ownPool = options.Workers > 0 ? new PlotWorkerPool(options.Workers) : null;
-        var pool = ownPool ?? PlotWorkerPool.Shared;
+        // A pool of the scene's own, as many threads as the shared one when none is named, so that --yields decides whether it rests.
+        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), options.Yields);
         var (xPath, yPath) = PointFiles.Paths(options.File);
         if (options.Cold)
         {
@@ -353,8 +353,8 @@ internal static class SpatialScenes
     /// </summary>
     internal static void DisposeWhileWriting(Options options)
     {
-        using var ownPool = options.Workers > 0 ? new PlotWorkerPool(options.Workers) : null;
-        var pool = ownPool ?? PlotWorkerPool.Shared;
+        // A pool of the scene's own, as many threads as the shared one when none is named, so that --yields decides whether it rests.
+        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), options.Yields);
         var (xPath, yPath) = PointFiles.Paths(options.File);
         using var x = Column.MapFile<float>(xPath);
         using var y = Column.MapFile<float>(yPath);
