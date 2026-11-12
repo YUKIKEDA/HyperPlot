@@ -21,6 +21,22 @@ public sealed partial class PlotWorkerPool : IDisposable
     private readonly bool _isShared;
     private readonly ThreadPriority _priority;
 
+    // Never set: a rest is a wait on it with a timeout.
+    private readonly ManualResetEventSlim _resting = new(initialState: false);
+    private long _workerTicks;
+    private long _sampledAt;
+    private long _idle;
+    private long _total;
+    private int _rest;
+
+    // PROTOTYPE: the most rests after a job, in job times. 3 leaves the workers a quarter of their time.
+    internal static int MostRest { get; set; } = 4;
+
+    internal List<(double Idle, double Others, double Workers, int Resting)> Samples { get; } = new(1 << 16);
+
+    [ThreadStatic]
+    private static long _owed;
+
     [ThreadStatic]
     private static bool _isWorkerThread;
 
@@ -126,6 +142,9 @@ public sealed partial class PlotWorkerPool : IDisposable
     /// threads run beside the workers on few processors, and a unit at a lower priority would be starved there.
     /// </summary>
     internal static ThreadPriority DefaultPriority { get; set; } = ThreadPriority.BelowNormal;
+
+    /// <summary>Gets or sets a value indicating whether the workers rest after background jobs while the machine has no idle processor (prototype of row S4).</summary>
+    internal bool Yields { get; set; }
 
     /// <summary>Gets the priority of a thread of the pool while it computes background work.</summary>
     internal ThreadPriority Priority => _priority;
@@ -838,6 +857,7 @@ public sealed partial class PlotWorkerPool : IDisposable
 
         // What no query asked for is background work: its computation runs at the pool's priority (Lower).
         _background = this;
+        var began = Yields ? ThreadCpu() : 0;
         try
         {
             foreach (var work in works)
@@ -845,6 +865,11 @@ public sealed partial class PlotWorkerPool : IDisposable
                 if (work.RunOne(requestedOnly: false))
                 {
                     TestTook?.Invoke(false);
+                    if (Yields)
+                    {
+                        AfterBackground(ThreadCpu() - began);
+                    }
+
                     return true;
                 }
             }
@@ -856,6 +881,88 @@ public sealed partial class PlotWorkerPool : IDisposable
 
         return false;
     }
+
+    // PROTOTYPE (row S4): yield by resting. After a background job the worker looks, every 50 ms, at the idle time of the
+    // whole machine and at the processors that others than the workers use; with no idle time and others at work it
+    // rests longer after each job, and with idle time back it rests less.
+    // The processor time of the calling thread, in the ticks of the system's time provider.
+    private static long ThreadCpu()
+    {
+        if (!OperatingSystem.IsWindows() || !GetThreadTimes(GetCurrentThread(), out _, out _, out var kernel, out var user))
+        {
+            return 0;
+        }
+
+        return (kernel + user) * (TimeProvider.System.TimestampFrequency / 10_000_000);
+    }
+
+    private void AfterBackground(long ticks)
+    {
+        Interlocked.Add(ref _workerTicks, ticks);
+        var now = TimeProvider.System.GetTimestamp();
+        var last = Volatile.Read(ref _sampledAt);
+        if (now - last >= TimeProvider.System.TimestampFrequency / 20 && Interlocked.CompareExchange(ref _sampledAt, now, last) == last)
+        {
+            Sample(now - last);
+        }
+
+        var rest = Volatile.Read(ref _rest);
+        if (rest == 0)
+        {
+            _owed = 0;
+            return;
+        }
+
+        // A sleep is 15.6 ms long at the least on Windows: the rests are paid once they add up to that.
+        _owed += rest * ticks;
+        if (_owed >= TimeProvider.System.TimestampFrequency / 64)
+        {
+            _ = _resting.Wait((int)Math.Min(200, _owed * 1000 / TimeProvider.System.TimestampFrequency));
+            _owed = 0;
+        }
+    }
+
+    private void Sample(long window)
+    {
+        if (!OperatingSystem.IsWindows() || !GetSystemTimes(out var idle, out var kernel, out var user))
+        {
+            return;
+        }
+
+        // The kernel time includes the idle time; all three are sums over the processors, in 100 ns.
+        var total = kernel + user;
+        var (idleBefore, totalBefore) = (_idle, _total);
+        (_idle, _total) = (idle, total);
+        var workers = (double)Interlocked.Exchange(ref _workerTicks, 0) / window;
+        if (totalBefore == 0 || total == totalBefore)
+        {
+            return;
+        }
+
+        var idleShare = (double)(idle - idleBefore) / (total - totalBefore);
+        var others = ((1 - idleShare) * Environment.ProcessorCount) - workers;
+        var rest = _rest;
+        Samples.Add((idleShare, others, workers, rest));
+        if (idleShare < 0.02 && others >= 1.5)
+        {
+            Volatile.Write(ref _rest, Math.Min(MostRest, rest + 1));
+        }
+        else if (idleShare > 0.08)
+        {
+            Volatile.Write(ref _rest, rest / 2);
+        }
+    }
+
+    [LibraryImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetSystemTimes(out long idle, out long kernel, out long user);
+
+    [LibraryImport("kernel32", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool GetThreadTimes(nint thread, out long creation, out long exit, out long kernel, out long user);
+
+    [LibraryImport("kernel32")]
+    private static partial nint GetCurrentThread();
 
     /// <summary>The lower priority of a worker thread during the computation of one background job.</summary>
     internal struct LowPriority

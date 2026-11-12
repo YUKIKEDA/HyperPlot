@@ -128,9 +128,13 @@ internal static class SpatialScenes
             "normal" => ThreadPriority.Normal,
             "lowest" => ThreadPriority.Lowest,
             "below" => ThreadPriority.BelowNormal,
-            _ => throw new ArgumentException($"Unknown priority '{options.Priority}': write normal, below, or lowest."),
+            "rest" => ThreadPriority.Normal,
+            _ => throw new ArgumentException($"Unknown priority '{options.Priority}': write normal, below, lowest, or rest."),
         };
-        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), priority);
+        using var pool = new PlotWorkerPool(options.Workers > 0 ? options.Workers : Math.Max(1, Environment.ProcessorCount - 1), priority)
+        {
+            Yields = options.Priority == "rest",
+        };
         var (xPath, yPath) = PointFiles.Paths(options.File);
         using var x = Column.MapFile<float>(xPath);
         using var y = Column.MapFile<float>(yPath);
@@ -227,6 +231,12 @@ internal static class SpatialScenes
                 ("collects", collects.Count),
                 ("collect_min_ms", collects.Count > 0 ? collects.Min() : 0),
                 ("collect_max_ms", collects.Count > 0 ? collects.Max() : 0),
+                ("samples", pool.Samples.Count),
+                ("idle_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Idle) : 0),
+                ("idle_min", pool.Samples.Count > 0 ? pool.Samples.Min(sample => sample.Idle) : 0),
+                ("others_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Others) : 0),
+                ("workers_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Workers) : 0),
+                ("rest_mean", pool.Samples.Count > 0 ? pool.Samples.Average(sample => sample.Resting) : 0),
                 ("competitor_alone_per_s", baseline),
                 ("competitor_beside_per_s", during),
                 ("competitor_percent", baseline > 0 ? 100 * during / baseline : 0),
