@@ -29,6 +29,8 @@ Write `#12` with none of those verbs before it.
 Part of #12. The NativeAOT check on #12 is still unmet.
 ```
 
+An issue whose subject the PR takes away (a check of code that will not be merged) is not finished by the PR either. Write `Refs #12` and close the issue as not planned after the merge.
+
 ## Before sending
 
 1. Read the title and the full body. For each issue number, decide whether this PR finishes it.

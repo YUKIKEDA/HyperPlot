@@ -9,6 +9,7 @@ GitHub closes an Issue when a closing verb (`close(s/d)`, `fix(es/ed)`, `resolve
 
 - A PR that finishes an Issue puts `Closes #N` alone on a line under `## Related`.
 - A PR that does not finish it never puts a closing verb before `#N`. Write `Part of #N` or `Refs #N`.
+- An Issue whose subject the PR takes away (a check of code that will not be merged) is not finished by the PR: write `Refs #N`, and close the Issue as not planned after the merge. PR #427 first wrote a closing line for Issue #426.
 - The line lives in the PR body only, never in a commit body.
 - After a PR is created or its body edited, run `gh pr view <n> --json closingIssuesReferences` and compare the list with the intent.
 - When the PR body itself says a condition of the Issue is not met, the PR does not close the Issue. Either move the unmet conditions to an Issue and a roadmap row of their own, or write `Part of #N`. Which of the two is the owner's to say when the owner set the conditions.
