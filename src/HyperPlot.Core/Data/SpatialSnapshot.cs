@@ -20,6 +20,15 @@ internal abstract unsafe class SpatialSnapshot
     /// <summary>The number of cells of levels 0 to <see cref="CoarseLevel"/>: (4^9 − 1) / 3.</summary>
     internal const int CoarseLength = 87_381;
 
+    /// <summary>
+    /// The most points of a resident cell that is not a leaf (design §5.5.2 "常駐のセルとページ"): a cell of the table with
+    /// no more points whose parent has more.
+    /// </summary>
+    internal const int CellCapacity = 32_768;
+
+    /// <summary>The units a resident cell's extent is cut into on each axis: a resident point's position is one of them.</summary>
+    internal const double CellUnits = 4294967296.0;
+
     private const int DeepestLevel = 32;
 
     // A walk pops one cell and pushes its four children, so the stack grows by three a level: 1 + 3 × 32 cells.
@@ -42,6 +51,7 @@ internal abstract unsafe class SpatialSnapshot
     private int _references = 1;
     private int _freed;
     private DensityTiles? _tiles;
+    private ResidentCell[] _cells = [];
 
     /// <summary>Initializes a new instance of the <see cref="SpatialSnapshot"/> class that holds nothing.</summary>
     /// <param name="owner">The index.</param>
@@ -92,6 +102,18 @@ internal abstract unsafe class SpatialSnapshot
         // Taking the table is the last statement: when it throws, the builder still owns the rows and the build still
         // owns the copy, and each is freed once.
         _rows = builder.TakeTable(out _rowCount);
+        try
+        {
+            _cells = MakeResidentCells();
+        }
+        catch
+        {
+            // The rows are this snapshot's now, and nothing else will free them.
+            _rowCount = 0;
+            NativeMemory.AlignedFree(_rows);
+            _rows = null;
+            throw;
+        }
     }
 
     /// <summary>Gets how far the build had come when the snapshot was made.</summary>
@@ -130,6 +152,13 @@ internal abstract unsafe class SpatialSnapshot
     /// Only a full snapshot gets them, once, after every tile is made.
     /// </summary>
     public DensityTiles? Tiles => Volatile.Read(ref _tiles);
+
+    /// <summary>
+    /// Gets the resident cells in the order of their codes, which is the order of their points in the copy (design §5.5.2
+    /// "常駐のセルとページ"): they do not overlap and cover every point. A snapshot that is not
+    /// <see cref="SpatialStage.Full"/> has none.
+    /// </summary>
+    public ReadOnlySpan<ResidentCell> ResidentCells => _cells;
 
     /// <summary>Gets a value indicating whether the versions the build recorded are the columns' versions now.</summary>
     internal bool MatchesColumns => _xVersion == _owner.X.Version && _yVersion == _owner.Y.Version;
@@ -262,6 +291,80 @@ internal abstract unsafe class SpatialSnapshot
     }
 
     /// <summary>
+    /// Reads points of the copy as the GPU holds them (design §5.5.2 "常駐のセルとページ"): each point's position in its
+    /// resident cell, in units of 2^-32 of the cell's extent on each axis, and the cell's number. Neither allocates nor
+    /// grows with the number of points of the index.
+    /// </summary>
+    /// <param name="first">The position in the copy of the first point to read.</param>
+    /// <param name="points">Where the points go.</param>
+    /// <exception cref="InvalidOperationException">The snapshot is not <see cref="SpatialStage.Full"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The points to read are not all among the <see cref="PointCount"/> points.</exception>
+    public void ReadBlock(long first, Span<ResidentPoint> points)
+    {
+        if (Stage != SpatialStage.Full)
+        {
+            ThrowHelper.ThrowSpatialSnapshotNotFull();
+        }
+
+        if (first < 0 || points.Length > PointCount - first)
+        {
+            ThrowHelper.ThrowSpatialPointsOutOfRange(first, points.Length, PointCount);
+        }
+
+        if (points.IsEmpty || _copy == null)
+        {
+            return;
+        }
+
+        // The cell of the first point: the last cell that begins at or before it.
+        var cells = ResidentCells;
+        var (low, high) = (0, cells.Length - 1);
+        while (low < high)
+        {
+            var middle = (low + high + 1) / 2;
+            if (cells[middle].First <= first)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        const int Chunk = 256;
+        Span<double> xs = stackalloc double[Chunk];
+        Span<double> ys = stackalloc double[Chunk];
+        var cell = low;
+        for (var done = 0; done < points.Length; done += Chunk)
+        {
+            var count = Math.Min(Chunk, points.Length - done);
+            ReadValues(_copy, first + done, xs[..count], ys[..count]);
+            for (var i = 0; i < count; i++)
+            {
+                var position = first + done + i;
+                while (position >= cells[cell].First + cells[cell].Count)
+                {
+                    cell++;
+                }
+
+                ref readonly var c = ref cells[cell];
+                points[done + i] = new ResidentPoint(UnitOf(xs[i] - c.CornerX, c.ExtentX), UnitOf(ys[i] - c.CornerY, c.ExtentY), (uint)cell);
+            }
+        }
+
+        // The position in a cell: the difference from its corner over its extent, in 2^32 units, kept in the cell. A point
+        // at the upper edge, or one a rounding put outside, takes the nearest unit. An extent of 0 gives NaN, which is 0.
+        static uint UnitOf(double difference, double extent)
+        {
+            var unit = Math.Floor(difference / extent * CellUnits);
+            return unit >= CellUnits - 1 ? uint.MaxValue
+                : unit > 0 ? (uint)unit
+                : 0;
+        }
+    }
+
+    /// <summary>
     /// Gives back what <see cref="SpatialIndex.Acquire"/> lent. The snapshot is not touched after this call. When the
     /// last borrower releases a snapshot that the index has replaced, a worker frees its table and its copy; when the
     /// pool is disposed, this call frees them.
@@ -331,6 +434,13 @@ internal abstract unsafe class SpatialSnapshot
     /// <param name="rows">Where the row numbers go: as long as <paramref name="x"/>.</param>
     private protected abstract void ReadCore(SpatialCopy copy, long first, Span<double> x, Span<double> y, Span<long> rows);
 
+    /// <summary>Reads the x and y of points of the copy as differences from the ranges' origins.</summary>
+    /// <param name="copy">The copy.</param>
+    /// <param name="first">The position of the first point: the points to read are in the copy.</param>
+    /// <param name="x">Where the x values go.</param>
+    /// <param name="y">Where the y values go: as long as <paramref name="x"/>.</param>
+    private protected abstract void ReadValues(SpatialCopy copy, long first, Span<double> x, Span<double> y);
+
     /// <summary>Makes the codes of points of the copy from their values of the stored types.</summary>
     /// <param name="copy">The copy.</param>
     /// <param name="first">The position of the first point: the points to read are in the copy.</param>
@@ -351,6 +461,54 @@ internal abstract unsafe class SpatialSnapshot
         {
             ThrowHelper.ThrowSpatialLevelOutOfRange(maxLevel);
         }
+    }
+
+    // Walks the table from the root and stops at each cell with at most CellCapacity points, or at a leaf with more: the
+    // cells come in the order of their codes, as GetCells gives them.
+    private ResidentCell[] MakeResidentCells()
+    {
+        var rows = Rows;
+        if (rows.IsEmpty)
+        {
+            return [];
+        }
+
+        var cells = new List<ResidentCell>();
+        Span<int> stack = stackalloc int[StackLength];
+        var top = 0;
+        stack[top++] = 0;
+        while (top > 0)
+        {
+            ref readonly var row = ref rows[stack[--top]];
+            if (row.Count == 0)
+            {
+                continue;
+            }
+
+            if (row.Count > CellCapacity && row.FirstChild >= 0)
+            {
+                for (var child = 3; child >= 0; child--)
+                {
+                    stack[top++] = row.FirstChild + child;
+                }
+
+                continue;
+            }
+
+            var shift = DeepestLevel - row.Level;
+            cells.Add(
+                new ResidentCell(
+                    row.First,
+                    row.Count,
+                    _xAxis.DifferenceOf((ulong)SpatialCode.Axis2(row.Code, 0) << shift),
+                    _yAxis.DifferenceOf((ulong)SpatialCode.Axis2(row.Code, 1) << shift),
+                    _xAxis.ExtentAt(row.Level),
+                    _yAxis.ExtentAt(row.Level)
+                )
+            );
+        }
+
+        return [.. cells];
     }
 
     private SpatialCount CountRows(in GridRect grid, int maxLevel)
