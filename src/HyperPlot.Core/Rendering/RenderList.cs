@@ -720,7 +720,7 @@ public sealed class RenderList
         ArgumentException.ThrowIfNullOrEmpty(style.Locale, nameof(style));
     }
 
-    private static Vector4 Premultiply(Color color) =>
+    internal static Vector4 Premultiply(Color color) =>
         new(
             Premultiplied.Multiply(color.R, color.A) / 255f,
             Premultiplied.Multiply(color.G, color.A) / 255f,

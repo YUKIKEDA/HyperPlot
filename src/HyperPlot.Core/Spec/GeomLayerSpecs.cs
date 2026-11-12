@@ -255,4 +255,10 @@ public sealed record PointLayerSpec : LayerSpec
 
     /// <summary>Gets the opacity, from 0 to 1, which multiplies the alpha of each point's color.</summary>
     public double Opacity { get; init; } = 1;
+
+    /// <summary>
+    /// Gets a value indicating whether the layer has more than 131,072 rows and each of its parts is drawn from a spatial
+    /// index (design §5.5.2). The compile sets it on the node it hands to the parts; a spec from a caller never has it.
+    /// </summary>
+    internal bool Indexed { get; init; }
 }
