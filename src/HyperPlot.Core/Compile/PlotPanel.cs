@@ -106,7 +106,9 @@ internal sealed class PlotPanel
     {
         if (data.Length < width + 1)
         {
-            (data, scale) = (new double[width + 1], new double[width + 1]);
+            // Doubled when full, so that a window widened a pixel at a time allocates a logarithmic number of times.
+            var length = Math.Max(width + 1, 2 * data.Length);
+            (data, scale) = (new double[length], new double[length]);
         }
 
         var boundaries = data.AsSpan(0, width + 1);

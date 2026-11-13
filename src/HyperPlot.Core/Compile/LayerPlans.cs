@@ -2047,7 +2047,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
         if (_yBoundaries.Length < height + 1)
         {
-            _yBoundaries = new double[height + 1];
+            _yBoundaries = new double[Math.Max(height + 1, 2 * _yBoundaries.Length)];
         }
 
         // Until the buffer holds this domain's boundaries, it holds no height's: a transform that throws leaves none.
