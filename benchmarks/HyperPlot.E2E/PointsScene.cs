@@ -17,6 +17,13 @@ internal static partial class PointsScene
     // Spike R3b2: 2 seconds of frames before the measured ones (.cursor/rules/bench.mdc); HP_PROBE_WARMUP sets the count.
     private static readonly int Warmup = int.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_WARMUP"), out var w) ? w : 120;
 
+    // Spike R3b2: HP_PROBE_ZOOM=z makes the "whole" script show the middle 1/z of the data on each axis (its drift scaled
+    // by 1/z too). It changes the view only: to keep the points in view comparable, the caller passes z² times the count.
+    private static readonly double Zoom =
+        double.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_ZOOM"), NumberStyles.Float, CultureInfo.InvariantCulture, out var z) && z >= 1
+            ? z
+            : 1;
+
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
     /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), and the layer's shape.</param>
     public static int Run(ReadOnlySpan<string> args)
@@ -66,7 +73,11 @@ internal static partial class PointsScene
 
         using var x = Column.Wrap(xs);
         using var y = Column.Wrap(ys);
-        using var size = Column.Wrap(Enumerable.Range(0, count).Select(i => (double)(i % 101)).ToArray());
+
+        // Spike R3b2: a scene that does not size the points wraps x again for the unused column, so that a run of 1.6e8
+        // points does not make 1.3 GB it never reads.
+        var sized = args.Length > 7 && args[7] is "size" or "shapesize";
+        using var size = Column.Wrap(sized ? Enumerable.Range(0, count).Select(i => (double)(i % 101)).ToArray() : xs);
         var builder = DataTable.Create().Add("x", x).Add("y", y).Add("s", size);
         if (categories > 0)
         {
@@ -139,9 +150,9 @@ internal static partial class PointsScene
             var t = (f % 300) / 300.0;
 
             // "whole": the whole data stays in view, moved by a hundredth of the side, so that every frame draws every point.
-            var span = whole ? 102 : 100 * Math.Pow(10, -Math.Sin(t * Math.PI));
+            var span = whole ? 102 / Zoom : 100 * Math.Pow(10, -Math.Sin(t * Math.PI));
             var (cx, cy) = whole
-                ? (50 + Math.Sin(t * 2 * Math.PI), 50 + Math.Cos(t * 2 * Math.PI))
+                ? (50 + (Math.Sin(t * 2 * Math.PI) / Zoom), 50 + (Math.Cos(t * 2 * Math.PI) / Zoom))
                 : (50 + (20 * Math.Sin(t * 2 * Math.PI)), 50 + (10 * Math.Cos(t * 2 * Math.PI)));
             views[f] = new PanelView2D(
                 ViewRange.FromValues(cx - (span / 2), cx + (span / 2)),
@@ -199,7 +210,7 @@ internal static partial class PointsScene
         var probeFrames = (double)frames;
         var probe = string.Create(
             CultureInfo.InvariantCulture,
-            $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
+            $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} zoom={Zoom} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
         );
 
         // Hit tests at seeded pixels of the whole view, each timed alone.

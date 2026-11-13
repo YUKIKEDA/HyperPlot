@@ -9,6 +9,9 @@ internal static class SplitProbe
     /// <summary>HP_PROBE_SHUFFLE_BLOCKS: a page is staged as this many runs of the copy's order, each shuffled in steps alone (1: the page whole, as on main).</summary>
     internal static readonly int ShuffleBlocks = Read("HP_PROBE_SHUFFLE_BLOCKS", 1);
 
+    /// <summary>HP_PROBE_BLOCK_POINTS: a page is staged as runs of this many points of the copy's order (the last holds the rest), each shuffled in steps alone; overrides <see cref="ShuffleBlocks"/>. 0 (unset): off.</summary>
+    internal static readonly int BlockPoints = Read("HP_PROBE_BLOCK_POINTS", 0);
+
     /// <summary>HP_PROBE_SPLIT: each page is drawn as this many calls over equal runs of its points (1: one call, as on main).</summary>
     internal static readonly int Split = Read("HP_PROBE_SPLIT", 1);
 
@@ -46,7 +49,7 @@ internal static class SplitProbe
     internal static string Describe() =>
         string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"probe: shuffle_blocks={ShuffleBlocks} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")}"
+            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")}"
         );
 
     private static int Read(string name, int fallback) =>

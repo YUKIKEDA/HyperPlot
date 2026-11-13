@@ -127,11 +127,14 @@ internal sealed class PointPages
         snapshot.ReadBlock((long)page * PagePoints, ordered);
         var staged = _staging.AsSpan(_staged, count);
 
-        // Spike R3b2: the page in SplitProbe.ShuffleBlocks runs of the copy's order, each in steps alone; 1 is main's order.
-        var blocks = Math.Min(SplitProbe.ShuffleBlocks, count);
+        // Spike R3b2: the page in runs of the copy's order, each in steps alone: runs of SplitProbe.BlockPoints points when
+        // set, otherwise SplitProbe.ShuffleBlocks equal runs; one run is main's order.
+        var size = SplitProbe.BlockPoints;
+        var blocks = size > 0 ? (count + size - 1) / size : Math.Min(SplitProbe.ShuffleBlocks, count);
         for (var b = 0; b < blocks; b++)
         {
-            var (start, end) = ((int)((long)count * b / blocks), (int)((long)count * (b + 1) / blocks));
+            var (start, end) =
+                size > 0 ? (b * size, Math.Min(count, (b + 1) * size)) : ((int)((long)count * b / blocks), (int)((long)count * (b + 1) / blocks));
             var length = end - start;
             var from = 0;
             for (var k = 0; k < length; k++)
