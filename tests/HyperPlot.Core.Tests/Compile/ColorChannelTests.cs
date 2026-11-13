@@ -1,4 +1,5 @@
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -1207,7 +1208,8 @@ public sealed class ColorChannelTests
     ///   scale with a color bar, each drawn twice.
     ///
     /// Steps:
-    /// - Render each five times, then two of other y domains in turn six times.
+    /// - Render each five times, then two of other y domains in turn six times: once as a warm-up, then, after a collection,
+    ///   counting the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -1285,21 +1287,21 @@ public sealed class ColorChannelTests
                 _ = plan.Render(turn);
             }
 
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 5; i++)
-            {
-                _ = plan.Render(spec);
-            }
+            PerformanceAssert.DoesNotAllocate(
+                () =>
+                {
+                    for (var i = 0; i < 5; i++)
+                    {
+                        _ = plan.Render(spec);
+                    }
 
-            for (var i = 0; i < 6; i++)
-            {
-                _ = plan.Render(turns[1 + (i % 2)]);
-            }
-
-            var spent = GC.GetAllocatedBytesForCurrentThread() - before;
-            Assert.True(spent == 0, $"spec {Array.IndexOf(specs, spec)}: {spent}");
+                    for (var i = 0; i < 6; i++)
+                    {
+                        _ = plan.Render(turns[1 + (i % 2)]);
+                    }
+                },
+                scenario: $"spec {Array.IndexOf(specs, spec)}"
+            );
         }
     }
 

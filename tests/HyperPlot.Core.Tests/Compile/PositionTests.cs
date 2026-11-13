@@ -1,4 +1,5 @@
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -1389,23 +1390,17 @@ public sealed class PositionTests
         {
             using var plan = TestPlans.Create(pool, Size, Size);
             var renewed = spec with { Layers = [.. spec.Layers.Select(l => l with { })] };
-            for (var i = 0; i < 3; i++)
-            {
-                _ = plan.Render(spec);
-                _ = plan.Render(renewed);
-            }
-
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 5; i++)
-            {
-                _ = plan.Render(spec);
-                _ = plan.Render(renewed);
-            }
-
-            var spent = GC.GetAllocatedBytesForCurrentThread() - before;
-            Assert.True(spent == 0, $"spec {Array.IndexOf(specs, spec)}: {spent}");
+            PerformanceAssert.DoesNotAllocate(
+                () =>
+                {
+                    for (var i = 0; i < 5; i++)
+                    {
+                        _ = plan.Render(spec);
+                        _ = plan.Render(renewed);
+                    }
+                },
+                scenario: $"spec {Array.IndexOf(specs, spec)}"
+            );
         }
     }
 

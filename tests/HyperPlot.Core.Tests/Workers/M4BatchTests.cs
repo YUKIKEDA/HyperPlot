@@ -1,3 +1,5 @@
+using HyperPlot.Testing;
+
 namespace HyperPlot.Tests;
 
 /// <summary>Series extracted across the pool (design §5.5.1, §8.1, §10 "系列ごとの並列（S1）").</summary>
@@ -69,7 +71,7 @@ public sealed class M4BatchTests
     /// - A batch of 16 series on a pool of 3 threads; one extraction to warm up.
     ///
     /// Steps:
-    /// - Extract 20 times.
+    /// - Extract 20 times as a warm-up; collect; extract 20 times more, counting the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -82,15 +84,13 @@ public sealed class M4BatchTests
         var batch = fixture.Batch(16);
         pool.Extract(batch, default, fixture.Boundaries);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 20; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            pool.Extract(batch, default, fixture.Boundaries);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 20; i++)
+            {
+                pool.Extract(batch, default, fixture.Boundaries);
+            }
+        });
     }
 
     /// <summary>

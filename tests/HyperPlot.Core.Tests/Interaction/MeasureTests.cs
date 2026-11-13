@@ -1,6 +1,7 @@
 using System.Numerics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -508,7 +509,7 @@ public sealed class MeasureTests
     ///
     /// Steps:
     /// - Rounds of 50 statistics queries; rounds of 8 moves drawn after each; the pointer leaves; rounds of 20 wheel turns
-    ///   drawn after each. 4 of each to warm, a garbage collection, then 2 of each counted.
+    ///   drawn after each. 4 of each to warm, a garbage collection, then 2 of each counted, each kind apart.
     ///
     /// Expected:
     /// - The counted rounds: 0 bytes.
@@ -529,58 +530,62 @@ public sealed class MeasureTests
         f.Changes.Capacity = 20_000;
         var (left, top, _, _) = f.Rect;
         var results = new SeriesStatistics[4];
-        long Queries()
+        void Queries()
         {
-            var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 50; i++)
             {
                 _ = f.Engine.Statistics(Panel, ViewRange.FromValues(i, 500.0 + i), results);
             }
-
-            return GC.GetAllocatedBytesForCurrentThread() - before;
         }
 
-        long Moves()
+        void Moves()
         {
-            var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 8; i++)
             {
                 _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, new Vector2(left + 20 + (i * 23), top + 30 + (i * 7))));
                 f.Engine.RenderFrame();
             }
-
-            return GC.GetAllocatedBytesForCurrentThread() - before;
         }
 
-        long Wheels()
+        void Wheels()
         {
-            var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 20; i++)
             {
                 f.Time.Advance(TimeSpan.FromMilliseconds(16));
                 _ = f.Engine.OnWheel(new WheelEvent(f.Middle, 0, i < 10 ? 1 : -1, ModifierKeys.None, f.Time.GetTimestamp()));
                 f.Engine.RenderFrame();
             }
-
-            return GC.GetAllocatedBytesForCurrentThread() - before;
         }
 
-        var (queries, moves) = (Warm(Queries), Warm(Moves));
-        _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Leave, new Vector2(left, top)));
-        var wheels = Warm(Wheels);
-        Assert.Equal((0L, 0L, 0L), (queries, moves, wheels));
-
-        static long Warm(Func<long> round)
-        {
-            for (var i = 0; i < 4; i++)
+        // Two rounds a run: 4 rounds warm, then 2 counted.
+        PerformanceAssert.DoesNotAllocate(
+            () =>
             {
-                _ = round();
-            }
-
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            return round() + round();
-        }
+                Queries();
+                Queries();
+            },
+            warmUps: 2,
+            scenario: "queries"
+        );
+        PerformanceAssert.DoesNotAllocate(
+            () =>
+            {
+                Moves();
+                Moves();
+            },
+            warmUps: 2,
+            scenario: "moves"
+        );
+        _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Leave, new Vector2(left, top)));
+        PerformanceAssert.DoesNotAllocate(
+            () =>
+            {
+                Wheels();
+                Wheels();
+            },
+            warmUps: 2,
+            scenario: "wheels"
+        );
     }
 
     private static PlotEngine Engine(PlotWorkerPool pool, PlotSpec spec)
