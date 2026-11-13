@@ -400,6 +400,7 @@ internal static class DensityScene
                 $"gpu_frame: frames={gpuKept.Length} p50={PointsScene.Percentile(gpuKept, 0.5):F3} p95={PointsScene.Percentile(gpuKept, 0.95):F3} p99={PointsScene.Percentile(gpuKept, 0.99):F3} max={(gpuKept.Length == 0 ? double.NaN : gpuKept.Max()):F3} ms"
             )
         );
+
         // P-3 is the density's frames: a run with the switch also has raw-point frames (row R3b2's), read apart.
         foreach (var kind in "DPB")
         {
