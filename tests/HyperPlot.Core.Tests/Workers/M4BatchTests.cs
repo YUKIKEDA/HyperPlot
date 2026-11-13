@@ -120,7 +120,7 @@ public sealed class M4BatchTests
         var batch = fixture.Batch(4);
         M4Batch[] batches = [batch];
         ScaleOrigin[] origins = [default];
-        double[][] boundaries = [fixture.Boundaries];
+        ArraySegment<double>[] boundaries = [fixture.Boundaries];
         pool.ExtractTogether(batches, origins, boundaries, 0);
 
         GC.Collect();
@@ -313,7 +313,7 @@ public sealed class M4BatchTests
             _ = batches[s < 2 ? 0 : 2].Add(fixture.UniformX, fixture.Pyramids[s], outputs[s]);
         }
 
-        pool.ExtractTogether(batches, [default, default, default], [fixture.Boundaries, [], half], 3);
+        pool.ExtractTogether(batches, [default, default, default], [fixture.Boundaries, ArraySegment<double>.Empty, half], 3);
         for (var s = 0; s < 4; s++)
         {
             var alone = new M4Point[M4.MaxPointCount(Columns)];
