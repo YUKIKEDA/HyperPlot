@@ -47,6 +47,27 @@ internal readonly struct SpatialAxis
     /// <summary>Gets the origin of the range, in the unit of the stored values.</summary>
     public long Origin => _origin;
 
+    /// <summary>
+    /// Returns the difference from the origin at which a grid cell begins: the lower corner of a cell of the table (design
+    /// §5.5.2 "常駐のセルとページ").
+    /// </summary>
+    /// <param name="gridCell">The grid cell, from 0 to 2^bits − 1.</param>
+    /// <returns>The difference. An axis whose two ends are one value answers that value for every cell.</returns>
+    public double DifferenceOf(ulong gridCell)
+    {
+        var v = _cells == 0 ? _low : _low + (gridCell / _cells * _width);
+        return _halves ? v * 2 : v;
+    }
+
+    /// <summary>Returns the width, in the unit of the stored values, of a cell of a level.</summary>
+    /// <param name="level">The level, from 0 for the whole range.</param>
+    /// <returns>The width: 0 on an axis whose two ends are one value.</returns>
+    public double ExtentAt(int level)
+    {
+        var v = _cells == 0 ? 0 : _width / (1UL << level);
+        return _halves ? v * 2 : v;
+    }
+
     /// <summary>Returns the grid cell of a stored value.</summary>
     /// <typeparam name="T">The type of the stored value.</typeparam>
     /// <param name="value">The value: finite.</param>

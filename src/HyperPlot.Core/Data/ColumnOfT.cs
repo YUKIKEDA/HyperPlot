@@ -12,7 +12,7 @@ namespace HyperPlot;
 /// Reads may run on any number of threads at once. <see cref="Invalidate(long, long)"/> may run beside them; a read that
 /// overlaps the change sees the old or the new values. <see cref="Dispose"/> must not run beside a read.
 /// </remarks>
-public sealed class Column<T> : Column, IDisposable, IPyramidColumn
+public sealed class Column<T> : Column, IDisposable, IPyramidColumn, ISpatialColumn
     where T : unmanaged, INumber<T>
 {
     /// <summary>The sign bit of a 64-bit key (row G5b).</summary>
@@ -482,6 +482,14 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn
 
     /// <inheritdoc />
     PlotPyramid IPyramidColumn.BuildPlotPyramid(PlotWorkerPool pool) => new PlotPyramid<T>(pool.BuildPyramid(this));
+
+    /// <inheritdoc />
+    SpatialIndex ISpatialColumn.BuildSpatialIndex(PlotWorkerPool pool, Column y, in SpatialIndexInput input) =>
+        ((ISpatialColumn)y).BuildSpatialIndexAsY(pool, this, input);
+
+    /// <inheritdoc />
+    SpatialIndex ISpatialColumn.BuildSpatialIndexAsY<TX>(PlotWorkerPool pool, Column<TX> x, in SpatialIndexInput input) =>
+        pool.BuildSpatialIndex(x, this, input);
 
     /// <inheritdoc />
     internal override CategoryExtremes StartCategoryExtremes(CategoricalColumn x, PlotWorkerPool pool, RowRange rows) =>

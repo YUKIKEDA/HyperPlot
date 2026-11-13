@@ -443,6 +443,23 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         }
     }
 
+    /// <summary>Gets a value indicating whether a part's last recording left out what the frame's budget did not send: a part's pages of points (row R3a).</summary>
+    public override bool RecordedProvisional
+    {
+        get
+        {
+            foreach (var part in _parts)
+            {
+                if (part.Plan.RecordedProvisional)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     public override LayerReadiness Poll(LayerIndexes indexes)
     {
         if (_gathers.Length > 0)

@@ -30,6 +30,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly D3D11RectPipeline _rects;
     private readonly D3D11ColumnPipeline _columns;
     private readonly D3D11MarkerPipeline _markers;
+    private readonly D3D11ResidentMarkerPipeline _residentMarkers;
     private readonly D3D11SectorPipeline _sectors;
     private readonly D3D11ImagePipeline _images;
     private readonly DWriteTextBackend? _directWrite;
@@ -52,6 +53,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _rects = new D3D11RectPipeline(this);
         _columns = new D3D11ColumnPipeline(this);
         _markers = new D3D11MarkerPipeline(this);
+        _residentMarkers = new D3D11ResidentMarkerPipeline(this);
         _sectors = new D3D11SectorPipeline(this);
         _images = new D3D11ImagePipeline(this);
         _timer = new D3D11FrameTimer(this);
@@ -133,6 +135,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     /// <summary>Gets the pipeline of the markers, for the tests of its buffer.</summary>
     internal D3D11MarkerPipeline Markers => _markers;
+
+    /// <summary>Gets the pipeline of the resident markers, for the tests of its pages.</summary>
+    internal D3D11ResidentMarkerPipeline ResidentMarkers => _residentMarkers;
 
     /// <summary>Gets the polar trapezoids' pipeline, for the tests of its buffer.</summary>
     internal D3D11SectorPipeline Sectors => _sectors;
@@ -221,6 +226,8 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _glyphs.Upload(Text.Atlas, Text.Instances);
 
         // The tiles the frame sends go before the steps are looked at: the cache's staging is free once sent (row G9).
+        // The pages of points first: the image pipeline tells the cache that the frame's uploads were sent (row R3a).
+        _residentMarkers.UploadPages(Images.Points);
         _images.Upload(Images, list.Images);
         if (steps.IsEmpty)
         {
@@ -231,6 +238,8 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _rects.Upload(list.Rects);
         _columns.Upload(list.Columns);
         _markers.Upload(list.Markers);
+        _residentMarkers.Upload(list.ResidentCells);
+        var residentRuns = list.ResidentRuns;
         _sectors.Upload(list.Sectors);
         var polylines = list.Polylines;
         var sectorCalls = list.SectorCalls;
@@ -261,6 +270,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     case DrawStepKind.Markers:
                         _markers.Bind(own);
                         break;
+                    case DrawStepKind.ResidentMarkers:
+                        _residentMarkers.Bind(own);
+                        break;
                     default:
                         _columns.Bind(own);
                         break;
@@ -288,6 +300,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     break;
                 case DrawStepKind.Markers:
                     _markers.Draw(own, step);
+                    break;
+                case DrawStepKind.ResidentMarkers:
+                    _residentMarkers.Draw(own, residentRuns[step.Index]);
                     break;
                 default:
                     _columns.Draw(own, step);
@@ -344,6 +359,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                 break;
             case DrawStepKind.Markers:
                 _markers.Unbind();
+                break;
+            case DrawStepKind.ResidentMarkers:
+                _residentMarkers.Unbind();
                 break;
             default:
                 break;
@@ -512,6 +530,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
             _rects.Make();
             _columns.Make();
             _markers.Make();
+            _residentMarkers.Make();
             _sectors.Make();
             _images.Make();
             _timer.Make();
@@ -627,6 +646,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _sectors.Release();
         _columns.Release();
         _markers.Release();
+        _residentMarkers.Release();
         _rects.Release();
         _glyphs.Release();
         _lines.Release();

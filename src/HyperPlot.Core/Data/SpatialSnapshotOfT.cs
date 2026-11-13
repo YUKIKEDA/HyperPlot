@@ -42,7 +42,7 @@ internal sealed class SpatialSnapshot<TX, TY> : SpatialSnapshot
     }
 
     /// <inheritdoc />
-    private protected override void ReadCore(SpatialCopy copy, long first, Span<double> x, Span<double> y, Span<long> rows)
+    private protected override void ReadValues(SpatialCopy copy, long first, Span<double> x, Span<double> y)
     {
         var xs = copy.GetRegion<TX>(0).Read(first, x.Length);
         var xOrigin = XRange.Origin;
@@ -57,6 +57,12 @@ internal sealed class SpatialSnapshot<TX, TY> : SpatialSnapshot
         {
             y[i] = ScaleSpace.Difference(ys[i], yOrigin);
         }
+    }
+
+    /// <inheritdoc />
+    private protected override void ReadCore(SpatialCopy copy, long first, Span<double> x, Span<double> y, Span<long> rows)
+    {
+        ReadValues(copy, first, x, y);
 
         // The last region holds each point's row as an offset from the first row the index reads, 4 or 8 bytes wide.
         var region = copy.RegionCount - 1;

@@ -1169,6 +1169,12 @@ internal sealed partial class PlotPlan : IDisposable
         {
             var layer = plot.Layers[i] ?? throw new ArgumentNullException(nameof(plot), $"Layer {i} of the spec is null.");
             LayerPlan.Validate(plot.Data, layer, i, _channels);
+            if (plot.Coord is PolarCoordSpec && layer is PointLayerSpec point && point.X.Column.Length > LayerPlan.MaxElements)
+            {
+                throw new InvalidOperationException(
+                    $"Layer {i} has {point.X.Column.Length} points in polar coordinates; at most {LayerPlan.MaxElements} are drawn so (design §5.5.2). Row R3e draws more."
+                );
+            }
         }
 
         CheckTextRows(plot);
@@ -1930,7 +1936,8 @@ internal sealed partial class PlotPlan : IDisposable
             return new EmptyPlan(layer);
         }
 
-        var mapped = data.Map is { } map ? FacetData.Remap(layer, map) : layer;
+        // The path of a point layer is chosen by the layer's rows, not by the panel's gathered ones (design §5.5.2).
+        var mapped = data.Map is { } map ? FacetData.Remap(LayerPlan.Marked(layer), map) : layer;
         StatSource? source = null;
         if (layer.Stat is not null)
         {
@@ -2077,6 +2084,7 @@ internal sealed partial class PlotPlan : IDisposable
         // Layers made again try again (row W1b1): the passes of statistics a failed one started are forgotten too.
         _indexes.Forget();
         var shared = SharedSources(spec, _facet);
+        var indexing = new SpatialIndexing();
         for (var p = 0; p < count; p++)
         {
             var panel = _panels[p];
@@ -2092,7 +2100,10 @@ internal sealed partial class PlotPlan : IDisposable
                 _xTransform,
                 spec.ScaleY,
                 _yTransform
-            );
+            )
+            {
+                Indexing = indexing,
+            };
             var layers = new LayerPlan[spec.Layers.Count];
             for (var i = 0; i < layers.Length; i++)
             {

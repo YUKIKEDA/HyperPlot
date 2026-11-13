@@ -13,6 +13,9 @@ internal abstract class LayerPlan
     /// <summary>The most elements a segment or a rect layer draws (design §5.5.3): 2^17, 4 MB of rectangle records.</summary>
     public const int MaxElements = 131_072;
 
+    /// <summary>The most rows of a point layer until row R3b draws more as a density (design §5.5.2): 1e7.</summary>
+    public const int RawThreshold = 10_000_000;
+
     /// <summary>The most categories a color channel splits a layer into (design §4.1, row G7c).</summary>
     public const int MaxCategories = 256;
 
@@ -128,6 +131,17 @@ internal abstract class LayerPlan
     /// only the run; a stat's edges and ranges come from <paramref name="source"/>, or from the run when it is null.
     /// </summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows, StatSource? source) =>
+        CreateMarked(Marked(spec), build, rows, source);
+
+    /// <summary>
+    /// Returns a layer's spec with the index path marked on a point layer of more than 131,072 rows (design §5.5.2). The
+    /// rows are counted before any split, so that every part takes the layer's path: a part cannot tell from its own rows.
+    /// A facet marks the layer before it maps the layer's columns onto a panel's gathered ones, which are shorter.
+    /// </summary>
+    public static LayerSpec Marked(LayerSpec spec) =>
+        spec is PointLayerSpec { Indexed: false } point && point.X.Column.Length > MaxElements ? point with { Indexed = true } : spec;
+
+    private static LayerPlan CreateMarked(LayerSpec spec, PlanBuild build, RowRange rows, StatSource? source) =>
         spec.Stat is not null ? new StatPlan(spec, build, rows, source)
         : Stacks(PositionOf(spec))
             ? spec is BarLayerSpec { X.Column: CategoricalColumn } bar ? new StackedCategoryBarPlan(bar, rows)
@@ -151,6 +165,7 @@ internal abstract class LayerPlan
             RuleLayerSpec rule => new RulePlan(rule, rows),
             RectLayerSpec rect => new RectPlan(rect, rows),
             SegmentLayerSpec segment => new SegmentPlan(segment, rows),
+            PointLayerSpec { Indexed: true } point => new IndexedPointPlan(point, build, rows),
             PointLayerSpec point => new PointPlan(point, rows),
             TextLayerSpec text => new TextPlan(text, rows),
             ImageLayerSpec image => new ImagePlan(image, build),
@@ -376,7 +391,7 @@ internal abstract class LayerPlan
                 ValidateText(data, t, index);
                 break;
             case PointLayerSpec p:
-                ValidatePoint(p, index);
+                ValidatePoint(data, p, index);
                 break;
             case ImageLayerSpec image:
                 ValidateImage(image, index);
@@ -1055,8 +1070,8 @@ internal abstract class LayerPlan
 
     /// <summary>
     /// Gets a value indicating whether the last recording drew a stand-in for what a frame's budget left out (Issue #319): an
-    /// image's tile from an ancestor. The frame is then provisional. A virtual member, so that a plot without the layer
-    /// keeps none of its code.
+    /// image's tile from an ancestor, or nothing for a page of points (row R3a). The frame is then provisional. A virtual
+    /// member, so that a plot without the layer keeps none of its code.
     /// </summary>
     public virtual bool RecordedProvisional => false;
 
@@ -1347,7 +1362,7 @@ internal abstract class LayerPlan
     }
 
     /// <summary>Checks a point layer's members and its rows (design §5.5.2, row R3a).</summary>
-    private static void ValidatePoint(PointLayerSpec point, int index)
+    private static void ValidatePoint(DataTable data, PointLayerSpec point, int index)
     {
         if (!PointBuilder.IsSize(point.Size))
         {
@@ -1366,12 +1381,28 @@ internal abstract class LayerPlan
 
         // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2).
         var rows = point.X.Column.Length;
-        if (rows > MaxElements)
+        if (rows <= MaxElements)
+        {
+            return;
+        }
+
+        if (rows > RawThreshold)
         {
             throw new InvalidOperationException(
-                $"Layer {index} has {rows} points; a point layer of more than {MaxElements} rows is drawn from a spatial index (design §5.5.2), which the second part of row R3a adds (Issue #438)."
+                $"Layer {index} has {rows} points; a point layer draws at most {RawThreshold} (design §5.5.2). Row R3b draws more as a density."
             );
         }
+
+        if (point.ColorBy is { Column: not CategoricalColumn })
+        {
+            throw new InvalidOperationException(
+                $"Layer {index} has {rows} points colored one by one by a number; at most {MaxElements} are drawn so (design §5.5.2). Row R3d colors the points of a larger layer."
+            );
+        }
+
+        // The index is built over the stored values of both columns.
+        CheckStored(data, point.X, index, "the x of a point layer of more than 131,072 rows");
+        CheckStored(data, point.Y, index, "the y of a point layer of more than 131,072 rows");
     }
 
     private static void CheckCount(long count, int layer)
@@ -1426,6 +1457,9 @@ internal sealed class PlanBuild(
 
     /// <summary>Returns the mipmap the plan holds over a raster, made the first time (row G9).</summary>
     public RasterPyramid Mipmap(Raster raster) => mipmap is null ? raster.MakePyramid() : mipmap(raster);
+
+    /// <summary>Gets or initializes what the point layers of one making share (row R3a): the makings of all panels pass one.</summary>
+    public SpatialIndexing Indexing { get; init; } = new();
 
     /// <summary>Gets the workers that split layers find their categories' runs and gather their rows on (row G7c).</summary>
     public PlotWorkerPool Pool => pool;

@@ -173,6 +173,11 @@ public sealed class TextEngine
                     AddStep(new DrawStep(DrawStepKind.Markers, call.Start, call.Count, 0, call.Clip));
                 }
             }
+            else if (command.Kind == RenderCommandKind.ResidentMarkers)
+            {
+                // A run reads its own page and has its own look: one step each (row R3a).
+                AddStep(new DrawStep(DrawStepKind.ResidentMarkers, command.Index, 1, 0, list.ResidentRuns[command.Index].Clip));
+            }
             else if (command.Kind == RenderCommandKind.Image)
             {
                 // Tiles of one page under one clip are one step (design §5.3, row G9).
@@ -518,6 +523,9 @@ internal enum DrawStepKind : byte
 
     /// <summary>Markers under one clip: a range of <see cref="RenderList.Markers"/> (row R3a).</summary>
     Markers,
+
+    /// <summary>One run of resident markers: the index is into <see cref="RenderList.ResidentRuns"/> (row R3a).</summary>
+    ResidentMarkers,
 }
 
 /// <summary>One step of a backend's <c>Draw</c>, in the order of the list's commands.</summary>

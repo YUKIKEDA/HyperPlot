@@ -81,20 +81,20 @@ public sealed class PointPlanTests
     }
 
     /// <summary>
-    /// The compile refuses a point layer it does not draw (design §5.5.2 "上限と例外"): members out of range, more than
-    /// 131,072 rows, a categorical x, a position, a stat, a FillBy, and a color beside a color channel.
+    /// The compile refuses a point layer it does not draw (design §5.5.2 "上限と例外"): members out of range, a categorical
+    /// x, a position, a stat, a FillBy, and a color beside a color channel. 131,072 rows are mapped on the CPU.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - Columns of 131,072 and 131,073 doubles, a category column, and a numeric column, in tables of each length.
+    /// - A column of 131,072 doubles and a category column.
     ///
     /// Steps:
-    /// - Render point layers with a Size of 0 and of 513, an Opacity of 1.5 and of NaN, a Shape of 3, 131,073 rows (alone and
-    ///   split by a category), a categorical x, a stack position, a bin stat, a FillBy, and a Color beside a ColorBy.
+    /// - Render point layers with a Size of 0 and of 513, an Opacity of 1.5 and of NaN, a Shape of 3, a categorical x, a stack
+    ///   position, a bin stat, a FillBy, and a Color beside a ColorBy.
     /// - Render 131,072 rows.
     ///
     /// Expected:
-    /// - ArgumentException for each but the rows, which throw InvalidOperationException naming 131073, 131072, and Issue #438.
+    /// - ArgumentException for each.
     /// - 131,072 rows record 131,072 markers in one call.
     /// </remarks>
     [Fact]
@@ -104,16 +104,10 @@ public sealed class PointPlanTests
         using var plan = TestPlans.Create(pool, Size, Size);
         var limit = LayerPlan.MaxElements;
         using var most = Column.Wrap(Enumerable.Range(0, limit).Select(i => (double)(i % 100)).ToArray());
-        using var over = Column.Wrap(Enumerable.Range(0, limit + 1).Select(i => (double)(i % 100)).ToArray());
         var fits = DataTable
             .Create()
             .Add("v", most)
             .Add("c", Column.Categorical(Enumerable.Range(0, limit).Select(i => (string?)Names[i % 3]).ToArray()))
-            .Build();
-        var tooMany = DataTable
-            .Create()
-            .Add("v", over)
-            .Add("c", Column.Categorical(Enumerable.Range(0, limit + 1).Select(i => (string?)Names[i % 3]).ToArray()))
             .Build();
         var v = fits.Col<double>("v");
         var c = fits.Cat("c").ToColumnRef();
@@ -166,26 +160,6 @@ public sealed class PointPlanTests
         foreach (var layer in refused)
         {
             _ = Assert.ThrowsAny<ArgumentException>(() => plan.Render(Spec(fits, layer)));
-        }
-
-        var big = tooMany.Col<double>("v");
-        foreach (
-            var layer in new[]
-            {
-                new PointLayerSpec { X = big, Y = big },
-                new PointLayerSpec
-                {
-                    X = big,
-                    Y = big,
-                    ColorBy = tooMany.Cat("c").ToColumnRef(),
-                },
-            }
-        )
-        {
-            var message = Assert.Throws<InvalidOperationException>(() => plan.Render(Spec(tooMany, layer))).Message;
-            Assert.Contains("131073", message, StringComparison.Ordinal);
-            Assert.Contains("131072", message, StringComparison.Ordinal);
-            Assert.Contains("#438", message, StringComparison.Ordinal);
         }
 
         var list = plan.Render(Spec(fits, point));
