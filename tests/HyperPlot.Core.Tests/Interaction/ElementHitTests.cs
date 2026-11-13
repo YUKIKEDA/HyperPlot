@@ -683,7 +683,7 @@ public sealed class ElementHitTests
     /// - A numeric bar, a category bar, a stacked category bar, a numeric error bar, a category error bar, and a rectangle layer.
     ///
     /// Steps:
-    /// - Hit test each in both modes once to warm; then 50 times each, counting the thread's allocations.
+    /// - Hit test each in both modes once to warm; collect; then 50 times each, counting the thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -719,6 +719,9 @@ public sealed class ElementHitTests
             var cursor = Inside(engine, 0.4, 0.5);
             _ = engine.HitTest(cursor, 20, HitMode.X, hits);
             _ = engine.HitTest(cursor, 20, HitMode.XY, hits);
+
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var k = 0; k < 50; k++)
             {

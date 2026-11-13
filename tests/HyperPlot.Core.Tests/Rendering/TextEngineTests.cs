@@ -565,6 +565,8 @@ public sealed class TextEngineTests
         Record(list, labels);
         engine.Prepare(list, 640, 480);
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var frame = 0; frame < 10; frame++)
         {

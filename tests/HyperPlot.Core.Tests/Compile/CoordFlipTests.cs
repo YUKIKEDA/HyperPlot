@@ -385,6 +385,8 @@ public sealed class CoordFlipTests
         _ = plan.Render(spec);
         _ = plan.Render(spec with { Title = "Flip" });
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

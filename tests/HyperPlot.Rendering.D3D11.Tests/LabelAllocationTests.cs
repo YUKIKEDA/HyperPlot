@@ -19,7 +19,7 @@ public sealed class LabelAllocationTests
     ///
     /// Steps:
     /// - Render the domains in turn until a run of 300 frames allocates nothing (at most 4 runs, which fill the shaping cache
-    ///   of 8,192 texts), then render 300 more domains, none drawn before.
+    ///   of 8,192 texts); collect; then render 300 more domains, none drawn before.
     ///
     /// Expected:
     /// - 0 bytes over the 300 frames; each frame's x labels differ from the frame before's.
@@ -60,6 +60,9 @@ public sealed class LabelAllocationTests
 
         Assert.Equal(0, bytes);
         var first = renderer.Plan!.Guides.X.TickLabels.ToArray();
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         Assert.Equal(0, Measure(renderer, specs.AsSpan(run * Frames, Frames)));
         Assert.DoesNotContain(renderer.Plan!.Guides.X.TickLabels.ToArray()[0], first);
     }

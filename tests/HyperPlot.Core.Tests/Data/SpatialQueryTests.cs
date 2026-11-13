@@ -234,7 +234,7 @@ public sealed class SpatialQueryTests
     /// - One round of the calls made before the measurement.
     ///
     /// Steps:
-    /// - Read the bytes allocated on the thread, then 100 times: Acquire, Count at maxLevel 32 and 8, GetCells at
+    /// - Collect; read the bytes allocated on the thread, then 100 times: Acquire, Count at maxLevel 32 and 8, GetCells at
     ///   maxLevel 32, ReadPoints of 256 points, Release. Read the bytes again.
     ///
     /// Expected:
@@ -261,6 +261,9 @@ public sealed class SpatialQueryTests
         var returned = 0;
 
         Round();
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {

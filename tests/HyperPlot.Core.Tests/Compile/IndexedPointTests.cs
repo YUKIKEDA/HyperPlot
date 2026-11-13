@@ -512,6 +512,9 @@ public sealed class IndexedPointTests
         }
 
         Assert.False(engine.IsProvisional);
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         foreach (var view in views)
         {

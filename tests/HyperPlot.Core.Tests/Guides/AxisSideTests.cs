@@ -732,7 +732,7 @@ public sealed class AxisSideTests : IDisposable
     /// - The two-axes spec with y on the right and x on the top swapped in, at two y2 domains.
     ///
     /// Steps:
-    /// - Render both a few times, then five times more in turn.
+    /// - Render both a few times; collect; then five times more in turn.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -750,6 +750,8 @@ public sealed class AxisSideTests : IDisposable
             _ = plan.Render(two);
         }
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

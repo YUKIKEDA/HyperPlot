@@ -455,7 +455,7 @@ public sealed class CategoricalTests
     ///   categories of names of one length.
     ///
     /// Steps:
-    /// - Render; count the names shaped; render twice again and count the bytes.
+    /// - Render; count the names shaped; render again; collect; render once more and count the bytes.
     ///
     /// Expected:
     /// - The names shaped at most three times the labels shown, plus 3, far below the 100,000 categories: with names of
@@ -479,6 +479,9 @@ public sealed class CategoricalTests
         Assert.InRange(shapedNames, plan.Guides.X.Count, (3 * plan.Guides.X.Count) + 3);
 
         _ = plan.Render(spec);
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         _ = plan.Render(spec);
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
@@ -599,6 +602,7 @@ public sealed class CategoricalTests
             _ = plan.Render(spec);
             _ = plan.Render(spec);
 
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 5; i++)
             {

@@ -391,8 +391,8 @@ public sealed class GeomCustomTests
     /// - A spec of each geom, both the few and the many paths of bars, error bars, and rules (800 elements on 100 pixels).
     ///
     /// Steps:
-    /// - For each, render the spec and a copy of its layer, a new node that records again; then render them in turn five
-    ///   times, counting this thread's bytes.
+    /// - For each, render the spec and a copy of its layer, a new node that records again; collect; then render them in
+    ///   turn five times, counting this thread's bytes.
     ///
     /// Expected:
     /// - 0 bytes for each.
@@ -469,6 +469,8 @@ public sealed class GeomCustomTests
                 _ = plan.Render(other);
                 var recordings = plan.Recordings;
 
+                // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+                GC.Collect();
                 var before = GC.GetAllocatedBytesForCurrentThread();
                 for (var i = 0; i < 5; i++)
                 {

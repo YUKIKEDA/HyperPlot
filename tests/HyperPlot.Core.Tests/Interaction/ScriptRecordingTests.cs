@@ -108,7 +108,7 @@ public sealed class ScriptRecordingTests
     ///
     /// Steps:
     /// - Warm: zoom in and out by the wheel and pan by drags, each event and frame 16 ms apart, until a round allocates
-    ///   nothing (at most 6 rounds); then one more round, counting the bytes of the input and the frames.
+    ///   nothing (at most 6 rounds); collect; then one more round, counting the bytes of the input and the frames.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -135,6 +135,8 @@ public sealed class ScriptRecordingTests
             bytes = Round(f);
         }
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         Assert.Equal(0, Round(f));
     }
 
