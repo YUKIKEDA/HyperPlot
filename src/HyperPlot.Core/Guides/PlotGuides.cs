@@ -20,6 +20,10 @@ internal sealed class PlotGuides
     /// <summary>The most rows of the size legend (design §4.6 "大きさの凡例").</summary>
     private const int MaxSizeRows = 5;
 
+    // The tick spacings in DIPs the size legend tries in turn (design §4.6 "大きさの凡例"). A field, not a span of constants
+    // in the loop: in Debug that span was an array made each layout, 360 bytes over 5 frames (.cursor/rules/perf.mdc).
+    private static readonly float[] SizeSpacings = [40, 20, 10];
+
     // The panel's sides, the places of the axes (row G6a).
     internal const int SideBottom = 0;
     internal const int SideTop = 1;
@@ -917,7 +921,7 @@ internal sealed class PlotGuides
         else
         {
             // About 4 ticks over the axis's length, then twice and four times as many, until 3 lie in the domain.
-            foreach (var spacing in (ReadOnlySpan<float>)[40, 20, 10])
+            foreach (var spacing in SizeSpacings)
             {
                 Prepare(
                     SizeAxis,
