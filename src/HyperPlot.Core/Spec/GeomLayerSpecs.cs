@@ -257,6 +257,19 @@ public sealed record PointLayerSpec : LayerSpec
     public double Opacity { get; init; } = 1;
 
     /// <summary>
+    /// Gets the numeric column that gives each point its size through <see cref="PlotSpec.ScaleSize"/>, or null (design
+    /// §5.5.2 "大きさと形のチャネル", row R3f). With it, <see cref="Size"/> does not size the points. A layer of at most
+    /// 131,072 rows takes it.
+    /// </summary>
+    public ColumnRef? SizeBy { get; init; }
+
+    /// <summary>
+    /// Gets the categorical column that gives each point its shape through <see cref="PlotSpec.ScaleShape"/>, or null
+    /// (design §5.5.2 "大きさと形のチャネル", row R3f). With it, <see cref="Shape"/> does not shape the points.
+    /// </summary>
+    public ColumnRef? ShapeBy { get; init; }
+
+    /// <summary>
     /// Gets a value indicating whether the layer has more than 131,072 rows and each of its parts is drawn from a spatial
     /// index (design §5.5.2). The compile sets it on the node it hands to the parts; a spec from a caller never has it.
     /// </summary>

@@ -147,6 +147,72 @@ public static class ScaleSpecExtensions
         return scale with { Title = title };
     }
 
+    /// <summary>Returns a copy of a size scale with the diameters at the domain's ends (design §4.2, row R3f).</summary>
+    /// <param name="scale">The scale.</param>
+    /// <param name="min">The diameter at the domain's low end, in DIPs: above 0 and at most <paramref name="max"/>.</param>
+    /// <param name="max">The diameter at the domain's high end, in DIPs: at most 512.</param>
+    /// <returns>The copy, with a new <see cref="SpecNode.Id"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The diameters are not finite, or not 0 &lt; min ≤ max ≤ 512.</exception>
+    public static SizeScaleSpec WithRange(this SizeScaleSpec scale, float min, float max)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        if (!SizeScaleSpec.IsRange(min, max))
+        {
+            throw new ArgumentOutOfRangeException(
+                min > 0 && min <= SizeScaleSpec.MaxDiameter ? nameof(max) : nameof(min),
+                $"The range is {min} to {max}; a size scale's diameters are 0 < min ≤ max ≤ 512 DIPs."
+            );
+        }
+
+        return scale with { RangeMin = min, RangeMax = max };
+    }
+
+    /// <summary>Returns a copy of a shape scale with the shapes its categories take in order (design §4.2, row R3f).</summary>
+    /// <param name="scale">The scale.</param>
+    /// <param name="shapes">One or more named shapes, each once.</param>
+    /// <returns>The copy, with a new <see cref="SpecNode.Id"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="shapes"/> is empty or holds a shape twice.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">A shape is not a named value.</exception>
+    public static ShapeScaleSpec WithShapes(this ShapeScaleSpec scale, params ReadOnlySpan<MarkerShape> shapes)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        if (shapes.IsEmpty)
+        {
+            throw new ArgumentException("A shape scale has one shape or more.", nameof(shapes));
+        }
+
+        for (var i = 0; i < shapes.Length; i++)
+        {
+            if (!Rendering.MarkerStyle.IsShape(shapes[i]))
+            {
+                throw new ArgumentOutOfRangeException(nameof(shapes), shapes[i], "A shape is a named MarkerShape value.");
+            }
+
+            if (shapes[..i].Contains(shapes[i]))
+            {
+                throw new ArgumentException($"The shape {shapes[i]} is given twice; a shape scale holds each shape once.", nameof(shapes));
+            }
+        }
+
+        return scale with { Shapes = shapes.ToArray() };
+    }
+
+    /// <summary>
+    /// Returns a copy of a shape scale with a legend title (row R3f). A size scale takes its title from its inner
+    /// continuous scale.
+    /// </summary>
+    /// <param name="scale">The scale.</param>
+    /// <param name="title">The title; null or empty for none.</param>
+    /// <returns>The copy, with a new <see cref="SpecNode.Id"/>.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    public static ShapeScaleSpec WithTitle(this ShapeScaleSpec scale, string? title)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        return scale with { Title = title };
+    }
+
     private static void CheckSide(AxisSide side)
     {
         if ((uint)side > (uint)AxisSide.Right)

@@ -20,6 +20,8 @@ public sealed class PlotBuilder
     private Theme? _theme;
     private CoordSpec? _coord;
     private ColorScaleSpec? _scaleColor;
+    private SizeScaleSpec? _scaleSize;
+    private ShapeScaleSpec? _scaleShape;
     private ContinuousScaleSpec? _scaleX2;
     private ContinuousScaleSpec? _scaleY2;
     private FacetSpec? _facet;
@@ -311,6 +313,8 @@ public sealed class PlotBuilder
                 Opacity = point.OpacityValue,
                 Label = point.LabelText,
                 ColorBy = Channel(point.ColorByRef),
+                SizeBy = Channel(point.SizeByRef),
+                ShapeBy = Channel(point.ShapeByRef),
             }
         );
         Secondary(point.SecondaryXValue, point.SecondaryYValue);
@@ -1013,6 +1017,32 @@ public sealed class PlotBuilder
         return this;
     }
 
+    /// <summary>Sets the size scale that the point layers' SizeBy share (design §4.2, row R3f).</summary>
+    /// <param name="scale">The scale, from <see cref="Scale.Size"/>.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder ScaleSize(SizeScaleSpec scale)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        ThrowIfBuilt();
+        _scaleSize = scale;
+        return this;
+    }
+
+    /// <summary>Sets the shape scale that the point layers' ShapeBy share (design §4.2, row R3f).</summary>
+    /// <param name="scale">The scale, from <see cref="Scale.Shape"/>.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="scale"/> is null.</exception>
+    /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
+    public PlotBuilder ScaleShape(ShapeScaleSpec scale)
+    {
+        ArgumentNullException.ThrowIfNull(scale);
+        ThrowIfBuilt();
+        _scaleShape = scale;
+        return this;
+    }
+
     /// <summary>Makes the spec. A plot of no layers draws nothing. The builder cannot be used afterwards.</summary>
     /// <returns>The spec.</returns>
     /// <exception cref="InvalidOperationException"><see cref="Build"/> was called before.</exception>
@@ -1033,6 +1063,8 @@ public sealed class PlotBuilder
             Theme = _theme ?? HyperPlot.Theme.Light,
             Coord = _coord ?? HyperPlot.Coord.Cartesian(),
             ScaleColor = _scaleColor,
+            ScaleSize = _scaleSize,
+            ScaleShape = _scaleShape,
             ScaleX2 = _scaleX2,
             ScaleY2 = _scaleY2,
             Facet = _facet,
