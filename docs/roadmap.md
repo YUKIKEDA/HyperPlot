@@ -27,6 +27,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 - **並べた design の行:** K0d（運用 2）。ブランチ `docs/483-k0d`（設計）、Issue #483（設計）、#490（試作）
 - **並べた design の行:** K0e（運用 2）。ブランチ `docs/484-k0e`（設計）、Issue #484（設計）、#491（試作）
 - **並べた design の行:** R3c（運用 2）。ブランチ `docs/471-r3c`（設計）、Issue #471（設計）、#496（試作、ブランチ `spike/r3c-nearest`）
+- **並べた design の行:** R3e1・R3e4・R3e2・R3e3（運用 2。行 R3e を分けた、Issue #504 の決定 1）。ブランチ `docs/504-r3e`（設計）、Issue #504（設計）、#514（R3e2 の試作）、#515（R3e3 の試作）、#516（R3e4 の試作）
 
 ## ツールチェーン
 
@@ -99,7 +100,10 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | R3b2 | 散布の重なりと予算（§5.5.2）: 点の数 × 印の面積での密度への切り替え（倍数は計測で決める）、予算に入らない画面の見せ方、1e9 点の写しの読み出し（ページ）をワーカーに移すか、毎フレーム引く葉とセルの表を表の行の数で抑えたままでよいか、写しがページキャッシュにない場合（メモリマップの列）のページの読み出しの時間。行 R3f から送られたもの（Issue #456）: 1e7 点を 6 つの形に分けた層の全体表示は、GPU 時間の p50 が 17.3〜18.0 ms で 16.7 ms を超える（6 つの色に分けた層は 15.5〜16.1 ms。`docs/benchmarks/r3f-size-shape.md`）。形の違いからではなく、部分がどれも同じ色であることから遅い（同じ列で色と形に分けると 15.4 ms）。その GPU の中の理由は確かめていない。行 R3a から送られたもの（Issue #438）: 点が重なる画面は生の点で 16.7 ms を超える（1e7 点の中央の塊を直径 6 DIP で全体表示して 18.2 ms、8 カテゴリで 17.5〜17.6 ms。`docs/benchmarks/r3a-points.md`）ので、点の数 × 印の面積でも密度に切り替えるか、写しがページキャッシュにない場合（メモリマップの列）のページの読み出しの時間。行 R3b を分けた（Issue #462） | not-started | |
 | R3c | 散布のヒットテストと選択（要件 P-5、§6.3・§6.4）: 索引の道の半径のヒットテスト（探し方と、`GetCells` の `maxLevel` を画素の大きさで止めるか。今の形は半径にかかる葉の数 × `LeafCapacity` 点を読む。行 C3a の計測は最初の 1,024 の葉だけを読み、それで p99 が 10〜19 ms。Issue #473）、密度の領域の点の数と `SeriesHit` の形、範囲と重ならない矩形の `Count`、選択した点の強調（シェーダが述語で判定する生の点と、述語の領域で切り抜いた密度）、point の層の選択。常駐の点は目盛りに寄って描かれることがあり（§5.5.2 の「限界」）、ヒットテストは描いた位置で測る（Issue #471 の決定 1）。行 R3 から分けた | in-progress | [#471](https://github.com/YUKIKEDA/HyperPlot/issues/471)（設計）、[#496](https://github.com/YUKIKEDA/HyperPlot/issues/496)（試作） |
 | R3d | 散布の色のカテゴリと点ごとの色（§5.5.2）: 索引の道で数の列の色を点ごとに付ける（エンコードの列の Morton 順の並べ直し）、索引の道の `SizeBy`（点ごとの大きさ。行 R3f は CPU の道だけ、Issue #448）、64 を超える部分に分かれる大きな層を 1 つの索引で描く、同じ列を描く層の間で索引を使い回すか（行 R3a は使い回さない）、カテゴリごとの密度の合成、色のスケールの写像をチャンクごとに持つ形。行 R3 から分けた | not-started | |
-| R3e | ほかの Geom の残り: point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、索引の道の polar の point（頂点シェーダで写す、§4.4）、pointrange、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1）。行 R3 から分けた | not-started | |
+| R3e1 | カテゴリの x の line・step と point の位置（行 G7b から、§4.2）: カテゴリの x の line・step と point。line・step は `CategoricalColumn` の番号の順に結び、同じ番号の行は行の順（行を並べ替えず、ワーカーがカテゴリのセルごとに M4 の 4 点（最初・最後・最小・最大）を作る。M4 を使えない並びの大きなデータの道、Issue #504 の決定 9）。点は別の point のスケールを持たず band の真ん中に置く（決定 10）。point の y はカテゴリを取らず、縦に並べるときは flip で描く（決定 3）。行 R3e を分けた（決定 1） | in-progress | [#504](https://github.com/YUKIKEDA/HyperPlot/issues/504)（設計） |
+| R3e4 | 線分ごとの色（行 G7c から、§4.1・§5.3）: 数の色を持つ rule・segment・errorbar を要素ごとの色で描く。rule と errorbar は画素列ごとにまとめず、見える要素が 131,072 まで要素ごとに描き（segment は要素の総数 131,072 の今の上限のまま）、超えたら行 R3e3 の密度で、それまでは行 R3e3 を名で書いた例外。errorbar は 1 要素（縦線と端 2 本）に 1 色、色が NaN の要素は描かずヒットテストにも答えない（Issue #504 の決定 8）。重ね方（合成）は CPU の試作（#516）で決める。数の色の errorbar の見える要素が 4W を超えるときのヒットテストの探し方も、この行で決める。行 R3e を分けた（Issue #504 の決定 1） | in-progress | [#504](https://github.com/YUKIKEDA/HyperPlot/issues/504)（設計）、[#516](https://github.com/YUKIKEDA/HyperPlot/issues/516)（試作） |
+| R3e2 | 索引の道の polar の point（要件 G-7、§4.4・§5.5.2）: 131,072 行を超え 1e7 行以下の polar の point の層を索引の道で描き、1e7 行を超えたら要件 G-7 を書いた例外。密度は持たず、`Auto` も `Density` も生の点で描く。ヒットテストと選択は答えない（Issue #504 の決定 5）。角度の写し方（表と補間か、シェーダの `sincos` か）は GPU の試作（#514）で決める。行 R3e を分けた（Issue #504 の決定 1） | in-progress | [#504](https://github.com/YUKIKEDA/HyperPlot/issues/504)（設計）、[#514](https://github.com/YUKIKEDA/HyperPlot/issues/514)（試作） |
+| R3e3 | segment・rect と数の色の bar の密度（§4.1・§5.5.3）: 要素が 131,072 を超える segment・rect の層の大きなデータの道。量は segment がビンの中の線の長さ、rect と bar がビンの中の覆う面積で、1 物理画素の面積あたりに正規化して 2 × 2 の和で積む（Issue #504 の決定 6）。画面内の要素の数（索引で数える上限）で要素と密度を切り替え、層の `Draw`（`Auto`・`Elements`・`Density`）を point と同じ形で持つ。数の列で色を付けた bar の 131,072 を超える分（数の x の見える棒と、カテゴリの x の行。今はフレームの中とコンパイルの例外）も矩形として同じ道で描く（決定 4・7）。行 R3e4 の rule と errorbar の 131,072 を超える分の密度も、この行。polar の segment と rect は例外のまま（決定 7）。色の集計（重みつきの平均など）と構造（緩い四分木など）、切り替えのしきい値、`Draw` の公開の型と既定は CPU の試作（#515）の結果で決める。行 R3b1 の密度タイルと行 R3d の点ごとの色に重なる。行 R3e を分けた（Issue #504 の決定 1） | in-progress | [#504](https://github.com/YUKIKEDA/HyperPlot/issues/504)（設計）、[#515](https://github.com/YUKIKEDA/HyperPlot/issues/515)（試作） |
 | C4 | ストリーミングとリングバッファ（全体表示を追い続ける表示と、ビューの間に学び直した後の全体表示の値と通知、行 I1a の `FullStale`）。空間タイル索引への追記は v1 で作らない（要件 §7、Issue #401 の決定 6） | not-started | |
 | **3D（v1.x。作る順は X1 の前、オーナーの決定、Issue #505）** | | | |
 | K0a | 3D の共通の設計と八分木（要件 §4.6、§13）: 座標系（`CoordSpec` の 3D の cartesian、`PlotSpec` の z のスケール、層の Z チャネル、flip・polar・二次軸・band・Position・ファセット・Stat との組ごとに受けるか断るかの表）、GPU に送る位置の精度、深度の契約（3D のパネルに 2D のマークを深度付きで置く要件があるか）、カメラ、ビュー（3D のズームとパンが動かすもの）、K-7 のレイのヒットテスト、性能の仮説（P-11、八分木の構築時間、写しと節点の表のメモリ）。八分木（加法方式、シードつきの 128³ の格子の間引き、静止したときの描き足し）の節点の大きさと節点の表のメモリ、点の予算の単位と既定値、点の描き方（印のパイプラインと計算シェーダのラスタ化の試作）。ファセットの `Scales`（`Free` など）が z にも効くか。値は試作で確定する。行 K0 を分けた（Issue #470 の決定 2・4） | in-progress | [#470](https://github.com/YUKIKEDA/HyperPlot/issues/470)（設計）、[#477](https://github.com/YUKIKEDA/HyperPlot/issues/477)（試作） |
@@ -121,6 +125,8 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | A1 | Avalonia のホスト | not-started | |
 | P1 | wgpu-native のバックエンド（Linux） | not-started | |
 | P2 | Metal のバックエンド（macOS）。空間タイル索引の一時ファイルの macOS での作り方（それまで、macOS ではメモリマップの列の索引の構築が `PlatformNotSupportedException` で失敗する、§3.4） | not-started | |
+| **v1 の後: プロットの種類の拡充（要件 G-14）** | | | |
+| G12 | pointrange の Geom（ggplot2 の `geom_pointrange` に当たる）。要件 G-3 の v1 の Geom にないので、v1 の後に足す（行 R3e から移した、Issue #504 の決定 2）。足す前に、その種類の属性を読んだページを Issue に書く（`docs/references.md`） | not-started | |
 
 ## 意図的に対象外
 
