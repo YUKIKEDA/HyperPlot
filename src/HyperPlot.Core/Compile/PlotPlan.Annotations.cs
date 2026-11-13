@@ -154,7 +154,10 @@ internal sealed partial class PlotPlan
                         }
                     }
 
-                    if (!Enum.IsDefined(text.Horizontal) || !Enum.IsDefined(text.Vertical))
+                    if (
+                        text.Horizontal is not (TextAlign.Left or TextAlign.Center or TextAlign.Right)
+                        || text.Vertical is not (TextBaseline.Top or TextBaseline.Middle or TextBaseline.Baseline or TextBaseline.Bottom)
+                    )
                     {
                         throw new ArgumentOutOfRangeException(nameof(plot), $"Annotation {i}'s alignment is not a named value.");
                     }
@@ -163,7 +166,7 @@ internal sealed partial class PlotPlan
                 case MarkerAnnotationSpec marker:
                     Point(plot, i, marker.At, polar);
                     Positive(i, marker.Radius, "Radius");
-                    if (!Enum.IsDefined(marker.Shape))
+                    if (!MarkerStyle.IsShape(marker.Shape))
                     {
                         throw new ArgumentOutOfRangeException(nameof(plot), $"Annotation {i}'s Shape is not a named value.");
                     }
@@ -197,7 +200,10 @@ internal sealed partial class PlotPlan
 
         static void Coordinate(PlotSpec plot, int i, in AnnotationValue value, bool ofX)
         {
-            if (!Enum.IsDefined(value.Coord))
+            // The named values are compared one by one, not with Enum.IsDefined: a drag checks the annotations on every
+            // event, and with Enum.IsDefined the drags after a garbage collection allocated 992 bytes, 4 times the 248
+            // bytes of MarkerStyle.IsShape (AnnotationTests.Frames_AllocateNothing, Issue #400).
+            if (value.Coord is not (AnnotationCoord.Data or AnnotationCoord.Data2 or AnnotationCoord.Panel))
             {
                 throw new ArgumentOutOfRangeException(nameof(plot), $"Annotation {i} has a coordinate whose Coord is not a named value.");
             }
