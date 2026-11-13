@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using HyperPlot.Interaction;
 using HyperPlot.Testing;
 using HyperPlot.Tests;
 
@@ -340,7 +341,9 @@ public sealed class DensityRenderTests
     private static (double X, double Y) Clustered(long row)
     {
         var pick = Unit(row, 2);
-        return pick < 0.60 ? Normal(row, 28, 70, 8, 6) : pick < 0.95 ? Normal(row, 72, 28, 6, 8) : Uniform(row);
+        return pick < 0.60 ? Normal(row, 28, 70, 8, 6)
+            : pick < 0.95 ? Normal(row, 72, 28, 6, 8)
+            : Uniform(row);
     }
 
     /// <summary>Returns a row's point of the three overlapping clusters, one a run of rows (<see cref="Split_MatchesBaseline"/>).</summary>
