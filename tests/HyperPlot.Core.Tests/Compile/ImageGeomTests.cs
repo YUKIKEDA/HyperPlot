@@ -1,4 +1,5 @@
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -527,20 +528,16 @@ public sealed class ImageGeomTests : IDisposable
                 }
             )
             .ToArray();
-        foreach (var spec in specs.Concat(specs))
-        {
-            _ = plan.Render(spec);
-        }
-
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        foreach (var spec in specs)
-        {
-            _ = plan.Render(spec);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        PerformanceAssert.DoesNotAllocate(
+            () =>
+            {
+                foreach (var spec in specs)
+                {
+                    _ = plan.Render(spec);
+                }
+            },
+            warmUps: 2
+        );
     }
 
     private static PlotSpec Spec(ImageLayerSpec layer, double columns = 4, double rows = 3) =>

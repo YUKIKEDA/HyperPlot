@@ -1,4 +1,5 @@
 using System.Numerics;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -48,7 +49,8 @@ public sealed class PyramidKernelTests
     /// - One chunk of floats and one of doubles with sparse NaN; bucket arrays made before; one warm-up run of each call.
     ///
     /// Steps:
-    /// - Run StatsAndLevel1, Level1, and ChunkStatsKernel.Compute 10 times each on each chunk.
+    /// - Run StatsAndLevel1, Level1, and ChunkStatsKernel.Compute 10 times each on each chunk as a warm-up; collect; run them
+    ///   10 times more while counting.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -65,15 +67,13 @@ public sealed class PyramidKernelTests
         long sink = 0;
         Run();
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 10; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Run();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 10; i++)
+            {
+                Run();
+            }
+        });
         Assert.NotEqual(0, sink);
 
         void Run()

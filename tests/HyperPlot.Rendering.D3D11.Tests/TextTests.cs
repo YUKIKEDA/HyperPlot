@@ -1,4 +1,5 @@
 using System.Numerics;
+using HyperPlot.Testing;
 using HyperPlot.Tests;
 using TerraFX.Interop.DirectX;
 
@@ -251,7 +252,8 @@ public sealed class TextTests
     /// - A WARP backend, over the fake text backend or DirectWrite; a 640 × 480 target; 100 labels drawn once.
     ///
     /// Steps:
-    /// - Ten times: clear the list, record the 100 labels, draw; count the bytes this thread allocates.
+    /// - Ten times as a warm-up, then, after a collection, ten times counting the bytes this thread allocates: clear the list,
+    ///   record the 100 labels, draw.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -271,16 +273,14 @@ public sealed class TextTests
         Record();
         backend.Draw(target, list);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var frame = 0; frame < 10; frame++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Record();
-            backend.Draw(target, list);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var frame = 0; frame < 10; frame++)
+            {
+                Record();
+                backend.Draw(target, list);
+            }
+        });
 
         void Record()
         {

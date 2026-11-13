@@ -1,6 +1,7 @@
 using System.Numerics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -713,7 +714,7 @@ public sealed class SizeShapeTests
     ///   a layer of 131,073 points shaped by a category on the index path. Each drawn with five views twice.
     ///
     /// Steps:
-    /// - Collect, then draw the five views again, counting the thread's allocations.
+    /// - Draw the five views again as a warm-up; collect; draw them once more, counting the thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes for each.
@@ -774,15 +775,13 @@ public sealed class SizeShapeTests
                 }
             }
 
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            foreach (var view in views)
+            PerformanceAssert.DoesNotAllocate(() =>
             {
-                Draw(view);
-            }
-
-            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+                foreach (var view in views)
+                {
+                    Draw(view);
+                }
+            });
 
             void Draw(PanelView2D view)
             {

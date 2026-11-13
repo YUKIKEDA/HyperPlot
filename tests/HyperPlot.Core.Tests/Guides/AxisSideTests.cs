@@ -1,4 +1,5 @@
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -744,22 +745,14 @@ public sealed class AxisSideTests : IDisposable
         var transform = new Times(1.0 / 60);
         var one = Both() with { ScaleX = Scale.Linear().WithTitle("X").WithAxisSide(AxisSide.Top).WithSecondaryAxis(transform, "min") };
         var two = one with { ScaleY2 = Scale.Linear().WithDomain(-3, 3).WithTitle("Y2") };
-        for (var i = 0; i < 3; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            _ = plan.Render(one);
-            _ = plan.Render(two);
-        }
-
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 5; i++)
-        {
-            _ = plan.Render(one);
-            _ = plan.Render(two);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 5; i++)
+            {
+                _ = plan.Render(one);
+                _ = plan.Render(two);
+            }
+        });
     }
 
     private PlotPlan Plan(float scale) => new(_pool, Width, Height, new TextEngine(new FakeTextBackend()), scale);
