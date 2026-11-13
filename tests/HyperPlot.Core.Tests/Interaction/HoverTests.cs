@@ -1009,7 +1009,8 @@ public sealed class HoverTests
     ///
     /// Steps:
     /// - Rounds of 8 moves over the panel drawn after each, then 20 wheel turns at the panel's middle (10 in, 10 out) drawn
-    ///   after each: 4 rounds to warm, a collection, then 2 rounds counted.
+    ///   after each, two rounds a run of <c>PerformanceAssert.DoesNotAllocate</c>: 2 runs (4 rounds) to warm, a
+    ///   collection, then 1 run (2 rounds) counted.
     ///
     /// Expected:
     /// - The counted rounds: 0 bytes; the hover holds a hit at the end.
@@ -1030,9 +1031,8 @@ public sealed class HoverTests
         f.Changes.Capacity = 20_000;
         var (left, top, _, _) = f.Rect;
         var middle = f.Middle;
-        long Round()
+        void Round()
         {
-            var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 8; i++)
             {
                 _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, new Vector2(left + 20 + (i * 23), top + 30 + (i * 7))));
@@ -1045,17 +1045,17 @@ public sealed class HoverTests
                 _ = f.Engine.OnWheel(new WheelEvent(middle, 0, i < 10 ? 1 : -1, ModifierKeys.None, f.Time.GetTimestamp()));
                 f.Engine.RenderFrame();
             }
-
-            return GC.GetAllocatedBytesForCurrentThread() - before;
         }
 
-        for (var i = 0; i < 4; i++)
-        {
-            _ = Round();
-        }
-
-        GC.Collect();
-        Assert.Equal(0, Round() + Round());
+        // Two rounds a run: 2 runs (4 rounds) warm, then 2 rounds counted.
+        PerformanceAssert.DoesNotAllocate(
+            () =>
+            {
+                Round();
+                Round();
+            },
+            warmUps: 2
+        );
         Assert.False(f.Engine.Hover.IsEmpty);
     }
 

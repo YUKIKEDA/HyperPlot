@@ -1,5 +1,6 @@
 using System.Numerics;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -172,12 +173,14 @@ public sealed class SpanTextTests
     /// - An engine over the fake backend, recording no calls, its cache full of 8,192 short texts "0" to "8191".
     ///
     /// Steps:
-    /// - Shape "a tooltip line: 000" into an owned text twice; then with the size 15; collect; shape 100 new texts of
-    ///   its length, "a tooltip line: 100" to "a tooltip line: 199", counting the bytes.
+    /// - Shape "a tooltip line: 000" into an owned text twice; then with the size 15.
+    /// - With <c>PerformanceAssert.DoesNotAllocate</c> (1 run to warm, a collection, 1 run counted), each run shapes 100 texts
+    ///   of that length, "a tooltip line: 100" to "a tooltip line: 199".
     /// - Record the last at (10, 20) with its shape in one list and without it in another; prepare each on a 200 × 100 target.
     ///
     /// Expected:
-    /// - The backend shapes the first text once, again for the new size, and once for each new text; 0 bytes for the 100.
+    /// - The backend shapes the first text once, again for the new size, and once for each text of each run (200); the
+    ///   counted run allocates 0 bytes.
     /// - The cache holds 8,192 entries all along and still holds "0" (no backend call to measure it); the first list adds
     ///   nothing to it and the second shapes once; both lists give the same glyph records.
     /// </remarks>
@@ -206,32 +209,31 @@ public sealed class SpanTextTests
         Prefix.CopyTo(buffer);
         var length = 0;
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 100; i < 200; i++)
+        // One run to warm, then one counted: each run shapes its 100 texts, as the last text is "...199".
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            _ = i.TryFormat(buffer.AsSpan(Prefix.Length), out var written, default, invariant);
-            length = Prefix.Length + written;
-            _ = owned.Shape(engine, buffer.AsSpan(0, length), Style);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
-        Assert.Equal(calls + 102, backend.ShapeCount);
+            for (var i = 100; i < 200; i++)
+            {
+                _ = i.TryFormat(buffer.AsSpan(Prefix.Length), out var written, default, invariant);
+                length = Prefix.Length + written;
+                _ = owned.Shape(engine, buffer.AsSpan(0, length), Style);
+            }
+        });
+        Assert.Equal(calls + 202, backend.ShapeCount);
         Assert.Equal(TextEngine.CacheCapacity, engine.CacheCount);
         _ = engine.Measure("0", Style);
-        Assert.Equal(calls + 102, backend.ShapeCount);
+        Assert.Equal(calls + 202, backend.ShapeCount);
 
         var text = buffer.AsSpan(0, length);
         var withShape = new RenderList();
         withShape.DrawText(text, new Vector2(10, 20), Style, owned.Shape(engine, text, Style));
         engine.Prepare(withShape, 200, 100);
         var owns = engine.Instances.ToArray();
-        Assert.Equal(calls + 102, backend.ShapeCount);
+        Assert.Equal(calls + 202, backend.ShapeCount);
         var fromCache = new RenderList();
         fromCache.DrawText(text, new Vector2(10, 20), Style);
         engine.Prepare(fromCache, 200, 100);
-        Assert.Equal(calls + 103, backend.ShapeCount);
+        Assert.Equal(calls + 203, backend.ShapeCount);
         Assert.NotEmpty(owns);
         Assert.Equal(owns, engine.Instances.ToArray());
     }
