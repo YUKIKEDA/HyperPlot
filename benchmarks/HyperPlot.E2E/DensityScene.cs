@@ -11,11 +11,13 @@ namespace HyperPlot.E2E;
 /// The scene of the density and the switch from raw points (design §9 "密度と切り替え（行 R3b1）", requirements P-3 and
 /// P-15): a <see cref="PlotEngine"/> over one point layer of seeded <see cref="float"/> x and y columns mapped from files,
 /// at 1,920 × 1,080 on the hardware, a frame every 16.7 ms or more. Every mode first sets the plot and draws until the
-/// frames are no longer provisional, and prints when the first density and the last provisional frame came. Then "zoom"
+/// frames are no longer provisional, and prints when the first density came, when the index published its coarse snapshot,
+/// its full snapshot, and its density tiles, and when the last provisional frame came. Then "zoom"
 /// zooms from the whole view into 1e-4 of the range and out again; "switch" runs the same script and prints the frames
 /// where the layer changes between density and raw points; "categories" draws the layer split into 8 categories, whole
 /// view; "first" stops after the first display. Each frame's CPU time (the view's change and
-/// <see cref="PlotEngine.RenderFrame"/>), its GPU time, and its allocations.
+/// <see cref="PlotEngine.RenderFrame"/>), its GPU time, and its allocations, over all the frames and apart for the density
+/// frames and the raw-point frames.
 /// </summary>
 internal static class DensityScene
 {
@@ -251,12 +253,19 @@ internal static class DensityScene
     /// <summary>
     /// Sets the plot and draws a frame a period until a frame is no longer provisional: the index is full and every density
     /// face or page of points the whole view draws is on the GPU. Prints when the first density came (the coarse density
-    /// while the index is coarse) and when the last provisional frame ended; returns the frames drawn, or −1 past the deadline.
+    /// while the index is coarse), when every part's index published its coarse snapshot, its full snapshot (requirement
+    /// P-15's build), and its density tiles (P-15's tiles after it), each seen at the end of a frame, and when the last
+    /// provisional frame ended; returns the frames drawn, or −1 past the deadline.
     /// </summary>
     private static int Show(PlotEngine engine, D3D11Backend backend, PlotSpec plot)
     {
         var (coarse, coarseFrame, coarseImages) = (-1.0, -1, 0);
         var (frames, sending, mostFaces) = (0, 0, 0);
+
+        // When the least advanced part's index first reached each stage (IndexStage), and the frame.
+        var reached = new double[4];
+        var reachedFrame = new int[4];
+        Array.Fill(reached, -1.0);
         var slots = backend.Images.SlotsInUse;
         var shown = Stopwatch.StartNew();
         engine.SetPlot(plot);
@@ -267,7 +276,7 @@ internal static class DensityScene
                 Console.Error.WriteLine(
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"first display: still provisional after {shown.Elapsed.TotalSeconds:F0} s and {frames} frames; first density at {coarse:F3} s"
+                        $"first display: still provisional after {shown.Elapsed.TotalSeconds:F0} s and {frames} frames; first density at {coarse:F3} s; {Stages(reached, reachedFrame)}"
                     )
                 );
                 return -1;
@@ -282,6 +291,11 @@ internal static class DensityScene
                 (coarse, coarseFrame, coarseImages) = (shown.Elapsed.TotalSeconds, frames, images);
             }
 
+            for (var stage = IndexStage(engine.Plan!); stage > 0 && reached[stage] < 0; stage--)
+            {
+                (reached[stage], reachedFrame[stage]) = (shown.Elapsed.TotalSeconds, frames);
+            }
+
             // The faces a frame sent, as the growth of the slots in use: a slot let go of for another hides one.
             var grown = backend.Images.SlotsInUse - slots;
             slots += grown;
@@ -294,6 +308,7 @@ internal static class DensityScene
                         ? "first density: none"
                         : string.Create(CultureInfo.InvariantCulture, $"first density: {coarse:F3} s (frame {coarseFrame}, {coarseImages} images)")
                 );
+                Console.WriteLine(Stages(reached, reachedFrame));
                 Console.WriteLine(
                     string.Create(
                         CultureInfo.InvariantCulture,
@@ -319,6 +334,7 @@ internal static class DensityScene
         Array.Fill(gpu, double.NaN);
         var allocated = new long[total];
         var kinds = new char[total];
+        var provisional = new bool[total];
         var faces = new int[total];
         var slots = backend.Images.SlotsInUse;
 
@@ -341,6 +357,7 @@ internal static class DensityScene
             }
 
             kinds[f] = KindOf(engine.Plan!.List);
+            provisional[f] = engine.IsProvisional;
             var now = backend.Images.SlotsInUse;
             faces[f] = Math.Max(0, now - slots);
             slots = now;
@@ -383,6 +400,18 @@ internal static class DensityScene
                 $"gpu_frame: frames={gpuKept.Length} p50={PointsScene.Percentile(gpuKept, 0.5):F3} p95={PointsScene.Percentile(gpuKept, 0.95):F3} p99={PointsScene.Percentile(gpuKept, 0.99):F3} max={(gpuKept.Length == 0 ? double.NaN : gpuKept.Max()):F3} ms"
             )
         );
+        // P-3 is the density's frames: a run with the switch also has raw-point frames (row R3b2's), read apart.
+        foreach (var kind in "DPB")
+        {
+            ReportKind(kind, kindsKept, kept, gpu[Warmup..]);
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"provisional frames after warm-up: {provisional[Warmup..].Count(p => p)}, the longest run {LongestRun(provisional[Warmup..])} frames"
+            )
+        );
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
@@ -405,6 +434,43 @@ internal static class DensityScene
         {
             ReportChanges(kinds, spans, cpu, gpu, hi - lo, total);
         }
+    }
+
+    /// <summary>
+    /// Prints the CPU and GPU times of the measured frames of one kind (<see cref="KindOf"/>), and the p95 of their sum over
+    /// the frames whose GPU time came; nothing when no frame was of the kind.
+    /// </summary>
+    private static void ReportKind(char kind, char[] kinds, double[] cpu, double[] gpu)
+    {
+        var frames = Enumerable.Range(0, kinds.Length).Where(f => kinds[f] == kind).ToArray();
+        if (frames.Length == 0)
+        {
+            return;
+        }
+
+        var cpuOf = frames.Select(f => cpu[f]).ToArray();
+        var timed = frames.Where(f => !double.IsNaN(gpu[f])).ToArray();
+        var gpuOf = timed.Select(f => gpu[f]).ToArray();
+        var sum = timed.Select(f => cpu[f] + gpu[f]).ToArray();
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"  {kind} frames={frames.Length}: cpu p50={PointsScene.Percentile(cpuOf, 0.5):F3} p95={PointsScene.Percentile(cpuOf, 0.95):F3} p99={PointsScene.Percentile(cpuOf, 0.99):F3} max={cpuOf.Max():F3} ms; gpu frames={gpuOf.Length} p50={PointsScene.Percentile(gpuOf, 0.5):F3} p95={PointsScene.Percentile(gpuOf, 0.95):F3} p99={PointsScene.Percentile(gpuOf, 0.99):F3} max={(gpuOf.Length == 0 ? double.NaN : gpuOf.Max()):F3} ms; cpu+gpu of a frame p95={PointsScene.Percentile(sum, 0.95):F3} ms"
+            )
+        );
+    }
+
+    /// <summary>Returns the most frames in a row that were provisional.</summary>
+    private static int LongestRun(bool[] provisional)
+    {
+        var (longest, run) = (0, 0);
+        foreach (var p in provisional)
+        {
+            run = p ? run + 1 : 0;
+            longest = Math.Max(longest, run);
+        }
+
+        return longest;
     }
 
     /// <summary>
@@ -490,6 +556,49 @@ internal static class DensityScene
             (true, true) => 'B',
             _ => '-',
         };
+
+    /// <summary>
+    /// Returns the stage of the least advanced part of the plot's first layer: 0 while a part has no index or nothing counted,
+    /// 1 when every part's snapshot is coarse or better, 2 when every part's is full, 3 when every full snapshot also has its
+    /// density tiles (design §3.4 "公開"). Each part's index is lent its current snapshot and given it back.
+    /// </summary>
+    private static int IndexStage(PlotPlan plan)
+    {
+        if (plan.Layers.Count == 0)
+        {
+            return 0;
+        }
+
+        var layer = plan.Layers[0];
+        IEnumerable<LayerPlan> parts = layer is SplitPlan split ? split.Parts : [layer];
+        var least = 3;
+        foreach (var part in parts)
+        {
+            if (part is not IndexedPointPlan { SpatialIndex: { } index })
+            {
+                return 0;
+            }
+
+            var snapshot = index.Acquire();
+            var stage = snapshot.Stage switch
+            {
+                SpatialStage.Full => snapshot.Tiles is null ? 2 : 3,
+                SpatialStage.Coarse => 1,
+                _ => 0,
+            };
+            snapshot.Release();
+            least = Math.Min(least, stage);
+        }
+
+        return least;
+    }
+
+    /// <summary>Returns the line of the times the index reached its stages (<see cref="IndexStage"/>), −1 for a stage not reached.</summary>
+    private static string Stages(double[] reached, int[] frames) =>
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"index of every part: coarse snapshot {reached[1]:F3} s (frame {frames[1]}), full snapshot {reached[2]:F3} s (frame {frames[2]}), density tiles {reached[3]:F3} s (frame {frames[3]}); tiles after the full snapshot {(reached[3] < 0 || reached[2] < 0 ? double.NaN : reached[3] - reached[2]):F3} s"
+        );
 
     private static void Pace(long start)
     {
