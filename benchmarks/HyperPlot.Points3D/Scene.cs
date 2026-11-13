@@ -209,7 +209,8 @@ internal static partial class Scene
 
     private static int Differing(byte[] a, byte[] b)
     {
-        var (left, right) = (MemoryMarshal.Cast<byte, uint>(a), MemoryMarshal.Cast<byte, uint>(b));
+        var left = MemoryMarshal.Cast<byte, uint>(a);
+        var right = MemoryMarshal.Cast<byte, uint>(b);
         var differing = 0;
         for (var i = 0; i < left.Length; i++)
         {

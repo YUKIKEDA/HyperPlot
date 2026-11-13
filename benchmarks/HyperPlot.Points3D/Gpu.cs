@@ -449,7 +449,9 @@ internal sealed unsafe class Gpu : IDisposable
         }
 
         Check(result, "CreateUnorderedAccessView");
-        (texture, access, view) = (made, madeAccess, madeView);
+        texture = made;
+        access = madeAccess;
+        view = madeView;
     }
 
     private void MakePoints(ReadOnlySpan<Point3> points)
