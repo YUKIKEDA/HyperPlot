@@ -159,7 +159,7 @@ internal sealed unsafe class BrickStore : IDisposable
     {
         var n = LevelBricks[level];
         var i = id - LevelFirst[level];
-        return (i % n, i / n % n, i / (n * n));
+        return (i % n, (i / n) % n, i / (n * n));
     }
 
     /// <summary>The brick of the next coarser level that covers brick id, or -1 at the coarsest level.</summary>
@@ -286,7 +286,7 @@ internal sealed unsafe class BrickStore : IDisposable
             bricks * bricks * bricks,
             i =>
             {
-                var (bx, by, bz) = (i % bricks, i / bricks % bricks, i / (bricks * bricks));
+                var (bx, by, bz) = (i % bricks, (i / bricks) % bricks, i / (bricks * bricks));
                 var id = LevelFirst[level] + i;
                 var target = new Span<ushort>((ushort*)data + (id * codes), (int)codes);
                 var (low, high) = (ushort.MaxValue, ushort.MinValue);

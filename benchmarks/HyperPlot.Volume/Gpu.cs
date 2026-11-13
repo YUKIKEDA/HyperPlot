@@ -192,7 +192,7 @@ internal sealed unsafe class Gpu : IDisposable
             var atlas = slot / Layout.SlotsPerAtlas;
             var inAtlas = slot - (atlas * Layout.SlotsPerAtlas);
             var x = (uint)(inAtlas % Layout.SlotsX) * side;
-            var y = (uint)(inAtlas / Layout.SlotsX % Layout.SlotsY) * side;
+            var y = (uint)((inAtlas / Layout.SlotsX) % Layout.SlotsY) * side;
             var z = (uint)(inAtlas / (Layout.SlotsX * Layout.SlotsY)) * side;
             var box = new D3D11_BOX
             {
@@ -409,12 +409,14 @@ internal sealed unsafe class Gpu : IDisposable
         ID3DBlob* errors = null;
         try
         {
-            fixed (byte* data = source)
-            fixed (byte* namePointer = name)
-            fixed (byte* entryPointer = entry)
-            fixed (byte* profilePointer = profile)
-            fixed (byte* defineNamePointer = defineName)
-            fixed (byte* defineValuePointer = defineValue)
+            fixed (
+                byte* data = source,
+                    namePointer = name,
+                    entryPointer = entry,
+                    profilePointer = profile,
+                    defineNamePointer = defineName,
+                    defineValuePointer = defineValue
+            )
             {
                 var defines = stackalloc D3D_SHADER_MACRO[2];
                 defines[0] = new D3D_SHADER_MACRO { Name = (sbyte*)defineNamePointer, Definition = (sbyte*)defineValuePointer };
