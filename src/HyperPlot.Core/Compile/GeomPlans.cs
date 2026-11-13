@@ -1070,6 +1070,7 @@ internal sealed class PointPlan : LayerPlan
 
     // The radius of each point of the last recording in physical pixels, by row, when the layer has a SizeBy; else empty.
     private float[] _radii = [];
+    private double[] _diameters = [];
     private bool _sized;
 
     public PointPlan(PointLayerSpec spec, RowRange rows)
@@ -1179,11 +1180,26 @@ internal sealed class PointPlan : LayerPlan
             _radii = new float[Math.Max(end, _x.Length)];
         }
 
+        // The sizes read and mapped at once: one at a time through the column took 2 to 4 ms of 131,072 points (Issue #456).
+        var diameters = default(ReadOnlySpan<double>);
+        if (sizeBy is not null)
+        {
+            if (_diameters.Length < sizeBy.Length)
+            {
+                _diameters = new double[sizeBy.Length];
+            }
+
+            var all = _diameters.AsSpan(0, (int)sizeBy.Length);
+            sizeBy.ReadDifferences(all, 0);
+            Sizes!.Diameters(all, context.Scale);
+            diameters = all;
+        }
+
         var count = 0;
         for (var i = start; i < end; i++)
         {
             var color = values is null ? default(Color?) : ElementColor(values, i);
-            var size = sizeBy is null ? 0 : Sizes!.Diameter(sizeBy.DifferenceAt(i, 0)) * context.Scale;
+            var size = sizeBy is null ? 0 : (float)diameters[i];
             if ((values is not null && color is null) || float.IsNaN(size))
             {
                 // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.

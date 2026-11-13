@@ -53,6 +53,25 @@ internal sealed class SizeScale
         return (float)Math.Sqrt((min * min) + (t * ((max * max) - (min * min))));
     }
 
+    /// <summary>
+    /// Writes the diameters of values in data units, in DIPs times a scale, as <see cref="Diameter"/> gives them one by one:
+    /// a frame's points at once, the transform over the span (design §5.5.2 "大きさと形のチャネル").
+    /// </summary>
+    public void Diameters(Span<double> values, float scale)
+    {
+        Transform?.Forward(values, values);
+        var (low, high) = (Domain.Origin + Domain.Lower, Domain.Origin + Domain.Upper);
+        var (min, max) = ((double)Spec.RangeMin, (double)Spec.RangeMax);
+        var (minSquared, spread) = (min * min, (max * max) - (min * min));
+        var width = high - low;
+        for (var i = 0; i < values.Length; i++)
+        {
+            var s = values[i];
+            var t = width > 0 ? Math.Clamp((s - low) / width, 0, 1) : 0.5;
+            values[i] = double.IsFinite(s) ? Math.Sqrt(minSquared + (t * spread)) * scale : double.NaN;
+        }
+    }
+
     private double Forward(double value)
     {
         if (Transform is null)
