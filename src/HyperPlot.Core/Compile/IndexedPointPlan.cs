@@ -103,10 +103,12 @@ internal sealed class IndexedPointPlan : LayerPlan
     private ColorMap? _ramp;
     private Color _rampColor;
 
-    // The markers' radius in physical pixels of the last recording, and the row and the position in the copy of the last
-    // point a hit test answered, which a hover marks where it is drawn (row R3c).
+    // The markers' radius in physical pixels of the last recording, and the values and the position in the copy of the last
+    // point a hit test answered, which a hover marks where it is drawn (row R3c). The values, not the row, tell the hit
+    // again: a split's or a facet's gathered row is taken back to the table's after this part answered.
     private double _markerRadius;
-    private long _lastRow = -1;
+    private double _lastX = double.NaN;
+    private double _lastY = double.NaN;
     private long _lastPosition = -1;
 
     public IndexedPointPlan(PointLayerSpec spec, PlanBuild build, RowRange rows)
@@ -331,13 +333,13 @@ internal sealed class IndexedPointPlan : LayerPlan
         // The x and y are the point's values in the copy, as differences from the snapshot's origins, taken back to data
         // units (invariant 6); the distance is the drawn one in both directions, as the CPU path's. A page not yet on the GPU leaves the frame provisional, and the answer with it
         // (Decision 14); so does a queue that overflowed (Decision 20).
-        (_lastRow, _lastPosition) = (found.Row, found.Position);
-        var row = found.Row;
+        var (valueX, valueY) = (x.ValueOf(found.X), y.ValueOf(found.Y));
+        (_lastX, _lastY, _lastPosition) = (valueX, valueY, found.Position);
         scan.Add(
             0,
-            row,
-            x.ValueOf(found.X),
-            y.ValueOf(found.Y),
+            found.Row,
+            valueX,
+            valueY,
             scan.Distance(found.Along, found.Across),
             derived: false,
             provisional: found.Overflowed || _missing || snapshot.IsProvisional
@@ -347,11 +349,11 @@ internal sealed class IndexedPointPlan : LayerPlan
     /// <summary>
     /// Returns where the vertex shader draws the point of the last answer (design §6.3 "描いた位置で測る"): its unit of its
     /// resident cell, placed from the cell's record of this view. Another hit (an older selection's point) is marked at its
-    /// value.
+    /// value. The point is known by its values, which a gathered part's remap of the row leaves as they are.
     /// </summary>
     internal override (double Along, double Across) HitPlace(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit)
     {
-        if (hit.Row < 0 || hit.Row != _lastRow || _snapshot is not { } snapshot || _lastPosition >= snapshot.PointCount)
+        if (hit.Row < 0 || hit.X != _lastX || hit.Y != _lastY || _snapshot is not { } snapshot || _lastPosition >= snapshot.PointCount)
         {
             return base.HitPlace(x, y, hit);
         }
@@ -718,7 +720,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             _cache?.ForgetDensity(snapshot);
             snapshot.Release();
             _snapshot = null;
-            (_lastRow, _lastPosition) = (-1, -1);
+            (_lastX, _lastY, _lastPosition) = (double.NaN, double.NaN, -1);
         }
     }
 

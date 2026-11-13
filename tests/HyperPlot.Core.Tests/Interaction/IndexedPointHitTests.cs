@@ -89,35 +89,54 @@ public sealed class IndexedPointHitTests
         }
     }
 
+    /// <summary>The kinds of bins a density draws (design §5.5.2 "水準の選び方").</summary>
+    public enum BinKind
+    {
+        /// <summary>A bin of the cell's own tile at the chosen level.</summary>
+        Own,
+
+        /// <summary>A bin of the tile of the cell's deepest ancestor that has one.</summary>
+        Ancestor,
+
+        /// <summary>A cell with no tile above it, drawn as one fill.</summary>
+        Fill,
+    }
+
     /// <summary>
-    /// A layer drawn as a density answers with the bin drawn under the cursor: a row of −1, the bin's center, a distance of
-    /// 0, and the bin's points as a loop counts them; nothing outside the data's range (design §6.3 "密度で描いている層",
-    /// Issue #471 Decisions 2 and 10).
+    /// A layer drawn as a density answers with the bin drawn under the cursor, of each kind (its own tile's, an ancestor's,
+    /// a fill): a row of −1, the bin's center, a distance of 0, and the bin's points as a loop counts them, before their
+    /// normalization; nothing outside the data's range (design §6.3 "密度で描いている層", Issue #471 Decisions 2 and 10).
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 400,000 seeded points over [0, 100]² drawn as a density at the view [−50, 150]², 640 × 360.
+    /// - Seeded points over [0, 100]² drawn as a density, 640 × 360: 131,073 points at the view [0, 100]² (no cell has a
+    ///   tile: fills); 400,000 at [0, 100]² (the chosen level 1 has no tile: the root's); 400,000 at [−50, 150]² (the chosen
+    ///   level 0: the root's own tile).
     ///
     /// Steps:
     /// - At 30 cursors over [0, 100]², hit test in XY with a radius of 8 and in X with a radius of 0.
-    /// - Find the bin the recording draws there by the design's rule: the cell of the chosen level that holds the cursor, its
-    ///   own tile or its deepest ancestor's, whose bins are cells 8 levels deeper; count by a loop the points whose grid
-    ///   cells lie in that bin.
-    /// - Hit test at a cursor over x = −25, outside the data.
+    /// - Find the bin the recording draws there by the design's rule: the cell of the chosen level that holds the cursor (or
+    ///   the leaf above it), its own tile or its deepest ancestor's, whose bins are cells 8 levels deeper, or the cell itself
+    ///   as a fill; count by a loop the points whose grid cells lie in that bin.
+    /// - At the wider view, hit test at a cursor over x = −25, outside the data.
     ///
     /// Expected:
-    /// - Both modes: one hit of row −1, distance 0, the bin's center as x and y, and the loop's count.
+    /// - Both modes: one hit of row −1, distance 0, the bin's center as x and y, and the loop's count; the kind of the case
+    ///   is among the bins met.
     /// - Outside the data: no hit.
     /// </remarks>
-    [Fact]
-    public void Density_AnswersWithTheBinUnderTheCursor()
+    [Theory]
+    [InlineData(Over, 0.0, 100.0, BinKind.Fill)]
+    [InlineData(Dense, 0.0, 100.0, BinKind.Ancestor)]
+    [InlineData(Dense, -50.0, 150.0, BinKind.Own)]
+    public void Density_AnswersWithTheBinUnderTheCursor(int points, double low, double high, BinKind kind)
     {
-        var (xs, ys, table) = Uniform(Dense, seed: 12);
+        var (xs, ys, table) = Uniform(points, seed: 12);
         var backend = new NullBackend();
         using var engine = Drawn(
             backend,
             Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Density)),
-            (-50, 150, -50, 150)
+            (low, high, low, high)
         );
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
         Assert.True(plan.DrewDensity);
@@ -133,19 +152,16 @@ public sealed class IndexedPointHitTests
 
             var hits = new SeriesHit[2];
             var random = new Random(13);
+            var kinds = new HashSet<BinKind>();
             for (var k = 0; k < 30; k++)
             {
                 var (vx, vy) = (random.NextDouble() * 100, random.NextDouble() * 100);
+                var (level, met) = DrawnBin(snapshot, vx - ox, vy - oy, plan.TileLevel);
+                kinds.Add(met);
                 var (gx, gy) = snapshot.GridAt(vx - ox, vy - oy);
-                var level = BinLevel(snapshot, gx, gy, plan.TileLevel);
-                var shift = 32 - level;
-                long count = 0;
-                foreach (var (px, py) in grid)
-                {
-                    count += px >> shift == gx >> shift && py >> shift == gy >> shift ? 1 : 0;
-                }
-
-                var (cornerX, cornerY, extentX, extentY) = snapshot.CellBox(SpatialCode.Interleave(gx >> shift, gy >> shift), level);
+                var count = CountIn(grid, gx, gy, level);
+                var code = level == 0 ? 0 : SpatialCode.Interleave(gx >> (32 - level), gy >> (32 - level));
+                var (cornerX, cornerY, extentX, extentY) = snapshot.CellBox(code, level);
                 var cursor = Pixel(engine, vx, vy);
                 foreach (var (mode, radius) in (ReadOnlySpan<(HitMode, float)>)[(HitMode.XY, 8f), (HitMode.X, 0f)])
                 {
@@ -156,7 +172,11 @@ public sealed class IndexedPointHitTests
                 }
             }
 
-            Assert.Equal(0, engine.HitTest(Pixel(engine, -25, 50), 8, HitMode.XY, hits));
+            Assert.Contains(kind, kinds);
+            if (low < -25)
+            {
+                Assert.Equal(0, engine.HitTest(Pixel(engine, -25, 50), 8, HitMode.XY, hits));
+            }
         }
         finally
         {
@@ -257,23 +277,422 @@ public sealed class IndexedPointHitTests
             });
     }
 
-    // The level of the bin the recording draws over a grid cell (design §5.5.2 "水準の選び方"): 8 below the cell's own tile
-    // at the chosen level or its deepest ancestor's.
-    private static int BinLevel(SpatialSnapshot snapshot, uint gx, uint gy, int chosen)
+    /// <summary>
+    /// A hover over a density marks the bin with its frame, in the target's pixels of the bin's box (Issue #471 Decision 10).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]² drawn as a density at the view [0, 100]², 640 × 360, the default hover.
+    ///
+    /// Steps:
+    /// - Hover at (30, 60) and draw. Find the bin's box by the design's rule and map its corners to pixels.
+    ///
+    /// Expected:
+    /// - The recording holds the frame's top side: a rectangle at the box's left and top, as wide as the box (within a pixel
+    ///   for the rounding of the corners), one line high; and its left side, as high as the box.
+    /// </remarks>
+    [Fact]
+    public void Hover_MarksABinWithItsFrame()
     {
-        var tiles = snapshot.Tiles!;
-        for (var at = chosen; at >= 0; at--)
+        var (_, _, table) = Uniform(Dense, seed: 16);
+        var backend = new NullBackend();
+        using var engine = Drawn(
+            backend,
+            Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Density)),
+            (0, 100, 0, 100)
+        );
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        var cursor = Pixel(engine, 30, 60);
+        engine.OnPointer(new PointerEvent(PointerEventKind.Move, cursor, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0));
+        engine.RenderFrame();
+
+        var snapshot = plan.SpatialIndex!.Acquire();
+        try
         {
-            var shift = 32 - at;
-            var code = at == 0 ? 0 : SpatialCode.Interleave(gx >> shift, gy >> shift);
-            if (tiles.TryGetTile(code, at, out _))
+            var (ox, oy) = (snapshot.XRange.Origin, snapshot.YRange.Origin);
+            var (level, _) = DrawnBin(snapshot, 30 - ox, 60 - oy, plan.TileLevel);
+            var (gx, gy) = snapshot.GridAt(30 - ox, 60 - oy);
+            var code = level == 0 ? 0 : SpatialCode.Interleave(gx >> (32 - level), gy >> (32 - level));
+            var (cornerX, cornerY, extentX, extentY) = snapshot.CellBox(code, level);
+            var low = Pixel(engine, ox + cornerX, oy + cornerY);
+            var high = Pixel(engine, ox + cornerX + extentX, oy + cornerY + extentY);
+            var (left, top, width, height) = (Math.Min(low.X, high.X), Math.Min(low.Y, high.Y), Math.Abs(high.X - low.X), Math.Abs(high.Y - low.Y));
+            var line = MathF.Max(1, MathF.Round(engine.Scale));
+            var rects = backend.LastList!.Rects.ToArray();
+            Assert.Contains(rects, r => Near(r.X, left) && Near(r.Y, top) && Near(r.Width, width) && r.Height == line);
+            Assert.Contains(rects, r => Near(r.X, left) && Near(r.Y, top) && Near(r.Height, height) && r.Width == line);
+        }
+        finally
+        {
+            snapshot.Release();
+        }
+
+        static bool Near(float a, float b) => Math.Abs(a - b) < 1;
+    }
+
+    /// <summary>
+    /// A click of the selection of points on a density's bin selects nothing: a bin is no point (Issue #523 Decision 1). A
+    /// click on a point of another layer over the density selects that point alone.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]² drawn as a density (layer 0), and a line along y = 50 (layer 1), at the view
+    ///   [0, 100]², 640 × 360, the default bindings (Shift and a click select points).
+    ///
+    /// Steps:
+    /// - Shift-click at (30, 80), where only the density answers. Shift-click at (30, 50), on the line.
+    ///
+    /// Expected:
+    /// - After the first click the plot has no selection. After the second, a selection of points with one point, the
+    ///   line's (layer 1, a row of 0 or more).
+    /// </remarks>
+    [Fact]
+    public void PointsClick_OnADensitysBin_SelectsNothing()
+    {
+        using var engine = LineOverDensity(new NullBackend(), seed: 17);
+        var hits = new SeriesHit[4];
+        var bin = Pixel(engine, 30, 80);
+        Assert.Equal(-1, Assert.Single(hits[..engine.HitTest(bin, 8, HitMode.XY, hits)]).Row);
+
+        Click(engine, bin, 0);
+        Assert.Null(engine.Selection(0));
+
+        // Ten seconds later, so that the second click is no double click.
+        Click(engine, Pixel(engine, 30, 50), 10 * System.Diagnostics.Stopwatch.Frequency);
+        var selection = Assert.IsType<Selection2D>(engine.Selection(0));
+        Assert.Equal(SelectionKind.Points, selection.Kind);
+        var point = Assert.Single(selection.Points.ToArray());
+        Assert.Equal(1, point.Layer);
+        Assert.True(point.Row >= 0);
+
+        static void Click(PlotEngine engine, Vector2 at, long time)
+        {
+            engine.OnPointer(new PointerEvent(PointerEventKind.Down, at, PointerButtons.Left, PointerButtons.Left, ModifierKeys.Shift, PointerKind.Mouse, time));
+            engine.OnPointer(new PointerEvent(PointerEventKind.Up, at, PointerButtons.Left, PointerButtons.None, ModifierKeys.Shift, PointerKind.Mouse, time));
+        }
+    }
+
+    /// <summary>
+    /// In the switch's band a hit answers with the drawing the last recording chose (Issue #471 Decision 11): bins when the
+    /// layer came into the band as a density, points when it came in as raw points.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 131,073 seeded points over [0, 100]², Auto with a threshold of 10,000, an engine that waits for its indexes.
+    ///
+    /// Steps:
+    /// - Zoom in from the whole view to a side of 2 in 200 steps, then out again, drawing each view. At each view whose
+    ///   upper count lies between 8,000 and 10,000, hit test the view's middle in XY with a radius of 40 pixels.
+    ///
+    /// Expected:
+    /// - A view in the band drawn as a density answers with a bin (row −1); one drawn as raw points answers with rows of 0
+    ///   or more. Both kinds of view are met.
+    /// </remarks>
+    [Fact]
+    public void SwitchBand_AnswersWithTheLastDrawing()
+    {
+        var (_, _, table) = Uniform(Over, seed: 18);
+        var backend = new NullBackend();
+        using var engine = Drawn(
+            backend,
+            Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Density(threshold: 10_000)),
+            (0, 100, 0, 100)
+        );
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        var hits = new SeriesHit[4];
+        var sides = Enumerable.Range(0, 201).Select(i => 100 * Math.Pow(0.02, i / 200.0)).ToArray();
+        var (asDensity, asPoints) = (false, false);
+        foreach (var side in sides.Concat(sides.Reverse()))
+        {
+            Show(engine, backend, (50 - (side / 2), 50 + (side / 2), 50 - (side / 2), 50 + (side / 2)));
+            var count = plan.Switch.LastCount;
+            if (count < 10_000 * DensitySwitch.Back || count > 10_000)
             {
-                return at + DensityTiles.BinLevels;
+                continue;
+            }
+
+            var found = hits[..engine.HitTest(Pixel(engine, 50, 50), 40, HitMode.XY, hits)];
+            if (found.Length == 0)
+            {
+                continue;
+            }
+
+            var hit = Assert.Single(found);
+            if (plan.DrewDensity)
+            {
+                Assert.Equal(-1, hit.Row);
+                asDensity = true;
+            }
+            else
+            {
+                Assert.True(hit.Row >= 0);
+                asPoints = true;
             }
         }
 
-        Assert.Fail("No tile above the cursor: the data is meant to draw from tiles.");
-        return 0;
+        Assert.True(asDensity && asPoints, $"The band was met as a density: {asDensity}; as raw points: {asPoints}.");
+    }
+
+    /// <summary>
+    /// While a changed column's index is built again, the layer answers from the last full snapshot it draws, provisionally
+    /// (Issue #471 Decision 5); once the new one is drawn, not provisionally.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 131,073 points on whole numbers (x = i mod 100, y = i mod 97), raw points, on a pool of 1 worker; the x column's
+    ///   storage holds the reads of chunk 0. Drawn until not provisional.
+    ///
+    /// Steps:
+    /// - Hold chunk 0, invalidate the x column, draw a frame, and hit test in XY at (50, 50) with a radius of 8.
+    /// - Release the chunk, draw until not provisional, and hit test again.
+    ///
+    /// Expected:
+    /// - During the build: one hit at (50, 50), provisional, of a row whose x is 50 and y 50.
+    /// - After it: the same point, not provisional.
+    /// </remarks>
+    [Fact]
+    public void Rebuild_AnswersFromTheLastFullSnapshot_Provisionally()
+    {
+        using var xs = TestStorage<double>.MakeColumn(Enumerable.Range(0, Over).Select(i => (double)(i % 100)).ToArray(), out var storage);
+        using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(i => (double)(i % 97)).ToArray());
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        var backend = new NullBackend();
+        using var pool = new PlotWorkerPool(1);
+        using var engine = new PlotEngine(backend, 640, 360, pool: pool);
+        engine.SetPlot(
+            Plot.Create(table)
+                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
+                .ScaleX(Scale.Linear().WithDomain(0, 100))
+                .ScaleY(Scale.Linear().WithDomain(0, 100))
+                .Build()
+        );
+        Settle(engine, backend);
+        var hits = new SeriesHit[2];
+        var at = Pixel(engine, 50, 50);
+
+        storage.Hold(0);
+        try
+        {
+            xs.Invalidate();
+            backend.Images.Sent();
+            engine.RenderFrame();
+            Assert.True(engine.IsProvisional);
+            var during = Assert.Single(hits[..engine.HitTest(at, 8, HitMode.XY, hits)]);
+            Assert.Equal((50.0, 50.0, true), (during.X, during.Y, during.Provisional));
+        }
+        finally
+        {
+            storage.Release(0);
+        }
+
+        Settle(engine, backend);
+        var after = Assert.Single(hits[..engine.HitTest(at, 8, HitMode.XY, hits)]);
+        Assert.Equal((50.0, 50.0, false), (after.X, after.Y, after.Provisional));
+    }
+
+    /// <summary>
+    /// A point whose page is not on the GPU yet still answers, from the index's copy, and the answer is provisional while the
+    /// frame is (Issue #471 Decision 14); once every page is sent, not.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]² drawn as raw points (7 pages), in an engine that waits for its indexes.
+    ///
+    /// Steps:
+    /// - Draw one frame, which sends at most 5 pages; hit test in XY at 20 points' pixels with a radius of 8.
+    /// - Draw until every page is sent; hit test again.
+    ///
+    /// Expected:
+    /// - The first frame missed pages; each hit test finds a point, provisional.
+    /// - After: each finds a point, not provisional.
+    /// </remarks>
+    [Fact]
+    public void PointsNotOnTheGpu_AnswerProvisionally()
+    {
+        var (xs, ys, table) = Uniform(Dense, seed: 19);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(
+            Plot.Create(table)
+                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
+                .ScaleX(Scale.Linear().WithDomain(0, 100))
+                .ScaleY(Scale.Linear().WithDomain(0, 100))
+                .Build()
+        );
+        engine.RenderFrame();
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        Assert.True(plan.MissedPages);
+        var hits = new SeriesHit[2];
+        for (var i = 0; i < 20; i++)
+        {
+            Assert.True(Assert.Single(hits[..engine.HitTest(Pixel(engine, xs[i], ys[i]), 8, HitMode.XY, hits)]).Provisional);
+        }
+
+        Show(engine, backend, (0, 100, 0, 100));
+        Assert.False(plan.MissedPages);
+        for (var i = 0; i < 20; i++)
+        {
+            Assert.False(Assert.Single(hits[..engine.HitTest(Pixel(engine, xs[i], ys[i]), 8, HitMode.XY, hits)]).Provisional);
+        }
+    }
+
+    /// <summary>
+    /// Past the limit of design §5.5.2, where points are drawn on the units of their resident cell, the distance and the
+    /// hover's marker are where the point is drawn, and the x and y its true values (Issue #471 Decision 1).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 131,073 points: 130,973 seeded over [0, 10^6]², and 100 in a cluster 10^-3 wide at (500,000.3, 500,000.7); raw
+    ///   points; the view the cluster's square, 640 × 360. A resident cell is then about 2.5 × 10^5 wide, so that its unit
+    ///   is tens of pixels.
+    /// - Each cluster point's drawn pixel found apart from the plan: its resident cell and unit by ReadBlock, the unit's
+    ///   value mapped by the engine.
+    ///
+    /// Steps:
+    /// - Hit test in XY with a radius of 8 at each cluster point's drawn pixel; read the hover marker's pixel of the hit.
+    ///
+    /// Expected:
+    /// - Each finds a point at a distance under 0.01 pixels from its drawn pixel; the marker lies within 0.01 pixels of the
+    ///   drawn pixel; the x and y are the row's values.
+    /// - Some cluster point is drawn more than a pixel from its value's pixel: the case is past the limit.
+    /// </remarks>
+    [Fact]
+    public void DeepZoom_MeasuresWhereThePointsAreDrawn()
+    {
+        const int Cluster = 100;
+        var random = new Random(20);
+        var xs = new double[Over];
+        var ys = new double[Over];
+        for (var i = 0; i < Over; i++)
+        {
+            (xs[i], ys[i]) = i < Over - Cluster
+                ? (random.NextDouble() * 1e6, random.NextDouble() * 1e6)
+                : (500_000.3 + (random.NextDouble() * 1e-3), 500_000.7 + (random.NextDouble() * 1e-3));
+        }
+
+        using var x = Column.Wrap(xs);
+        using var y = Column.Wrap(ys);
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(
+            Plot.Create(table)
+                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
+                .ScaleX(Scale.Linear().WithDomain(0, 1e6))
+                .ScaleY(Scale.Linear().WithDomain(0, 1e6))
+                .Build()
+        );
+        engine.RenderFrame();
+        Show(engine, backend, (500_000.3, 500_000.301, 500_000.7, 500_000.701));
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        var snapshot = plan.SpatialIndex!.Acquire();
+        try
+        {
+            var (px, py, rows) = SpatialReference.ReadAll(snapshot);
+            var resident = new ResidentPoint[px.Length];
+            snapshot.ReadBlock(0, resident);
+            var cells = snapshot.ResidentCells.ToArray();
+            var (ox, oy) = (snapshot.XRange.Origin, snapshot.YRange.Origin);
+            var hits = new SeriesHit[2];
+            var snapped = false;
+            for (var position = 0; position < px.Length; position++)
+            {
+                if (rows[position] < Over - Cluster)
+                {
+                    continue;
+                }
+
+                var (point, cell) = (resident[position], cells[resident[position].Cell]);
+                var drawn = Pixel(
+                    engine,
+                    ox + cell.CornerX + (point.X / SpatialSnapshot.CellUnits * cell.ExtentX),
+                    oy + cell.CornerY + (point.Y / SpatialSnapshot.CellUnits * cell.ExtentY)
+                );
+                snapped |= Vector2.Distance(drawn, Pixel(engine, xs[rows[position]], ys[rows[position]])) > 1;
+                var hit = Assert.Single(hits[..engine.HitTest(drawn, 8, HitMode.XY, hits)]);
+                Assert.True(hit.Distance < 0.01, $"The hit at {drawn} is {hit.Distance} pixels away.");
+                Assert.Equal((xs[hit.Row], ys[hit.Row]), (hit.X, hit.Y));
+                Assert.True(engine.Plan!.HitPixel(hit, out var marker));
+                Assert.True(Vector2.Distance(marker, drawn) < 0.01, $"The marker {marker} is not at {drawn}.");
+            }
+
+            Assert.True(snapped, "No cluster point is drawn a pixel from its value.");
+        }
+        finally
+        {
+            snapshot.Release();
+        }
+    }
+
+    // The bin the recording draws over a point, by the design's rule (design §5.5.2 "水準の選び方"): the cell of the chosen
+    // level that holds it, or the leaf above; a bin of its own tile or of its deepest ancestor's, 8 levels deeper; or the
+    // cell itself as a fill. Returns the bin's level and its kind.
+    private static (int Level, BinKind Kind) DrawnBin(SpatialSnapshot snapshot, double dx, double dy, int chosen)
+    {
+        Span<SpatialCell> one = stackalloc SpatialCell[1];
+        Assert.Equal(1, snapshot.GetCells(new SpatialRect(dx, dx, dy, dy), chosen, one));
+        var cell = one[0];
+        var tiles = snapshot.Tiles!;
+        for (var at = Math.Min(cell.Level, DensityTiles.DeepestTileLevel); at >= 0; at--)
+        {
+            if (tiles.TryGetTile(cell.Code >> (2 * (cell.Level - at)), at, out _))
+            {
+                return (at + DensityTiles.BinLevels, at == chosen ? BinKind.Own : BinKind.Ancestor);
+            }
+        }
+
+        return (cell.Level, BinKind.Fill);
+    }
+
+    // The points whose grid cells lie in the cell of a level that holds a grid cell.
+    private static long CountIn((uint X, uint Y)[] grid, uint gx, uint gy, int level)
+    {
+        if (level == 0)
+        {
+            return grid.Length;
+        }
+
+        var shift = 32 - level;
+        long count = 0;
+        foreach (var (px, py) in grid)
+        {
+            count += px >> shift == gx >> shift && py >> shift == gy >> shift ? 1 : 0;
+        }
+
+        return count;
+    }
+
+    private static void Settle(PlotEngine engine, NullBackend backend)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        do
+        {
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The frames stayed provisional for 60 s.");
+            backend.Images.Sent();
+            engine.RenderFrame();
+            Thread.Sleep(1);
+        }
+        while (engine.IsProvisional);
+    }
+
+    private static PlotEngine LineOverDensity(NullBackend backend, int seed)
+    {
+        var (_, _, table) = Uniform(Dense, seed);
+        var lineX = Column.Wrap(Enumerable.Range(0, Dense).Select(i => i * 100.0 / Dense).ToArray());
+        var lineY = Column.Wrap(Enumerable.Repeat(50.0, Dense).ToArray());
+        var both = DataTable.Create()
+            .Add("x", table.Col<double>("x").Column)
+            .Add("y", table.Col<double>("y").Column)
+            .Add("lx", lineX)
+            .Add("ly", lineY)
+            .Build();
+        return Drawn(
+            backend,
+            Plot.Create(both)
+                .Point(both.Col<double>("x"), both.Col<double>("y"), p => p.Draw(PointDraw.Density))
+                .Line(both.Col<double>("lx"), both.Col<double>("ly")),
+            (0, 100, 0, 100)
+        );
     }
 
     private static double Measure(HitMode mode, Vector2 cursor, double along, double across)

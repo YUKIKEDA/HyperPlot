@@ -165,6 +165,45 @@ public sealed class SpatialNearestTests
     }
 
     /// <summary>
+    /// A cell no nearer than the best point less half a pixel is not opened, though its box is nearer than the best point
+    /// (design §6.3 "探し方"): only the half pixel lets it be left.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two points, A (8.5, 10.1) and B (11.9, 10.1), with leaves of 1 point and both ranges passed as [0, 16], so that the
+    ///   leaves are the cells of level 3, [8, 10) and [10, 12) on x; a screen of 1 pixel a unit.
+    ///
+    /// Steps:
+    /// - Call Nearest in XY at (9.3, 10.1) with a radius of 8.
+    ///
+    /// Expected:
+    /// - A, at 0.8 pixels. B's leaf lies 0.7 pixels away, nearer than A but not nearer than 0.8 − 0.5: it is not opened, and
+    ///   one point is read.
+    /// </remarks>
+    [Fact]
+    public void Nearest_CellWithinHalfAPixelOfTheBest_IsNotOpened()
+    {
+        double[] xs = [8.5, 11.9];
+        double[] ys = [10.1, 10.1];
+        var range = new ScaleRange(0, 0, 16);
+        var input = new SpatialIndexInput { Rows = RowRange.All, XRange = range, YRange = range };
+        var tuning = new SpatialIndexTuning(LeafCapacity: 1, RowsPerUnit: 1 << 12, TableShare: 1e6, WideRows: 1L << 32);
+        using var built = SpatialBuilt.Of(xs, ys, input, tuning: tuning);
+        var snapshot = built.Snapshot;
+        Assert.Contains(
+            SpatialReference.Cells(snapshot, SpatialReference.Everything, 32),
+            cell => cell.Level == 3 && cell.Count == 1 && snapshot.CellBox(cell.Code, 3).CornerX == 10
+        );
+        var screen = new LinearScreen(1, 1, 0, 0);
+
+        var found = snapshot.Nearest(ref screen, 9.3, 10.1, 8, 0, HitMode.XY, new SpatialNearestScratch(1));
+
+        Assert.Equal(0, found.Row);
+        Assert.Equal(0.8, found.Distance, 9);
+        Assert.Equal(1, found.PointsRead);
+    }
+
+    /// <summary>
     /// The reach of XY is the radius plus the marker's radius (a layer whose points take their size from data passes its
     /// largest); X uses the radius alone; with no point within the reach nothing is found (design §6.3).
     /// </summary>

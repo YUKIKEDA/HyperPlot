@@ -567,6 +567,8 @@ public sealed class DensityTests
     /// - The coarse frame: the index's snapshot is Coarse; the frame is provisional; one piece, the root cell read from
     ///   the coarse grid (0, 0, 0, 0, 0); one image that reads the grid from its corner, 2^-L of a texel a texel for the
     ///   chosen level L; no resident run.
+    /// - A hit test at (50, 50) in the coarse frame: one hit of row −1 at a distance of 0, provisional, whose count is the
+    ///   coarse grid's cell of level 8 that holds (50, 50) (row R3c).
     /// - The full frame, Points and Auto: raw points, no image, and no face in the cache (the coarse face let go of).
     ///   Density: more than one piece, each a cell of the chosen level that reads the root's tile; an image each; one face
     ///   in the cache, the root tile's.
@@ -636,6 +638,22 @@ public sealed class DensityTests
             var image = Assert.Single(list.Images.ToArray());
             Assert.Equal(Vector2.Zero, image.SampleOrigin);
             Assert.Equal(Math.Pow(2, -plan.TileLevel), image.SampleScale, 9);
+
+            // A hit test answers with the coarse bin under the cursor, provisionally (row R3c, Issue #471 Decision 5).
+            var coarse = index.Acquire();
+            try
+            {
+                var (gx, gy) = coarse.GridAt(50 - coarse.XRange.Origin, 50 - coarse.YRange.Origin);
+                var expected = coarse.CoarseDensity[(int)(((gy >> 24) << 8) + (gx >> 24))];
+                var hits = new SeriesHit[2];
+                var at = engine.ViewToPixel(Panel, ViewRange.FromValues(50.0, 50.0), ViewRange.FromValues(50.0, 50.0));
+                var hit = Assert.Single(hits[..engine.HitTest(at, 8, HitMode.XY, hits)]);
+                Assert.Equal((-1L, 0f, true, expected), (hit.Row, hit.Distance, hit.Provisional, hit.Count));
+            }
+            finally
+            {
+                coarse.Release();
+            }
         }
         finally
         {
