@@ -775,14 +775,14 @@ internal abstract class LayerPlan
                 if (categories.CategoryCount > MaxCategories)
                 {
                     throw new ArgumentException(
-                        $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {categories.CategoryCount} categories; a layer is split into at most {MaxCategories} (design §4.1). Data of more categories is drawn as a density (row R3d)."
+                        $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {categories.CategoryCount} categories; a layer is split into at most {MaxCategories} (design §4.1). Data of more categories is drawn as a density (row R3g)."
                     );
                 }
 
                 if (CategoricalX(layer) is { } x && (long)categories.CategoryCount * x.CategoryCount > MaxCategoryCells)
                 {
                     throw new ArgumentException(
-                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the cells of bars, error bars, and rules over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3d)."
+                        $"Layer {index} splits {x.CategoryCount} categories of x by {categories.CategoryCount} of {name}; the cells of bars, error bars, and rules over categories split by color hold at most {MaxCategoryCells} (2^24) of them (design §5.5.3). Data of more is drawn as a density (row R3g)."
                     );
                 }
             }
