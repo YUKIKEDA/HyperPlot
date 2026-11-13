@@ -286,7 +286,7 @@ internal sealed class ImagePlan : LayerPlan
         {
             // Another map in a full table would paint with the wrong colors (PR #201's review).
             throw new InvalidOperationException(
-                $"Layer {Index} paints a raster with a color map past the {ResidencyCache.MaxColorTables} the backend holds (design §5.2)."
+                $"Layer {Index} paints a raster with a color map past the {ResidencyCache.MaxColorTables} the backend holds in one frame (design §5.2)."
             );
         }
 

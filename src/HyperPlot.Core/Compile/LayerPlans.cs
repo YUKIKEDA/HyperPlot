@@ -13,9 +13,6 @@ internal abstract class LayerPlan
     /// <summary>The most elements a segment or a rect layer draws (design §5.5.3): 2^17, 4 MB of rectangle records.</summary>
     public const int MaxElements = 131_072;
 
-    /// <summary>The most rows of a point layer until row R3b draws more as a density (design §5.5.2): 1e7.</summary>
-    public const int RawThreshold = 10_000_000;
-
     /// <summary>The most categories a color channel splits a layer into (design §4.1, row G7c).</summary>
     public const int MaxCategories = 256;
 
@@ -1398,19 +1395,38 @@ internal abstract class LayerPlan
             throw new ArgumentException($"The Shape of layer {index} is {(int)point.Shape}; a shape is a named MarkerShape value.");
         }
 
-        // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2).
+        // The density's members are checked on every layer, the CPU path's too: a spec keeps them when its rows grow (design
+        // §4.8 "検査（行 R3b1）"). The names are made only when they throw.
+        if (!PointBuilder.IsDraw(point.Draw))
+        {
+            throw new ArgumentOutOfRangeException($"Layers[{index}].Draw", point.Draw, $"The Draw of layer {index} is not a named PointDraw value.");
+        }
+
+        if (point.DensityThreshold < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                $"Layers[{index}].DensityThreshold",
+                point.DensityThreshold,
+                $"The DensityThreshold of layer {index} is less than 1 point."
+            );
+        }
+
+        if (!PointBuilder.IsDensityNorm(point.DensityNorm))
+        {
+            throw new ArgumentOutOfRangeException(
+                $"Layers[{index}].DensityNorm",
+                point.DensityNorm,
+                $"The DensityNorm of layer {index} is not a named DensityNorm value."
+            );
+        }
+
+        // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2). A
+        // layer of any number of rows past 131,072 is drawn from its indexes (row R3b1).
         var rows = point.X.Column.Length;
         ValidateMarkerChannels(data, point, index, rows);
         if (rows <= MaxElements)
         {
             return;
-        }
-
-        if (rows > RawThreshold)
-        {
-            throw new InvalidOperationException(
-                $"Layer {index} has {rows} points; a point layer draws at most {RawThreshold} (design §5.5.2). Row R3b draws more as a density."
-            );
         }
 
         if (point.ColorBy is { Column: not CategoricalColumn })
@@ -1671,6 +1687,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     private int _pendingSectors;
     private Color _pendingFill;
     private double[] _yBoundaries = [];
+    private int _yBoundaryHeight = -1;
     private ScaleRange _yBoundaryDomain = ScaleRange.None;
     private IScale? _yBoundaryTransform;
 
@@ -1703,7 +1720,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public long YOrigin { get; private set; }
 
     /// <summary>Gets the W + 1 boundaries of the pixel columns, as differences from <see cref="XOrigin"/>.</summary>
-    public double[] Boundaries { get; private set; } = [];
+    public ArraySegment<double> Boundaries { get; private set; } = ArraySegment<double>.Empty;
 
     public float Scale { get; private set; }
 
@@ -1725,7 +1742,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public void Begin(
         in GeomFrame.Axis x,
         in GeomFrame.Axis y,
-        double[] boundaries,
+        ArraySegment<double> boundaries,
         float scale,
         bool flipped,
         (int Left, int Top, int Width, int Height) panel,
@@ -2027,30 +2044,33 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     /// <summary>
     /// Returns the H + 1 boundaries of the pixel rows over the y domain, as differences from <see cref="YOrigin"/> in data
-    /// units, from the bottom (design §5.5.3, a horizontal rule). Made again when the domain, the transform, or the height changes.
+    /// units, from the bottom (design §5.5.3, a horizontal rule). Made again when the domain, the transform, or the height
+    /// changes, in a buffer that grows to the tallest panel's and never shrinks: a height up to the tallest seen allocates nothing (Issue #474).
     /// </summary>
     public ReadOnlySpan<double> YBoundaries()
     {
         var domain = Y.Domain;
         var height = Y.Size;
-        if (_yBoundaryDomain == domain && ReferenceEquals(_yBoundaryTransform, Y.Transform) && _yBoundaries.Length == height + 1)
+        if (_yBoundaryDomain == domain && ReferenceEquals(_yBoundaryTransform, Y.Transform) && _yBoundaryHeight == height)
         {
-            return _yBoundaries;
+            return _yBoundaries.AsSpan(0, height + 1);
         }
 
-        if (_yBoundaries.Length != height + 1)
+        if (_yBoundaries.Length < height + 1)
         {
-            _yBoundaries = new double[height + 1];
+            _yBoundaries = new double[Math.Max(height + 1, 2 * _yBoundaries.Length)];
         }
 
+        // Until the buffer holds this domain's boundaries, it holds no height's: a transform that throws leaves none.
+        _yBoundaryHeight = -1;
         for (var k = 0; k <= height; k++)
         {
             var s = domain.Lower + ((domain.Upper - domain.Lower) * k / height);
             _yBoundaries[k] = Y.Transform is null ? s : Inverse(Y.Transform, s + domain.Origin);
         }
 
-        (_yBoundaryDomain, _yBoundaryTransform) = (domain, Y.Transform);
-        return _yBoundaries;
+        (_yBoundaryDomain, _yBoundaryTransform, _yBoundaryHeight) = (domain, Y.Transform, height);
+        return _yBoundaries.AsSpan(0, height + 1);
     }
 
     /// <summary>
@@ -2084,7 +2104,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public void PointEnvelope(ReadOnlySpan<M4Point> points, ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, ColumnEnvelope envelope)
     {
         envelope.Reset(X.Offset, X.Size);
-        var boundaries = Boundaries;
+        ReadOnlySpan<double> boundaries = Boundaries;
         var width = X.Size;
         var k = 0;
         for (var i = 0; i < points.Length; i++)

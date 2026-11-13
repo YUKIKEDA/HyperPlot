@@ -270,6 +270,31 @@ public sealed record PointLayerSpec : LayerSpec
     public ColumnRef? ShapeBy { get; init; }
 
     /// <summary>
+    /// Gets how the layer draws its points on the index path, more than 131,072 rows (design §5.5.2 "行 R3b1 の密度と切り替え",
+    /// row R3b1): <see cref="PointDraw.Auto"/> by default. A layer of at most 131,072 rows draws raw points whatever it holds.
+    /// A value that is not named throws <see cref="ArgumentOutOfRangeException"/> when the plot is compiled.
+    /// </summary>
+    public PointDraw Draw { get; init; } = PointDraw.Auto;
+
+    /// <summary>
+    /// Gets the number of points in the view above which <see cref="PointDraw.Auto"/> draws a density: 10,000,000 by default,
+    /// and 1 or more. A value below 1 throws <see cref="ArgumentOutOfRangeException"/> when the plot is compiled.
+    /// </summary>
+    public long DensityThreshold { get; init; } = 10_000_000;
+
+    /// <summary>
+    /// Gets how a density maps the number of points of a bin to its colors: <see cref="DensityNorm.Log"/> by default. A value
+    /// that is not named throws <see cref="ArgumentOutOfRangeException"/> when the plot is compiled.
+    /// </summary>
+    public DensityNorm DensityNorm { get; init; } = DensityNorm.Log;
+
+    /// <summary>
+    /// Gets the colors of a density, from the emptiest bin to the fullest, or null for shades from transparent to the
+    /// layer's color (its <see cref="Color"/>, or its series color, or each part's color when it is split).
+    /// </summary>
+    public ColorMap? DensityMap { get; init; }
+
+    /// <summary>
     /// Gets a value indicating whether the layer has more than 131,072 rows and each of its parts is drawn from a spatial
     /// index (design §5.5.2). The compile sets it on the node it hands to the parts; a spec from a caller never has it.
     /// </summary>

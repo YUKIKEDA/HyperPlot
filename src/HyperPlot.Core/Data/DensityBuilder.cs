@@ -31,9 +31,10 @@ internal sealed unsafe class DensityBuilder : IDisposable
     // The tile of each row of the table, or −1.
     private readonly int[] _tileOfRow;
 
-    // The packed bins of each tile and their width: 0 until the tile is packed.
+    // The packed bins of each tile, their width, and the points of the largest: 0 until the tile is packed.
     private readonly nint[] _bins;
     private readonly byte[] _widths;
+    private readonly ulong[] _largest;
     private readonly long[] _groupStarts = new long[Groups + 1];
     private Unit[] _units = [];
     private int _level;
@@ -109,6 +110,7 @@ internal sealed unsafe class DensityBuilder : IDisposable
 
         _bins = new nint[_tileRows.Length];
         _widths = new byte[_tileRows.Length];
+        _largest = new ulong[_tileRows.Length];
         _level = LevelCount;
         if (_tileRows.Length > 0)
         {
@@ -213,6 +215,7 @@ internal sealed unsafe class DensityBuilder : IDisposable
                 Level = cell.Level,
                 Bins = _bins[tile],
                 BytesPerBin = _widths[tile],
+                Largest = _largest[tile],
             };
             _bins[tile] = 0;
         }
@@ -292,7 +295,7 @@ internal sealed unsafe class DensityBuilder : IDisposable
 
         // The child was packed in the level before this one: BinCount bins of its width.
         var packed = new ReadOnlySpan<byte>((void*)_bins[child], DensityTiles.BinCount * width);
-        var tile = new DensityTile(packed, width);
+        var tile = new DensityTile(packed, width, _largest[child]);
         var left = (quadrant & 1) * Half;
         var top = (quadrant >> 1) * Half;
         for (var y = 0; y < Half; y++)
@@ -381,7 +384,8 @@ internal sealed unsafe class DensityBuilder : IDisposable
         }
     }
 
-    // Writes the work tile at the width of its largest bin, and empties it for the group's next tile.
+    // Writes the work tile at the width of its largest bin, keeps the largest for the directory, and empties the work tile
+    // for the group's next tile.
     private void Pack(int tile, Span<ulong> bins)
     {
         ulong largest = 0;
@@ -426,6 +430,7 @@ internal sealed unsafe class DensityBuilder : IDisposable
         }
 
         _widths[tile] = (byte)width;
+        _largest[tile] = largest;
         _bins[tile] = (nint)block;
         bins.Clear();
     }

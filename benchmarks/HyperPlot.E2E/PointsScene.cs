@@ -232,12 +232,12 @@ internal static partial class PointsScene
     }
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
-    private static partial uint TimeBeginPeriod(uint period);
+    internal static partial uint TimeBeginPeriod(uint period);
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
-    private static partial uint TimeEndPeriod(uint period);
+    internal static partial uint TimeEndPeriod(uint period);
 
-    private static double Percentile(double[] values, double share)
+    internal static double Percentile(double[] values, double share)
     {
         var sorted = values.Order().ToArray();
         return sorted.Length == 0 ? double.NaN : sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * share))];

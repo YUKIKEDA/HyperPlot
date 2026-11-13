@@ -1,7 +1,8 @@
 // Image tiles (design §5.3, row G9). One quad a tile: its corners are the record's origin plus the drawn texel range along the
 // tile's column and row vectors, a parallelogram that flip and a turned-over extent set. The pixel shader reads the tile's
 // face of 258 x 258 (the tile and a border of a texel from its neighbors) with Load, nearest or bilinear, and paints a number
-// through the scale's transform and the color table as ColorMap.Map does, or takes a premultiplied color as it is.
+// through the scale's transform and the color table as ColorMap.Map does, or takes a premultiplied color as it is. A density
+// tile (row R3b1) is a face of numbers read nearest, whose value 0 the flag of bit 6 leaves transparent.
 
 cbuffer Images : register(b0)
 {
@@ -19,7 +20,7 @@ struct Image
     float2 SampleOrigin; // the face texel (border left out) that tile texel (0, 0) reads
     float SampleScale;
     uint Slice;
-    uint Flags;          // bit 0 bilinear, bit 1 RGBA, bits 2-3 transform, bit 4 diverging, bit 5 reversed
+    uint Flags;          // bit 0 bilinear, bit 1 RGBA, bits 2-3 transform, bit 4 diverging, bit 5 reversed, bit 6 0 transparent
     uint Table;
     float Constant;
     float Low;
@@ -76,10 +77,11 @@ float Forward(float value, uint kind, float constant)
 }
 
 // A number painted as ColorScale.Of and ColorMap.Map do: NaN and a value that does not map are transparent; t below 0 takes
-// the first color, and the index is floor(t * 256), 255 at most.
+// the first color, and the index is floor(t * 256), 255 at most. With bit 6, a value of exactly 0 is transparent too: an
+// empty bin of a density tile. Read bilinear, that is a value whose four texels are all 0.
 float4 Paint(Image image, float value)
 {
-    if (!(value == value))
+    if (!(value == value) || ((image.Flags & 64) != 0 && value == 0))
     {
         return 0;
     }

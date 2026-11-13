@@ -26,8 +26,8 @@ internal sealed unsafe class DensityTiles : IDisposable
     /// <summary>The deepest level of a cell that has a tile: its bins are the grid cells of level 32.</summary>
     internal const int DeepestTileLevel = 24;
 
-    /// <summary>The bytes of one tile's line in the directory: its code, its level, its width, and where its bins are.</summary>
-    internal const int EntryBytes = 24;
+    /// <summary>The bytes of one tile's line in the directory: its code, its level, its width, its largest bin, and where its bins are.</summary>
+    internal const int EntryBytes = 32;
 
     // The directory, in the order of the level and then of the code. The blocks are owned from the constructor to Dispose.
     private readonly Entry[] _entries;
@@ -82,7 +82,7 @@ internal sealed unsafe class DensityTiles : IDisposable
             if (order == 0)
             {
                 // The block holds BinCount bins of the entry's width until Dispose (see the remarks of the type).
-                tile = new DensityTile(new ReadOnlySpan<byte>((void*)entry.Bins, BinCount * entry.BytesPerBin), entry.BytesPerBin);
+                tile = new DensityTile(new ReadOnlySpan<byte>((void*)entry.Bins, BinCount * entry.BytesPerBin), entry.BytesPerBin, entry.Largest);
                 return true;
             }
 
@@ -124,6 +124,9 @@ internal sealed unsafe class DensityTiles : IDisposable
         /// <summary>The block of the tile's bins: <see cref="BinCount"/> bins of <see cref="BytesPerBin"/> bytes, the row of the least y first.</summary>
         public nint Bins;
 
+        /// <summary>The points of the tile's largest bin (row R3b1).</summary>
+        public ulong Largest;
+
         /// <summary>The level of the tile's cell.</summary>
         public byte Level;
 
@@ -138,14 +141,22 @@ internal readonly ref struct DensityTile
     /// <summary>Initializes a new instance of the <see cref="DensityTile"/> struct.</summary>
     /// <param name="bins">The bins.</param>
     /// <param name="bytesPerBin">The bytes of one bin.</param>
-    internal DensityTile(ReadOnlySpan<byte> bins, int bytesPerBin)
+    /// <param name="largest">The points of the largest bin.</param>
+    internal DensityTile(ReadOnlySpan<byte> bins, int bytesPerBin, ulong largest)
     {
         Bins = bins;
         BytesPerBin = bytesPerBin;
+        Largest = largest;
     }
 
     /// <summary>Gets the bytes of one bin: 1, 2, 4, or 8.</summary>
     public int BytesPerBin { get; }
+
+    /// <summary>
+    /// Gets the number of points of the tile's largest bin, at the tile's own level (design §5.5.2 "行 R3b1 の密度と切り替え",
+    /// row R3b1): the top of a density's colors is taken from the tiles drawn without reading their bins.
+    /// </summary>
+    public ulong Largest { get; }
 
     /// <summary>
     /// Gets the bins as unsigned integers of <see cref="BytesPerBin"/> bytes in the byte order of the machine (little-endian

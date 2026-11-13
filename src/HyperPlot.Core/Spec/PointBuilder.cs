@@ -31,6 +31,18 @@ public sealed class PointBuilder
     /// <summary>Gets the column set so far to shape the points by.</summary>
     internal ColumnRef? ShapeByRef { get; private set; }
 
+    /// <summary>Gets how the layer draws its points, set so far (row R3b1).</summary>
+    internal PointDraw DrawValue { get; private set; } = PointDraw.Auto;
+
+    /// <summary>Gets the number of points in the view above which the layer draws a density, set so far (row R3b1).</summary>
+    internal long DensityThresholdValue { get; private set; } = 10_000_000;
+
+    /// <summary>Gets how a density maps its counts to its colors, set so far (row R3b1).</summary>
+    internal DensityNorm DensityNormValue { get; private set; } = DensityNorm.Log;
+
+    /// <summary>Gets the colors of a density set so far: null for shades of the layer's color (row R3b1).</summary>
+    internal ColorMap? DensityMapValue { get; private set; }
+
     /// <summary>Gets a value indicating whether the layer's x goes on the secondary x scale (row G6a).</summary>
     internal bool SecondaryXValue { get; private set; }
 
@@ -142,6 +154,51 @@ public sealed class PointBuilder
         return this;
     }
 
+    /// <summary>
+    /// Sets how the layer draws its points on the index path, more than 131,072 rows (design §5.5.2 "行 R3b1 の密度と切り替え",
+    /// row R3b1). A layer of at most 131,072 rows draws raw points whatever is set.
+    /// </summary>
+    /// <param name="draw">Raw points, a density, or a switch by the number of points in the view.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="draw"/> is not a named value.</exception>
+    public PointBuilder Draw(PointDraw draw)
+    {
+        if (!IsDraw(draw))
+        {
+            throw new ArgumentOutOfRangeException(nameof(draw), draw, "The way of drawing is a named PointDraw value.");
+        }
+
+        DrawValue = draw;
+        return this;
+    }
+
+    /// <summary>
+    /// Sets how the layer draws a density (design §5.5.2 "行 R3b1 の密度と切り替え", row R3b1): the mapping of a bin's points
+    /// to its colors, the colors, and the number of points in the view above which <see cref="PointDraw.Auto"/> draws one.
+    /// </summary>
+    /// <param name="norm">How a bin's points map to a place on the colors.</param>
+    /// <param name="map">The colors from the emptiest bin to the fullest, or null for shades from transparent to the layer's color.</param>
+    /// <param name="threshold">The number of points in the view above which <see cref="PointDraw.Auto"/> draws a density: 1 or more.</param>
+    /// <returns>This builder.</returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="norm"/> is not a named value, or <paramref name="threshold"/> is less than 1.
+    /// </exception>
+    public PointBuilder Density(DensityNorm norm = DensityNorm.Log, ColorMap? map = null, long threshold = 10_000_000)
+    {
+        if (!IsDensityNorm(norm))
+        {
+            throw new ArgumentOutOfRangeException(nameof(norm), norm, "The mapping of a density is a named DensityNorm value.");
+        }
+
+        if (threshold < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(threshold), threshold, "The threshold of a density is 1 point or more.");
+        }
+
+        (DensityNormValue, DensityMapValue, DensityThresholdValue) = (norm, map, threshold);
+        return this;
+    }
+
     /// <summary>Puts the layer's x on <see cref="PlotSpec.ScaleX2"/> (design §4.1, row G6a).</summary>
     /// <returns>This builder.</returns>
     public PointBuilder SecondaryX()
@@ -160,4 +217,10 @@ public sealed class PointBuilder
 
     /// <summary>Returns whether a size is one a point layer takes: finite, above 0, and at most 512 DIPs.</summary>
     internal static bool IsSize(float size) => size is > 0 and <= 512;
+
+    /// <summary>Returns whether a way of drawing is a named value, compared name by name: the compile checks it on every render.</summary>
+    internal static bool IsDraw(PointDraw draw) => draw is PointDraw.Auto or PointDraw.Points or PointDraw.Density;
+
+    /// <summary>Returns whether a mapping of a density is a named value, compared name by name.</summary>
+    internal static bool IsDensityNorm(DensityNorm norm) => norm is DensityNorm.Log or DensityNorm.Linear or DensityNorm.Cbrt;
 }
