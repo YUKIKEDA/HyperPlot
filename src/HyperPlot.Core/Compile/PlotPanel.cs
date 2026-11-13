@@ -7,8 +7,12 @@ namespace HyperPlot;
 /// </summary>
 internal sealed class PlotPanel
 {
-    // The buffers of the boundaries of the last four lengths, so that drawing domains seen before allocates nothing (§4.6).
-    private readonly (double[] Data, double[] Scale)[] _widths = new (double[], double[])[4];
+    // The buffers of the boundaries, in data units and in the scale space, primary and secondary: as long as the widest W + 1
+    // seen, so that a width seen before, or a narrower one, allocates nothing (§4.6).
+    private double[] _data = [];
+    private double[] _scale = [];
+    private double[] _data2 = [];
+    private double[] _scale2 = [];
 
     /// <summary>
     /// Gets or sets the panel's rows (row G6b): a run of the plot's table, or a table of its gathered rows; null without a
@@ -24,18 +28,12 @@ internal sealed class PlotPanel
 
     /// <summary>
     /// Gets the boundaries of the pixel columns along x, W + 1 of them for the panel's width W (H + 1 for its height when
-    /// flipped), in data units (design §4.8).
+    /// flipped), in data units (design §4.8): the start of a buffer that holds the widest panel's.
     /// </summary>
-    public double[] Boundaries { get; private set; } = [];
-
-    /// <summary>Gets the boundaries in the scale space.</summary>
-    public double[] ScaleBoundaries { get; private set; } = [];
+    public ArraySegment<double> Boundaries { get; private set; } = ArraySegment<double>.Empty;
 
     /// <summary>Gets the boundaries over the secondary x domain (row G6a): M4 runs a layer on ScaleX2 over them.</summary>
-    public double[] Boundaries2 { get; private set; } = [];
-
-    /// <summary>Gets the secondary boundaries in the scale space.</summary>
-    public double[] ScaleBoundaries2 { get; private set; } = [];
+    public ArraySegment<double> Boundaries2 { get; private set; } = ArraySegment<double>.Empty;
 
     /// <summary>Gets or sets the learned x domain (design §4.2), before nice widens it in the layout (§4.6).</summary>
     public ScaleRange LearnedX { get; set; }
@@ -65,36 +63,25 @@ internal sealed class PlotPanel
     public (GeomFrame.Axis X, GeomFrame.Axis Y, GeomFrame.Axis X2, GeomFrame.Axis Y2) Frames { get; set; }
 
     /// <summary>
-    /// Writes the W + 1 boundaries of the pixel columns over the primary x domain (design §4.8): a new width takes kept buffers
-    /// or new ones in the place of the least recent.
+    /// Writes the W + 1 boundaries of the pixel columns over the primary x domain (design §4.8), in buffers that grow to the
+    /// widest panel's and never shrink: the y labels' width sets W, so a domain that changes W writes into the same buffers.
     /// </summary>
     public void MakeBoundaries(ScaleRange domain, int width, IScale? transform)
     {
-        // Until the buffer holds this domain's boundaries, it holds no domain's. A new width makes new buffers: the layout
-        // changed, which is not the steady state.
+        // Until the buffer holds this domain's boundaries, it holds no domain's.
         X = ScaleRange.None;
-        if (Boundaries.Length != width + 1)
-        {
-            (Boundaries, ScaleBoundaries) = Buffers(width + 1);
-        }
-
-        WriteBoundaries(domain, width, Boundaries, ScaleBoundaries, transform);
+        Boundaries = Write(domain, width, ref _data, ref _scale, transform);
         X = domain;
     }
 
     /// <summary>
     /// Writes the boundaries of the pixel columns over the secondary x domain (row G6a), as <see cref="MakeBoundaries"/> does
-    /// over the primary: a new width makes new buffers, which is not the steady state.
+    /// over the primary, in buffers of their own.
     /// </summary>
     public void MakeSecondaryBoundaries(ScaleRange domain, int width, IScale? transform)
     {
         X2 = ScaleRange.None;
-        if (Boundaries2.Length != width + 1)
-        {
-            (Boundaries2, ScaleBoundaries2) = (new double[width + 1], new double[width + 1]);
-        }
-
-        WriteBoundaries(domain, width, Boundaries2, ScaleBoundaries2, transform);
+        Boundaries2 = Write(domain, width, ref _data2, ref _scale2, transform);
         X2 = domain;
     }
 
@@ -112,11 +99,18 @@ internal sealed class PlotPanel
     /// <summary>
     /// Writes the W + 1 boundaries of the pixel columns over an x domain, or throws when they do not increase in double (design
     /// §4.8). Without a transform they are differences from the domain's origin; with one they are made in the scale space and
-    /// mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase (design §4.2). Allocates nothing,
-    /// so that a new x domain costs no garbage.
+    /// mapped back to data units with <see cref="IScale.Inverse"/>, and must still increase (design §4.2). Allocates only to
+    /// grow the buffers past the widest W seen, so that a new x domain, or a new width, costs no garbage.
     /// </summary>
-    private static void WriteBoundaries(ScaleRange domain, int width, double[] boundaries, double[] scaleBoundaries, IScale? transform)
+    private static ArraySegment<double> Write(ScaleRange domain, int width, ref double[] data, ref double[] scale, IScale? transform)
     {
+        if (data.Length < width + 1)
+        {
+            (data, scale) = (new double[width + 1], new double[width + 1]);
+        }
+
+        var boundaries = data.AsSpan(0, width + 1);
+        var scaleBoundaries = scale.AsSpan(0, width + 1);
         var target = transform is null ? boundaries : scaleBoundaries;
         for (var k = 0; k <= width; k++)
         {
@@ -131,7 +125,7 @@ internal sealed class PlotPanel
 
         if (transform is null)
         {
-            return;
+            return new ArraySegment<double>(data, 0, width + 1);
         }
 
         for (var k = 0; k <= width; k++)
@@ -149,24 +143,7 @@ internal sealed class PlotPanel
                 );
             }
         }
-    }
 
-    /// <summary>Returns the buffers of a length: kept ones, or new ones in the place of the least recent.</summary>
-    private (double[] Data, double[] Scale) Buffers(int length)
-    {
-        for (var i = 0; i < _widths.Length; i++)
-        {
-            if (_widths[i].Data?.Length == length)
-            {
-                var found = _widths[i];
-                Array.Copy(_widths, 0, _widths, 1, i);
-                _widths[0] = found;
-                return found;
-            }
-        }
-
-        Array.Copy(_widths, 0, _widths, 1, _widths.Length - 1);
-        _widths[0] = (new double[length], new double[length]);
-        return _widths[0];
+        return new ArraySegment<double>(data, 0, width + 1);
     }
 }
