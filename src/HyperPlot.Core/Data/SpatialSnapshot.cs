@@ -486,7 +486,7 @@ internal abstract unsafe class SpatialSnapshot
 
         if (search.Position < 0)
         {
-            return new SpatialNearest(false, -1, 0, 0, 0, 0, 0, overflowed, visited, read);
+            return new SpatialNearest(false, -1, -1, 0, 0, 0, 0, 0, overflowed, visited, read);
         }
 
         // Only the winner's row is read (Issue #471 Decision 21).
@@ -494,7 +494,19 @@ internal abstract unsafe class SpatialSnapshot
         Span<double> oneY = stackalloc double[1];
         Span<long> oneRow = stackalloc long[1];
         ReadCore(copy, search.Position, oneX, oneY, oneRow);
-        return new SpatialNearest(true, oneRow[0], search.X, search.Y, search.Along, search.Across, search.Best, overflowed, visited, read);
+        return new SpatialNearest(
+            true,
+            oneRow[0],
+            search.Position,
+            search.X,
+            search.Y,
+            search.Along,
+            search.Across,
+            search.Best,
+            overflowed,
+            visited,
+            read
+        );
     }
 
     /// <summary>
@@ -565,6 +577,14 @@ internal abstract unsafe class SpatialSnapshot
             _yAxis.ExtentAt(level)
         );
     }
+
+    /// <summary>
+    /// Returns the grid cells of a point given as differences from the ranges' origins (design §3.4 "量子化"): the cells
+    /// of level 32 that the index put such a point in. A density's bin under a cursor is taken from them (row R3c).
+    /// </summary>
+    /// <param name="x">The x, as a difference from the origin of <see cref="XRange"/>: not NaN.</param>
+    /// <param name="y">The y, as a difference from the origin of <see cref="YRange"/>: not NaN.</param>
+    internal (uint X, uint Y) GridAt(double x, double y) => (_xAxis.CellOfDifference(x), _yAxis.CellOfDifference(y));
 
     /// <summary>Makes the codes of points of the copy again from their stored values (design §3.4 "ビンの値").</summary>
     /// <param name="first">The position of the first point: the points to read are in the copy.</param>

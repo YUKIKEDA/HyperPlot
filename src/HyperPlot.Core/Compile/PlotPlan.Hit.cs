@@ -6,10 +6,15 @@ namespace HyperPlot;
 /// <content>The hit test over a panel's layers (design §6.3, row I2a, Issue #337).</content>
 internal sealed partial class PlotPlan
 {
+    // The buffers of the search over a spatial index (design §6.3 "探し方", row R3c): one a plot's plan, made at the first
+    // hit test that reaches a layer on the index path, 851,968 bytes, and lent to each hit test after.
+    private SpatialNearestScratch? _nearest;
+
     /// <summary>
     /// Answers a hit test at a pixel of a panel as last drawn (design §6.3): each layer that answers adds its series' hits, in
     /// the spec's order, on its own pair of scales. A layer that failed or draws nothing yet answers nothing; one that draws
-    /// an older version answers provisionally. Returns the hits found, written or not. Allocates nothing.
+    /// an older version answers provisionally. A density's bins come after the points of every layer (row R3c, Issue #471
+    /// Decision 15). Returns the hits found, written or not. Allocates nothing once warm.
     /// </summary>
     internal int HitTest(int plot, int panel, Vector2 pixel, float radius, HitMode mode, Span<SeriesHit> results)
     {
@@ -22,7 +27,7 @@ internal sealed partial class PlotPlan
         var target = _panels[panel];
         var frames = target.Frames;
         var (along, across) = _guides.Flipped ? (pixel.Y, pixel.X) : (pixel.X, pixel.Y);
-        var scan = new HitScan(results, _store, plot, panel, mode, radius, along, across);
+        var scan = new HitScan(results, _store, plot, panel, mode, radius, along, across) { Nearest = _nearest };
         for (var i = 0; i < target.Layers.Length && i < spec.Layers.Count; i++)
         {
             var layer = target.Layers[i];
@@ -46,7 +51,35 @@ internal sealed partial class PlotPlan
             }
         }
 
+        _nearest = scan.Nearest;
+        BinsLast(results[..Math.Min(scan.Found, results.Length)]);
         return scan.Found;
+    }
+
+    /// <summary>
+    /// Puts the hits of a density's bins (a row of −1) after the other hits, each kind in its order (row R3c, Issue #471
+    /// Decision 15): a bin is at a distance of 0, and the first hit is what a click selects, so that a point under the
+    /// cursor stays selectable over a density.
+    /// </summary>
+    private static void BinsLast(Span<SeriesHit> hits)
+    {
+        var firstBin = -1;
+        for (var i = 0; i < hits.Length; i++)
+        {
+            if (hits[i].Row < 0)
+            {
+                firstBin = firstBin < 0 ? i : firstBin;
+                continue;
+            }
+
+            if (firstBin >= 0)
+            {
+                // Move the bins between one place on, and the point before them: the copy within a span keeps the overlap.
+                var hit = hits[i];
+                hits[firstBin..i].CopyTo(hits[(firstBin + 1)..]);
+                hits[firstBin++] = hit;
+            }
+        }
     }
 
     /// <summary>

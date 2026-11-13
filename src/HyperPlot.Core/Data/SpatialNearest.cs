@@ -3,6 +3,7 @@ namespace HyperPlot;
 /// <summary>What <see cref="SpatialSnapshot.Nearest{TScreen}"/> found, and what it read to find it (design §6.3, row R3c).</summary>
 /// <param name="Found">Whether a point is drawn nearer than the reach: the radius, plus the marker's radius in XY.</param>
 /// <param name="Row">The point's row in the columns.</param>
+/// <param name="Position">The point's position in the copy, which <see cref="SpatialSnapshot.ReadBlock"/> reads it at.</param>
 /// <param name="X">The point's x, as a difference from the origin of <see cref="SpatialSnapshot.XRange"/>.</param>
 /// <param name="Y">The point's y, as a difference from the origin of <see cref="SpatialSnapshot.YRange"/>.</param>
 /// <param name="Along">The pixel along at which the point is drawn.</param>
@@ -17,6 +18,7 @@ namespace HyperPlot;
 internal readonly record struct SpatialNearest(
     bool Found,
     long Row,
+    long Position,
     double X,
     double Y,
     double Along,

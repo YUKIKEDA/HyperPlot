@@ -88,6 +88,15 @@ internal ref struct HitScan
     public bool Derived { get; set; }
 
     /// <summary>
+    /// Gets or sets the buffers of the search over a spatial index (design §6.3 "探し方", row R3c): the plot's plan lends
+    /// its own, and the first layer on the index path that a hit test reaches makes it when the plan has none yet.
+    /// </summary>
+    public SpatialNearestScratch? Nearest { get; set; }
+
+    /// <summary>Gets a value indicating whether the scan sums statistics (row I4b) in place of finding hits.</summary>
+    public readonly bool Summing => _summing;
+
+    /// <summary>
     /// Adds a series' summary over the rows of [start, end) whose x lies in the scan's range (row I4b): the rows found by two
     /// searches of x, the y's count, mean, least, and greatest from its pyramid. Counted whether the span has room or not.
     /// </summary>
@@ -160,13 +169,14 @@ internal ref struct HitScan
 
     /// <summary>
     /// Takes the rows of the hits written from <paramref name="from"/> back through a gather (row I2a, Issue #337 Decision 3):
-    /// a split's or a facet's gathered rows to the rows they were gathered from. A derived row stays.
+    /// a split's or a facet's gathered rows to the rows they were gathered from. A derived row stays, and so does a density's
+    /// bin, which has no row (−1, row R3c).
     /// </summary>
     public readonly void Remap(int from, ISourceRows rows, int key)
     {
         for (var i = from; i < Math.Min(Found, _results.Length); i++)
         {
-            if (!_results[i].Derived)
+            if (!_results[i].Derived && _results[i].Row >= 0)
             {
                 _results[i] = _results[i] with { Row = rows.SourceRow(key, _results[i].Row) };
             }
