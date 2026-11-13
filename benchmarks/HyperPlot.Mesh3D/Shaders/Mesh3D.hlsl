@@ -102,39 +102,33 @@ float3 Shade(MeshVertex input, bool front)
 // [The equations as transcribed here are to be checked against the paper's PDF before a figure quotes them.]
 float Weight(float z, float depth)
 {
+    // An if chain and one return: fxc read the switch whose default returned early as a function result that may be
+    // uninitialized (X4000), and an early return in an else the same way.
     float w = 1;
-    switch (WeightKind)
+    if (WeightKind == 7)
     {
-    case 7:
-        {
-            float a = z / 5;
-            float b = z / 200;
-            w = 10 / (1e-5 + a * a + b * b * b * b * b * b);
-            break;
-        }
-    case 8:
-        {
-            float a = z / 10;
-            float b = z / 200;
-            w = 10 / (1e-5 + a * a * a + b * b * b * b * b * b);
-            break;
-        }
-    case 9:
-        {
-            float b = z / 200;
-            w = 0.03 / (1e-5 + b * b * b * b);
-            break;
-        }
-    case 10:
-        {
-            float d = 1 - depth;
-            w = 3e3 * d * d * d;
-            break;
-        }
-    default:
-        return Alpha;
+        float a = z / 5;
+        float b = z / 200;
+        w = 10 / (1e-5 + a * a + b * b * b * b * b * b);
+    }
+    else if (WeightKind == 8)
+    {
+        float a = z / 10;
+        float b = z / 200;
+        w = 10 / (1e-5 + a * a * a + b * b * b * b * b * b);
+    }
+    else if (WeightKind == 9)
+    {
+        float b = z / 200;
+        w = 0.03 / (1e-5 + b * b * b * b);
+    }
+    else if (WeightKind == 10)
+    {
+        float d = 1 - depth;
+        w = 3e3 * d * d * d;
     }
 
+    // No weight (any other kind): w stays 1, inside the clamp, so the result is Alpha.
     return Alpha * clamp(w, 1e-2, 3e3);
 }
 
@@ -214,7 +208,8 @@ RWTexture2D<uint> Heads : register(u1);
 RWStructuredBuffer<Fragment> Fragments : register(u2);
 RWByteAddressBuffer Counter : register(u3);
 
-void CapturePS(MeshVertex input, bool front : SV_IsFrontFace, uint primitive : SV_PrimitiveID)
+// SV_PrimitiveID comes before SV_IsFrontFace: fxc wants the system-generated values last (X4576).
+void CapturePS(MeshVertex input, uint primitive : SV_PrimitiveID, bool front : SV_IsFrontFace)
 {
     uint index;
     Counter.InterlockedAdd(0, 1, index);

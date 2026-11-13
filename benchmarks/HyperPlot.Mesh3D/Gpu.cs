@@ -215,7 +215,13 @@ internal sealed unsafe class Gpu : IDisposable
         context->ClearUnorderedAccessViewUint(_headsAccess, empty);
         uint zero = 0;
         context->UpdateSubresource((ID3D11Resource*)_counter, 0, null, &zero, 4, 4);
-        var scissor = new RECT { left = 0, top = top, right = _width, bottom = bottom };
+        var scissor = new RECT
+        {
+            left = 0,
+            top = top,
+            right = _width,
+            bottom = bottom,
+        };
         BindMesh(_scissored);
         context->RSSetScissorRects(1, &scissor);
         context->PSSetShader(_capturePS, null, 0);
@@ -262,7 +268,15 @@ internal sealed unsafe class Gpu : IDisposable
         var fragments = new Fragment[kept];
         if (kept > 0)
         {
-            var box = new D3D11_BOX { left = 0, right = (uint)(kept * sizeof(Fragment)), top = 0, bottom = 1, front = 0, back = 1 };
+            var box = new D3D11_BOX
+            {
+                left = 0,
+                right = (uint)(kept * sizeof(Fragment)),
+                top = 0,
+                bottom = 1,
+                front = 0,
+                back = 1,
+            };
             context->CopySubresourceRegion((ID3D11Resource*)_fragmentsStaging, 0, 0, 0, 0, (ID3D11Resource*)_fragments, 0, &box);
             Check(context->Map((ID3D11Resource*)_fragmentsStaging, 0, D3D11_MAP.D3D11_MAP_READ, 0, &mapped), "Map");
             try
@@ -779,7 +793,7 @@ internal sealed unsafe class Gpu : IDisposable
         _accumBlend = blendState;
 
         // Composite: average·(1 - revealage) + target·revealage (INV_SRC_ALPHA, SRC_ALPHA; the target's alpha is kept).
-        var composite = new D3D11_BLEND_DESC();
+        var composite = default(D3D11_BLEND_DESC);
         composite.RenderTarget[0] = new D3D11_RENDER_TARGET_BLEND_DESC
         {
             BlendEnable = BOOL.TRUE,

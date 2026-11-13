@@ -53,7 +53,10 @@ internal static class ColorDifference
         else
         {
             dhp = h2p - h1p;
-            dhp = dhp > 180 ? dhp - 360 : dhp < -180 ? dhp + 360 : dhp;
+            dhp =
+                dhp > 180 ? dhp - 360
+                : dhp < -180 ? dhp + 360
+                : dhp;
         }
 
         var dHp = 2 * Math.Sqrt(c1p * c2p) * Math.Sin(Radians(dhp / 2));
@@ -73,7 +76,8 @@ internal static class ColorDifference
             hMean = h1p + h2p < 360 ? (h1p + h2p + 360) / 2 : (h1p + h2p - 360) / 2;
         }
 
-        var t = 1
+        var t =
+            1
             - (0.17 * Math.Cos(Radians(hMean - 30)))
             + (0.24 * Math.Cos(Radians(2 * hMean)))
             + (0.32 * Math.Cos(Radians((3 * hMean) + 6)))

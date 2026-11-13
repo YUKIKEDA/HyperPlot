@@ -128,7 +128,12 @@ internal static class MeshData
         {
             var frequency = 1 + (7 * random.NextDouble());
             var direction = 2 * Math.PI * random.NextDouble();
-            waves[k] = (frequency * Math.Cos(direction), frequency * Math.Sin(direction), 0.04 + (0.1 * random.NextDouble()), 2 * Math.PI * random.NextDouble());
+            waves[k] = (
+                frequency * Math.Cos(direction),
+                frequency * Math.Sin(direction),
+                0.04 + (0.1 * random.NextDouble()),
+                2 * Math.PI * random.NextDouble()
+            );
         }
 
         var vertices = new MeshVertex[n * n];
@@ -145,11 +150,7 @@ internal static class MeshData
                 }
 
                 z = Math.Clamp(z + (0.003 * ((2 * random.NextDouble()) - 1)), -1, 1);
-                vertices[(row * n) + column] = new MeshVertex
-                {
-                    Position = new Vector3((float)x, (float)y, (float)z),
-                    Color = Ramp(0.5 + (0.8 * z)),
-                };
+                vertices[(row * n) + column] = new MeshVertex { Position = new Vector3((float)x, (float)y, (float)z), Color = Ramp(0.5 + (0.8 * z)) };
             }
         }
 

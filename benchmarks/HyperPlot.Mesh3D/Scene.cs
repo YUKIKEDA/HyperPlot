@@ -128,9 +128,13 @@ internal static partial class Scene
             var same = first.AsSpan().SequenceEqual(second);
             var sameAccum = firstAccum.AsSpan().SequenceEqual(secondAccum);
             failed |= !same || !sameAccum;
-            var accum = mode == Mode.Translucent
-                ? string.Create(CultureInfo.InvariantCulture, $" accum_identical={sameAccum} accum_sha256={Convert.ToHexString(SHA256.HashData(firstAccum))}")
-                : string.Empty;
+            var accum =
+                mode == Mode.Translucent
+                    ? string.Create(
+                        CultureInfo.InvariantCulture,
+                        $" accum_identical={sameAccum} accum_sha256={Convert.ToHexString(SHA256.HashData(firstAccum))}"
+                    )
+                    : string.Empty;
             Console.WriteLine(
                 string.Create(
                     CultureInfo.InvariantCulture,
@@ -140,7 +144,10 @@ internal static partial class Scene
             if (options.Dump is { } folder)
             {
                 _ = Directory.CreateDirectory(folder);
-                var file = string.Create(CultureInfo.InvariantCulture, $"{(mode == Mode.Opaque ? "opaque" : "oit")}-{(gpu.IsWarp ? "warp" : "hw")}-{kind}-f{options.Frame}.bmp");
+                var file = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{(mode == Mode.Opaque ? "opaque" : "oit")}-{(gpu.IsWarp ? "warp" : "hw")}-{kind}-f{options.Frame}.bmp"
+                );
                 WriteBmp(Path.Combine(folder, file), first);
             }
         }
@@ -212,7 +219,10 @@ internal static partial class Scene
             if (options.Dump is { } folder && reference is not null)
             {
                 _ = Directory.CreateDirectory(folder);
-                var stem = string.Create(CultureInfo.InvariantCulture, $"{kind}-{(gpu.IsWarp ? "warp" : "hw")}-{WeightName(options.Weight)}-f{frame}");
+                var stem = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{kind}-{(gpu.IsWarp ? "warp" : "hw")}-{WeightName(options.Weight)}-f{frame}"
+                );
                 WriteBmp(Path.Combine(folder, stem + "-wboit.bmp"), image);
                 WriteBmp(Path.Combine(folder, stem + "-reference.bmp"), reference);
                 WriteBmp(Path.Combine(folder, stem + "-de00x25.bmp"), DifferenceMap(image, reference));
@@ -244,7 +254,16 @@ internal static partial class Scene
     }
 
     // The pixels of rows [top, bottom): each pixel's fragments composited four ways and compared.
-    private static void Compare(ErrorStats stats, byte[] image, byte[]? reference, uint[] heads, Fragment[] fragments, int top, int bottom, Options options)
+    private static void Compare(
+        ErrorStats stats,
+        byte[] image,
+        byte[]? reference,
+        uint[] heads,
+        Fragment[] fragments,
+        int top,
+        int bottom,
+        Options options
+    )
     {
         var list = new List<int>();
         Comparison<int> backToFront = (a, b) =>
@@ -325,7 +344,11 @@ internal static partial class Scene
         }
 
         var divisor = Math.Clamp(a, 1e-4, 5e4);
-        return ((r / divisor * (1 - revealage)) + revealage, (g / divisor * (1 - revealage)) + revealage, (b / divisor * (1 - revealage)) + revealage);
+        return (
+            (r / divisor * (1 - revealage)) + revealage,
+            (g / divisor * (1 - revealage)) + revealage,
+            (b / divisor * (1 - revealage)) + revealage
+        );
     }
 
     // The weight of Mesh3D.hlsl's Weight, in double.
@@ -353,8 +376,7 @@ internal static partial class Scene
         return alpha * Math.Clamp(w, 1e-2, 3e3);
     }
 
-    private static (byte R, byte G, byte B) Quantize((double R, double G, double B) color) =>
-        (ToByte(color.R), ToByte(color.G), ToByte(color.B));
+    private static (byte R, byte G, byte B) Quantize((double R, double G, double B) color) => (ToByte(color.R), ToByte(color.G), ToByte(color.B));
 
     private static byte ToByte(double value) => (byte)Math.Round(Math.Clamp(value, 0, 1) * 255);
 
@@ -385,7 +407,12 @@ internal static partial class Scene
         var toEye = new Vector3(MathF.Cos(Elevation) * MathF.Cos(angle), MathF.Cos(Elevation) * MathF.Sin(angle), MathF.Sin(Elevation));
         var eye = toEye * distance;
         var view = Matrix4x4.CreateLookAt(eye, Vector3.Zero, Vector3.UnitZ);
-        var projection = Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, Width / (float)Height, distance - radius - 0.1f, distance + radius + 0.1f);
+        var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+            FieldOfView,
+            Width / (float)Height,
+            distance - radius - 0.1f,
+            distance + radius + 0.1f
+        );
         var right = Vector3.Normalize(Vector3.Cross(Vector3.UnitZ, toEye));
         return new FrameConstants
         {
@@ -421,7 +448,8 @@ internal static partial class Scene
 
     private static int Differing(byte[] a, byte[] b)
     {
-        var (left, right) = (MemoryMarshal.Cast<byte, uint>(a), MemoryMarshal.Cast<byte, uint>(b));
+        var left = MemoryMarshal.Cast<byte, uint>(a);
+        var right = MemoryMarshal.Cast<byte, uint>(b);
         var differing = 0;
         for (var i = 0; i < left.Length; i++)
         {
@@ -499,11 +527,35 @@ internal static partial class Scene
     /// <summary>The color differences of the pixels compared, by comparison and by the pixels' layers.</summary>
     private sealed class ErrorStats
     {
-        private static readonly string[] _names = ["wboit_gpu_vs_reference", "wboit_cpu_vs_reference", "wboit_gpu_vs_wboit_cpu", "unsorted_over_vs_reference"];
+        private static readonly string[] _names =
+        [
+            "wboit_gpu_vs_reference",
+            "wboit_cpu_vs_reference",
+            "wboit_gpu_vs_wboit_cpu",
+            "unsorted_over_vs_reference",
+        ];
 
-        private readonly List<float>[] _covered = [[], [], [], []];
-        private readonly List<float>[] _overlap = [[], [], [], []];
-        private readonly List<float>[] _covered76 = [[], [], [], []];
+        private readonly List<float>[] _covered =
+        [
+            [],
+            [],
+            [],
+            [],
+        ];
+        private readonly List<float>[] _overlap =
+        [
+            [],
+            [],
+            [],
+            [],
+        ];
+        private readonly List<float>[] _covered76 =
+        [
+            [],
+            [],
+            [],
+            [],
+        ];
         private readonly List<int> _layers = [];
 
         /// <summary>Pixels the WBOIT frame drew where the capture found no fragment: expected 0.</summary>
@@ -512,7 +564,13 @@ internal static partial class Scene
         /// <summary>Lists that pointed outside the captured fragments or looped: expected 0.</summary>
         public int Broken { get; set; }
 
-        public void Take(int layers, (byte R, byte G, byte B) gpu, (byte R, byte G, byte B) reference, (byte R, byte G, byte B) cpu, (byte R, byte G, byte B) unsorted)
+        public void Take(
+            int layers,
+            (byte R, byte G, byte B) gpu,
+            (byte R, byte G, byte B) reference,
+            (byte R, byte G, byte B) cpu,
+            (byte R, byte G, byte B) unsorted
+        )
         {
             _layers.Add(layers);
             var (labGpu, labReference, labCpu, labUnsorted) = (Lab(gpu), Lab(reference), Lab(cpu), Lab(unsorted));
@@ -569,7 +627,7 @@ internal static partial class Scene
             }
         }
 
-        private static (double, double, double) Lab((byte R, byte G, byte B) color) => ColorDifference.Lab(color.R, color.G, color.B);
+        private static (double L, double A, double B) Lab((byte R, byte G, byte B) color) => ColorDifference.Lab(color.R, color.G, color.B);
 
         private static void Line(string name, List<float> values)
         {
@@ -652,7 +710,10 @@ internal static partial class Scene
             for (var f = 0; f < _timed.Length; f++)
             {
                 var gpu = _timed[f]
-                    ? string.Join(',', Enumerable.Range(0, stages.Length).Select(s => _times[(f * Stages) + s].ToString("F4", CultureInfo.InvariantCulture)))
+                    ? string.Join(
+                        ',',
+                        Enumerable.Range(0, stages.Length).Select(s => _times[(f * Stages) + s].ToString("F4", CultureInfo.InvariantCulture))
+                    )
                     : new string(',', stages.Length - 1);
                 writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{f},{cpu[f]:F4},{gpu}"));
             }
