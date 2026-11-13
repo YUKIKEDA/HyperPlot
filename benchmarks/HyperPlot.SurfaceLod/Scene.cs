@@ -193,7 +193,12 @@ internal static partial class Scene
         var distance = radius / MathF.Sin(FieldOfView / 2);
         var eye = new Vector3(MathF.Cos(Elevation) * MathF.Cos(angle), MathF.Cos(Elevation) * MathF.Sin(angle), MathF.Sin(Elevation)) * distance;
         var view = Matrix4x4.CreateLookAt(eye, Vector3.Zero, Vector3.UnitZ);
-        var projection = Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, Width / (float)Height, distance - radius - 0.1f, distance + radius + 0.1f);
+        var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+            FieldOfView,
+            Width / (float)Height,
+            distance - radius - 0.1f,
+            distance + radius + 0.1f
+        );
         var (zScale, zOffset) = Selector.ZToBox(data);
         return new FrameConstants
         {
@@ -439,7 +444,9 @@ internal static partial class Scene
         public void Write(string path, GpuTimes gpuTimes)
         {
             using var writer = new StreamWriter(path);
-            writer.WriteLine("frame,cpu_ms,select_ms,residency_ms,record_ms,tiles,before_restriction,restriction_splits,triangles,uploaded_tiles,missing,at_budget,gpu_upload_end_ms,gpu_clear_end_ms,gpu_draw_end_ms");
+            writer.WriteLine(
+                "frame,cpu_ms,select_ms,residency_ms,record_ms,tiles,before_restriction,restriction_splits,triangles,uploaded_tiles,missing,at_budget,gpu_upload_end_ms,gpu_clear_end_ms,gpu_draw_end_ms"
+            );
             for (var f = 0; f < _cpu.Length; f++)
             {
                 writer.WriteLine(
@@ -499,7 +506,8 @@ internal static partial class Scene
         public int Timed(int from) => _timed.AsSpan(from).Count(true);
 
         /// <summary>The time of stage s (0 the uploads, 1 the clears, 2 the draws) of each timed frame from a frame on.</summary>
-        public double[] Stage(int s, int from) => Collect(from, f => s == 0 ? _times[f * Stages] : _times[(f * Stages) + s] - _times[(f * Stages) + s - 1]);
+        public double[] Stage(int s, int from) =>
+            Collect(from, f => s == 0 ? _times[f * Stages] : _times[(f * Stages) + s] - _times[(f * Stages) + s - 1]);
 
         public double[] Total(int from) => Collect(from, f => _times[(f * Stages) + Stages - 1]);
 
