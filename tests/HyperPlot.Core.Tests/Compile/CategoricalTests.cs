@@ -1,5 +1,6 @@
 using System.Numerics;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -478,13 +479,7 @@ public sealed class CategoricalTests
         var shapedNames = backend.Shaped.Count(s => s.Text.StartsWith('n'));
         Assert.InRange(shapedNames, plan.Guides.X.Count, (3 * plan.Guides.X.Count) + 3);
 
-        _ = plan.Render(spec);
-
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        _ = plan.Render(spec);
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        PerformanceAssert.DoesNotAllocate(() => _ = plan.Render(spec));
     }
 
     /// <summary>
@@ -582,10 +577,10 @@ public sealed class CategoricalTests
     /// <summary>Once warm, bars over categories drawn again allocate nothing (design §4.8).</summary>
     /// <remarks>
     /// Preconditions:
-    /// - A 640 × 360 target with the light theme; bars over 50 categories and over 5,000 (bands under a pixel), drawn once.
+    /// - A 640 × 360 target with the light theme; bars over 50 categories and over 5,000 (bands under a pixel).
     ///
     /// Steps:
-    /// - Render each five times.
+    /// - Render each five times as a warm-up; collect; render five times more and count the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -599,17 +594,16 @@ public sealed class CategoricalTests
             using var data = Data.Create(count, 2);
             using var plan = new PlotPlan(pool, 640, 360, new TextEngine(new FakeTextBackend()), 1);
             var spec = data.Bars() with { Theme = Theme.Light };
-            _ = plan.Render(spec);
-            _ = plan.Render(spec);
-
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 5; i++)
-            {
-                _ = plan.Render(spec);
-            }
-
-            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            PerformanceAssert.DoesNotAllocate(
+                () =>
+                {
+                    for (var i = 0; i < 5; i++)
+                    {
+                        _ = plan.Render(spec);
+                    }
+                },
+                scenario: $"{count} categories"
+            );
         }
     }
 

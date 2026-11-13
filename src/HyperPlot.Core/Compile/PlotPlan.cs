@@ -1202,7 +1202,7 @@ internal sealed partial class PlotPlan : IDisposable
             if (plot.Coord is PolarCoordSpec && layer is PointLayerSpec point && point.X.Column.Length > LayerPlan.MaxElements)
             {
                 throw new InvalidOperationException(
-                    $"Layer {i} has {point.X.Column.Length} points in polar coordinates; at most {LayerPlan.MaxElements} are drawn so (design §5.5.2). Row R3e draws more."
+                    $"Layer {i} has {point.X.Column.Length} points in polar coordinates; at most {LayerPlan.MaxElements} are drawn so (design §5.5.2). Row R3e2 draws more."
                 );
             }
         }

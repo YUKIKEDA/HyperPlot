@@ -1,4 +1,5 @@
 using System.Numerics;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -254,7 +255,8 @@ public sealed class MinMaxPyramidTests
     ///   one warm-up run of each call.
     ///
     /// Steps:
-    /// - Run 100 times: a range query across a seam, and M4 over 1,920 columns with both gap modes and both X kinds.
+    /// - Run 100 times as a warm-up, collect, and 100 times more while counting: a range query across a seam, and M4 over
+    ///   1,920 columns with both gap modes and both X kinds.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -273,15 +275,13 @@ public sealed class MinMaxPyramidTests
         Eventually.Completes(pool.PrecomputeStats(stored));
         Run();
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 100; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Run();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 100; i++)
+            {
+                Run();
+            }
+        });
 
         void Run()
         {

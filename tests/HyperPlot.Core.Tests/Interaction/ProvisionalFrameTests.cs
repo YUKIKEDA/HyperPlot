@@ -1,4 +1,5 @@
 using HyperPlot.Interaction;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -478,8 +479,8 @@ public sealed class ProvisionalFrameTests
     ///   reads it, and 10 frames more.
     ///
     /// Steps:
-    /// - Count the bytes this thread allocates over 20 frames. Each provisional frame learns, lays out, extracts, and records
-    ///   again; the view is not moved, so that no new tick label comes, whose shaping is a cache's first entry (row I1c).
+    /// - Draw 20 frames as a warm-up; collect; count the bytes this thread allocates over 20 frames more. Each provisional
+    ///   frame learns, lays out, extracts, and records again; the view is not moved, so that no new tick label comes, whose shaping is a cache's first entry (row I1c).
     ///   Release chunk 1 at the end, so that the pyramid's disposal does not wait for the hold's watchdog.
     ///
     /// Expected:
@@ -505,20 +506,17 @@ public sealed class ProvisionalFrameTests
 
             var learnings = engine.Plan!.Learnings;
 
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
             var provisional = true;
-            for (var i = 0; i < 20; i++)
+            PerformanceAssert.DoesNotAllocate(() =>
             {
-                engine.RenderFrame();
-                provisional &= engine.IsProvisional;
-            }
-
-            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+                for (var i = 0; i < 20; i++)
+                {
+                    engine.RenderFrame();
+                    provisional &= engine.IsProvisional;
+                }
+            });
             Assert.True(provisional);
-            Assert.Equal(learnings + 20, engine.Plan.Learnings);
-            Assert.Equal(0, allocated);
+            Assert.Equal(learnings + 40, engine.Plan.Learnings);
         }
         finally
         {

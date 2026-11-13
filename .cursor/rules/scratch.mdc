@@ -13,6 +13,7 @@ Remove, in the turn that made them: extra worktrees and checkouts, throwaway pro
 - Long text for `gh` goes through a temporary UTF-8 file that is deleted after the call.
 - A removal names its targets with a literal absolute path, or with `"${DIR:?}"` in Bash. `rm -rf "$DIR"/*` is refused by the agent's safety check and stops the whole command, the steps before the removal included (`.cursor/rules/powershell-shell.mdc`).
 - Generated data for a measurement goes under the worktree's `.dev/` (for example `.dev/data`), not a folder at a drive's root: the agent's safety check refuses `rm -rf /d/<folder>` as a system directory, and the files stay for the owner to delete. PR #379 left 16 GB in `D:\hyperplot-i3b-data` that way.
+- The session's scratchpad is shared by the agent and every subagent it starts. Each task keeps its files in a subfolder named after the task, removes only that subfolder, and never deletes or moves a file it did not create. Scripts that a later run needs (a measurement chain, a run script another agent waits on) and their output live in the task's worktree or under `.dev/out/`, not in the scratchpad. On 2026-11-13 the scratchpad was emptied at 23:56 while a measurement chain ran from it: the chain's scripts, the R3b2 block-size sweep's output (about 108 runs, 40 minutes of machine time), and the #485 run script were lost, and the sweep had to run again.
 
 ```text
 # BAD — a 40 GB generated column file stays in the scratchpad "for the next run"

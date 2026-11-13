@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Numerics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -677,11 +678,10 @@ public sealed class DensityTests
     /// Preconditions:
     /// - 400,000 seeded rows over [0, 100]²: a Density layer over (x, y), whose root has a tile, and an Auto layer over
     ///   (u, v) split by three categories with a threshold of 130,000. An engine that waits for its indexes.
-    /// - A script of square views around (50, 50) of sides 100, 70, 20, 10, 20, 70, and 100, run 6 times, then a
-    ///   collection.
+    /// - A script of square views around (50, 50) of sides 100, 70, 20, 10, 20, 70, and 100, run 6 times.
     ///
     /// Steps:
-    /// - Run the script twice, counting the thread's allocations.
+    /// - Run the script twice more as a warm-up; collect; run it twice again, counting the thread's allocations.
     ///
     /// Expected:
     /// - In the warm-up, the Density layer draws a density at every view, and the Auto layer draws both a density and raw
@@ -738,18 +738,16 @@ public sealed class DensityTests
         Assert.Contains(false, drawn);
         Assert.False(engine.IsProvisional);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var round = 0; round < 2; round++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            foreach (var view in views)
+            for (var round = 0; round < 2; round++)
             {
-                Draw(view);
+                foreach (var view in views)
+                {
+                    Draw(view);
+                }
             }
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        });
 
         void Draw(PanelView2D view)
         {

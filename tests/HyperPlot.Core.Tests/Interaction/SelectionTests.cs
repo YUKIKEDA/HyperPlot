@@ -1,6 +1,7 @@
 using System.Numerics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -506,7 +507,7 @@ public sealed class SelectionTests
     /// - The engine fixture with a lasso selected.
     ///
     /// Steps:
-    /// - Move over 8 pixels and draw after each, 3 times round to warm; collect; count the thread's allocations over 5 more rounds.
+    /// - Move over 8 pixels and draw after each, 5 times round to warm; collect; count the thread's allocations over 5 more rounds.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -526,20 +527,13 @@ public sealed class SelectionTests
             }
         }
 
-        for (var k = 0; k < 3; k++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Round();
-        }
-
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var k = 0; k < 5; k++)
-        {
-            Round();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var k = 0; k < 5; k++)
+            {
+                Round();
+            }
+        });
     }
 
     /// <summary>Returns layer 0's selected rows of plot 0, waited for on the test's thread: the engine is called from its own thread only.</summary>
