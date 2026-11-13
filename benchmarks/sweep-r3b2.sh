@@ -34,6 +34,11 @@ for blk in 65536 8192; do
   SCENES+=("z4-p1-b$blk|HP_PROBE_BLOCK_POINTS=$blk HP_PROBE_ZOOM=4 HP_PROBE_NO_RAW_LIMIT=1|160000000|0")
 done
 
+# 64 parts below 2,048 points a block: the window of 32,768 points is 512 points a block.
+for blk in 512 1024; do
+  SCENES+=("w64-p64-b$blk|HP_PROBE_BLOCK_POINTS=$blk|10000000|64")
+done
+
 run() {
   local name env count cats
   IFS='|' read -r name env count cats <<< "$1"
@@ -42,8 +47,8 @@ run() {
   env $env "$E" points "$count" 6 0.6 uniform 600 "$cats" whole >> "$OUT" 2>&1 || echo "exit $? (run without a result)" >> "$OUT"
 }
 
-# SWEEP_ONLY=<prefix> keeps the scenes whose name starts with it (the zoom-4 rerun: SWEEP_ONLY=z4).
-if [ -n "${SWEEP_ONLY:-}" ]; then KEPT=(); for s in "${SCENES[@]}"; do [[ $s == "$SWEEP_ONLY"* ]] && KEPT+=("$s"); done; SCENES=("${KEPT[@]}"); fi
+# SWEEP_ONLY=<regex> keeps the scenes whose name matches it at the start (the second run: SWEEP_ONLY="z4|w64").
+if [ -n "${SWEEP_ONLY:-}" ]; then KEPT=(); for s in "${SCENES[@]}"; do [[ $s =~ ^($SWEEP_ONLY) ]] && KEPT+=("$s"); done; SCENES=("${KEPT[@]}"); fi
 N=${#SCENES[@]}
 for r in 1 2 3; do
   echo "##### round $r $(date +%H:%M:%S)" >> "$OUT"
