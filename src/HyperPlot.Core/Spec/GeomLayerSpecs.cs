@@ -247,7 +247,7 @@ public sealed record PointLayerSpec : LayerSpec
     /// <summary>Gets the points' color, or null for the layer's series color (design §4.1).</summary>
     public Color? Color { get; init; }
 
-    /// <summary>Gets the diameter of a disc, the side of a square, or the span of a cross, in DIPs: above 0 and at most 512.</summary>
+    /// <summary>Gets the points' size in DIPs, above 0 and at most 512: the diameter of a disc, and the side of the box any other shape fits in.</summary>
     public float Size { get; init; } = 6;
 
     /// <summary>Gets the points' shape.</summary>

@@ -350,20 +350,9 @@ internal sealed partial class PlotPlan
                 {
                     var at = Map(marker.At, shift.X0, shift.Y0, guide, axes);
                     var radius = marker.Radius * _scale;
-                    switch (marker.Shape)
-                    {
-                        case MarkerShape.Square:
-                            _list.DrawRect(at.X - radius, at.Y - radius, 2 * radius, 2 * radius, color);
-                            break;
-                        case MarkerShape.Cross:
-                            var line = new LineStyle(color, MathF.Max(1, MathF.Round(_scale)));
-                            _list.DrawPolyline([at - new Vector2(radius, 0), at + new Vector2(radius, 0)], line);
-                            _list.DrawPolyline([at - new Vector2(0, radius), at + new Vector2(0, radius)], line);
-                            break;
-                        default:
-                            _list.DrawSectors([new SectorTrapezoid(0, MathF.Tau, radius, radius, 0, 0)], at, color);
-                            break;
-                    }
+
+                    // The markers' own call draws every shape, as a point layer's (design §5.1 "行 R3f の形").
+                    _list.DrawMarkers([at], new MarkerStyle(color, 2 * radius, marker.Shape, MathF.Max(1, MathF.Round(_scale))));
 
                     Keep(annotation, i, panel, HitShape.Disc, at, at, radius);
                     break;

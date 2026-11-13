@@ -23,7 +23,7 @@ public sealed class PointPlanTests
     ///
     /// Steps:
     /// - Call Point with a default reference and with the other table's reference.
-    /// - In the configure, set sizes of 0, NaN, and 513, opacities of -0.1, 1.1, and NaN, and a shape of 3.
+    /// - In the configure, set sizes of 0, NaN, and 513, opacities of -0.1, 1.1, and NaN, and a shape of 6.
     /// - Build a point layer with every member set, and one with none.
     ///
     /// Expected:
@@ -59,7 +59,7 @@ public sealed class PointPlanTests
 
         Assert.Equal(
             "shape",
-            Assert.Throws<ArgumentOutOfRangeException>(() => Plot.Create(table).Point(x, y, p => p.Shape((MarkerShape)3))).ParamName
+            Assert.Throws<ArgumentOutOfRangeException>(() => Plot.Create(table).Point(x, y, p => p.Shape((MarkerShape)6))).ParamName
         );
 
         var red = new Color(200, 0, 0, 255);
@@ -81,6 +81,42 @@ public sealed class PointPlanTests
     }
 
     /// <summary>
+    /// A point layer takes every named shape, in the builder and in the compile, and records its markers with it (design
+    /// §4.1, §5.1 "行 R3f の形"): the checks compare the names one by one, so a name left out fails here.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Three points over [0, 100]².
+    ///
+    /// Steps:
+    /// - For each value of Enum.GetValues of MarkerShape: build a point layer with it through the builder, and render it.
+    /// - Render a spec whose layer holds the value past the largest.
+    ///
+    /// Expected:
+    /// - Each render records three markers with the shape's number. The value past the largest throws ArgumentException.
+    /// </remarks>
+    [Fact]
+    public void Shape_TakesEveryNamedValueAndNoOther()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        using var xs = Column.Wrap([10.0, 50, 90]);
+        using var ys = Column.Wrap([10.0, 50, 90]);
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        var shapes = Enum.GetValues<MarkerShape>();
+        foreach (var shape in shapes)
+        {
+            var built = Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Shape(shape)).Build();
+            var list = plan.Render(Spec(table, built.Layers[0]));
+            Assert.Equal([(uint)shape, (uint)shape, (uint)shape], list.Markers.ToArray().Select(m => m.Kind & 0xFF));
+        }
+
+        var past = (MarkerShape)(shapes.Max(s => (int)s) + 1);
+        var point = new PointLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") };
+        _ = Assert.Throws<ArgumentException>(() => plan.Render(Spec(table, point with { Shape = past })));
+    }
+
+    /// <summary>
     /// The compile refuses a point layer it does not draw (design §5.5.2 "上限と例外"): members out of range, a categorical
     /// x, a position, a stat, a FillBy, and a color beside a color channel. 131,072 rows are mapped on the CPU.
     /// </summary>
@@ -89,7 +125,7 @@ public sealed class PointPlanTests
     /// - A column of 131,072 doubles and a category column.
     ///
     /// Steps:
-    /// - Render point layers with a Size of 0 and of 513, an Opacity of 1.5 and of NaN, a Shape of 3, a categorical x, a stack
+    /// - Render point layers with a Size of 0 and of 513, an Opacity of 1.5 and of NaN, a Shape of 6, a categorical x, a stack
     ///   position, a bin stat, a FillBy, and a Color beside a ColorBy.
     /// - Render 131,072 rows.
     ///
@@ -133,7 +169,7 @@ public sealed class PointPlanTests
             },
             point with
             {
-                Shape = (MarkerShape)3,
+                Shape = (MarkerShape)6,
             },
             point with
             {

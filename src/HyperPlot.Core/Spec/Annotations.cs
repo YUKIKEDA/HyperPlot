@@ -65,7 +65,10 @@ public readonly record struct AnnotationValue(AnnotationCoord Coord, long Origin
 /// <param name="Y">The y coordinate.</param>
 public readonly record struct AnnotationPoint(AnnotationValue X, AnnotationValue Y);
 
-/// <summary>The shape of a <see cref="MarkerAnnotationSpec"/> (row I4a).</summary>
+/// <summary>
+/// The shape of a marker (rows I4a and R3f): of a <see cref="MarkerAnnotationSpec"/> and of the points of a
+/// <see cref="PointLayerSpec"/>. Every shape fits in the square box whose side is the marker's size.
+/// </summary>
 public enum MarkerShape
 {
     /// <summary>A filled disc.</summary>
@@ -74,8 +77,17 @@ public enum MarkerShape
     /// <summary>A filled square.</summary>
     Square = 1,
 
-    /// <summary>Two crossing lines.</summary>
+    /// <summary>A horizontal and a vertical line that cross at the center: a plus sign.</summary>
     Cross = 2,
+
+    /// <summary>A filled triangle that points up: its apex at the middle of the box's top side, its base the bottom side.</summary>
+    Triangle = 3,
+
+    /// <summary>A filled diamond: its corners at the middles of the box's sides.</summary>
+    Diamond = 4,
+
+    /// <summary>Two lines along the box's diagonals.</summary>
+    X = 5,
 }
 
 /// <summary>
@@ -139,7 +151,7 @@ public sealed record MarkerAnnotationSpec(AnnotationPoint At) : AnnotationSpec
     /// <summary>Gets the marker's shape: a circle by default.</summary>
     public MarkerShape Shape { get; init; } = MarkerShape.Circle;
 
-    /// <summary>Gets the marker's radius in DIPs (half a square's side, half a cross's arm span): 4 by default.</summary>
+    /// <summary>Gets the marker's radius in DIPs (half the side of the box the shape fits in): 4 by default.</summary>
     public float Radius { get; init; } = 4;
 }
 

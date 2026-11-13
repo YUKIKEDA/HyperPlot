@@ -41,7 +41,7 @@ public sealed class PointBuilder
     }
 
     /// <summary>Sets the points' size.</summary>
-    /// <param name="size">The diameter of a disc, the side of a square, or the span of a cross, in DIPs: finite, above 0, and at most 512.</param>
+    /// <param name="size">The diameter of a disc, and the side of the box any other shape fits in, in DIPs: finite, above 0, and at most 512.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="size"/> is not finite, above 0, and at most 512.</exception>
     public PointBuilder Size(float size)
