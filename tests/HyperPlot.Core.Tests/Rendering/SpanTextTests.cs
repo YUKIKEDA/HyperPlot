@@ -239,6 +239,84 @@ public sealed class SpanTextTests
     }
 
     /// <summary>
+    /// In a full cache of short texts, a frame drawn whole after one or more frames of a new tooltip alone shapes every long
+    /// text it draws again (Issue #378's review): each hover frame's tooltip takes the grown entry of the long text used
+    /// longest ago, and each long text the whole frame shapes again takes the entry of the next one it draws.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine over the fake backend, recording no calls, its cache full of 8,192 short texts.
+    /// - A whole frame measures 19 long texts (a title, two axis titles, 16 data labels, each over 16 characters) and then a
+    ///   new tooltip; a hover frame measures a new tooltip alone, as the engine's frames that keep the plot do.
+    ///
+    /// Steps:
+    /// - A whole frame; 4 rounds of <c>hovers</c> hover frames and a whole frame; then <c>hovers</c> hover frames and a whole
+    ///   frame counted. The cases: 0 (whole frames back to back), 1, 8, and 64 (more than the 20 grown entries).
+    ///
+    /// Expected:
+    /// - The counted whole frame calls <c>Shape</c> once (its tooltip) with no hover frame before it, and 20 times (its 19
+    ///   long texts and its tooltip) after any number of them.
+    /// </remarks>
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(1, 20)]
+    [InlineData(8, 20)]
+    [InlineData(64, 20)]
+    public void Cache_Full_WholeFrameAfterHoverFrames_ShapesItsLongTextsAgain(int hovers, int expected)
+    {
+        var backend = new FakeTextBackend { RecordShapes = false };
+        var engine = new TextEngine(backend);
+        var buffer = new char[32];
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        for (var i = 0; i < TextEngine.CacheCapacity; i++)
+        {
+            _ = i.TryFormat(buffer, out var written, default, invariant);
+            _ = engine.Measure(buffer.AsSpan(0, written), Style);
+        }
+
+        string[] texts =
+        [
+            "a title of the plot, kept",
+            "the x axis title, long",
+            "the y axis title, long",
+            .. Enumerable.Range(0, 16).Select(i => "a data label of row " + i.ToString(invariant)),
+        ];
+        var tooltip = 0;
+        void Tooltip() => _ = engine.Measure("a tooltip line: " + (tooltip++).ToString(invariant), Style);
+        void Whole()
+        {
+            engine.BeginFrame();
+            foreach (var text in texts)
+            {
+                _ = engine.Measure(text, Style);
+            }
+
+            Tooltip();
+        }
+
+        void Hovers()
+        {
+            for (var i = 0; i < hovers; i++)
+            {
+                engine.BeginFrame();
+                Tooltip();
+            }
+        }
+
+        Whole();
+        for (var round = 0; round < 4; round++)
+        {
+            Hovers();
+            Whole();
+        }
+
+        Hovers();
+        var before = backend.ShapeCount;
+        Whole();
+        Assert.Equal(expected, backend.ShapeCount - before);
+    }
+
+    /// <summary>
     /// A shaped text that is reused holds only the last text: its glyphs, lines, and size (design §5.6, row I1c).
     /// </summary>
     /// <remarks>

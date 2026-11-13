@@ -21,6 +21,8 @@ using HyperPlot.Samples;
 //   <dir>/HyperPlot.E2E.exe density <folder for the data files> <count: 1e8 or 1e9> <uniform|cluster>
 //     <zoom|switch|first|categories> [frames] [auto|points|density]: the scene of the density of row R3b1 instead, over
 //     x and y files of HyperPlot.DataPath's generate-points (DensityScene).
+//   <dir>/HyperPlot.E2E.exe wheel-after-hover <labels> <hover frames> [cycles]: the wheel frame after hover frames of PR
+//     #511 instead, with no data file (WheelAfterHoverScene; run-511.ps1 runs it against the code before the PR).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
 if (args.Length > 0 && args[0] == "points")
 {
@@ -41,6 +43,13 @@ if (args.Length > 0 && args[0] == "density")
     using var own = Process.GetCurrentProcess();
     own.PriorityClass = ProcessPriorityClass.High;
     return HyperPlot.E2E.DensityScene.Run(args.AsSpan(1));
+}
+
+if (args.Length > 0 && args[0] == "wheel-after-hover")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.WheelAfterHoverScene.Run(args.AsSpan(1));
 }
 
 string? directory = null;
