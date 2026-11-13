@@ -60,10 +60,7 @@ public sealed class PointDrawTests
 
         foreach (var threshold in new[] { 0, -1, long.MinValue })
         {
-            Assert.Equal(
-                "threshold",
-                Assert.Throws<ArgumentOutOfRangeException>(() => Built(p => p.Density(threshold: threshold))).ParamName
-            );
+            Assert.Equal("threshold", Assert.Throws<ArgumentOutOfRangeException>(() => Built(p => p.Density(threshold: threshold))).ParamName);
         }
 
         var set = Built(p => p.Draw(PointDraw.Density).Density(DensityNorm.Cbrt, ColorMaps.Viridis, 1));
@@ -72,11 +69,15 @@ public sealed class PointDrawTests
         Assert.Equal(long.MaxValue, Built(p => p.Density(threshold: long.MaxValue)).DensityThreshold);
 
         var density = Built(p => p.Density());
-        Assert.Equal((PointDraw.Auto, DensityNorm.Log, 10_000_000L, null), (density.Draw, density.DensityNorm, density.DensityThreshold, density.DensityMap));
+        Assert.Equal(
+            (PointDraw.Auto, DensityNorm.Log, 10_000_000L, null),
+            (density.Draw, density.DensityNorm, density.DensityThreshold, density.DensityMap)
+        );
         var plain = Built(_ => { });
         Assert.Equal((PointDraw.Auto, DensityNorm.Log, 10_000_000L, null), (plain.Draw, plain.DensityNorm, plain.DensityThreshold, plain.DensityMap));
 
-        PointLayerSpec Built(Action<PointBuilder> configure) => Assert.IsType<PointLayerSpec>(Plot.Create(table).Point(x, y, configure).Build().Layers[0]);
+        PointLayerSpec Built(Action<PointBuilder> configure) =>
+            Assert.IsType<PointLayerSpec>(Plot.Create(table).Point(x, y, configure).Build().Layers[0]);
     }
 
     /// <summary>

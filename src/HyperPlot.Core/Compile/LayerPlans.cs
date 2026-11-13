@@ -1399,11 +1399,7 @@ internal abstract class LayerPlan
         // §4.8 "検査（行 R3b1）"). The names are made only when they throw.
         if (!PointBuilder.IsDraw(point.Draw))
         {
-            throw new ArgumentOutOfRangeException(
-                $"Layers[{index}].Draw",
-                point.Draw,
-                $"The Draw of layer {index} is not a named PointDraw value."
-            );
+            throw new ArgumentOutOfRangeException($"Layers[{index}].Draw", point.Draw, $"The Draw of layer {index} is not a named PointDraw value.");
         }
 
         if (point.DensityThreshold < 1)

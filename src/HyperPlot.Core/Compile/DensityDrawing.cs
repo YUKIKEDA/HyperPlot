@@ -1,5 +1,5 @@
-using System.Runtime.InteropServices;
 using System.Numerics;
+using System.Runtime.InteropServices;
 using HyperPlot.Rendering;
 
 namespace HyperPlot;

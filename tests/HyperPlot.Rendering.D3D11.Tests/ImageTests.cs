@@ -211,7 +211,7 @@ public sealed class ImageTests : IDisposable
     ///   table (log10 on the GPU and on the CPU may round apart at an index's edge).
     /// </remarks>
     [Fact]
-    public void DensityFace_DrawsTheCountsAndLeavesEmptyBinsTransparent()
+    public async Task DensityFace_DrawsTheCountsAndLeavesEmptyBinsTransparent()
     {
         ulong[] counts = [0, 1, 5, 0, 300, 1_000];
         var bins = new byte[DensityTiles.BinCount * 2];
@@ -226,7 +226,7 @@ public sealed class ImageTests : IDisposable
         using var xs = Column.Wrap(Enumerable.Range(0, 100).Select(_ => random.NextDouble()).ToArray());
         using var ys = Column.Wrap(Enumerable.Range(0, 100).Select(_ => random.NextDouble()).ToArray());
         using var index = pool.BuildSpatialIndex(xs, ys, new SpatialIndexInput { Rows = RowRange.All });
-        index.WhenComplete().GetAwaiter().GetResult();
+        await index.WhenComplete();
         var snapshot = index.Acquire();
         try
         {
@@ -235,7 +235,7 @@ public sealed class ImageTests : IDisposable
             using var target = backend.CreateRenderTarget(new RenderTargetDescription(width, Height));
             var map = ColorMaps.Viridis;
             backend.Images.BeginFrame();
-            var slot = backend.Images.RequestDensity(snapshot, 0, 0, new DensityTile(bins, 2));
+            var slot = backend.Images.RequestDensity(snapshot, 0, 0, new DensityTile(bins, 2, 0));
             var high = Forward(1_000, 2, 1);
             var record = Paint(2, 1, 0, high, 0, false, false, (uint)backend.Images.Table(map), bilinear: false, opacity: 1);
             record.Flags |= ZeroTransparent;
@@ -259,7 +259,13 @@ public sealed class ImageTests : IDisposable
                 }
 
                 var expected = Index(Forward(counts[i], 2, 1) / high);
-                AssertPixel(pixels, width, (16 * i) + 8, Height / 2, [map[Math.Max(0, expected - 1)], map[expected], map[Math.Min(255, expected + 1)]]);
+                AssertPixel(
+                    pixels,
+                    width,
+                    (16 * i) + 8,
+                    Height / 2,
+                    [map[Math.Max(0, expected - 1)], map[expected], map[Math.Min(255, expected + 1)]]
+                );
             }
         }
         finally

@@ -63,16 +63,23 @@ internal static class DensityScene
         };
         var mode = args[3];
         var frames = args.Length > 4 ? int.Parse(args[4], CultureInfo.InvariantCulture) : 600;
-        PointDraw? drawn = args.Length > 5
-            ? args[5] switch
-            {
-                "auto" => PointDraw.Auto,
-                "points" => PointDraw.Points,
-                "density" => PointDraw.Density,
-                _ => null,
-            }
-            : PointDraw.Auto;
-        if (distribution is null || drawn is not { } draw || mode is not ("zoom" or "switch" or "first" or "categories") || count < 1 || frames < Round)
+        PointDraw? drawn =
+            args.Length > 5
+                ? args[5] switch
+                {
+                    "auto" => PointDraw.Auto,
+                    "points" => PointDraw.Points,
+                    "density" => PointDraw.Density,
+                    _ => null,
+                }
+                : PointDraw.Auto;
+        if (
+            distribution is null
+            || drawn is not { } draw
+            || mode is not ("zoom" or "switch" or "first" or "categories")
+            || count < 1
+            || frames < Round
+        )
         {
             Console.Error.WriteLine(Usage);
             Console.Error.WriteLine("The frames are 300 or more: the allocations are read over the last round of the script.");
@@ -229,13 +236,14 @@ internal static class DensityScene
         using var engine = new PlotEngine(backend, 1920, 1080);
         engine.SetPlot(plot);
         var waited = Stopwatch.StartNew();
-        var frames = 0;
-        do
+        engine.RenderFrame();
+        var frames = 1;
+        while (engine.IsProvisional && waited.Elapsed < Deadline)
         {
+            Thread.Sleep(1);
             engine.RenderFrame();
             frames++;
-            Thread.Sleep(1);
-        } while (engine.IsProvisional && waited.Elapsed < Deadline);
+        }
 
         return frames;
     }
@@ -452,13 +460,14 @@ internal static class DensityScene
         {
             var t = (f % Round) / (double)Round;
             var depth = Math.Sin(t * Math.PI);
-            var (span, cx, cy) = mode == "categories"
-                ? (1.02 * whole, middle + (0.01 * whole * Math.Sin(t * 2 * Math.PI)), middle + (0.01 * whole * Math.Cos(t * 2 * Math.PI)))
-                : (
-                    whole * Math.Pow(10, -4 * depth),
-                    middle + ((dense + (0.2 * PointFiles.Side * Math.Sin(t * 2 * Math.PI)) - middle) * depth),
-                    middle + ((dense + (0.1 * PointFiles.Side * Math.Cos(t * 2 * Math.PI)) - middle) * depth)
-                );
+            var (span, cx, cy) =
+                mode == "categories"
+                    ? (1.02 * whole, middle + (0.01 * whole * Math.Sin(t * 2 * Math.PI)), middle + (0.01 * whole * Math.Cos(t * 2 * Math.PI)))
+                    : (
+                        whole * Math.Pow(10, -4 * depth),
+                        middle + ((dense + (0.2 * PointFiles.Side * Math.Sin(t * 2 * Math.PI)) - middle) * depth),
+                        middle + ((dense + (0.1 * PointFiles.Side * Math.Cos(t * 2 * Math.PI)) - middle) * depth)
+                    );
             spans[f] = span;
             views[f] = new PanelView2D(
                 ViewRange.FromValues(cx - (span / 2), cx + (span / 2)),

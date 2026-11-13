@@ -84,23 +84,26 @@ public sealed class DensityTests
     /// - 131,073 seeded points over [0, 100]² in an engine that waits for its indexes; a threshold of 10,000.
     ///
     /// Steps:
-    /// - Draw the whole view; zoom to views holding about 9,000 (between 0.8 and 1 times), then about 5,000 points; zoom out
-    ///   to about 9,000 again, then the whole view. Draw the whole view with Points and with Density.
+    /// - Zoom in from the whole view to a side of 2 in 200 steps, then out again, drawing each view. Draw a whole view with
+    ///   Points and a side of 5 with Density.
     ///
     /// Expected:
-    /// - Whole view: density. About 9,000: still density. About 5,000: raw points. About 9,000 again: still raw points. Whole
-    ///   view: density. Points: raw points; Density: density, at any view.
+    /// - At each view, Auto draws a density exactly when the upper count passes 10,000 after raw points, or stays at or over
+    ///   8,000 after a density. The walk passes both kinds of view between 8,000 and 10,000: one drawn as a density (zooming
+    ///   in) and one drawn as raw points (zooming out). The whole view is a density; a side of 2 is raw points.
+    /// - Points: raw points at the whole view. Density: a density at a side of 5.
     /// </remarks>
     [Fact]
     public void Auto_SwitchesWithABand()
     {
+        const long Threshold = 10_000;
         var random = new Random(3);
         using var xs = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
         using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
         var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
         PlotSpec Spec(PointDraw draw) =>
             Plot.Create(table)
-                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(draw).Density(threshold: 10_000))
+                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(draw).Density(threshold: Threshold))
                 .ScaleX(Scale.Linear().WithDomain(0, 100))
                 .ScaleY(Scale.Linear().WithDomain(0, 100))
                 .Build();
@@ -108,24 +111,37 @@ public sealed class DensityTests
         var backend = new NullBackend();
         using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
         engine.SetPlot(Spec(PointDraw.Auto));
+        engine.RenderFrame();
+        IndexedPointPlan Plan() => (IndexedPointPlan)engine.Plan!.Layers[0];
         bool Density(double side)
         {
-            engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(10, 10 + side), ViewRange.FromValues(10, 10 + side)));
+            engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(0, side), ViewRange.FromValues(0, side)));
             backend.Images.Sent();
             engine.RenderFrame();
-            return ((IndexedPointPlan)engine.Plan!.Layers[0]).DrewDensity;
+            return Plan().DrewDensity;
         }
 
-        // About 131,073 · (side / 100)² points: 9,000 at a side of 26.2, 5,000 at 19.5.
+        var sides = Enumerable.Range(0, 201).Select(i => 100 * Math.Pow(0.02, i / 200.0)).ToArray();
+        var (last, heldDensity, heldPoints) = (false, false, false);
+        foreach (var side in sides.Concat(sides.Reverse()))
+        {
+            var drawn = Density(side);
+            var count = Plan().Switch.LastCount;
+            Assert.Equal(last ? count >= Threshold * DensitySwitch.Back : count > Threshold, drawn);
+            var between = count >= Threshold * DensitySwitch.Back && count <= Threshold;
+            (heldDensity, heldPoints) = (heldDensity || (between && drawn), heldPoints || (between && !drawn));
+            last = drawn;
+        }
+
+        Assert.True(heldDensity && heldPoints);
         Assert.True(Density(100));
-        Assert.True(Density(26.2));
-        Assert.False(Density(19.5));
-        Assert.False(Density(26.2));
-        Assert.True(Density(100));
+        Assert.False(Density(2));
 
         engine.SetPlot(Spec(PointDraw.Points));
+        engine.RenderFrame();
         Assert.False(Density(100));
         engine.SetPlot(Spec(PointDraw.Density));
+        engine.RenderFrame();
         Assert.True(Density(5));
     }
 
@@ -172,6 +188,9 @@ public sealed class DensityTests
         Assert.NotEqual(0, list.Images.Length);
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
         Assert.True(plan.Switch.Top > 0);
-        Assert.All(list.Images.ToArray(), image => Assert.Equal(ImageInstance.ZeroTransparent | (2u << 2), image.Flags & (ImageInstance.ZeroTransparent | (3u << 2))));
+        Assert.All(
+            list.Images.ToArray(),
+            image => Assert.Equal(ImageInstance.ZeroTransparent | (2u << 2), image.Flags & (ImageInstance.ZeroTransparent | (3u << 2)))
+        );
     }
 }

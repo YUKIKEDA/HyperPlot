@@ -219,7 +219,17 @@ public sealed class IndexedPointTests
         var buffer = new ColumnRef[4];
         foreach (var draw in Enum.GetValues<PointDraw>())
         {
-            LayerPlan.Validate(table, new PointLayerSpec { X = v, Y = v, Draw = draw }, 0, buffer);
+            LayerPlan.Validate(
+                table,
+                new PointLayerSpec
+                {
+                    X = v,
+                    Y = v,
+                    Draw = draw,
+                },
+                0,
+                buffer
+            );
         }
     }
 

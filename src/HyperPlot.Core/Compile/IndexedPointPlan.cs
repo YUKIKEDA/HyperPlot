@@ -81,6 +81,9 @@ internal sealed class IndexedPointPlan : LayerPlan
     private readonly IScale? _xTransform;
     private readonly IScale? _yTransform;
     private readonly SpatialIndexing _indexing;
+
+    // The switch the layer's parts share (design §5.5.2 "行 R3b1 の密度と切り替え").
+    private readonly DensitySwitch _switch;
     private SpatialIndex? _index;
     private SpatialSnapshot? _snapshot;
 
@@ -90,7 +93,6 @@ internal sealed class IndexedPointPlan : LayerPlan
     private bool _missing;
 
     // The density's pieces this frame (design §5.5.2 "水準の選び方"), planned by the switch before any part records.
-    private readonly DensitySwitch _switch;
     private DensityPiece[] _pieces = new DensityPiece[64];
     private SpatialCell[] _cells = new SpatialCell[256];
     private int _pieceCount;

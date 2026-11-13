@@ -41,7 +41,7 @@ public sealed class ResidencyCacheTests : IDisposable
         var counts = Counts(width);
         var cache = new ResidencyCache { Unbounded = true };
         cache.BeginFrame();
-        var slot = cache.RequestDensity(built.Snapshot, 3, 5, new DensityTile(Bins(counts, width), width));
+        var slot = cache.RequestDensity(built.Snapshot, 3, 5, new DensityTile(Bins(counts, width), width, 0));
         var upload = Assert.Single(cache.Uploads.ToArray());
         Assert.Equal((ResidencyCache.Format.Float, slot), (upload.Format, upload.Slot));
         var face = MemoryMarshal.Cast<uint, float>(cache.Face(upload)).ToArray();
@@ -78,16 +78,16 @@ public sealed class ResidencyCacheTests : IDisposable
         var bins = Bins(Counts(1), 1);
         var cache = new ResidencyCache { Unbounded = true };
         cache.BeginFrame();
-        var first = cache.RequestDensity(a.Snapshot, 4, 9, new DensityTile(bins, 1));
-        Assert.Equal(first, cache.RequestDensity(a.Snapshot, 4, 9, new DensityTile(bins, 1)));
+        var first = cache.RequestDensity(a.Snapshot, 4, 9, new DensityTile(bins, 1, 0));
+        Assert.Equal(first, cache.RequestDensity(a.Snapshot, 4, 9, new DensityTile(bins, 1, 0)));
         _ = Assert.Single(cache.Uploads.ToArray());
 
         int[] slots =
         [
             first,
-            cache.RequestDensity(b.Snapshot, 4, 9, new DensityTile(bins, 1)),
-            cache.RequestDensity(a.Snapshot, 5, 9, new DensityTile(bins, 1)),
-            cache.RequestDensity(a.Snapshot, 4, 10, new DensityTile(bins, 1)),
+            cache.RequestDensity(b.Snapshot, 4, 9, new DensityTile(bins, 1, 0)),
+            cache.RequestDensity(a.Snapshot, 5, 9, new DensityTile(bins, 1, 0)),
+            cache.RequestDensity(a.Snapshot, 4, 10, new DensityTile(bins, 1, 0)),
         ];
         Assert.Equal(4, slots.Distinct().Count());
         Assert.Equal(4, cache.Uploads.Length);
@@ -133,7 +133,7 @@ public sealed class ResidencyCacheTests : IDisposable
 
         var density = new List<int>();
         int slot;
-        while ((slot = cache.RequestDensity(built.Snapshot, 2, (ulong)density.Count, new DensityTile(bins, 2))) >= 0)
+        while ((slot = cache.RequestDensity(built.Snapshot, 2, (ulong)density.Count, new DensityTile(bins, 2, 0))) >= 0)
         {
             density.Add(slot);
         }
@@ -151,7 +151,7 @@ public sealed class ResidencyCacheTests : IDisposable
         cache.BeginFrame();
         for (var code = 0; code < density.Count; code++)
         {
-            Assert.Equal(density[code], cache.RequestDensity(built.Snapshot, 2, (ulong)code, new DensityTile(bins, 2)));
+            Assert.Equal(density[code], cache.RequestDensity(built.Snapshot, 2, (ulong)code, new DensityTile(bins, 2, 0)));
         }
 
         for (var i = 0; i < raster.Length; i++)
@@ -219,7 +219,7 @@ public sealed class ResidencyCacheTests : IDisposable
 
         Assert.Equal(0, cache.Uploads.Length);
         Assert.Equal(d, RequestRaster(1_000));
-        Assert.Equal(r0, cache.RequestDensity(built.Snapshot, 0, 0, new DensityTile(bins, 1)));
+        Assert.Equal(r0, cache.RequestDensity(built.Snapshot, 0, 0, new DensityTile(bins, 1, 0)));
         Assert.Equal(r0, Assert.Single(cache.Uploads.ToArray()).Slot);
         cache.Sent();
         Assert.Equal(-1, RequestRaster(1_001));
@@ -233,7 +233,7 @@ public sealed class ResidencyCacheTests : IDisposable
 
         int RequestD()
         {
-            var slot = cache.RequestDensity(built.Snapshot, 0, 0, new DensityTile(bins, 1));
+            var slot = cache.RequestDensity(built.Snapshot, 0, 0, new DensityTile(bins, 1, 0));
             cache.Sent();
             return slot;
         }
@@ -273,11 +273,11 @@ public sealed class ResidencyCacheTests : IDisposable
         cache.BeginFrame();
         int[] ofA =
         [
-            cache.RequestDensity(a.Snapshot, 1, 0, new DensityTile(bins, 4)),
-            cache.RequestDensity(a.Snapshot, 1, 1, new DensityTile(bins, 4)),
+            cache.RequestDensity(a.Snapshot, 1, 0, new DensityTile(bins, 4, 0)),
+            cache.RequestDensity(a.Snapshot, 1, 1, new DensityTile(bins, 4, 0)),
             cache.RequestCoarseDensity(a.Snapshot),
         ];
-        var ofB = cache.RequestDensity(b.Snapshot, 1, 0, new DensityTile(bins, 4));
+        var ofB = cache.RequestDensity(b.Snapshot, 1, 0, new DensityTile(bins, 4, 0));
         var raster = cache.Request(Key(mipmap, 1), mipmap);
         var face = cache.Face(cache.Uploads[1]).ToArray();
         cache.Sent();
@@ -286,10 +286,10 @@ public sealed class ResidencyCacheTests : IDisposable
         cache.BeginFrame();
         cache.ForgetDensity(a.Snapshot);
         Assert.Equal(2, cache.SlotsInUse);
-        Assert.Equal(ofB, cache.RequestDensity(b.Snapshot, 1, 0, new DensityTile(bins, 4)));
+        Assert.Equal(ofB, cache.RequestDensity(b.Snapshot, 1, 0, new DensityTile(bins, 4, 0)));
         Assert.Equal(raster, cache.Request(Key(mipmap, 1), mipmap));
         Assert.Equal(0, cache.Uploads.Length);
-        Assert.Equal(ofA.Min(), cache.RequestDensity(a.Snapshot, 1, 1, new DensityTile(bins, 4)));
+        Assert.Equal(ofA.Min(), cache.RequestDensity(a.Snapshot, 1, 1, new DensityTile(bins, 4, 0)));
         _ = Assert.Single(cache.Uploads.ToArray());
         cache.Sent();
 
@@ -297,7 +297,7 @@ public sealed class ResidencyCacheTests : IDisposable
         Assert.Equal(0, cache.SlotsInUse);
         Assert.Equal(0, cache.Uploads.Length);
         cache.BeginFrame();
-        _ = cache.RequestDensity(a.Snapshot, 1, 1, new DensityTile(bins, 4));
+        _ = cache.RequestDensity(a.Snapshot, 1, 1, new DensityTile(bins, 4, 0));
         Assert.Equal(face, cache.Face(Assert.Single(cache.Uploads.ToArray())).ToArray());
     }
 
@@ -332,7 +332,7 @@ public sealed class ResidencyCacheTests : IDisposable
         Assert.Equal(slot, cache.RequestCoarseDensity(snapshot));
         var upload = Assert.Single(cache.Uploads.ToArray());
         Assert.Equal(slot, upload.Slot);
-        Assert.NotEqual(slot, cache.RequestDensity(snapshot, 0, 0, new DensityTile(new byte[DensityTiles.BinCount], 1)));
+        Assert.NotEqual(slot, cache.RequestDensity(snapshot, 0, 0, new DensityTile(new byte[DensityTiles.BinCount], 1, 0)));
 
         var counts = snapshot.CoarseDensity.ToArray();
         Assert.True(counts.Max() > 1);
