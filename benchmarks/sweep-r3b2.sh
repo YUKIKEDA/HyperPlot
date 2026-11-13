@@ -44,7 +44,7 @@ run() {
   IFS='|' read -r name env count cats <<< "$1"
   echo "=== $name $(date +%H:%M:%S)" >> "$OUT"
   # shellcheck disable=SC2086
-  env $env "$E" points "$count" 6 0.6 uniform 600 "$cats" whole >> "$OUT" 2>&1 || echo "exit $? (run without a result)" >> "$OUT"
+  timeout 900 env $env "$E" points "$count" 6 0.6 uniform 600 "$cats" whole >> "$OUT" 2>&1 || echo "exit $? (run without a result)" >> "$OUT"
 }
 
 # SWEEP_ONLY=<regex> keeps the scenes whose name matches it at the start (the second run: SWEEP_ONLY="z4|w64").

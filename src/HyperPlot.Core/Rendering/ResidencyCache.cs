@@ -14,7 +14,7 @@ namespace HyperPlot.Rendering;
 public sealed class ResidencyCache
 {
     /// <summary>The bytes of GPU memory the tiles take at most: 256 MB.</summary>
-    public const long DefaultBudget = 256L << 20;
+    public const long DefaultBudget = 1L << 30; // Spike only (R3b2 zoom 4): main has 256 MB.
 
     /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs.</summary>
     public const int FrameUpload = 4 << 20;

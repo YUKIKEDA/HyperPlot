@@ -116,30 +116,6 @@ internal static partial class PointsScene
         using var backend = D3D11Backend.Create();
         using var engine = new PlotEngine(backend, 1920, 1080);
 
-        // The first display: frames until the index is built and every page the whole view draws is on the GPU.
-        var shown = Stopwatch.StartNew();
-        engine.SetPlot(plot);
-        engine.RenderFrame();
-        var (waited, firstRuns, pageFrames) = (0, -1.0, 0);
-        while (engine.IsProvisional)
-        {
-            Thread.Sleep(1);
-            engine.RenderFrame();
-            waited++;
-            if (backend.Images.Points.PagesInUse > 0)
-            {
-                firstRuns = firstRuns < 0 ? shown.Elapsed.TotalSeconds : firstRuns;
-                pageFrames++;
-            }
-        }
-
-        Console.WriteLine(
-            string.Create(
-                CultureInfo.InvariantCulture,
-                $"first display: {shown.Elapsed.TotalSeconds:F3} s over {waited} frames; first pages at {firstRuns:F3} s; frames that sent pages: {pageFrames}; pages on the GPU: {backend.Images.Points.PagesInUse} ({backend.Images.Points.BytesInUse} bytes)"
-            )
-        );
-
         // The script: zoom in to a tenth of the side around a point that drifts, and out again, 300 frames a round. The
         // views are made before the frames: a view is an object of the scene's own.
         var panel = new PanelId(0, 0);
@@ -159,6 +135,38 @@ internal static partial class PointsScene
                 ViewRange.FromValues(cy - (span / 2), cy + (span / 2))
             );
         }
+
+        // The first display: frames until the index is built and every page the whole view draws is on the GPU.
+        var shown = Stopwatch.StartNew();
+        engine.SetPlot(plot);
+        engine.RenderFrame();
+
+        // Spike only: at a zoom above 1, the first display waits for the pages of the zoomed view, not of the whole data,
+        // which past about 2.2e7 points would never fit the page budget and would stay provisional.
+        if (Zoom > 1)
+        {
+            engine.Views.SetView(panel, views[0]);
+            engine.RenderFrame();
+        }
+        var (waited, firstRuns, pageFrames) = (0, -1.0, 0);
+        while (engine.IsProvisional)
+        {
+            Thread.Sleep(1);
+            engine.RenderFrame();
+            waited++;
+            if (backend.Images.Points.PagesInUse > 0)
+            {
+                firstRuns = firstRuns < 0 ? shown.Elapsed.TotalSeconds : firstRuns;
+                pageFrames++;
+            }
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"first display: {shown.Elapsed.TotalSeconds:F3} s over {waited} frames; first pages at {firstRuns:F3} s; frames that sent pages: {pageFrames}; pages on the GPU: {backend.Images.Points.PagesInUse} ({backend.Images.Points.BytesInUse} bytes)"
+            )
+        );
 
         var cpu = new double[total];
         var allocated = new long[total];
