@@ -69,6 +69,54 @@ public sealed class AnnotationTests
     }
 
     /// <summary>
+    /// The compile takes every named value of the four enums an annotation holds, and refuses the value after the last of
+    /// each (design §4.8): the checks compare the names one by one (Issue #400), so a name left out of a comparison, or
+    /// added to an enum alone, fails here.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's table as a line with a secondary y scale, so that a y of Data2 checks; a point at (500, 0) of the data.
+    ///
+    /// Steps:
+    /// - For each value of Enum.GetValues of TextAlign, TextBaseline, MarkerShape, and AnnotationCoord, set a spec with one
+    ///   annotation that holds it: a text's Horizontal, a text's Vertical, a marker's Shape, a marker's y Coord.
+    /// - Set the same four with the value one above the enum's largest.
+    ///
+    /// Expected:
+    /// - Every named value is taken: 3 alignments, 4 baselines, every shape, 3 coords.
+    /// - Each value above the largest throws ArgumentOutOfRangeException.
+    /// </remarks>
+    [Fact]
+    public void Spec_TakesEveryNamedValueAndNoOther()
+    {
+        using var f = new EngineFixture();
+        var (x, y) = (f.Table.Col<double>("x"), f.Table.Col<float>("y"));
+        var spec = Plot.Create(f.Table).Line(x, y).Line(x, y, l => l.SecondaryY()).ScaleY2(Scale.Linear().WithDomain(0, 100)).Build();
+        var at = new AnnotationPoint(AnnotationValue.Data(500), AnnotationValue.Data(0));
+        var text = Annotation.Text(at, "a");
+        var marker = Annotation.Marker(at);
+
+        Assert.Equal(3, Check<TextAlign>(v => text with { Horizontal = v }));
+        Assert.Equal(4, Check<TextBaseline>(v => text with { Vertical = v }));
+        Assert.True(Check<MarkerShape>(v => marker with { Shape = v }) >= 3);
+        Assert.Equal(3, Check<AnnotationCoord>(v => marker with { At = at with { Y = new AnnotationValue(v, 0, 0.5) } }));
+
+        int Check<TEnum>(Func<TEnum, AnnotationSpec> make)
+            where TEnum : struct, Enum
+        {
+            var values = Enum.GetValues<TEnum>();
+            foreach (var value in values)
+            {
+                f.Engine.SetPlot(spec with { Annotations = [make(value)] });
+            }
+
+            var past = (TEnum)Enum.ToObject(typeof(TEnum), values.Max(v => Convert.ToInt32(v, null)) + 1);
+            _ = Assert.Throws<ArgumentOutOfRangeException>(() => f.Engine.SetPlot(spec with { Annotations = [make(past)] }));
+            return values.Length;
+        }
+    }
+
+    /// <summary>
     /// The subtitle takes a band below the title and the caption one at the bottom, and the panel gives up their height
     /// (design §4.6, Issue #382 Decisions 2 and 14), in a plot and in a figure's cell.
     /// </summary>
