@@ -289,7 +289,7 @@ public sealed class PlotBuilder
     /// <typeparam name="TY">The element type of the y column.</typeparam>
     /// <param name="x">The column of the points' x.</param>
     /// <param name="y">The column of the points' y.</param>
-    /// <param name="configure">Sets the color, the size, the shape, the opacity, and the label; called once, here.</param>
+    /// <param name="configure">Sets the color, the size, the shape, the opacity, the label, and the density; called once, here.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentException">A reference is <see langword="default"/> or names another table.</exception>
     /// <exception cref="InvalidOperationException"><see cref="Build"/> was called.</exception>
@@ -315,6 +315,10 @@ public sealed class PlotBuilder
                 ColorBy = Channel(point.ColorByRef),
                 SizeBy = Channel(point.SizeByRef),
                 ShapeBy = Channel(point.ShapeByRef),
+                Draw = point.DrawValue,
+                DensityThreshold = point.DensityThresholdValue,
+                DensityNorm = point.DensityNormValue,
+                DensityMap = point.DensityMapValue,
             }
         );
         Secondary(point.SecondaryXValue, point.SecondaryYValue);
