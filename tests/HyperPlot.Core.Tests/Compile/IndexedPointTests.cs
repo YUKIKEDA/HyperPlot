@@ -142,35 +142,26 @@ public sealed class IndexedPointTests
     }
 
     /// <summary>
-    /// The compile refuses what the index path does not draw in row R3a (design §5.5.2 "上限と例外"): more than 1e7 rows, a
-    /// numeric color, polar coordinates, a column that is not stored, and more than 64 parts.
+    /// The compile refuses what the index path does not draw (design §5.5.2 "上限と例外"): a numeric color, polar
+    /// coordinates, a column that is not stored, and more than 64 parts.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - Columns of 131,073 rows; a column of 10,000,001 floats; categories of 64 and of 65 names over the 131,073 rows.
+    /// - Columns of 131,073 rows; categories of 64 and of 65 names over the 131,073 rows.
     ///
     /// Steps:
-    /// - Render 10,000,001 rows; 131,073 rows colored by a number; 131,073 rows in polar coordinates; 131,073 rows over an
-    ///   evenly spaced x; 131,073 rows split by 65 categories, and by 64.
+    /// - Render 131,073 rows colored by a number; 131,073 rows in polar coordinates; 131,073 rows over an evenly spaced x;
+    ///   131,073 rows split by 65 categories, and by 64.
     ///
     /// Expected:
-    /// - InvalidOperationException naming row R3b, R3d, R3e, and R3d for the first three and the 65 categories;
-    ///   ArgumentException naming a stored column for the evenly spaced x; the 64 categories render 64 parts' runs.
+    /// - InvalidOperationException naming row R3d, R3e, and R3d for the first two and the 65 categories; ArgumentException
+    ///   naming a stored column for the evenly spaced x; the 64 categories render 64 parts' runs.
     /// </remarks>
     [Fact]
     public void Validate_RefusesWhatTheIndexPathDoesNotDraw()
     {
         using var pool = new PlotWorkerPool(2);
         using var plan = TestPlans.Create(pool, Size, Size);
-        using var huge = Column.Wrap(new float[LayerPlan.RawThreshold + 1]);
-        var hugeTable = DataTable.Create().Add("v", huge).Build();
-        var h = hugeTable.Col<float>("v");
-        Assert.Contains(
-            "R3b",
-            Assert.Throws<InvalidOperationException>(() => plan.Render(Spec(hugeTable, new PointLayerSpec { X = h, Y = h }))).Message,
-            StringComparison.Ordinal
-        );
-
         using var values = Column.Wrap(Enumerable.Range(0, Over).Select(i => (double)(i % 100)).ToArray());
         var names64 = Enumerable.Range(0, 64).Select(i => $"k{i:D2}").ToArray();
         var names65 = Enumerable.Range(0, 65).Select(i => $"k{i:D2}").ToArray();
@@ -201,6 +192,35 @@ public sealed class IndexedPointTests
 
         var parts = plan.Render(Spec(table, point with { ColorBy = table.Cat("c64").ToColumnRef() }) with { ScaleColor = Scale.Ordinal() });
         Assert.Equal(64, parts.ResidentRuns.ToArray().Select(r => r.Cells).Distinct().Count());
+    }
+
+    /// <summary>
+    /// A point layer of more than 1e7 rows passes the compile's checks (design §4.8 "検査（行 R3b1）", §10 R3b1 row): row
+    /// R3b1 draws any number of rows from the indexes, and the limit of row R3a is gone.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One stored column of 10,000,001 floats, the layer's x and y (40 MB, so the class runs apart from the others).
+    ///
+    /// Steps:
+    /// - Check the layer with the checks the compile runs on each layer before it makes a plan (LayerPlan.Validate), drawn
+    ///   as each value of Enum.GetValues of PointDraw. A render is not needed for the check, and it would build an index
+    ///   of 1e7 points.
+    ///
+    /// Expected:
+    /// - No check throws. Row R3a threw InvalidOperationException here.
+    /// </remarks>
+    [Fact]
+    public void Validate_MoreThan1e7Rows_Passes()
+    {
+        using var huge = Column.Wrap(new float[10_000_001]);
+        var table = DataTable.Create().Add("v", huge).Build();
+        var v = table.Col<float>("v");
+        var buffer = new ColumnRef[4];
+        foreach (var draw in Enum.GetValues<PointDraw>())
+        {
+            LayerPlan.Validate(table, new PointLayerSpec { X = v, Y = v, Draw = draw }, 0, buffer);
+        }
     }
 
     /// <summary>
