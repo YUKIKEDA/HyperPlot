@@ -14,5 +14,7 @@
   <ItemGroup>
     <Compile Include="..\..\samples\Shared\PlotArea.cs" Link="PlotArea.cs" />
     <Compile Include="..\..\samples\Shared\WalkFile.cs" Link="WalkFile.cs" />
+    <!-- The density scene (row R3b1) maps the seeded x and y files of the spatial scenes of row C3a. -->
+    <Compile Include="..\HyperPlot.DataPath\PointFiles.cs" Link="PointFiles.cs" />
   </ItemGroup>
 </Project>

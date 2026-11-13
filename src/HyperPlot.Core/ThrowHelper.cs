@@ -97,4 +97,9 @@ internal static class ThrowHelper
             nameof(first),
             $"The points [{first}, {first} + {count}) are not all among the snapshot's {pointCount} points."
         );
+
+    [DoesNotReturn]
+    [StackTraceHidden]
+    internal static void ThrowNoCoarseDensity(string paramName) =>
+        throw new ArgumentException("The snapshot holds nothing, so it has no coarse density.", paramName);
 }

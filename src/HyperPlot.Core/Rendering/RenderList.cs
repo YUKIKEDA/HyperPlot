@@ -1175,6 +1175,9 @@ internal enum RenderCommandKind : byte
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
 internal struct ImageInstance
 {
+    /// <summary>The bit of <see cref="Flags"/> that leaves a number read as exactly 0 transparent (row R3b1).</summary>
+    internal const uint ZeroTransparent = 64;
+
     /// <summary>The target point of the tile's texel corner (0, 0), in physical pixels.</summary>
     public Vector2 Origin;
 
@@ -1196,7 +1199,10 @@ internal struct ImageInstance
     /// <summary>The slot's slice in its page.</summary>
     public uint Slice;
 
-    /// <summary>Bit 0 bilinear; bit 1 RGBA; bits 2 and 3 the transform (linear, log, symlog, pow); bit 4 diverging; bit 5 reversed.</summary>
+    /// <summary>
+    /// Bit 0 bilinear; bit 1 RGBA; bits 2 and 3 the transform (linear, log, symlog, pow); bit 4 diverging; bit 5 reversed;
+    /// bit 6 a number read as exactly 0 is transparent (the empty bins of a density tile, row R3b1).
+    /// </summary>
     public uint Flags;
 
     /// <summary>The row of the color table.</summary>

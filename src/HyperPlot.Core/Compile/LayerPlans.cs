@@ -13,9 +13,6 @@ internal abstract class LayerPlan
     /// <summary>The most elements a segment or a rect layer draws (design §5.5.3): 2^17, 4 MB of rectangle records.</summary>
     public const int MaxElements = 131_072;
 
-    /// <summary>The most rows of a point layer until row R3b draws more as a density (design §5.5.2): 1e7.</summary>
-    public const int RawThreshold = 10_000_000;
-
     /// <summary>The most categories a color channel splits a layer into (design §4.1, row G7c).</summary>
     public const int MaxCategories = 256;
 
@@ -1398,19 +1395,38 @@ internal abstract class LayerPlan
             throw new ArgumentException($"The Shape of layer {index} is {(int)point.Shape}; a shape is a named MarkerShape value.");
         }
 
-        // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2).
+        // The density's members are checked on every layer, the CPU path's too: a spec keeps them when its rows grow (design
+        // §4.8 "検査（行 R3b1）"). The names are made only when they throw.
+        if (!PointBuilder.IsDraw(point.Draw))
+        {
+            throw new ArgumentOutOfRangeException($"Layers[{index}].Draw", point.Draw, $"The Draw of layer {index} is not a named PointDraw value.");
+        }
+
+        if (point.DensityThreshold < 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                $"Layers[{index}].DensityThreshold",
+                point.DensityThreshold,
+                $"The DensityThreshold of layer {index} is less than 1 point."
+            );
+        }
+
+        if (!PointBuilder.IsDensityNorm(point.DensityNorm))
+        {
+            throw new ArgumentOutOfRangeException(
+                $"Layers[{index}].DensityNorm",
+                point.DensityNorm,
+                $"The DensityNorm of layer {index} is not a named DensityNorm value."
+            );
+        }
+
+        // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2). A
+        // layer of any number of rows past 131,072 is drawn from its indexes (row R3b1).
         var rows = point.X.Column.Length;
         ValidateMarkerChannels(data, point, index, rows);
         if (rows <= MaxElements)
         {
             return;
-        }
-
-        if (rows > RawThreshold)
-        {
-            throw new InvalidOperationException(
-                $"Layer {index} has {rows} points; a point layer draws at most {RawThreshold} (design §5.5.2). Row R3b draws more as a density."
-            );
         }
 
         if (point.ColorBy is { Column: not CategoricalColumn })

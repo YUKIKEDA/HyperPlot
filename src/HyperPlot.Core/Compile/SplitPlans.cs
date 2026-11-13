@@ -766,7 +766,8 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
 
     /// <summary>
     /// Returns whether two nodes of the same layer draw alike (row G7c): the same kind, label, and looks (stroke, fill, outline,
-    /// baseline, width, mode, caps). Their channels are the same, or the diff would have made the layer again.
+    /// baseline, width, mode, caps, and a point layer's density, row R3b1). Their channels are the same, or the diff would have
+    /// made the layer again.
     /// </summary>
     internal static bool SameLooks(LayerSpec before, LayerSpec after) =>
         string.Equals(before.Label, after.Label, StringComparison.Ordinal)
@@ -783,7 +784,14 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             (RuleLayerSpec b, RuleLayerSpec a) => b.Style == a.Style,
             (RectLayerSpec b, RectLayerSpec a) => b.Fill == a.Fill,
             (SegmentLayerSpec b, SegmentLayerSpec a) => b.Style == a.Style,
-            (PointLayerSpec b, PointLayerSpec a) => b.Color == a.Color && b.Size.Equals(a.Size) && b.Shape == a.Shape && b.Opacity.Equals(a.Opacity),
+            (PointLayerSpec b, PointLayerSpec a) => b.Color == a.Color
+                && b.Size.Equals(a.Size)
+                && b.Shape == a.Shape
+                && b.Opacity.Equals(a.Opacity)
+                && b.Draw == a.Draw
+                && b.DensityThreshold == a.DensityThreshold
+                && b.DensityNorm == a.DensityNorm
+                && Equals(b.DensityMap, a.DensityMap),
             (TextLayerSpec b, TextLayerSpec a) => b.Color == a.Color
                 && b.Size.Equals(a.Size)
                 && b.Horizontal == a.Horizontal

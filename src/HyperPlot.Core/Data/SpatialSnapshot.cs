@@ -416,6 +416,23 @@ internal abstract unsafe class SpatialSnapshot
     /// <param name="tiles">The tiles.</param>
     internal void AttachTiles(DensityTiles tiles) => Volatile.Write(ref _tiles, tiles);
 
+    /// <summary>
+    /// Returns a cell's corner and extent as differences from the ranges' origins (design §3.4): the cell of a code at a
+    /// level, as the resident cells and the density's pieces place it (row R3b1).
+    /// </summary>
+    /// <param name="code">The cell's code at its level.</param>
+    /// <param name="level">The level, from 0 to 32.</param>
+    internal (double CornerX, double CornerY, double ExtentX, double ExtentY) CellBox(ulong code, int level)
+    {
+        var shift = DeepestLevel - level;
+        return (
+            _xAxis.DifferenceOf((ulong)SpatialCode.Axis2(code, 0) << shift),
+            _yAxis.DifferenceOf((ulong)SpatialCode.Axis2(code, 1) << shift),
+            _xAxis.ExtentAt(level),
+            _yAxis.ExtentAt(level)
+        );
+    }
+
     /// <summary>Makes the codes of points of the copy again from their stored values (design §3.4 "ビンの値").</summary>
     /// <param name="first">The position of the first point: the points to read are in the copy.</param>
     /// <param name="codes">Where the codes go: one for each point to read.</param>

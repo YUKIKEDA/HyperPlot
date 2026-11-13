@@ -8,7 +8,10 @@ namespace HyperPlot.Tests;
 [Collection("Large data")]
 public sealed class SpatialDensityTests
 {
-    /// <summary>Every bin of every tile is the number of points of the copy in it, for each shape of data.</summary>
+    /// <summary>
+    /// Every bin of every tile is the number of points of the copy in it, and each tile holds its largest bin, for each shape
+    /// of data.
+    /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - Leaves of 16 points and units of 256 rows, 3 workers, and a density split of <paramref name="split"/> points.
@@ -32,8 +35,9 @@ public sealed class SpatialDensityTests
     /// - The table has a capped leaf in "capped" and a coincident leaf in "coincident".
     /// - Bin (x, y) of the tile of a cell of level L is the number of points whose code lies in the cell and whose
     ///   cell at level L + 8 has x and y as its lower 8 bits on each axis.
-    /// - The width of a tile is the least of 1, 2, 4, and 8 bytes that holds its largest bin, and ByteCount is the
-    ///   bins of every tile and 24 bytes a tile.
+    /// - The tile's Largest is the most points of a bin of the loop (row R3b1), and the width of a tile is the least of 1,
+    ///   2, 4, and 8 bytes that holds it.
+    /// - ByteCount is the bins of every tile and 32 bytes a tile, the size of a line of the directory.
     /// </remarks>
     [Theory]
     [InlineData("uniform", 64)]
@@ -74,9 +78,10 @@ public sealed class SpatialDensityTests
             expected++;
             var bins = Brute(codes, row.Code, row.Level);
             var largest = bins.Max();
+            Assert.Equal(largest, tile.Largest);
             Assert.Equal(DensityTiles.BytesPerBinFor(largest), tile.BytesPerBin);
             Assert.Equal(DensityTiles.BinCount * tile.BytesPerBin, tile.Bins.Length);
-            bytes += tile.Bins.Length + DensityTiles.EntryBytes;
+            bytes += tile.Bins.Length + 32;
             for (var bin = 0; bin < bins.Length; bin++)
             {
                 var (x, y) = (bin % DensityTiles.Side, bin / DensityTiles.Side);
@@ -92,6 +97,7 @@ public sealed class SpatialDensityTests
         Assert.True(expected > 0, "No cell has a tile.");
         Assert.Equal(expected, tiles.TileCount);
         Assert.Equal(bytes, tiles.ByteCount);
+        Assert.Equal(32, System.Runtime.CompilerServices.Unsafe.SizeOf<DensityTiles.Entry>());
 
         // The root has a tile, so a leaf of the kind the shape is named for lies under a cell with a tile.
         var kinds = snapshot.Rows.ToArray().Select(row => (SpatialCellKind)row.Kind).ToHashSet();
@@ -173,8 +179,8 @@ public sealed class SpatialDensityTests
     ///
     /// Expected:
     /// - The largest bin of the loop over the copy is exactly <paramref name="same"/>: 255, 256, 65,535, or 65,536.
-    /// - The tile's bin holds that number, and the tile's bins are <paramref name="width"/> bytes wide: 1 byte at 255,
-    ///   2 at 256 and at 65,535, and 4 at 65,536.
+    /// - The tile's bin holds that number, and so does its Largest; the tile's bins are <paramref name="width"/> bytes
+    ///   wide: 1 byte at 255, 2 at 256 and at 65,535, and 4 at 65,536.
     /// - The function of the width gives 4 bytes at 4,294,967,295 and 8 at 4,294,967,296, a number of points that no
     ///   test holds.
     /// </remarks>
@@ -199,6 +205,7 @@ public sealed class SpatialDensityTests
         Assert.Equal(width, root.BytesPerBin);
         var index = Array.IndexOf(bins, largest);
         Assert.Equal(largest, root[index % DensityTiles.Side, index / DensityTiles.Side]);
+        Assert.Equal((ulong)same, root.Largest);
 
         Assert.Equal(4, DensityTiles.BytesPerBinFor(uint.MaxValue));
         Assert.Equal(8, DensityTiles.BytesPerBinFor((ulong)uint.MaxValue + 1));
@@ -216,7 +223,7 @@ public sealed class SpatialDensityTests
     /// Expected:
     /// - A level from 1 on was left out. Every cell above it that is split and holds more than 1,000 points has a
     ///   tile, and no cell at or below it has one, although some hold more than 1,000 points.
-    /// - The estimate is, for each tile, 24 B and 65,536 bins at the width of the most points one bin can hold by the
+    /// - The estimate is, for each tile, 32 B and 65,536 bins at the width of the most points one bin can hold by the
     ///   table: the points of a cell 8 levels below the tile's, or of a leaf that ends above that level.
     /// - The bytes of the tiles are no more than the estimate, and the table and the tiles together are no more than
     ///   10 % of the source.
@@ -274,7 +281,7 @@ public sealed class SpatialDensityTests
                 }
             }
 
-            estimate += 24 + (65_536L * DensityTiles.BytesPerBinFor((ulong)most));
+            estimate += 32 + (65_536L * DensityTiles.BytesPerBinFor((ulong)most));
         }
 
         Assert.Equal(estimate, plan.EstimatedBytes);

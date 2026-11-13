@@ -98,11 +98,11 @@ public sealed class ImageGeomTests : IDisposable
     /// - A raster of numbers and an RGBA one.
     ///
     /// Steps:
-    /// - Render each case, a time color scale over a raster of floats included. Fill the color tables; render a 65th map.
+    /// - Render each case, a time color scale over a raster of floats included. Fill the color tables in a frame; render a 65th map the next frame.
     ///
     /// Expected:
     /// - ArgumentException each, naming the layer; the RGBA image takes an ordinal color scale of other layers. The 65th map
-    ///   throws InvalidOperationException naming the layer.
+    ///   draws, and its table holds a row.
     /// </remarks>
     [Fact]
     public void Compile_RejectsWhatAnImageCannotBeDrawnOn()
@@ -150,11 +150,13 @@ public sealed class ImageGeomTests : IDisposable
 
         _ = plan.Render(Spec(new ImageLayerSpec { Raster = Rgba(2, 2) }) with { ScaleColor = Scale.Ordinal() });
 
-        // A 65th color map past the table's 64 rows throws rather than paint with another map's colors (PR #201's review).
+        // A 65th color map, a frame after the table's 64 rows were filled, takes the row used longest ago (PR #497's review);
+        // only 64 maps in one frame throw, which DensityTests checks with 65 layers of their own colors.
         for (var i = 0; plan.Images.Table(new ColorMap(new Color((byte)i, 0, 0, 255), Colors.White)) >= 0; i++) { }
 
         var past = Spec(layer) with { ScaleColor = Scale.Sequential(new ColorMap(Colors.Black, Colors.Red)) };
-        Assert.Contains("ayer 0", Assert.Throws<InvalidOperationException>(() => plan.Render(past)).Message, StringComparison.Ordinal);
+        _ = plan.Render(past);
+        Assert.InRange(plan.Images.Table(new ColorMap(Colors.Black, Colors.Red)), 0, ResidencyCache.MaxColorTables - 1);
     }
 
     /// <summary>
