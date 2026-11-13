@@ -82,9 +82,7 @@ internal static partial class Scene
 
         Print("gpu_points", gpuTimes.Points(options.Warmup, stages.Length));
         Print("gpu_total", gpuTimes.Stage(stages.Length - 1, options.Warmup, cumulative: true));
-        Console.WriteLine(
-            string.Create(CultureInfo.InvariantCulture, $"gpu frames timed: {gpuTimes.Timed(options.Warmup)} of {options.Frames}")
-        );
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"gpu frames timed: {gpuTimes.Timed(options.Warmup)} of {options.Frames}"));
         if (options.Csv is { } csv)
         {
             gpuTimes.Write(csv, cpu, stages);
@@ -137,7 +135,10 @@ internal static partial class Scene
             if (options.Dump is { } folder)
             {
                 _ = Directory.CreateDirectory(folder);
-                var file = string.Create(CultureInfo.InvariantCulture, $"{name}-{(gpu.IsWarp ? "warp" : "hw")}-{count}-{args[1]}-f{options.Frame}.bmp");
+                var file = string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{name}-{(gpu.IsWarp ? "warp" : "hw")}-{count}-{args[1]}-f{options.Frame}.bmp"
+                );
                 WriteBmp(Path.Combine(folder, file), first);
             }
         }
@@ -179,7 +180,12 @@ internal static partial class Scene
         var distance = radius / MathF.Sin(FieldOfView / 2);
         var eye = new Vector3(MathF.Cos(Elevation) * MathF.Cos(angle), MathF.Cos(Elevation) * MathF.Sin(angle), MathF.Sin(Elevation)) * distance;
         var view = Matrix4x4.CreateLookAt(eye, Vector3.Zero, Vector3.UnitZ);
-        var projection = Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, Width / (float)Height, distance - radius - 0.1f, distance + radius + 0.1f);
+        var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+            FieldOfView,
+            Width / (float)Height,
+            distance - radius - 0.1f,
+            distance + radius + 0.1f
+        );
         return new FrameConstants
         {
             Transform = view * projection,
@@ -334,7 +340,12 @@ internal static partial class Scene
             writer.WriteLine($"frame,cpu_ms,{string.Join(',', stages.Select(s => $"gpu_{s}_end_ms"))}");
             for (var f = 0; f < _timed.Length; f++)
             {
-                var gpu = _timed[f] ? string.Join(',', Enumerable.Range(0, stages.Length).Select(s => _times[(f * Stages) + s].ToString("F4", CultureInfo.InvariantCulture))) : new string(',', stages.Length - 1);
+                var gpu = _timed[f]
+                    ? string.Join(
+                        ',',
+                        Enumerable.Range(0, stages.Length).Select(s => _times[(f * Stages) + s].ToString("F4", CultureInfo.InvariantCulture))
+                    )
+                    : new string(',', stages.Length - 1);
                 writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{f},{cpu[f]:F4},{gpu}"));
             }
         }
