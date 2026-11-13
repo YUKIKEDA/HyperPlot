@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -419,7 +420,8 @@ public sealed class ColumnTests
     ///   storage of design §3.2.
     ///
     /// Steps:
-    /// - Read every chunk, a value, and every chunk's statistics 100 times while counting this thread's allocations.
+    /// - Read every chunk, a value, and every chunk's statistics 100 times as a warm-up; collect; read them 100 times more
+    ///   while counting this thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -440,18 +442,16 @@ public sealed class ColumnTests
             Read(native);
             Read(mapped);
 
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
-            for (var i = 0; i < 100; i++)
+            PerformanceAssert.DoesNotAllocate(() =>
             {
-                Read(wrapped);
-                Read(pointed);
-                Read(native);
-                Read(mapped);
-            }
-
-            Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+                for (var i = 0; i < 100; i++)
+                {
+                    Read(wrapped);
+                    Read(pointed);
+                    Read(native);
+                    Read(mapped);
+                }
+            });
         }
 
         static void Read(Column<float> column)

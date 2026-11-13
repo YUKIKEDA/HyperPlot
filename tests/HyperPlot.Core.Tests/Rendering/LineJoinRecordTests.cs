@@ -1,5 +1,6 @@
 using System.Numerics;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -279,7 +280,7 @@ public sealed class LineJoinRecordTests
     /// - 16 M4-like polylines of 7,680 points, mitered and dashed with 8 intervals; one frame recorded to grow the buffers.
     ///
     /// Steps:
-    /// - Clear and record the 16 polylines 10 times.
+    /// - Clear and record the 16 polylines 10 times as a warm-up; collect; 10 times more, counting the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -293,15 +294,13 @@ public sealed class LineJoinRecordTests
         var list = new RenderList();
         Frame();
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 10; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Frame();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 10; i++)
+            {
+                Frame();
+            }
+        });
 
         void Frame()
         {

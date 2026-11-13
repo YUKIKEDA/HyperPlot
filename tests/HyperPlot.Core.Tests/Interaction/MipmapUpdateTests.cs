@@ -1,5 +1,6 @@
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -387,7 +388,8 @@ public sealed class MipmapUpdateTests
     /// - The raster drawn until not provisional; chunk 1 held, the raster invalidated, and 10 frames drawn.
     ///
     /// Steps:
-    /// - Count the bytes this thread allocates over 20 frames. Release chunk 1 at the end.
+    /// - Draw 20 frames as a warm-up; collect; count the bytes this thread allocates over 20 frames more. Release chunk 1 at
+    ///   the end.
     ///
     /// Expected:
     /// - 0 bytes, and each frame is provisional.
@@ -409,19 +411,16 @@ public sealed class MipmapUpdateTests
                 engine.RenderFrame();
             }
 
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
             var provisional = true;
-            for (var i = 0; i < 20; i++)
+            PerformanceAssert.DoesNotAllocate(() =>
             {
-                engine.RenderFrame();
-                provisional &= engine.IsProvisional;
-            }
-
-            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+                for (var i = 0; i < 20; i++)
+                {
+                    engine.RenderFrame();
+                    provisional &= engine.IsProvisional;
+                }
+            });
             Assert.True(provisional);
-            Assert.Equal(0, allocated);
         }
         finally
         {

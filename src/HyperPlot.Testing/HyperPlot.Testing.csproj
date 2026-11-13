@@ -8,7 +8,10 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="HyperPlot.Testing.Tests" />
-    <!-- The PNG decoder, written apart from Core's writer, reads back what the PNG tests of Core and D3D11 write. -->
+    <!--
+      The PNG decoder, written apart from Core's writer, reads back what the PNG tests of Core and D3D11 write.
+      Their Zero-Alloc tests count through PerformanceAssert.
+    -->
     <InternalsVisibleTo Include="HyperPlot.Core.Tests" />
     <InternalsVisibleTo Include="HyperPlot.Rendering.D3D11.Tests" />
   </ItemGroup>

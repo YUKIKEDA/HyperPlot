@@ -1,5 +1,6 @@
 using System.Numerics;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -551,7 +552,8 @@ public sealed class TextEngineTests
     /// - An engine over the fake backend; 100 labels of 2 to 6 characters, prepared once.
     ///
     /// Steps:
-    /// - Clear the list, record the labels, and prepare, 10 times, counting the bytes this thread allocates.
+    /// - Clear the list, record the labels, and prepare, 10 times as a warm-up; collect; 10 times more, counting the bytes this
+    ///   thread allocates.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -565,16 +567,14 @@ public sealed class TextEngineTests
         Record(list, labels);
         engine.Prepare(list, 640, 480);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var frame = 0; frame < 10; frame++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Record(list, labels);
-            engine.Prepare(list, 640, 480);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var frame = 0; frame < 10; frame++)
+            {
+                Record(list, labels);
+                engine.Prepare(list, 640, 480);
+            }
+        });
 
         static void Record(RenderList list, string[] labels)
         {

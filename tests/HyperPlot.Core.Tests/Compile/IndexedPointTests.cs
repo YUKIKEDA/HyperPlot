@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -504,7 +505,7 @@ public sealed class IndexedPointTests
     /// - A point layer of 200,000 rows split by three categories, drawn until it is not provisional; five views, each drawn once.
     ///
     /// Steps:
-    /// - Draw the five views again, counting the thread's allocations.
+    /// - Draw the five views again as a warm-up; collect; draw them once more, counting the thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -543,15 +544,13 @@ public sealed class IndexedPointTests
 
         Assert.False(engine.IsProvisional);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        foreach (var view in views)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Draw(view);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            foreach (var view in views)
+            {
+                Draw(view);
+            }
+        });
         Assert.True(backend.LastList!.ResidentRuns.Length >= 3);
 
         void Draw(PanelView2D view)

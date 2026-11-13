@@ -1,4 +1,5 @@
 using System.Numerics;
+using HyperPlot.Testing;
 using TerraFX.Interop.DirectX;
 
 namespace HyperPlot.Rendering.D3D11.Tests;
@@ -280,7 +281,8 @@ public sealed class FrameTests
     /// - A WARP backend, a 64 × 64 target, a list with one line; 50 frames to warm up.
     ///
     /// Steps:
-    /// - 50 outer frames, each with a clear and a draw, reading LastFrameTime.
+    /// - 50 outer frames, each with a clear and a draw, reading LastFrameTime, as a warm-up; collect; 50 more, counting the
+    ///   bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -297,15 +299,13 @@ public sealed class FrameTests
             Frame();
         }
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 50; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Frame();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 50; i++)
+            {
+                Frame();
+            }
+        });
         Assert.True(sink >= 0);
 
         void Frame()

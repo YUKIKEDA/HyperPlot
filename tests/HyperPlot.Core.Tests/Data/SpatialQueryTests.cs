@@ -1,3 +1,5 @@
+using HyperPlot.Testing;
+
 namespace HyperPlot.Tests;
 
 /// <summary>The queries of a full snapshot of a spatial tile index against plain loops over every point (design §3.4, row C3a).</summary>
@@ -234,8 +236,8 @@ public sealed class SpatialQueryTests
     /// - One round of the calls made before the measurement.
     ///
     /// Steps:
-    /// - Collect; read the bytes allocated on the thread, then 100 times: Acquire, Count at maxLevel 32 and 8, GetCells at
-    ///   maxLevel 32, ReadPoints of 256 points, Release. Read the bytes again.
+    /// - 100 rounds as a warm-up; collect; read the bytes allocated on the thread, then 100 rounds: Acquire, Count at
+    ///   maxLevel 32 and 8, GetCells at maxLevel 32, ReadPoints of 256 points, Release. Read the bytes again.
     ///
     /// Expected:
     /// - The difference is 0 bytes.
@@ -262,17 +264,14 @@ public sealed class SpatialQueryTests
 
         Round();
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 100; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Round();
-        }
+            for (var i = 0; i < 100; i++)
+            {
+                Round();
+            }
+        });
 
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-
-        Assert.Equal(0, allocated);
         Assert.True(points > 0 && returned > 0, "The queries found nothing to answer.");
 
         void Round()

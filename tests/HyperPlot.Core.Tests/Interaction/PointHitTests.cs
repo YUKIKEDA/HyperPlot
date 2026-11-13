@@ -1,6 +1,7 @@
 using System.Numerics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -170,8 +171,8 @@ public sealed class PointHitTests
     /// - A point layer of 131,072 rows, drawn once.
     ///
     /// Steps:
-    /// - Hit test in both modes once and draw five views once to warm; collect; then hit test 20 times in each mode and draw the
-    ///   five views again, counting the thread's allocations.
+    /// - Hit test in both modes once and draw five views once to warm; hit test 20 times in each mode and draw the five views
+    ///   again, as a warm-up; collect; then the same once more, counting the thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -198,21 +199,19 @@ public sealed class PointHitTests
             Move(view);
         }
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 20; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            _ = engine.HitTest(cursor, 8, HitMode.X, hits);
-            _ = engine.HitTest(cursor, 8, HitMode.XY, hits);
-        }
+            for (var i = 0; i < 20; i++)
+            {
+                _ = engine.HitTest(cursor, 8, HitMode.X, hits);
+                _ = engine.HitTest(cursor, 8, HitMode.XY, hits);
+            }
 
-        foreach (var view in views)
-        {
-            Move(view);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            foreach (var view in views)
+            {
+                Move(view);
+            }
+        });
 
         void Move(PanelView2D view)
         {
