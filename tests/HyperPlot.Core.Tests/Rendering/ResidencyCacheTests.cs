@@ -394,4 +394,46 @@ public sealed class ResidencyCacheTests : IDisposable
 
         return bins;
     }
+
+    /// <summary>
+    /// A full table texture takes the row used longest ago for a new color map, and refuses only when every row is used in
+    /// the frame (design §5.2, PR #497's review): maps made from a layer's color do not fill it for good.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A cache; 65 distinct two-color maps.
+    ///
+    /// Steps:
+    /// - Over 65 frames, ask one new map a frame. Then, in one frame, ask 64 maps and a 65th.
+    ///
+    /// Expected:
+    /// - Every one of the 65 frames gets a row; the 65th map takes the row of the first map (used longest ago) and stages
+    ///   it. In the single frame, the first 64 get rows and the 65th gets −1.
+    /// </remarks>
+    [Fact]
+    public void Table_FullTexture_ReusesTheLeastRecentlyUsedRow()
+    {
+        var cache = new ResidencyCache();
+        var maps = Enumerable.Range(0, 65).Select(i => new ColorMap(new Color((byte)i, 0, 0, 0), new Color((byte)i, 255, 255, 255))).ToArray();
+        var rows = new int[65];
+        for (var i = 0; i < 65; i++)
+        {
+            cache.BeginFrame();
+            rows[i] = cache.Table(maps[i]);
+            Assert.True(rows[i] >= 0);
+            if (i == 64)
+            {
+                Assert.Contains(cache.TableUploads.ToArray(), upload => upload.Row == rows[0] && ReferenceEquals(upload.Map, maps[64]));
+            }
+
+            cache.Sent();
+        }
+
+        Assert.Equal(rows[0], rows[64]);
+
+        cache.BeginFrame();
+        var more = Enumerable.Range(0, 64).Select(i => new ColorMap(new Color((byte)i, 1, 0, 0), new Color((byte)i, 254, 255, 255))).ToArray();
+        Assert.All(more, map => Assert.True(cache.Table(map) >= 0));
+        Assert.Equal(-1, cache.Table(maps[3]));
+    }
 }

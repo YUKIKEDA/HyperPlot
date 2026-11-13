@@ -435,7 +435,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         if (table < 0)
         {
             throw new InvalidOperationException(
-                $"Layer {Index} draws a density with a color map past the {ResidencyCache.MaxColorTables} the backend holds (design §5.2)."
+                $"Layer {Index} draws a density with a color map past the {ResidencyCache.MaxColorTables} the backend holds in one frame (design §5.2)."
             );
         }
 

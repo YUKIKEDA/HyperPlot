@@ -45,6 +45,10 @@ public sealed class ResidencyCache
     private readonly Pool[] _pools = [new(), new()];
     private readonly List<ColorMap> _tables = [];
     private readonly List<(int Row, ColorMap Map)> _tableUploads = [];
+
+    // The frame each table row was last used in: a full table texture takes the row used longest ago for a new map, so
+    // that maps made on the fly (a layer's own color, row R3b1) do not fill it for good.
+    private readonly long[] _tableUsed = new long[MaxColorTables];
     private readonly List<Upload> _uploads = [];
     private uint[] _staging = new uint[FrameUpload / 4];
     private int _stagingFaces;
@@ -266,18 +270,41 @@ public sealed class ResidencyCache
         return -1;
     }
 
-    /// <summary>Returns the row of a color map's table, staging it the first time; −1 when the table texture is full.</summary>
+    /// <summary>
+    /// Returns the row of a color map's table, staging it the first time. When the table texture is full, the row used
+    /// longest ago, and not in this frame, takes the map; −1 when every row is used in this frame.
+    /// </summary>
     internal int Table(ColorMap map)
     {
         var row = _tables.IndexOf(map);
-        if (row >= 0 || _tables.Count == MaxColorTables)
+        if (row < 0 && _tables.Count < MaxColorTables)
         {
-            return row;
+            _tables.Add(map);
+            row = _tables.Count - 1;
+            _tableUploads.Add((row, map));
+        }
+        else if (row < 0)
+        {
+            // The least recently used row; a row used in this frame is drawn with in this frame and is not written over.
+            for (var i = 0; i < _tables.Count; i++)
+            {
+                if (_tableUsed[i] < _frame && (row < 0 || _tableUsed[i] < _tableUsed[row]))
+                {
+                    row = i;
+                }
+            }
+
+            if (row < 0)
+            {
+                return -1;
+            }
+
+            _tables[row] = map;
+            _tableUploads.Add((row, map));
         }
 
-        _tables.Add(map);
-        _tableUploads.Add((_tables.Count - 1, map));
-        return _tables.Count - 1;
+        _tableUsed[row] = _frame;
+        return row;
     }
 
     /// <summary>Writes the counts of 256 × 256 bins, the row of the least y first, into a face, and 0 into its border.</summary>
