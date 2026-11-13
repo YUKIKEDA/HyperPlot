@@ -45,6 +45,11 @@ internal abstract unsafe class SpatialSnapshot
     private readonly long _yVersion;
     private readonly bool _disagreed;
 
+    // Whether a query's rectangle is clipped to the range on each axis: on an axis whose range the index found itself
+    // (design §3.4 "範囲で切る", row R3c, Issue #471 Decision 3).
+    private readonly bool _clipsX;
+    private readonly bool _clipsY;
+
     // The table, which this snapshot owns from the end of its constructor to Free. Every read goes through Rows.
     private SpatialRow* _rows;
     private int _rowCount;
@@ -77,6 +82,8 @@ internal abstract unsafe class SpatialSnapshot
         _xVersion = contents.XVersion;
         _yVersion = contents.YVersion;
         _disagreed = contents.Disagreed;
+        _clipsX = owner.Input.XRange is null;
+        _clipsY = owner.Input.YRange is null;
         _xAxis = new SpatialAxis(contents.XRange, DeepestLevel);
         _yAxis = new SpatialAxis(contents.YRange, DeepestLevel);
         Stage = SpatialStage.Coarse;
@@ -179,6 +186,8 @@ internal abstract unsafe class SpatialSnapshot
     /// <summary>
     /// Counts the points in a rectangle without reading the copy (design §3.4 "問い合わせ"). The points in the rectangle
     /// are no fewer than <see cref="SpatialCount.Inside"/> and no more than that plus <see cref="SpatialCount.Touching"/>.
+    /// On an axis whose range the index found itself, the rectangle is first clipped to the range (design §3.4 "範囲で切る"):
+    /// a rectangle that misses the range counts nothing.
     /// </summary>
     /// <param name="rect">The rectangle, as differences from the origins of <see cref="XRange"/> and <see cref="YRange"/>.</param>
     /// <param name="maxLevel">
@@ -197,13 +206,20 @@ internal abstract unsafe class SpatialSnapshot
             return new SpatialCount(0, _rowsRead);
         }
 
-        var grid = new GridRect(rect, _xAxis, _yAxis);
+        var clipped = rect;
+        if (!ClipToRanges(ref clipped))
+        {
+            return default;
+        }
+
+        var grid = new GridRect(clipped, _xAxis, _yAxis);
         return Stage == SpatialStage.Full ? CountRows(grid, maxLevel) : CountCoarse(grid, Math.Min(maxLevel, CoarseLevel));
     }
 
     /// <summary>
     /// Writes the cells that hold a point and touch a rectangle and that are leaves or lie at a level, in the order of
-    /// their codes (design §3.4 "問い合わせ").
+    /// their codes (design §3.4 "問い合わせ"). On an axis whose range the index found itself, the rectangle is first clipped
+    /// to the range (design §3.4 "範囲で切る"): a rectangle that misses the range touches no cell.
     /// </summary>
     /// <param name="rect">The rectangle, as differences from the origins of <see cref="XRange"/> and <see cref="YRange"/>.</param>
     /// <param name="maxLevel">The deepest level to open, from 0 to 32.</param>
@@ -217,12 +233,13 @@ internal abstract unsafe class SpatialSnapshot
     public int GetCells(in SpatialRect rect, int maxLevel, Span<SpatialCell> destination)
     {
         CheckQuery(rect, maxLevel);
-        if (Stage != SpatialStage.Full)
+        var clipped = rect;
+        if (Stage != SpatialStage.Full || !ClipToRanges(ref clipped))
         {
             return 0;
         }
 
-        var grid = new GridRect(rect, _xAxis, _yAxis);
+        var grid = new GridRect(clipped, _xAxis, _yAxis);
         var rows = Rows;
         Span<int> stack = stackalloc int[StackLength];
         var top = 0;
@@ -478,6 +495,42 @@ internal abstract unsafe class SpatialSnapshot
         {
             ThrowHelper.ThrowSpatialLevelOutOfRange(maxLevel);
         }
+    }
+
+    /// <summary>
+    /// Clips a rectangle to the range of each axis whose range the index found itself (design §3.4 "範囲で切る"): no
+    /// finite point lies outside such a range, so the points counted stay the same. On an axis whose range was passed,
+    /// the points outside it lie in the end grid cells, and the rectangle stays as it is.
+    /// </summary>
+    /// <param name="rect">The rectangle, clipped in place.</param>
+    /// <returns><see langword="false"/> when the rectangle misses a clipped range: it then holds no point.</returns>
+    private bool ClipToRanges(ref SpatialRect rect)
+    {
+        var (xMin, xMax, yMin, yMax) = (rect.XMin, rect.XMax, rect.YMin, rect.YMax);
+        if (_clipsX)
+        {
+            var (lower, upper) = (XRange.Lower, XRange.Upper);
+            if (xMax < lower || xMin > upper)
+            {
+                return false;
+            }
+
+            (xMin, xMax) = (Math.Max(xMin, lower), Math.Min(xMax, upper));
+        }
+
+        if (_clipsY)
+        {
+            var (lower, upper) = (YRange.Lower, YRange.Upper);
+            if (yMax < lower || yMin > upper)
+            {
+                return false;
+            }
+
+            (yMin, yMax) = (Math.Max(yMin, lower), Math.Min(yMax, upper));
+        }
+
+        rect = new SpatialRect(xMin, xMax, yMin, yMax);
+        return true;
     }
 
     // Walks the table from the root and stops at each cell with at most CellCapacity points, or at a leaf with more: the
