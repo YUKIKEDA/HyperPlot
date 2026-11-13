@@ -13,8 +13,9 @@ using HyperPlot.Samples;
 //     [--csv <file for one row a frame>] [--min-span <points: keep only the views at least this wide, for a profile>]
 //     [--hover | --hover-whole: the hover's scene of row I2b instead, 300 frames of the mouse alone, or as many drawn whole]
 //     [--hover-frames <frames of the hover's scene, 300 by default>]
-//   <dir>/HyperPlot.E2E.exe points <count> <diameter DIPs> <opacity> <uniform|cluster> [frames]: the scene of the raw points
-//     of row R3a instead, with no data file (PointsScene).
+//   <dir>/HyperPlot.E2E.exe points <count> <diameter DIPs> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom]
+//     [color|shape|both|size|shapesize] [shape]: the scene of the raw points of rows R3a and R3f instead, with no data file
+//     (PointsScene).
 //   <dir>/HyperPlot.E2E.exe annotations <shapes> [frames]: the scene of 1,024 marker annotations of row R3f instead, with
 //     no data file (AnnotationsScene).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
