@@ -78,11 +78,23 @@ internal abstract class LayerPlan
     /// </summary>
     public Color SeriesColor { get; set; }
 
+    /// <summary>
+    /// Gets or sets the shape of a part that a split by a shape column made (design §5.5.2 "大きさと形のチャネル", row
+    /// R3f), set before each recording; null for a layer's own shape.
+    /// </summary>
+    public MarkerShape? SeriesShape { get; set; }
+
     /// <summary>Gets or sets the layer's position in the spec, set before each recording: messages name it (row G8).</summary>
     public int Index { get; set; }
 
     /// <summary>Gets or sets the plot's color scale, set before each recording; null when no layer has a color channel (row G7c).</summary>
     public ColorScale? Colors { get; set; }
+
+    /// <summary>Gets or sets the plot's size scale, set before each recording; null when no layer has a SizeBy (row R3f).</summary>
+    public SizeScale? Sizes { get; set; }
+
+    /// <summary>Gets or sets the plot's shape scale, set before each recording; null when no layer has a ShapeBy (row R3f).</summary>
+    public ShapeScale? Shapes { get; set; }
 
     /// <summary>
     /// Gets or sets the place of a dodged part (design §4.1, row G5a): its category and the number of categories, set by its
@@ -860,6 +872,13 @@ internal abstract class LayerPlan
             return true;
         }
 
+        // A size or a shape column is read with the layer's rows, and a shape column splits a layer on the index path
+        // (design §4.2 "行 R3f の大きさと形のスケール", "差分").
+        if (before is PointLayerSpec point && (point.SizeBy != ((PointLayerSpec)after).SizeBy || point.ShapeBy != ((PointLayerSpec)after).ShapeBy))
+        {
+            return true;
+        }
+
         // A layer put on the other scale is mapped and extracted by it (design §4.8, row G6a).
         if (before.SecondaryX != after.SecondaryX || before.SecondaryY != after.SecondaryY)
         {
@@ -1381,6 +1400,7 @@ internal abstract class LayerPlan
 
         // The rows before a split: a layer split into many small parts would map every row each frame (design §5.5.2).
         var rows = point.X.Column.Length;
+        ValidateMarkerChannels(data, point, index, rows);
         if (rows <= MaxElements)
         {
             return;
@@ -1403,6 +1423,47 @@ internal abstract class LayerPlan
         // The index is built over the stored values of both columns.
         CheckStored(data, point.X, index, "the x of a point layer of more than 131,072 rows");
         CheckStored(data, point.Y, index, "the y of a point layer of more than 131,072 rows");
+    }
+
+    /// <summary>Checks a point layer's size and shape columns (design §4.8 "検査（行 R3f）").</summary>
+    private static void ValidateMarkerChannels(DataTable data, PointLayerSpec point, int index, long rows)
+    {
+        foreach (var (channel, name) in (ReadOnlySpan<(ColumnRef?, string)>)[(point.SizeBy, "SizeBy"), (point.ShapeBy, "ShapeBy")])
+        {
+            if (channel is not { } reference)
+            {
+                continue;
+            }
+
+            CheckReference(data, reference, index, name);
+            if (reference.Column.Length != rows)
+            {
+                throw new ArgumentException(
+                    $"The {name} column \"{data.GetName(reference.Index)}\" of layer {index} has {reference.Column.Length} elements and the layer {rows}; a size or a shape column is as long as the layer's."
+                );
+            }
+        }
+
+        if (point.SizeBy is { Column: CategoricalColumn } sized)
+        {
+            throw new ArgumentException(
+                $"The SizeBy column \"{data.GetName(sized.Index)}\" of layer {index} holds categories; points are sized by numbers (design §4.8)."
+            );
+        }
+
+        if (point.ShapeBy is { Column: not CategoricalColumn } shaped)
+        {
+            throw new ArgumentException(
+                $"The ShapeBy column \"{data.GetName(shaped.Index)}\" of layer {index} is a {shaped.Column.KindName}; points are shaped by categories (design §4.8)."
+            );
+        }
+
+        if (point.SizeBy is not null && rows > MaxElements)
+        {
+            throw new InvalidOperationException(
+                $"Layer {index} has {rows} points sized one by one by a number; at most {MaxElements} are drawn so (design §5.5.2). Row R3d sizes the points of a larger layer."
+            );
+        }
     }
 
     private static void CheckCount(long count, int layer)
@@ -1602,6 +1663,8 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     private double[] _mapped = new double[64];
     private Vector2[] _points = new Vector2[64];
     private Color[] _markerColors = [];
+    private float[] _markerSizes = [];
+    private MarkerShape[] _markerShapes = [];
     private ColumnTrapezoid[] _trapezoids = new ColumnTrapezoid[64];
     private Vector2[] _polarPoints = new Vector2[256];
     private SectorTrapezoid[] _sectors = new SectorTrapezoid[64];
@@ -1724,7 +1787,21 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// when polar), with the style's DIPs scaled. A point that does not map, or that falls in a polar hole, is NaN and draws
     /// nothing. The caller does not use the points afterwards.
     /// </summary>
-    public void DrawMarkers(Span<Vector2> points, ReadOnlySpan<Color> colors, in MarkerStyle style)
+    public void DrawMarkers(Span<Vector2> points, ReadOnlySpan<Color> colors, in MarkerStyle style) =>
+        DrawMarkers(points, colors, default, default, style);
+
+    /// <summary>
+    /// Records markers as <see cref="DrawMarkers(Span{Vector2}, ReadOnlySpan{Color}, in MarkerStyle)"/> does, each with its
+    /// own size and shape where the span is not empty (design §5.5.2 "大きさと形のチャネル"). The sizes are physical
+    /// pixels already; the style's size is DIPs, scaled here.
+    /// </summary>
+    public void DrawMarkers(
+        Span<Vector2> points,
+        ReadOnlySpan<Color> colors,
+        ReadOnlySpan<float> sizes,
+        ReadOnlySpan<MarkerShape> shapes,
+        in MarkerStyle style
+    )
     {
         if (Polar)
         {
@@ -1748,7 +1825,11 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
             Size = style.Size * Scale,
             Stroke = MathF.Max(1, MathF.Round(Scale)),
         };
-        if (colors.IsEmpty)
+        if (!sizes.IsEmpty || !shapes.IsEmpty)
+        {
+            list.DrawMarkers(points, colors, sizes, shapes, scaled);
+        }
+        else if (colors.IsEmpty)
         {
             list.DrawMarkers(points, scaled);
         }
@@ -1763,6 +1844,20 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     {
         Ensure(ref _markerColors, length);
         return _markerColors.AsSpan(0, length);
+    }
+
+    /// <summary>Returns a buffer of sizes kept from frame to frame, for the markers of one layer.</summary>
+    public Span<float> MarkerSizes(int length)
+    {
+        Ensure(ref _markerSizes, length);
+        return _markerSizes.AsSpan(0, length);
+    }
+
+    /// <summary>Returns a buffer of shapes kept from frame to frame, for the markers of one layer.</summary>
+    public Span<MarkerShape> MarkerShapes(int length)
+    {
+        Ensure(ref _markerShapes, length);
+        return _markerShapes.AsSpan(0, length);
     }
 
     /// <summary>Records a rectangle between two x pixels and two y pixels, in either order; nothing when one is not finite.</summary>

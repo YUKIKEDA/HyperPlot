@@ -301,6 +301,8 @@ internal abstract class GatherChannel : IDisposable
 /// A layer split into a series a category by a categorical <see cref="LayerSpec.ColorBy"/> or <see cref="LayerSpec.FillBy"/>
 /// (design §5.5.3, row G7c): each category is a plan of the layer's own geom, over the run of its rows when they lie in one,
 /// else over its rows gathered into columns of its own. Records each in its category's color; the plan sees one layer.
+/// A point layer on the index path is split by its <see cref="PointLayerSpec.ShapeBy"/> too (design §5.5.2 "大きさと形の
+/// チャネル", row R3f): by the shape's column alone, or by the pairs of a color category and a shape category that have rows.
 /// </summary>
 internal sealed class SplitPlan : LayerPlan, ISourceRows
 {
@@ -311,14 +313,21 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     private readonly PlotPyramid[] _gatheredPyramids = [];
     private readonly CategoryRuns? _runs;
     private readonly CategoricalColumn? _categories;
+
+    // What a part's number is a key of: the categories' column, or the pairs of a color and a shape category (row R3f).
+    private readonly RowKeys? _keys;
+
+    // The shape categories a key is taken modulo, when the keys are pairs; 0 when they are not.
+    private readonly int _shapeCount;
+
+    // Whether a key gives the part its color, and its shape (row R3f).
+    private readonly bool _colored = true;
+    private readonly bool _shaped;
     private long[] _starts = [];
 
     // The gather of the sources' newer versions into the same columns, on the store's queue in a frame that does not wait
     // (row W1b2, Issue #297 Decision 4).
     private GatherMaking? _regather;
-
-    // The keys a hit test reads a chunk's categories through, made at the first (row I2a).
-    private ColumnKeys? _hitKeys;
 
     public SplitPlan(LayerSpec spec, PlanBuild build)
         : this(spec, build, RowRange.All) { }
@@ -330,9 +339,30 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         // Which column splits what: the fill by FillBy (or ColorBy), a fill geom's outline by ColorBy, a line by ColorBy.
         var fillBy = IsFill(spec) ? (spec.FillBy ?? spec.ColorBy) : null;
         var strokeBy = spec.ColorBy;
-        var split = (fillBy ?? strokeBy)!.Value;
-        _categories = (CategoricalColumn)split.Column;
-        _runs = CategoryRuns.Of(_categories, build.Pool, rows);
+        var color = (fillBy ?? strokeBy) is { Column: CategoricalColumn } by ? (CategoricalColumn)by.Column : null;
+        var shape = spec is PointLayerSpec { Indexed: true, ShapeBy.Column: CategoricalColumn shapes } ? shapes : null;
+        if (shape is not null && color is not null && !ReferenceEquals(shape, color))
+        {
+            // The pairs of a color category and a shape category: the key is the color's number times the shapes, plus the shape's.
+            _categories = color;
+            (_shaped, _shapeCount) = (true, shape.CategoryCount);
+            _keys = new PairKeys(
+                color,
+                [.. Enumerable.Range(0, color.CategoryCount)],
+                color.CategoryCount,
+                shape,
+                [.. Enumerable.Range(0, shape.CategoryCount)],
+                shape.CategoryCount
+            );
+            _runs = CategoryRuns.Find(_keys, build.Pool, rows);
+        }
+        else
+        {
+            _categories = shape ?? color!;
+            (_colored, _shaped) = (color is not null, shape is not null);
+            _keys = new ColumnKeys(_categories);
+            _runs = CategoryRuns.Of(_categories, build.Pool, rows);
+        }
 
         // The source columns: every channel's, once each, then the categories.
         var channels = new ColumnRef[4];
@@ -349,6 +379,18 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             }
         }
 
+        // A point layer's size and shape columns go with its points on the CPU path (row R3f).
+        if (spec is PointLayerSpec { Indexed: false } marked)
+        {
+            foreach (var channel in (ReadOnlySpan<ColumnRef?>)[marked.SizeBy, marked.ShapeBy])
+            {
+                if (channel is { } reference && !sources.Contains(reference.Column))
+                {
+                    sources.Add(reference.Column);
+                }
+            }
+        }
+
         // A text layer's labels go with its points (row G8).
         if (spec is TextLayerSpec { Text.Column: var labels } && !sources.Contains(labels))
         {
@@ -356,10 +398,10 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         }
 
         _sources = [.. sources];
-        SetColumns([.. sources, _categories]);
+        SetColumns(_shapeCount > 0 ? [.. sources, _categories, shape!] : [.. sources, _categories]);
 
         // The categories that do not lie in one run are gathered, once, before their plans and pyramids are made.
-        var counts = new long[_categories.CategoryCount];
+        var counts = new long[_keys.Count];
         for (var c = 0; c < counts.Length; c++)
         {
             counts[c] = _runs.IsRun(c) ? 0 : _runs.Count[c];
@@ -425,7 +467,9 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
 
     /// <summary>Returns whether a layer is split: a categorical column in its color channels (row G7c).</summary>
     public static bool Splits(LayerSpec spec) =>
-        spec.ColorBy is { Column: CategoricalColumn } || (IsFill(spec) && spec.FillBy is { Column: CategoricalColumn });
+        spec.ColorBy is { Column: CategoricalColumn }
+        || (IsFill(spec) && spec.FillBy is { Column: CategoricalColumn })
+        || spec is PointLayerSpec { Indexed: true, ShapeBy.Column: CategoricalColumn };
 
     /// <summary>Passes a new node of the same columns on to every part's own node.</summary>
     protected override void OnSpecChanged(LayerSpec before, LayerSpec after)
@@ -623,8 +667,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered)
     {
-        _hitKeys ??= new ColumnKeys(_categories!);
-        return SourceRow(_hitKeys, _runs!, _starts, Rows, key, gathered);
+        return SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
     }
 
     /// <summary>
@@ -675,9 +718,13 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         var dodge = PositionOf(Spec) == PositionKind.Dodge;
         foreach (var part in _parts)
         {
-            part.Plan.SeriesColor = part.Category >= 0 ? palette.Series(part.Category) : SeriesColor;
+            // A key is a category, or a pair: the color's number times the shapes, plus the shape's (row R3f).
+            var colorOf = _shapeCount > 0 ? part.Category / _shapeCount : part.Category;
+            part.Plan.SeriesColor = part.Category >= 0 && _colored ? palette.Series(colorOf) : SeriesColor;
+            part.Plan.SeriesShape = part.Category >= 0 && _shaped ? Shapes!.Of(_shapeCount > 0 ? part.Category % _shapeCount : part.Category) : null;
             part.Plan.Index = Index;
             part.Plan.Colors = Colors;
+            (part.Plan.Sizes, part.Plan.Shapes) = (Sizes, Shapes);
             part.Plan.DodgeSlot = dodge && part.Category >= 0 ? (part.Category, _categories!.CategoryCount) : null;
             if (part.Plan is SplitPlan inner)
             {
@@ -812,7 +859,10 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     private static Func<LayerSpec, LayerSpec> MakeOutline(int index, ColumnRef? by) =>
         layer => by is { } column ? OutlineLines(layer)[index] with { ColorBy = column } : OutlineLines(layer)[index];
 
-    /// <summary>Returns a layer's spec with its channels through a map and without color channels: a category's own layer.</summary>
+    /// <summary>
+    /// Returns a layer's spec with its channels through a map and without color channels: a category's own layer. A point
+    /// part on the index path has one shape, set at its recording; one on the CPU path reads its rows' sizes and shapes.
+    /// </summary>
     private static LayerSpec Remap(LayerSpec spec, Func<ColumnRef, ColumnRef> map)
     {
         var plain = spec with { ColorBy = null, FillBy = null };
@@ -828,16 +878,19 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             RectLayerSpec r => r with { XMin = map(r.XMin), XMax = map(r.XMax), YMin = map(r.YMin), YMax = map(r.YMax) },
             SegmentLayerSpec s => s with { X = map(s.X), Y = map(s.Y), XEnd = map(s.XEnd), YEnd = map(s.YEnd) },
             TextLayerSpec t => t with { X = map(t.X), Y = map(t.Y), Text = map(t.Text) },
-            PointLayerSpec p => p with { X = map(p.X), Y = map(p.Y) },
+            PointLayerSpec { Indexed: true } p => p with { X = map(p.X), Y = map(p.Y), ShapeBy = null },
+            PointLayerSpec p => p with { X = map(p.X), Y = map(p.Y), SizeBy = Mapped(p.SizeBy, map), ShapeBy = Mapped(p.ShapeBy, map) },
             _ => throw new InvalidOperationException($"A {spec.GetType().Name} is not split by categories."),
         };
     }
+
+    private static ColumnRef? Mapped(ColumnRef? reference, Func<ColumnRef, ColumnRef> map) => reference is { } r ? map(r) : null;
 
     /// <summary>Adds a part a used category of a column: a plan over its run, or over its gathered rows.</summary>
     private void AddParts(LayerSpec spec, PlanBuild build, List<PlotPyramid> pyramids)
     {
         var runs = _runs!;
-        for (var c = 0; c < _categories!.CategoryCount; c++)
+        for (var c = 0; c < _keys!.Count; c++)
         {
             if (runs.Count[c] == 0)
             {
@@ -877,7 +930,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     /// <summary>A split's gather of its sources' newer versions into the same columns, on the store's queue (row W1b2).</summary>
     private sealed class GatherMaking(SplitPlan plan, PlotWorkerPool pool) : Making
     {
-        protected override void Work() => GatherRows(pool, plan._categories!, plan._runs!, plan._gathers, ref plan._starts, plan.Rows);
+        protected override void Work() => GatherRows(pool, plan._keys!, plan._runs!, plan._gathers, ref plan._starts, plan.Rows);
 
         // An abandoned gather's split was released: the columns go once it no longer writes them.
         protected override void Free() => plan.DisposeGathers();
@@ -890,7 +943,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             _gatheredVersions[s] = _sources[s].Version;
         }
 
-        GatherRows(pool, _categories!, _runs!, _gathers, ref _starts, Rows);
+        GatherRows(pool, _keys!, _runs!, _gathers, ref _starts, Rows);
     }
 
     /// <summary>

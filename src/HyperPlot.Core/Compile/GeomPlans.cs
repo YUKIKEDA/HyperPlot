@@ -1068,8 +1068,12 @@ internal sealed class PointPlan : LayerPlan
     private long _mapped;
     private double _radius;
 
+    // The radius of each point of the last recording in physical pixels, by row, when the layer has a SizeBy; else empty.
+    private float[] _radii = [];
+    private bool _sized;
+
     public PointPlan(PointLayerSpec spec, RowRange rows)
-        : base(spec, rows) => SetColumns(AndColors(spec.X.Column, spec.Y.Column));
+        : base(spec, rows) => SetColumns(Read(spec, AndColors(spec.X.Column, spec.Y.Column)));
 
     /// <summary>Answers from the pixels the last recording mapped: every point, up to 131,072 (design §6.3).</summary>
     internal override void Hit(ref HitScan scan)
@@ -1077,7 +1081,7 @@ internal sealed class PointPlan : LayerPlan
         var end = Math.Min(Rows.EndIn(_mapped), _mapped);
         if (end > Rows.Start)
         {
-            scan.Points(_x, _y, Rows.Start, end, Columns[0], Columns[1], _radius);
+            scan.Points(_x, _y, Rows.Start, end, Columns[0], Columns[1], _radius, _sized ? _radii : default);
         }
     }
 
@@ -1106,6 +1110,15 @@ internal sealed class PointPlan : LayerPlan
 
         var centers = context.Points(end - start)[..(end - start)];
         var style = new MarkerStyle(Faded(point.Color ?? SeriesColor, point.Opacity), point.Size, point.Shape);
+        _sized = point.SizeBy is not null;
+        if (_sized || point.ShapeBy is not null)
+        {
+            // The reach of the hit test's first cut is the largest radius drawn.
+            _radius = _sized ? 0 : _radius;
+            RecordLooks(context, point, centers, xs, ys, start, end, style);
+            return;
+        }
+
         if (ElementColors is not { } values)
         {
             // A point that does not map is NaN, which the list passes.
@@ -1137,6 +1150,85 @@ internal sealed class PointPlan : LayerPlan
 
         context.DrawMarkers(centers[..count], colors[..count], style);
     }
+
+    /// <summary>
+    /// Records the points of a layer with a SizeBy or a ShapeBy (design §5.5.2 "大きさと形のチャネル"): each with its own
+    /// diameter and shape through the plot's scales, and its own color when the layer is colored by a number. A point whose
+    /// size or color value is NaN draws nothing and is not hit.
+    /// </summary>
+    private void RecordLooks(
+        RecordContext context,
+        PointLayerSpec point,
+        Span<Vector2> centers,
+        ReadOnlySpan<double> xs,
+        ReadOnlySpan<double> ys,
+        int start,
+        int end,
+        in MarkerStyle style
+    )
+    {
+        var length = end - start;
+        var values = ElementColors;
+        var sizeBy = point.SizeBy?.Column;
+        var shapeBy = point.ShapeBy?.Column as CategoricalColumn;
+        var colors = values is null ? default : context.MarkerColors(length);
+        var sizes = sizeBy is null ? default : context.MarkerSizes(length);
+        var shapes = shapeBy is null ? default : context.MarkerShapes(length);
+        if (sizeBy is not null && _radii.Length < end)
+        {
+            _radii = new float[Math.Max(end, _x.Length)];
+        }
+
+        var count = 0;
+        for (var i = start; i < end; i++)
+        {
+            var color = values is null ? default(Color?) : ElementColor(values, i);
+            var size = sizeBy is null ? 0 : Sizes!.Diameter(sizeBy.DifferenceAt(i, 0)) * context.Scale;
+            if ((values is not null && color is null) || float.IsNaN(size))
+            {
+                // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.
+                _x[i] = double.NaN;
+                continue;
+            }
+
+            centers[count] = new Vector2((float)xs[i], (float)ys[i]);
+            if (values is not null)
+            {
+                colors[count] = Faded(color!.Value, point.Opacity);
+            }
+
+            if (sizeBy is not null)
+            {
+                (sizes[count], _radii[i]) = (size, size / 2);
+                _radius = Math.Max(_radius, size / 2);
+            }
+
+            if (shapeBy is not null)
+            {
+                shapes[count] = Shapes!.Of(shapeBy.GetCode(i));
+            }
+
+            count++;
+        }
+
+        context.DrawMarkers(
+            centers[..count],
+            values is null ? default : colors[..count],
+            sizeBy is null ? default : sizes[..count],
+            shapeBy is null ? default : shapes[..count],
+            style
+        );
+    }
+
+    /// <summary>Returns the columns a point layer reads: its positions, its numeric color, and its size and shape columns.</summary>
+    private static Column[] Read(PointLayerSpec spec, Column[] columns) =>
+        (spec.SizeBy, spec.ShapeBy) switch
+        {
+            ({ } size, { } shape) => [.. columns, size.Column, shape.Column],
+            ({ } size, null) => [.. columns, size.Column],
+            (null, { } shape) => [.. columns, shape.Column],
+            _ => columns,
+        };
 
     /// <summary>Returns a color with its alpha multiplied by an opacity.</summary>
     private static Color Faded(Color color, double opacity) => opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * opacity) };

@@ -179,7 +179,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             Count: 0,
             Cells: offset,
             Size: point.Size * context.Scale,
-            Kind: (uint)point.Shape | ((uint)MathF.Round(MathF.Max(1, MathF.Round(context.Scale)) * 16) << 8),
+            Kind: (uint)(SeriesShape ?? point.Shape) | ((uint)MathF.Round(MathF.Max(1, MathF.Round(context.Scale)) * 16) << 8),
             Color: RenderList.Premultiply(point.Opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * point.Opacity) }),
             Swap: context.Flipped,
             ClampLow: new Vector2(x.ClampLow, y.ClampLow),

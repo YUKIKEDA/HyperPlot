@@ -165,7 +165,11 @@ public static class ScaleSpecExtensions
             );
         }
 
-        return scale with { RangeMin = min, RangeMax = max };
+        return scale with
+        {
+            RangeMin = min,
+            RangeMax = max,
+        };
     }
 
     /// <summary>Returns a copy of a shape scale with the shapes its categories take in order (design §4.2, row R3f).</summary>
@@ -196,7 +200,10 @@ public static class ScaleSpecExtensions
             }
         }
 
-        return scale with { Shapes = shapes.ToArray() };
+        return scale with
+        {
+            Shapes = shapes.ToArray(),
+        };
     }
 
     /// <summary>
