@@ -28,10 +28,10 @@ for blk in 65536 16384 8192 4096; do
 done
 # Zoom 4: the middle 1/4 of each axis of 1.6e8 points, so 1e7 points stay in view at the same screen density.
 for blk in 65536 32768 16384 8192 4096 2048; do
-  SCENES+=("z4-p8-b$blk|HP_PROBE_BLOCK_POINTS=$blk HP_PROBE_ZOOM=4|160000000|8")
+  SCENES+=("z4-p8-b$blk|HP_PROBE_BLOCK_POINTS=$blk HP_PROBE_ZOOM=4 HP_PROBE_NO_RAW_LIMIT=1|160000000|8")
 done
 for blk in 65536 8192; do
-  SCENES+=("z4-p1-b$blk|HP_PROBE_BLOCK_POINTS=$blk HP_PROBE_ZOOM=4|160000000|0")
+  SCENES+=("z4-p1-b$blk|HP_PROBE_BLOCK_POINTS=$blk HP_PROBE_ZOOM=4 HP_PROBE_NO_RAW_LIMIT=1|160000000|0")
 done
 
 run() {
@@ -42,6 +42,8 @@ run() {
   env $env "$E" points "$count" 6 0.6 uniform 600 "$cats" whole >> "$OUT" 2>&1 || echo "exit $? (run without a result)" >> "$OUT"
 }
 
+# SWEEP_ONLY=<prefix> keeps the scenes whose name starts with it (the zoom-4 rerun: SWEEP_ONLY=z4).
+if [ -n "${SWEEP_ONLY:-}" ]; then KEPT=(); for s in "${SCENES[@]}"; do [[ $s == "$SWEEP_ONLY"* ]] && KEPT+=("$s"); done; SCENES=("${KEPT[@]}"); fi
 N=${#SCENES[@]}
 for r in 1 2 3; do
   echo "##### round $r $(date +%H:%M:%S)" >> "$OUT"
