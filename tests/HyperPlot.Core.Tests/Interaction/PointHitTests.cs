@@ -15,9 +15,9 @@ public sealed class PointHitTests
     private static readonly double[] TwoValues = [double.NaN, 1.0];
 
     /// <summary>
-    /// Points answer from the pixels last drawn (design §6.3): in X mode the nearest along within the radius, and of those as
-    /// near the nearest across; in XY the nearest center within the radius and the marker's own; equal distances keep the
-    /// later row; the x and y are the point's.
+    /// Points answer from the pixels last drawn (design §6.3): in X mode by the distance along within the radius; in XY by
+    /// the distance of the center within the radius and the marker's own; of the points within half a pixel of the least
+    /// distance, the least row (row R3c, Issue #471 Decision 16); the x and y are the point's.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -29,9 +29,9 @@ public sealed class PointHitTests
     ///   radius of 0 inside the marker of (8, 1).
     ///
     /// Expected:
-    /// - (2, 5.5): row 1, the nearer across of the two at x = 2. (5, 1): row 3, the later of the two at (5, 5). (3.5, 5):
-    ///   nothing within 8 pixels along.
-    /// - (5, 5): row 3 at distance 0. 10 pixels right of (8, 1): row 4 (within 8 + 3). 12 pixels right: nothing. Radius 0,
+    /// - (2, 5.5): row 0, the lesser row of the two at x = 2, whatever their y. (5, 1): row 2, the lesser of the two at
+    ///   (5, 5). (3.5, 5): nothing within 8 pixels along.
+    /// - (5, 5): row 2 at distance 0. 10 pixels right of (8, 1): row 4 (within 8 + 3). 12 pixels right: nothing. Radius 0,
     ///   2 pixels from the center: row 4.
     /// </remarks>
     [Fact]
@@ -44,18 +44,56 @@ public sealed class PointHitTests
         var hits = new SeriesHit[2];
 
         var column = Assert.Single(hits[..engine.HitTest(Pixel(engine, 2, 5.5), 8, HitMode.X, hits)]);
-        Assert.Equal((1L, 2.0, 6.0), (column.Row, column.X, column.Y));
-        Assert.Equal(3, Assert.Single(hits[..engine.HitTest(Pixel(engine, 5, 1), 8, HitMode.X, hits)]).Row);
+        Assert.Equal((0L, 2.0, 2.0), (column.Row, column.X, column.Y));
+        Assert.Equal(2, Assert.Single(hits[..engine.HitTest(Pixel(engine, 5, 1), 8, HitMode.X, hits)]).Row);
         Assert.Equal(0, engine.HitTest(Pixel(engine, 3.5, 5), 8, HitMode.X, hits));
 
         var exact = Assert.Single(hits[..engine.HitTest(Pixel(engine, 5, 5), 8, HitMode.XY, hits)]);
-        Assert.Equal((3L, 0f), (exact.Row, exact.Distance));
+        Assert.Equal((2L, 0f), (exact.Row, exact.Distance));
         var corner = Pixel(engine, 8, 1);
         var near = Assert.Single(hits[..engine.HitTest(corner + new Vector2(10, 0), 8, HitMode.XY, hits)]);
         Assert.Equal((4L, 8.0, 1.0), (near.Row, near.X, near.Y));
         Assert.Equal(10f, near.Distance, 3);
         Assert.Equal(0, engine.HitTest(corner + new Vector2(12, 0), 8, HitMode.XY, hits));
         Assert.Equal(4, Assert.Single(hits[..engine.HitTest(corner + new Vector2(0, 2), 0, HitMode.XY, hits)]).Row);
+    }
+
+    /// <summary>
+    /// Of the points within half a pixel of the least distance the least row answers, measured from the least distance and
+    /// not by pairs, which are not transitive (design §6.3 "同じ距離", row R3c, Issue #471 Decision 16).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Three points on the cursor's line: row 0 drawn 3.8 pixels to its right, row 1 3.4 pixels to its left, and row 2
+    ///   3.0 pixels to its right, on domains [0, 10] at 640 × 360.
+    ///
+    /// Steps:
+    /// - XY with a radius of 8 at the cursor; X with a radius of 8 at the cursor.
+    ///
+    /// Expected:
+    /// - Both modes: row 1. The least distance is 3.0 (row 2), and rows 1 and 2 lie within 3.5; a comparison by pairs in
+    ///   the rows' order would keep row 0 (3.8 and 3.4 are within half a pixel) and then take row 2.
+    /// </remarks>
+    [Fact]
+    public void Points_WithinHalfAPixelOfTheLeast_TakeTheLeastRow()
+    {
+        using var probeXs = Column.Wrap(OneX);
+        using var probeYs = Column.Wrap(OneY);
+        var probeTable = DataTable.Create().Add("x", probeXs).Add("y", probeYs).Build();
+        using var probe = Drawn(Domains(Plot.Create(probeTable).Point(probeTable.Col<double>("x"), probeTable.Col<double>("y"))).Build());
+        var perUnit = Pixel(probe, 6, 5).X - Pixel(probe, 5, 5).X;
+
+        using var xs = Column.Wrap(new[] { 5 + (3.8 / perUnit), 5 - (3.4 / perUnit), 5 + (3.0 / perUnit) });
+        using var ys = Column.Wrap(new[] { 5.0, 5, 5 });
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        using var engine = Drawn(Domains(Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"))).Build());
+        var hits = new SeriesHit[2];
+        var cursor = Pixel(engine, 5, 5);
+
+        var xy = Assert.Single(hits[..engine.HitTest(cursor, 8, HitMode.XY, hits)]);
+        Assert.Equal(1, xy.Row);
+        Assert.Equal(3.4f, xy.Distance, 3);
+        Assert.Equal(1, Assert.Single(hits[..engine.HitTest(cursor, 8, HitMode.X, hits)]).Row);
     }
 
     /// <summary>
