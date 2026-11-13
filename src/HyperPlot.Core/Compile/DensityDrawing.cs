@@ -24,7 +24,7 @@ internal sealed class DensitySwitch
     /// <summary>Gets a value indicating whether the layer draws a density this frame. Valid after <see cref="Prepare"/>.</summary>
     public bool Density => _density;
 
-    /// <summary>Gets the top of the density's scale this frame, in points a bin of the chosen level; 0 when nothing is drawn.</summary>
+    /// <summary>Gets the top of the density's scale this frame, in points a square physical pixel; 0 when nothing is drawn.</summary>
     public double Top { get; private set; }
 
     /// <summary>Gets the upper count of the points in the view the last choice read, summed over the parts. Tests only.</summary>
@@ -91,7 +91,7 @@ internal sealed class DensitySwitch
 /// <param name="CellLevel">The cell's level.</param>
 /// <param name="TileCode">The code of the cell whose tile is read, at <paramref name="TileLevel"/>; or the coarse grid's 0.</param>
 /// <param name="TileLevel">The level of the tile read: the cell's, an ancestor's, or −1 for a fill.</param>
-/// <param name="Count">A fill's points, normalized to a bin of the chosen level.</param>
+/// <param name="Count">A fill's points a square physical pixel: its count over the cell's area on the screen.</param>
 internal readonly record struct DensityPiece(ulong CellCode, int CellLevel, ulong TileCode, int TileLevel, double Count);
 
 /// <summary>The density's arithmetic of design §5.5.2, apart from the plan so that tests read it.</summary>
@@ -125,8 +125,23 @@ internal static class DensityMath
         return !(pixels > 1) ? 0 : Math.Clamp((int)Math.Ceiling(Math.Log2(pixels)), 0, 32);
     }
 
-    /// <summary>Returns a count normalized to a bin of the chosen level from a bin k levels shallower: c / 4^k.</summary>
-    public static double Normalized(double count, int shallower) => count / Math.Pow(4, shallower);
+    /// <summary>
+    /// Returns the area on the screen, in square physical pixels, of a bin of a cell's tile: the cell's extent over 256 on
+    /// each axis times the physical pixels of a unit (design §5.5.2 "広さで正規化する").
+    /// </summary>
+    /// <param name="extentX">The cell's extent along x, in units of the snapshot's scale space.</param>
+    /// <param name="extentY">The cell's extent along y.</param>
+    /// <param name="perUnitX">The physical pixels of a unit along x, signed.</param>
+    /// <param name="perUnitY">The physical pixels of a unit along y, signed.</param>
+    public static double BinArea(double extentX, double extentY, double perUnitX, double perUnitY) =>
+        Math.Abs(extentX * perUnitX * extentY * perUnitY) / ((double)DensityTiles.Side * DensityTiles.Side);
+
+    /// <summary>
+    /// Returns a count normalized to the points of a square physical pixel: the count over the area of its bin or cell on
+    /// the screen (design §5.5.2 "広さで正規化する"), so that the same density has the same value whatever the bin's level
+    /// and whatever the part's range.
+    /// </summary>
+    public static double Normalized(double count, double area) => area > 0 ? count / area : 0;
 
     /// <summary>
     /// Returns where a count lies from 0 to 1 under the top (design §5.5.2 "描き方"): log(1 + c) / log(1 + m), c / m, or
@@ -149,25 +164,25 @@ internal static class DensityMath
     }
 
     /// <summary>
-    /// Returns how the image command paints a tile read k levels shallower than the chosen level (design §5.5.2 "広さで
-    /// 正規化する"): the transform's kind as the image's flags read it, its constant, and the domain's high end, so that
-    /// the shader's value of c equals the value of c / 4^k under the top.
+    /// Returns how the image command paints a tile whose bins cover an area on the screen (design §5.5.2 "広さで正規化する"):
+    /// the transform's kind as the image's flags read it, its constant, and the domain's high end, so that the shader's
+    /// value of a bin's count c equals the value of c / area under the top.
     /// </summary>
-    public static (uint Kind, float Constant, float High) Paint(DensityNorm norm, double top, int shallower)
-    {
-        var area = Math.Pow(4, shallower);
-        return norm switch
+    /// <param name="norm">The layer's norm.</param>
+    /// <param name="top">The top of the scale, in points a square physical pixel.</param>
+    /// <param name="area">The area of a bin of the tile on the screen, in square physical pixels (<see cref="BinArea"/>).</param>
+    public static (uint Kind, float Constant, float High) Paint(DensityNorm norm, double top, double area) =>
+        norm switch
         {
-            // Linear: c / (m · 4^k).
+            // Linear: c / (m · area).
             DensityNorm.Linear => (0u, 0f, (float)(top * area)),
 
-            // Pow 1/3: ∛c / (∛m · 4^(k/3)).
+            // Pow 1/3: ∛c / (∛m · ∛area).
             DensityNorm.Cbrt => (3u, 1f / 3, (float)(Math.Cbrt(top) * Math.Cbrt(area))),
 
-            // Symlog of constant 4^k: log10(1 + c / 4^k) over log10(1 + m).
+            // Symlog of constant area: log10(1 + c / area) over log10(1 + m).
             _ => (2u, (float)area, (float)Math.Log10(1 + top)),
         };
-    }
 
     /// <summary>Returns the density's color table of a layer drawn in its own color: from transparent to the color.</summary>
     public static ColorMap Ramp(Color color) => new(color with { A = 0 }, color);
