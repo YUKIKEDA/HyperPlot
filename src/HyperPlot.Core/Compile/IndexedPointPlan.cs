@@ -356,7 +356,7 @@ internal sealed class IndexedPointPlan : LayerPlan
                 largest = Math.Max(largest, bin);
             }
 
-            return DensityMath.Normalized(largest, level);
+            return DensityMath.Normalized(largest, DensityMath.BinArea(rangeX, rangeY, x.PerUnit, y.PerUnit));
         }
 
         var rect = new SpatialRect(x.Low, x.High, y.Low, y.High);
@@ -378,7 +378,8 @@ internal sealed class IndexedPointPlan : LayerPlan
                 if (tiles.TryGetTile(code, at, out var tile))
                 {
                     Add(new DensityPiece(cell.Code, cell.Level, code, at, 0));
-                    top = Math.Max(top, DensityMath.Normalized(tile.Largest, level - at));
+                    var (_, _, tileX, tileY) = snapshot.CellBox(code, at);
+                    top = Math.Max(top, DensityMath.Normalized(tile.Largest, DensityMath.BinArea(tileX, tileY, x.PerUnit, y.PerUnit)));
                     drawn = true;
                     break;
                 }
@@ -386,8 +387,9 @@ internal sealed class IndexedPointPlan : LayerPlan
 
             if (!drawn)
             {
-                // No tile above: the cell's points as one fill, a bin of the chosen level's share of them.
-                var count = DensityMath.Normalized(cell.Count, level + DensityTiles.BinLevels - cell.Level);
+                // No tile above: the cell's points as one fill, normalized by the cell's area on the screen.
+                var (_, _, cellX, cellY) = snapshot.CellBox(cell.Code, cell.Level);
+                var count = DensityMath.Normalized(cell.Count, Math.Abs(cellX * x.PerUnit * cellY * y.PerUnit));
                 Add(new DensityPiece(cell.Code, cell.Level, 0, -1, count));
                 top = Math.Max(top, count);
             }
@@ -482,7 +484,8 @@ internal sealed class IndexedPointPlan : LayerPlan
             var side = bins * Math.Pow(2, level - piece.CellLevel);
             var (tileX, tileY, tileExtentX, tileExtentY) = snapshot.CellBox(piece.TileCode, piece.TileLevel);
             var shallower = level - piece.TileLevel;
-            var (kind, constant, high) = DensityMath.Paint(point.DensityNorm, top, shallower);
+            var area = DensityMath.BinArea(tileExtentX, tileExtentY, x.PerUnit, y.PerUnit);
+            var (kind, constant, high) = DensityMath.Paint(point.DensityNorm, top, area);
             var (alongX, alongY) = (x.PerUnit * extentX / side, y.PerUnit * extentY / side);
             var record = new ImageInstance
             {

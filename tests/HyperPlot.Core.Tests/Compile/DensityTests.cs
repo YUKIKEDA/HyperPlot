@@ -38,16 +38,17 @@ public sealed class DensityTests
     }
 
     /// <summary>
-    /// The image command's paint of a tile k levels shallower gives the position of c / 4^k under the top, for the three
-    /// norms (design §5.5.2 "広さで正規化する"): the shader's formula, taken on the CPU, equals the CPU's position.
+    /// The image command's paint of a tile whose bins cover an area on the screen gives the position of c / area under the
+    /// top, for the three norms (design §5.5.2 "広さで正規化する"): the shader's formula, taken on the CPU, equals the CPU's
+    /// position.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - The shader's transforms as Image.hlsl writes them: none, symlog log10(1 + |v| / C), and pow |v|^C; t = (s − low) / (high − low).
     ///
     /// Steps:
-    /// - For each norm, each k of 0, 1, and 3, and counts 0, 1, 7, and 1,000 against a top of 50: compute t through Paint and
-    ///   through Position of c / 4^k.
+    /// - For each norm, bin areas of 1, 2.5, 4, and 64 square physical pixels, and counts 0, 1, 7, and 1,000 against a top
+    ///   of 50: compute t through Paint and through Position of c / area.
     ///
     /// Expected:
     /// - Equal to within 1e-6, held to [0, 1].
@@ -57,11 +58,11 @@ public sealed class DensityTests
     {
         foreach (var norm in Enum.GetValues<DensityNorm>())
         {
-            foreach (var k in new[] { 0, 1, 3 })
+            foreach (var area in new[] { 1, 2.5, 4, 64 })
             {
                 foreach (var c in new[] { 0.0, 1, 7, 1000 })
                 {
-                    var (kind, constant, high) = DensityMath.Paint(norm, 50, k);
+                    var (kind, constant, high) = DensityMath.Paint(norm, 50, area);
                     var s = kind switch
                     {
                         2 => Math.Log10(1 + (c / constant)),
@@ -69,7 +70,7 @@ public sealed class DensityTests
                         _ => c,
                     };
                     var shader = Math.Clamp(s / high, 0, 1);
-                    Assert.Equal(DensityMath.Position(norm, DensityMath.Normalized(c, k), 50), shader, 6);
+                    Assert.Equal(DensityMath.Position(norm, DensityMath.Normalized(c, area), 50), shader, 6);
                 }
             }
         }
