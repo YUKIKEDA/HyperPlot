@@ -93,7 +93,7 @@ internal sealed partial class PlotPlan : IDisposable
     // The batches, origins, and boundaries of every panel's pairs of scales, at panel · 4 + pair: M4 extracts them together.
     private M4Batch[] _allBatches = [];
     private ScaleOrigin[] _allOrigins = [];
-    private double[][] _allBoundaries = [];
+    private ArraySegment<double>[] _allBoundaries = [];
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlotPlan"/> class for a target of a size in physical pixels, measuring
@@ -187,7 +187,7 @@ internal sealed partial class PlotPlan : IDisposable
     internal IReadOnlyCollection<PlotPyramid> Pyramids => [.. _held.Select(c => _store.Find(c)!)];
 
     /// <summary>Gets the number of pixel columns (rows when flipped) M4 last ran over: W, or H when flipped. Tests only.</summary>
-    internal int PixelColumns => _panels[0].Boundaries.Length - 1;
+    internal int PixelColumns => _panels[0].Boundaries.Count - 1;
 
     /// <summary>Gets the x domain of the last extraction, as an origin and differences (design §3.6). Tests only.</summary>
     internal ScaleRange XDomain => _panels[0].X;
@@ -277,7 +277,7 @@ internal sealed partial class PlotPlan : IDisposable
     /// Gets the M4 batches, origins, and boundaries that <see cref="Prepare"/> set for the extraction (row G6c): a figure
     /// extracts its plots' together.
     /// </summary>
-    internal (M4Batch[] Batches, ScaleOrigin[] Origins, double[][] Boundaries) Extraction => (_allBatches, _allOrigins, _allBoundaries);
+    internal (M4Batch[] Batches, ScaleOrigin[] Origins, ArraySegment<double>[] Boundaries) Extraction => (_allBatches, _allOrigins, _allBoundaries);
 
     /// <summary>Gets the list the plan records into: the one <see cref="Render(PlotSpec)"/> returns, or a figure's plot's (row G6c).</summary>
     internal RenderList List => _list;
@@ -849,7 +849,7 @@ internal sealed partial class PlotPlan : IDisposable
                     guide.Polar is { } polar ? polar.AlongSize
                     : flipped ? guide.Height
                     : guide.Width;
-                if (x != panel.X || panel.Boundaries.Length != along + 1)
+                if (x != panel.X || panel.Boundaries.Count != along + 1)
                 {
                     panel.MakeBoundaries(x, along, _xTransform);
                     boundaries = true;
@@ -857,7 +857,7 @@ internal sealed partial class PlotPlan : IDisposable
 
                 // The secondary scales (row G6a): their own boundaries, made the same way over the secondary x domain.
                 panel.Y2 = spec.ScaleY2 is null ? default : guide.Y2.FinalDomain;
-                if (spec.ScaleX2 is not null && (guide.X2.FinalDomain != panel.X2 || panel.Boundaries2.Length != along + 1))
+                if (spec.ScaleX2 is not null && (guide.X2.FinalDomain != panel.X2 || panel.Boundaries2.Count != along + 1))
                 {
                     panel.MakeSecondaryBoundaries(guide.X2.FinalDomain, along, _xTransform2);
                     boundaries = true;
@@ -2209,7 +2209,7 @@ internal sealed partial class PlotPlan : IDisposable
 
         if (_allBatches.Length != count)
         {
-            (_allBatches, _allOrigins, _allBoundaries) = (new M4Batch[count], new ScaleOrigin[count], new double[count][]);
+            (_allBatches, _allOrigins, _allBoundaries) = (new M4Batch[count], new ScaleOrigin[count], new ArraySegment<double>[count]);
         }
 
         var at = 0;

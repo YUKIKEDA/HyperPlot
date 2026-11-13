@@ -275,7 +275,7 @@ public sealed class FacetTests : IDisposable
                 using var pyramid = _pool.BuildPyramid(values);
                 await pyramid.WhenComplete();
                 await _pool.PrecomputeStats(x);
-                var expected = new M4Point[M4.MaxPointCount(panel.Boundaries.Length - 1)];
+                var expected = new M4Point[M4.MaxPointCount(panel.Boundaries.Count - 1)];
                 var count = M4.Extract(x, pyramid, new ScaleOrigin(panel.X.Origin, panel.Y.Origin), panel.Boundaries, expected).Count;
                 Assert.Equal(Values(expected.AsSpan(0, count)), Values(((LinePlan)panel.Layers[0]).Points(panel.Layers[0].Batch)));
             }
