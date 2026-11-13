@@ -1947,14 +1947,21 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public double ElementY(Column column, long index) => PixelY(column.DifferenceAt(index, YOrigin));
 
     /// <summary>Maps an element column's values to pixels into a buffer the layer keeps (row I2c): its hit test reads them after.</summary>
-    public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels)
+    public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels) =>
+        ElementPixelsInto(column, ofX, ref pixels, 0, (int)column.Length);
+
+    /// <summary>
+    /// Maps a run of a column's elements, <paramref name="length"/> from <paramref name="first"/>, to pixels on one axis into
+    /// a buffer kept from frame to frame: element <paramref name="first"/> + i at i. A part of a split layer over a run of
+    /// the layer's rows maps only its run (Issue #459).
+    /// </summary>
+    public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels, int first, int length)
     {
-        var length = (int)column.Length;
         Ensure(ref pixels, length);
         Ensure(ref _values, length);
         var values = _values.AsSpan(0, length);
         var mapped = pixels.AsSpan(0, length);
-        column.ReadDifferences(values, ofX ? XOrigin : YOrigin);
+        column.ReadDifferences(values, ofX ? XOrigin : YOrigin, first);
         MapAxis(Transform, ofX ? X : Y, values, mapped, ofX);
         return mapped;
     }

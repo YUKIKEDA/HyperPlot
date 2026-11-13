@@ -924,14 +924,17 @@ internal sealed class RectPlan : LayerPlan
     /// <summary>Answers from the pixels the last recording mapped: every rectangle, up to 131,072 (row I2c).</summary>
     internal override void Hit(ref HitScan scan)
     {
-        var end = Math.Min(Rows.EndIn(_mapped), _mapped);
-        if (end > Rows.Start)
+        if (_mapped > 0)
         {
-            scan.Rects(_x0, _x1, _y0, _y1, Rows.Start, end, _corners);
+            var count = (int)_mapped;
+            scan.Rects(_x0.AsSpan(0, count), _x1.AsSpan(0, count), _y0.AsSpan(0, count), _y1.AsSpan(0, count), Rows.Start, _corners);
         }
     }
 
     internal override Color HitColor(int series) => (((RectLayerSpec)Spec).Fill ?? SeriesColor) with { A = 255 };
+
+    /// <summary>Gets the number of rows the last recording mapped: the part's own (Issue #459). Tests only.</summary>
+    internal long MappedRows => _mapped;
 
     internal override SelectionShape? Shape => new(ShapeKind.Box, Columns[0], null, Columns[2], Rows, Sorted: false, X1: Columns[1], Y1: Columns[3]);
 
@@ -946,36 +949,42 @@ internal sealed class RectPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var rect = (RectLayerSpec)Spec;
-        var xs0 = context.ElementPixelsInto(rect.XMin.Column, ofX: true, ref _x0);
-        var xs1 = context.ElementPixelsInto(rect.XMax.Column, ofX: true, ref _x1);
-        var ys0 = context.ElementPixelsInto(rect.YMin.Column, ofX: false, ref _y0);
-        var ys1 = context.ElementPixelsInto(rect.YMax.Column, ofX: false, ref _y1);
+
+        // The part's own rows: a part over a run of the layer's columns maps its run, not the whole (Issue #459).
+        var start = (int)Rows.Start;
+        var length = Math.Max(0, (int)Rows.EndIn(rect.XMin.Column.Length) - start);
+        var xs0 = context.ElementPixelsInto(rect.XMin.Column, ofX: true, ref _x0, start, length);
+        var xs1 = context.ElementPixelsInto(rect.XMax.Column, ofX: true, ref _x1, start, length);
+        var ys0 = context.ElementPixelsInto(rect.YMin.Column, ofX: false, ref _y0, start, length);
+        var ys1 = context.ElementPixelsInto(rect.YMax.Column, ofX: false, ref _y1, start, length);
         if (_corners.Length == 0)
         {
             _corners = [rect.XMin.Column, rect.XMax.Column, rect.YMin.Column, rect.YMax.Column];
         }
 
-        _mapped = Math.Min(Math.Min(xs0.Length, xs1.Length), Math.Min(ys0.Length, ys1.Length));
-        for (var i = (int)Rows.Start; i < Rows.EndIn(xs0.Length); i++)
+        _mapped = length;
+        for (var j = 0; j < length; j++)
         {
+            var i = start + j;
+
             // Corners mapped one by one: the smaller is the top left whatever the scales' directions. A corner that does
             // not map draws nothing.
             if (ElementColors is { } colors)
             {
                 if (ElementColor(colors, i) is { } color)
                 {
-                    context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], color);
+                    context.DrawRect(xs0[j], xs1[j], ys0[j], ys1[j], color);
                 }
                 else
                 {
                     // Not drawn, so not hit either (design §6.3): the hit test passes a rectangle with a NaN corner.
-                    _x0[i] = double.NaN;
+                    _x0[j] = double.NaN;
                 }
 
                 continue;
             }
 
-            context.DrawRect(xs0[i], xs1[i], ys0[i], ys1[i], FillOf(rect.Fill, translucent: false));
+            context.DrawRect(xs0[j], xs1[j], ys0[j], ys1[j], FillOf(rect.Fill, translucent: false));
         }
     }
 }
@@ -1062,13 +1071,14 @@ internal sealed class CustomPlan : LayerPlan
 /// </summary>
 internal sealed class PointPlan : LayerPlan
 {
-    // The points' pixels of the last recording, along and across, kept for the hit test (design §6.3).
+    // The points' pixels of the last recording, along and across, kept for the hit test (design §6.3): index 0 is the part's
+    // first row (Issue #459).
     private double[] _x = [];
     private double[] _y = [];
     private long _mapped;
     private double _radius;
 
-    // The radius of each point of the last recording in physical pixels, by row, when the layer has a SizeBy; else empty.
+    // The radius of each point of the last recording in physical pixels, as _x, when the layer has a SizeBy; else empty.
     private float[] _radii = [];
     private double[] _diameters = [];
     private int _diametersRead;
@@ -1080,14 +1090,25 @@ internal sealed class PointPlan : LayerPlan
     /// <summary>Answers from the pixels the last recording mapped: every point, up to 131,072 (design §6.3).</summary>
     internal override void Hit(ref HitScan scan)
     {
-        var end = Math.Min(Rows.EndIn(_mapped), _mapped);
-        if (end > Rows.Start)
+        if (_mapped > 0)
         {
-            scan.Points(_x, _y, Rows.Start, end, Columns[0], Columns[1], _radius, _sized ? _radii : default);
+            var count = (int)_mapped;
+            scan.Points(
+                _x.AsSpan(0, count),
+                _y.AsSpan(0, count),
+                Rows.Start,
+                Columns[0],
+                Columns[1],
+                _radius,
+                _sized ? _radii.AsSpan(0, count) : default
+            );
         }
     }
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
+
+    /// <summary>Gets the number of rows the last recording mapped: the part's own (Issue #459). Tests only.</summary>
+    internal long MappedRows => _mapped;
 
     /// <summary>Gets the number of sizes the last recording read (row R3f). Tests only.</summary>
     internal int DiametersRead => _diametersRead;
@@ -1102,12 +1123,15 @@ internal sealed class PointPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var point = (PointLayerSpec)Spec;
-        var xs = context.ElementPixelsInto(point.X.Column, ofX: true, ref _x);
-        var ys = context.ElementPixelsInto(point.Y.Column, ofX: false, ref _y);
-        _mapped = Math.Min(xs.Length, ys.Length);
-        _radius = point.Size * context.Scale / 2;
+
+        // The part's own rows: a part over a run of the layer's columns maps its run, not the whole (Issue #459). The
+        // buffers' index 0 is the run's first row.
         var start = (int)Rows.Start;
-        var end = (int)Math.Min(Rows.EndIn(_mapped), _mapped);
+        var end = Math.Max(start, (int)Rows.EndIn(point.X.Column.Length));
+        var xs = context.ElementPixelsInto(point.X.Column, ofX: true, ref _x, start, end - start);
+        var ys = context.ElementPixelsInto(point.Y.Column, ofX: false, ref _y, start, end - start);
+        _mapped = end - start;
+        _radius = point.Size * context.Scale / 2;
         if (end <= start)
         {
             return;
@@ -1129,7 +1153,7 @@ internal sealed class PointPlan : LayerPlan
             // A point that does not map is NaN, which the list passes.
             for (var i = start; i < end; i++)
             {
-                centers[i - start] = new Vector2((float)xs[i], (float)ys[i]);
+                centers[i - start] = new Vector2((float)xs[i - start], (float)ys[i - start]);
             }
 
             context.DrawMarkers(centers, default, style);
@@ -1143,13 +1167,13 @@ internal sealed class PointPlan : LayerPlan
         {
             if (ElementColor(values, i) is { } color)
             {
-                centers[count] = new Vector2((float)xs[i], (float)ys[i]);
+                centers[count] = new Vector2((float)xs[i - start], (float)ys[i - start]);
                 colors[count++] = Faded(color, point.Opacity);
             }
             else
             {
                 // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.
-                _x[i] = double.NaN;
+                _x[i - start] = double.NaN;
             }
         }
 
@@ -1179,9 +1203,9 @@ internal sealed class PointPlan : LayerPlan
         var colors = values is null ? default : context.MarkerColors(length);
         var sizes = sizeBy is null ? default : context.MarkerSizes(length);
         var shapes = shapeBy is null ? default : context.MarkerShapes(length);
-        if (sizeBy is not null && _radii.Length < end)
+        if (sizeBy is not null && _radii.Length < length)
         {
-            _radii = new float[Math.Max(end, _x.Length)];
+            _radii = new float[length];
         }
 
         // The part's sizes read and mapped at once: one at a time through the column took 2 to 4 ms of 131,072 points
@@ -1212,11 +1236,11 @@ internal sealed class PointPlan : LayerPlan
             if ((values is not null && color is null) || float.IsNaN(size) || code < 0)
             {
                 // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.
-                _x[i] = double.NaN;
+                _x[i - start] = double.NaN;
                 continue;
             }
 
-            centers[count] = new Vector2((float)xs[i], (float)ys[i]);
+            centers[count] = new Vector2((float)xs[i - start], (float)ys[i - start]);
             if (values is not null)
             {
                 colors[count] = Faded(color!.Value, point.Opacity);
@@ -1224,7 +1248,7 @@ internal sealed class PointPlan : LayerPlan
 
             if (sizeBy is not null)
             {
-                (sizes[count], _radii[i]) = (size, size / 2);
+                (sizes[count], _radii[i - start]) = (size, size / 2);
                 _radius = Math.Max(_radius, size / 2);
             }
 

@@ -388,13 +388,18 @@ internal ref struct HitScan
     /// the nearest across; <see cref="HitMode.XY"/> the nearest of those the radius reaches. Of equal distances the later row
     /// stays: it is drawn over. The x and y are the rectangle's center, in data units.
     /// </summary>
+    /// <param name="x0">The left corners' pixels: index 0 is row <paramref name="first"/>.</param>
+    /// <param name="x1">The right corners' pixels, as <paramref name="x0"/>.</param>
+    /// <param name="y0">The low corners' pixels, as <paramref name="x0"/>.</param>
+    /// <param name="y1">The high corners' pixels, as <paramref name="x0"/>.</param>
+    /// <param name="first">The row of the buffers' first element (Issue #459).</param>
+    /// <param name="columns">The four corner columns, read for the answer's x and y.</param>
     public void Rects(
         ReadOnlySpan<double> x0,
         ReadOnlySpan<double> x1,
         ReadOnlySpan<double> y0,
         ReadOnlySpan<double> y1,
-        long start,
-        long end,
+        long first,
         Column[] columns
     )
     {
@@ -408,15 +413,15 @@ internal ref struct HitScan
         var (along, across, xMode) = (Along, Across, Mode == HitMode.X);
         var reach = xMode ? double.PositiveInfinity : (double)Radius;
         var (best, bestRow) = (xMode ? double.PositiveInfinity : reach * reach, -1L);
-        var (first, last) = ((int)start, (int)Math.Min(end, Math.Min(Math.Min(x0.Length, x1.Length), Math.Min(y0.Length, y1.Length))));
+        var last = Math.Min(Math.Min(x0.Length, x1.Length), Math.Min(y0.Length, y1.Length));
 
         // Most rectangles lie away from the cursor along: a vector of them at a time is passed when none comes within reach.
         var lanes = System.Numerics.Vector<double>.Count;
         var window = xMode ? 0 : reach;
         var (low, high) = (new System.Numerics.Vector<double>(along - window), new System.Numerics.Vector<double>(along + window));
-        for (var i = first; i < last; i++)
+        for (var i = 0; i < last; i++)
         {
-            if (i + lanes <= last && (i - first) % lanes == 0)
+            if (i + lanes <= last && i % lanes == 0)
             {
                 var (a, b) = (new System.Numerics.Vector<double>(x0.Slice(i, lanes)), new System.Numerics.Vector<double>(x1.Slice(i, lanes)));
                 var near =
@@ -473,6 +478,7 @@ internal ref struct HitScan
 
         if (bestRow >= 0)
         {
+            bestRow += first;
             var x = (ValueOf(X, columns[0], bestRow) + ValueOf(X, columns[1], bestRow)) / 2;
             var y = (columns[2].DifferenceAt(bestRow, 0) + columns[3].DifferenceAt(bestRow, 0)) / 2;
             Add(0, bestRow, x, y, Math.Sqrt(best), derived: false, provisional: false);
@@ -485,11 +491,17 @@ internal ref struct HitScan
     /// nearest across; <see cref="HitMode.XY"/> the point whose center is nearest among those within the radius and the
     /// marker's own. Of equal distances the later row stays: it is drawn over. The x and y are the point's, in data units.
     /// </summary>
+    /// <param name="xs">The points' pixels along: index 0 is row <paramref name="first"/>.</param>
+    /// <param name="ys">The points' pixels across, as <paramref name="xs"/>.</param>
+    /// <param name="first">The row of the buffers' first element (Issue #459).</param>
+    /// <param name="x">The x column, read for the answer's x.</param>
+    /// <param name="y">The y column, read for the answer's y.</param>
+    /// <param name="markerRadius">The markers' radius in physical pixels, or the largest when <paramref name="radii"/> is not empty.</param>
+    /// <param name="radii">Each point's radius, as <paramref name="xs"/> (row R3f), or empty.</param>
     public void Points(
         ReadOnlySpan<double> xs,
         ReadOnlySpan<double> ys,
-        long start,
-        long end,
+        long first,
         Column x,
         Column y,
         double markerRadius,
@@ -506,8 +518,8 @@ internal ref struct HitScan
         var reach = xMode ? (double)Radius : Radius + markerRadius;
         var (bestAlong, bestAcross, bestRow) = (double.PositiveInfinity, double.PositiveInfinity, -1L);
         var best = reach * reach;
-        var last = (int)Math.Min(end, Math.Min(xs.Length, ys.Length));
-        for (var i = (int)start; i < last; i++)
+        var last = Math.Min(xs.Length, ys.Length);
+        for (var i = 0; i < last; i++)
         {
             var dx = Math.Abs(xs[i] - along);
             if (!(dx <= reach))
@@ -547,6 +559,7 @@ internal ref struct HitScan
 
         if (bestRow >= 0)
         {
+            bestRow += first;
             var distance = Math.Sqrt((bestAlong * bestAlong) + (bestAcross * bestAcross));
             Add(0, bestRow, ValueOf(X, x, bestRow), y.DifferenceAt(bestRow, 0), distance, derived: false, provisional: false);
         }
