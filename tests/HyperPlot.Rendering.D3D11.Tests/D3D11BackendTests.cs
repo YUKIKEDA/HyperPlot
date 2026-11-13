@@ -1,3 +1,4 @@
+using HyperPlot.Testing;
 using TerraFX.Interop.DirectX;
 using TerraFX.Interop.Windows;
 
@@ -68,7 +69,7 @@ public sealed class D3D11BackendTests
     /// - A WARP backend and a 64 × 64 target, cleared; one read to warm up.
     ///
     /// Steps:
-    /// - Read 20 times.
+    /// - Read 20 times as a warm-up; collect; read 20 times more, counting the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -82,15 +83,13 @@ public sealed class D3D11BackendTests
         target.Clear(new Color(1, 2, 3, 255));
         target.ReadPixels(pixels);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 20; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            target.ReadPixels(pixels);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 20; i++)
+            {
+                target.ReadPixels(pixels);
+            }
+        });
     }
 
     /// <summary>

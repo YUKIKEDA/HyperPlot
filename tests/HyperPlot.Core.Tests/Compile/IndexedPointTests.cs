@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -154,7 +155,7 @@ public sealed class IndexedPointTests
     ///   131,073 rows split by 65 categories, and by 64.
     ///
     /// Expected:
-    /// - InvalidOperationException naming row R3d, R3e, and R3d for the first two and the 65 categories; ArgumentException
+    /// - InvalidOperationException naming row R3d, R3e2, and R3d for the first two and the 65 categories; ArgumentException
     ///   naming a stored column for the evenly spaced x; the 64 categories render 64 parts' runs.
     /// </remarks>
     [Fact]
@@ -178,7 +179,7 @@ public sealed class IndexedPointTests
         var numbered = Spec(table, point with { ColorBy = v }) with { ScaleColor = Scale.Sequential() };
         Assert.Contains("R3d", Assert.Throws<InvalidOperationException>(() => plan.Render(numbered)).Message, StringComparison.Ordinal);
         Assert.Contains(
-            "R3e",
+            "R3e2",
             Assert.Throws<InvalidOperationException>(() => plan.Render(Spec(table, point) with { Coord = Coord.Polar() })).Message,
             StringComparison.Ordinal
         );
@@ -504,7 +505,7 @@ public sealed class IndexedPointTests
     /// - A point layer of 200,000 rows split by three categories, drawn until it is not provisional; five views, each drawn once.
     ///
     /// Steps:
-    /// - Draw the five views again, counting the thread's allocations.
+    /// - Draw the five views again as a warm-up; collect; draw them once more, counting the thread's allocations.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -543,15 +544,13 @@ public sealed class IndexedPointTests
 
         Assert.False(engine.IsProvisional);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        foreach (var view in views)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Draw(view);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            foreach (var view in views)
+            {
+                Draw(view);
+            }
+        });
         Assert.True(backend.LastList!.ResidentRuns.Length >= 3);
 
         void Draw(PanelView2D view)

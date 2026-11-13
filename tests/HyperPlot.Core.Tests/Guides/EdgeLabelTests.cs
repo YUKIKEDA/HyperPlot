@@ -1,4 +1,5 @@
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -222,10 +223,10 @@ public sealed class EdgeLabelTests : IDisposable
     /// <summary>Once warm, a plot whose end labels are held drawn again allocates nothing (design §4.6).</summary>
     /// <remarks>
     /// Preconditions:
-    /// - The wide labels of x, drawn twice.
+    /// - The wide labels of x.
     ///
     /// Steps:
-    /// - Render five times.
+    /// - Render five times as a warm-up; collect; render five times more, counting the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -235,18 +236,13 @@ public sealed class EdgeLabelTests : IDisposable
     {
         using var plan = Plan();
         var spec = Spec(Wide());
-        _ = plan.Render(spec);
-        _ = plan.Render(spec);
-
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 5; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            _ = plan.Render(spec);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 5; i++)
+            {
+                _ = plan.Render(spec);
+            }
+        });
     }
 
     private static LinearScaleSpec Wide() =>
