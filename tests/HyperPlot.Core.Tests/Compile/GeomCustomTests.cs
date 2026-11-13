@@ -1,5 +1,6 @@
 using System.Numerics;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 using static HyperPlot.Tests.GeomTesting;
 
 namespace HyperPlot.Tests;
@@ -391,11 +392,11 @@ public sealed class GeomCustomTests
     /// - A spec of each geom, both the few and the many paths of bars, error bars, and rules (800 elements on 100 pixels).
     ///
     /// Steps:
-    /// - For each, render the spec and a copy of its layer, a new node that records again; collect; then render them in
-    ///   turn five times, counting this thread's bytes.
+    /// - For each, render the spec and a copy of its layer, a new node that records again; render them in turn five times as
+    ///   a warm-up; collect; then five times more, counting this thread's bytes.
     ///
     /// Expected:
-    /// - 0 bytes for each.
+    /// - 0 bytes for each, and a recording for each of the 20 renders after the first two.
     /// </remarks>
     [Fact]
     public void Record_Warm_AllocatesNothing()
@@ -469,18 +470,18 @@ public sealed class GeomCustomTests
                 _ = plan.Render(other);
                 var recordings = plan.Recordings;
 
-                // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-                GC.Collect();
-                var before = GC.GetAllocatedBytesForCurrentThread();
-                for (var i = 0; i < 5; i++)
-                {
-                    _ = plan.Render(spec);
-                    _ = plan.Render(other);
-                }
-
-                var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
-                Assert.True(bytes == 0, $"{layer.GetType().Name} on [{scale.Min}, {scale.Max}] allocated {bytes} bytes.");
-                Assert.Equal(recordings + 10, plan.Recordings);
+                PerformanceAssert.DoesNotAllocate(
+                    () =>
+                    {
+                        for (var i = 0; i < 5; i++)
+                        {
+                            _ = plan.Render(spec);
+                            _ = plan.Render(other);
+                        }
+                    },
+                    scenario: $"{layer.GetType().Name} on [{scale.Min}, {scale.Max}]"
+                );
+                Assert.Equal(recordings + 20, plan.Recordings);
             }
         }
     }

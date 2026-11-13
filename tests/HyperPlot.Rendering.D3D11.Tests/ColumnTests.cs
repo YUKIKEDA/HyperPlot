@@ -1,3 +1,4 @@
+using HyperPlot.Testing;
 using TerraFX.Interop.DirectX;
 
 namespace HyperPlot.Rendering.D3D11.Tests;
@@ -146,7 +147,8 @@ public sealed class ColumnTests
     /// - A WARP backend and a 64 × 64 target; one frame of 64 trapezoids to grow the buffers.
     ///
     /// Steps:
-    /// - Five times: clear the list, record the 64 trapezoids from a span, draw.
+    /// - Five times as a warm-up, then, after a collection, five times counting the bytes: clear the list, record the 64
+    ///   trapezoids from a span, draw.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -160,15 +162,13 @@ public sealed class ColumnTests
         var list = new RenderList();
         Frame();
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 5; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Frame();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 5; i++)
+            {
+                Frame();
+            }
+        });
 
         void Frame()
         {

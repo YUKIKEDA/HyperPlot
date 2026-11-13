@@ -1,3 +1,5 @@
+using HyperPlot.Testing;
+
 namespace HyperPlot.Tests;
 
 /// <summary>
@@ -18,10 +20,11 @@ public sealed class SpatialIndexWaitTests
     /// - One call of WhenComplete made before the measurement.
     ///
     /// Steps:
-    /// - Collect; read the bytes allocated on the thread, call WhenComplete 100 times, and read the bytes again.
+    /// - Call WhenComplete 100 times as a warm-up; collect; read the bytes allocated on the thread, call WhenComplete 100
+    ///   times more, and read the bytes again.
     ///
     /// Expected:
-    /// - Every task has ended without an exception.
+    /// - Every task of the 200 calls has ended without an exception.
     /// - The difference is 0 bytes: an index that is complete makes no TaskCompletionSource.
     /// - Allocate ran once: no call queued a build.
     /// </remarks>
@@ -33,18 +36,15 @@ public sealed class SpatialIndexWaitTests
         Assert.True(index.WhenComplete().IsCompletedSuccessfully);
         var ended = 0;
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 100; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            ended += index.WhenComplete().IsCompletedSuccessfully ? 1 : 0;
-        }
+            for (var i = 0; i < 100; i++)
+            {
+                ended += index.WhenComplete().IsCompletedSuccessfully ? 1 : 0;
+            }
+        });
 
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-
-        Assert.Equal(100, ended);
-        Assert.Equal(0, allocated);
+        Assert.Equal(200, ended);
         Assert.Equal(1, rig.Probe.CountOf(SpatialJob.Allocate));
     }
 

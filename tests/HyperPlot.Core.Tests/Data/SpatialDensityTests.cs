@@ -1,3 +1,5 @@
+using HyperPlot.Testing;
+
 namespace HyperPlot.Tests;
 
 /// <summary>
@@ -296,11 +298,12 @@ public sealed class SpatialDensityTests
     /// - The complete index of 5,000 seeded float points with leaves of 16 points and a density split of 64.
     ///
     /// Steps:
-    /// - Ask for the tile of every row of the table 20 times, counting the bytes this thread allocates.
+    /// - Ask for the tile of every row of the table 20 times as a warm-up; collect; 20 times more, counting the bytes this
+    ///   thread allocates.
     /// - Ask for a cell that is not in the table, and for the levels −1 and 33.
     ///
     /// Expected:
-    /// - The calls allocate 0 B.
+    /// - The calls allocate 0 B, and each of the 40 rounds finds every tile.
     /// - A cell that is not in the table has no tile, and the tile it leaves in the out parameter is empty.
     /// - The levels −1 and 33 throw ArgumentOutOfRangeException.
     /// </remarks>
@@ -313,20 +316,17 @@ public sealed class SpatialDensityTests
         var found = 0;
         _ = tiles.TryGetTile(0, 0, out _);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var round = 0; round < 20; round++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            foreach (var row in rows)
+            for (var round = 0; round < 20; round++)
             {
-                found += tiles.TryGetTile(row.Code, row.Level, out _) ? 1 : 0;
+                foreach (var row in rows)
+                {
+                    found += tiles.TryGetTile(row.Code, row.Level, out _) ? 1 : 0;
+                }
             }
-        }
-
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-        Assert.Equal(0, allocated);
-        Assert.Equal(20 * tiles.TileCount, found);
+        });
+        Assert.Equal(40 * tiles.TileCount, found);
 
         Assert.False(tiles.TryGetTile(ulong.MaxValue, 3, out var none));
         Assert.True(none.Bins.IsEmpty);

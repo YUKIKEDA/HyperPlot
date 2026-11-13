@@ -1,6 +1,7 @@
 using System.Numerics;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -967,7 +968,7 @@ public sealed class HoverTests
     /// - The plot of <see cref="Record_DrawsTheCrosshairMarkersAndTooltip"/>, the default hover.
     ///
     /// Steps:
-    /// - Move over 8 pixels of the panel in turn and draw after each, 3 times round to warm the shaping cache and the lists;
+    /// - Move over 8 pixels of the panel in turn and draw after each, 5 times round to warm the shaping cache and the lists;
     ///   collect; then count the thread's allocations over 5 more rounds.
     ///
     /// Expected:
@@ -988,20 +989,13 @@ public sealed class HoverTests
             }
         }
 
-        for (var k = 0; k < 3; k++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            Round();
-        }
-
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var k = 0; k < 5; k++)
-        {
-            Round();
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var k = 0; k < 5; k++)
+            {
+                Round();
+            }
+        });
     }
 
     private static PointerEvent Move(Vector2 at) =>

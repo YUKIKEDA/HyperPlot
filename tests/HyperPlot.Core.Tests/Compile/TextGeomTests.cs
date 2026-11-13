@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -750,7 +751,7 @@ public sealed class TextGeomTests : IDisposable
     /// - Two layers of 2,048 rows: numbers, and categories split by a ColorBy.
     ///
     /// Steps:
-    /// - Render twice to warm; collect; render five times.
+    /// - Render five times to warm; collect; render five times more, counting the bytes.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -768,17 +769,13 @@ public sealed class TextGeomTests : IDisposable
                 ColorBy = table.Cat("g").ToColumnRef(),
             }
         );
-        _ = plan.Render(spec);
-        _ = plan.Render(spec);
-
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 5; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            _ = plan.Render(spec);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 5; i++)
+            {
+                _ = plan.Render(spec);
+            }
+        });
     }
 
     private static TextLayerSpec Layer(DataTable table, ColumnRef text) =>

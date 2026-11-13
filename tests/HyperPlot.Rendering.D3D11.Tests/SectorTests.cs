@@ -1,4 +1,5 @@
 using System.Numerics;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Rendering.D3D11.Tests;
 
@@ -152,7 +153,8 @@ public sealed class SectorTests
     /// - A WARP target; a list of 100 wedges drawn once.
     ///
     /// Steps:
-    /// - Five times: clear the list, record the wedges, draw.
+    /// - Five times as a warm-up, then, after a collection, five times counting the bytes: clear the list, record the
+    ///   wedges, draw.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -170,17 +172,15 @@ public sealed class SectorTests
         list.DrawSectors(wedges, Center, new Color(0, 0, 0, 255));
         backend.Draw(target, list);
 
-        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-        GC.Collect();
-        var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var i = 0; i < 5; i++)
+        PerformanceAssert.DoesNotAllocate(() =>
         {
-            list.Clear();
-            list.DrawSectors(wedges, Center, new Color(0, 0, 0, 255));
-            backend.Draw(target, list);
-        }
-
-        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+            for (var i = 0; i < 5; i++)
+            {
+                list.Clear();
+                list.DrawSectors(wedges, Center, new Color(0, 0, 0, 255));
+                backend.Draw(target, list);
+            }
+        });
     }
 
     /// <summary>

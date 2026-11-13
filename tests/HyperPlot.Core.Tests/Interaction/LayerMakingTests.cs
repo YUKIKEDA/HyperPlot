@@ -1,4 +1,5 @@
 using HyperPlot.Interaction;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
@@ -465,8 +466,8 @@ public sealed class LayerMakingTests
     ///   drawn until the worker reads chunk 1, and 10 frames more.
     ///
     /// Steps:
-    /// - Count the bytes this thread allocates over 20 frames. Release chunk 1 at the end, so that the pyramid's disposal
-    ///   does not wait for the hold's watchdog.
+    /// - Draw 20 frames as a warm-up; collect; count the bytes this thread allocates over 20 frames more. Release chunk 1 at
+    ///   the end, so that the pyramid's disposal does not wait for the hold's watchdog.
     ///
     /// Expected:
     /// - 0 bytes, and each frame is provisional and records both layers.
@@ -513,21 +514,18 @@ public sealed class LayerMakingTests
                 engine.RenderFrame();
             }
 
-            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
-            GC.Collect();
-            var before = GC.GetAllocatedBytesForCurrentThread();
             var (provisional, recorded) = (true, true);
-            for (var i = 0; i < 20; i++)
+            PerformanceAssert.DoesNotAllocate(() =>
             {
-                engine.RenderFrame();
-                provisional &= engine.IsProvisional;
-                recorded &= engine.Plan!.LayersRecorded == 2;
-            }
-
-            var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+                for (var i = 0; i < 20; i++)
+                {
+                    engine.RenderFrame();
+                    provisional &= engine.IsProvisional;
+                    recorded &= engine.Plan!.LayersRecorded == 2;
+                }
+            });
             Assert.True(provisional);
             Assert.True(recorded);
-            Assert.Equal(0, allocated);
         }
         finally
         {

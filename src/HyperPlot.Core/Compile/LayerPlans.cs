@@ -790,7 +790,7 @@ internal abstract class LayerPlan
             {
                 // Bars over categories colored by numbers are a bar a row (design §4.1): their rows are counted here.
                 throw new InvalidOperationException(
-                    $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3e draws more as a density."
+                    $"Layer {index} has {column.Length} rows of bars over categories colored one by one by a number; at most {MaxElements} are drawn so (design §4.1). Row R3e3 draws more as a density."
                 );
             }
             else if (layer is not (BarLayerSpec or RectLayerSpec or PointLayerSpec))
@@ -1487,7 +1487,7 @@ internal abstract class LayerPlan
         if (count > MaxElements)
         {
             throw new InvalidOperationException(
-                $"Layer {layer} has {count} elements; a segment or a rect layer draws at most {MaxElements} (design §5.5.3). Row R3e draws more as a density."
+                $"Layer {layer} has {count} elements; a segment or a rect layer draws at most {MaxElements} (design §5.5.3). Row R3e3 draws more as a density."
             );
         }
     }
