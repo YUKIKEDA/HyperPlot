@@ -2,6 +2,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>HyperPlot.Testing.Tests</RootNamespace>
+    <!-- The tests of PerformanceAssert count allocations; tiering could allocate in the counted run (.cursor/rules/bench.mdc). -->
+    <TieredCompilation>false</TieredCompilation>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\HyperPlot.Testing\HyperPlot.Testing.csproj" />
