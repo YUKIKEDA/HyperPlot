@@ -21,6 +21,9 @@ internal sealed class TextPlan : LayerPlan
     /// <summary>Gets the number of times the numeric labels were written. Tests only.</summary>
     public int Writes { get; private set; }
 
+    /// <summary>Gets the number of rows the last recording mapped: the part's own (Issue #459). Tests only.</summary>
+    internal long MappedRows { get; private set; }
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var text = (TextLayerSpec)Spec;
@@ -95,10 +98,11 @@ internal sealed class TextPlan : LayerPlan
         }
         else
         {
-            xs = context.ElementPixels(text.X.Column, ofX: true, 0);
+            xs = context.ElementPixels(text.X.Column, ofX: true, 0, (int)start, (int)(end - start));
         }
 
-        var ys = context.ElementPixels(text.Y.Column, ofX: false, 1);
+        var ys = context.ElementPixels(text.Y.Column, ofX: false, 1, (int)start, (int)(end - start));
+        MappedRows = end - start;
         var (left, top, width, height) = context.Panel;
         var engine = context.Text;
         for (var i = start; i < end; i++)
@@ -122,10 +126,10 @@ internal sealed class TextPlan : LayerPlan
             }
             else
             {
-                along = xs[(int)i];
+                along = xs[(int)(i - start)];
             }
 
-            var across = ys[(int)i];
+            var across = ys[(int)(i - start)];
             if (!double.IsFinite(along) || !double.IsFinite(across))
             {
                 continue;

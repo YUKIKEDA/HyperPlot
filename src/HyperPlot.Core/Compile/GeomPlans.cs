@@ -995,6 +995,9 @@ internal sealed class SegmentPlan : LayerPlan
     public SegmentPlan(SegmentLayerSpec spec, RowRange rows)
         : base(spec, rows) => SetColumns(spec.X.Column, spec.Y.Column, spec.XEnd.Column, spec.YEnd.Column);
 
+    /// <summary>Gets the number of rows the last recording mapped: the part's own (Issue #459). Tests only.</summary>
+    internal long MappedRows { get; private set; }
+
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
         var segment = (SegmentLayerSpec)Spec;
@@ -1006,13 +1009,18 @@ internal sealed class SegmentPlan : LayerPlan
     public override void Record(RecordContext context)
     {
         var segment = (SegmentLayerSpec)Spec;
-        var xs0 = context.ElementPixels(segment.X.Column, ofX: true, 0);
-        var ys0 = context.ElementPixels(segment.Y.Column, ofX: false, 1);
-        var xs1 = context.ElementPixels(segment.XEnd.Column, ofX: true, 2);
-        var ys1 = context.ElementPixels(segment.YEnd.Column, ofX: false, 3);
-        var buffer = context.Points(3 * xs0.Length);
+
+        // A part of a split layer maps its run of rows alone (Issue #459): element i of the buffers is row start + i.
+        var start = (int)Rows.Start;
+        var length = Math.Max(0, (int)Rows.EndIn(segment.X.Column.Length) - start);
+        MappedRows = length;
+        var xs0 = context.ElementPixels(segment.X.Column, ofX: true, 0, start, length);
+        var ys0 = context.ElementPixels(segment.Y.Column, ofX: false, 1, start, length);
+        var xs1 = context.ElementPixels(segment.XEnd.Column, ofX: true, 2, start, length);
+        var ys1 = context.ElementPixels(segment.YEnd.Column, ofX: false, 3, start, length);
+        var buffer = context.Points(3 * length);
         var count = 0;
-        for (var i = (int)Rows.Start; i < Rows.EndIn(xs0.Length); i++)
+        for (var i = 0; i < length; i++)
         {
             // An end that does not map is NaN, which breaks the polyline on both sides: the segment draws nothing.
             count = ErrorBarPlan.Segment(buffer, count, (float)xs0[i], (float)ys0[i], (float)xs1[i], (float)ys1[i]);

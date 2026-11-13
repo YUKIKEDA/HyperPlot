@@ -1946,14 +1946,10 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Returns the pixel of a column's element on the y axis.</summary>
     public double ElementY(Column column, long index) => PixelY(column.DifferenceAt(index, YOrigin));
 
-    /// <summary>Maps an element column's values to pixels into a buffer the layer keeps (row I2c): its hit test reads them after.</summary>
-    public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels) =>
-        ElementPixelsInto(column, ofX, ref pixels, 0, (int)column.Length);
-
     /// <summary>
     /// Maps a run of a column's elements, <paramref name="length"/> from <paramref name="first"/>, to pixels on one axis into
-    /// a buffer kept from frame to frame: element <paramref name="first"/> + i at i. A part of a split layer over a run of
-    /// the layer's rows maps only its run (Issue #459).
+    /// a buffer kept from frame to frame (row I2c): element <paramref name="first"/> + i at i, which the layer's hit test reads
+    /// after. A part of a split layer over a run of the layer's rows maps only its run (Issue #459).
     /// </summary>
     public ReadOnlySpan<double> ElementPixelsInto(Column column, bool ofX, ref double[] pixels, int first, int length)
     {
@@ -1967,20 +1963,12 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     }
 
     /// <summary>
-    /// Maps all the elements of a column to pixels on one axis into one of four buffers kept from frame to frame, a chunk
-    /// read at a time and the transform applied to a span (a segment's and a rect's columns, design §5.5.3).
+    /// Maps a run of a column's elements, <paramref name="length"/> from <paramref name="first"/>, to pixels on one axis into
+    /// one of four buffers kept from frame to frame (a segment's and a text's columns, design §5.5.3): element
+    /// <paramref name="first"/> + i at i. A part of a split layer maps only its run (Issue #459).
     /// </summary>
-    public ReadOnlySpan<double> ElementPixels(Column column, bool ofX, int slot)
-    {
-        var length = (int)column.Length;
-        Ensure(ref _elements[slot], length);
-        Ensure(ref _values, length);
-        var values = _values.AsSpan(0, length);
-        var pixels = _elements[slot].AsSpan(0, length);
-        column.ReadDifferences(values, ofX ? XOrigin : YOrigin);
-        MapAxis(Transform, ofX ? X : Y, values, pixels, ofX);
-        return pixels;
-    }
+    public ReadOnlySpan<double> ElementPixels(Column column, bool ofX, int slot, int first, int length) =>
+        ElementPixelsInto(column, ofX, ref _elements[slot], first, length);
 
     /// <summary>
     /// Maps a series' M4 points to pixels, both coordinates at once through the transforms' spans (design §4.2), and returns
