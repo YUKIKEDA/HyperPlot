@@ -780,4 +780,47 @@ public sealed class DensityTests
             }
         }
     }
+
+    /// <summary>
+    /// A frame whose density layers need more color tables than the table texture's 64 rows throws, naming the layer that
+    /// found no row (design §5.5.2 "描き方", PR #497's review): a full texture reuses only rows not used in the frame.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 131,073 seeded points over [0, 100]²; 65 point layers of the same columns, each drawn as a density in a color of its
+    ///   own; an engine that waits for its indexes.
+    ///
+    /// Steps:
+    /// - Draw frames until the layers draw their densities.
+    ///
+    /// Expected:
+    /// - InvalidOperationException naming layer 64.
+    /// </remarks>
+    [Fact]
+    public void Density_MoreLayerColorsThanTableRowsInAFrame_Throws()
+    {
+        var random = new Random(9);
+        using var xs = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        var builder = Plot.Create(table);
+        for (var i = 0; i <= ResidencyCache.MaxColorTables; i++)
+        {
+            var color = new Color((byte)i, (byte)(255 - i), 128, 255);
+            builder = builder.Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Density).Color(color));
+        }
+
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(builder.ScaleX(Scale.Linear().WithDomain(0, 100)).ScaleY(Scale.Linear().WithDomain(0, 100)).Build());
+        var thrown = Assert.Throws<InvalidOperationException>(() =>
+        {
+            for (var frame = 0; frame < 50; frame++)
+            {
+                backend.Images.Sent();
+                engine.RenderFrame();
+            }
+        });
+        Assert.Contains("Layer 64", thrown.Message, StringComparison.Ordinal);
+    }
 }
