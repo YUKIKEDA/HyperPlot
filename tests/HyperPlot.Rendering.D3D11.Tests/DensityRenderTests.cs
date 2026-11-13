@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using HyperPlot.Testing;
 using HyperPlot.Tests;
 
@@ -205,6 +206,110 @@ public sealed class DensityRenderTests
         }
     }
 
+    /// <summary>
+    /// While the index has only its coarse snapshot, a layer of Auto draws the coarse density, the level-8 grid of 256 × 256
+    /// counts, as one tile over the whole range, provisional (design §5.5.2 "索引ができるまで").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded double points of the two clusters of <see cref="Clustered_MatchesBaseline"/>, more than the CPU
+    ///   path's 131,072 rows; the x column on a test storage that holds every worker read of chunk 0 once the index writes
+    ///   its copy, so the build stands after its coarse snapshot, published before the write pass. Draw is Auto, which with
+    ///   a full snapshot of 400,000 points under the threshold of 1e7 would draw raw points; the norm Log, no map; domains
+    ///   [0, 100]; a pool of 1 worker; an engine on WARP that does not wait for its indexes; the fake text backend;
+    ///   Theme.Light; 640 × 360.
+    ///
+    /// Steps:
+    /// - Hold chunk 0 until the plan has started its index, then let the reads go until the index writes. Render frames
+    ///   until the layer records the coarse density's face; read the pixels.
+    /// - Let the reads go in a finally, and render frames until one is not provisional, so that the build ends before the
+    ///   engine is disposed. Compare the pixels read with <c>Golden/density-coarse.png</c>.
+    ///
+    /// Expected:
+    /// - At the frame read: the snapshot is Coarse, the frame is provisional, and the layer drew a density of one piece,
+    ///   the root read from the coarse grid, whose face was sent.
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void Coarse_MatchesBaseline()
+    {
+        const int Count = 400_000;
+        const int Width = 640;
+        const int Height = 360;
+        var points = Enumerable.Range(0, Count).Select(row => Clustered(row)).ToArray();
+        using var xs = TestStorage<double>.MakeColumn(points.Select(p => p.X).ToArray(), out var storage);
+        using var ys = Column.Wrap(points.Select(p => p.Y).ToArray());
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        var spec = Plot.Create(table)
+            .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Auto))
+            .ScaleX(Scale.Linear().WithDomain(0, 100).WithTitle("x"))
+            .ScaleY(Scale.Linear().WithDomain(0, 100).WithTitle("y"))
+            .Title("Coarse density while the index builds")
+            .Build();
+        using var pool = new PlotWorkerPool(1);
+        using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));
+        using var engine = new PlotEngine(backend, Width, Height, 1, pool);
+        var hold = new WriteHold(storage);
+        storage.OnWorkerRead = hold.OnRead;
+        var clock = Stopwatch.StartNew();
+        var pixels = new byte[Width * Height * 4];
+
+        // The build waits at its first read until the test knows its index: from then on, a read of the copy's writing holds.
+        storage.Hold(0);
+        try
+        {
+            engine.SetPlot(spec);
+            engine.RenderFrame();
+            var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+            while (plan.SpatialIndex is null)
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The index was not started in 60 s.");
+                engine.RenderFrame();
+            }
+
+            var index = plan.SpatialIndex;
+            hold.Watch(index);
+            storage.Release(0);
+            var drawn = false;
+            while (!drawn)
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The coarse density was not drawn in 60 s.");
+                engine.RenderFrame();
+                drawn = plan.DrewDensity && plan.Pieces.Length == 1 && !plan.MissedPages;
+            }
+
+            engine.ReadPixels(pixels);
+            var snapshot = index.Acquire();
+            var stage = snapshot.Stage;
+            snapshot.Release();
+            Assert.Equal(SpatialStage.Coarse, stage);
+            Assert.True(engine.IsProvisional);
+            Assert.Equal([new DensityPiece(0, 0, 0, 0, 0)], plan.Pieces.ToArray());
+        }
+        finally
+        {
+            hold.Stop();
+            storage.Release(0);
+        }
+
+        // The build ends before the engine is disposed: a worker that read before the stop may hold the chunk again.
+        while (engine.IsProvisional)
+        {
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The frames stayed provisional for 60 s.");
+            storage.Release(0);
+            engine.RenderFrame();
+        }
+
+        GoldenImage.AssertMatches(
+            pixels,
+            Width,
+            Height,
+            GoldenImageTests.Baseline("density-coarse.png"),
+            GoldenImageTests.Tolerance,
+            GoldenImageTests.Output
+        );
+    }
+
     private static void Check(PlotSpec spec, PlotWorkerPool pool, int width, int height, string baseline, Action<HeadlessRenderer> drew)
     {
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));
@@ -266,5 +371,27 @@ public sealed class DensityRenderTests
         z = (z ^ (z >> 27)) * 0x94D049BB133111EB;
         z ^= z >> 31;
         return (z >> 11) * (1.0 / (1UL << 53));
+    }
+
+    /// <summary>
+    /// Holds chunk 0 of a storage at every worker read from the time the watched index writes its copy, until it is stopped:
+    /// the build then stands after its coarse snapshot.
+    /// </summary>
+    private sealed class WriteHold(TestStorage<double> storage)
+    {
+        private SpatialIndex? _index;
+        private int _stopped;
+
+        public void Watch(SpatialIndex index) => Volatile.Write(ref _index, index);
+
+        public void Stop() => Volatile.Write(ref _stopped, 1);
+
+        public void OnRead()
+        {
+            if (Volatile.Read(ref _stopped) == 0 && Volatile.Read(ref _index) is { State: SpatialIndexState.Writing })
+            {
+                storage.Hold(0);
+            }
+        }
     }
 }
