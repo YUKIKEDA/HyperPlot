@@ -8,6 +8,7 @@ alwaysApply: true
 When a path is removed, remove in the same change everything that only served it: methods, parameters threaded through callers, fields, flags, constants, `#if` branches, tests, XML docs, and the sentences in `docs/`, the READMEs, and `.cursor/rules/` that describe it.
 
 - Do not keep a public API that has no effect "for compatibility" while the packages are unpublished. After the first release, removals follow the versioning policy in `CONTRIBUTING.md`.
+- An overload or form that a new one replaces goes in the commit that adds the new one, not at review: PR #465 added `ElementPixelsInto` with a first row and a length and left the old three-argument form with no caller, and the review asked for it to go.
 - Names and comments that carry the words of a removed mechanism change with it.
 - Before a test goes with a removed path, name the claims it was the only test of. A claim the design still states keeps a test.
 - A debug-only helper (`[Conditional("DEBUG")]`) stays only while something calls it.
