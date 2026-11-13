@@ -23,7 +23,7 @@ Before calling a PR ready, before reporting that a PR waits for review, and when
 
 A reply that says a finding was fixed is checked against the pushed diff first (`git show <sha>` holds the change). In PR #100 an edit of `PlotPlan.Render`'s XML was lost to a later edit, and the reply said it was done. In PR #219 a reply said that a test of a binned area's `Baseline` was added; the pushed commit had the check without the test, and the re-review found it. Each "added" or "fixed" in a reply names what in the diff holds it.
 
-A fix that a review proposes is checked against the case the finding describes before it goes in. When it does not close the case, change the fix and say why in the reply. PR #409's review proposed that the worker read the state again after it had put its build in place; with `Dispose` still reading before it wrote, one order of the four operations let both miss each other, so both sides were changed.
+A fix that a review proposes is checked against the case the finding describes before it goes in. When it does not close the case, change the fix and say why in the reply. PR #409's review proposed that the worker read the state again after it had put its build in place; with `Dispose` still reading before it wrote, one order of the four operations let both miss each other, so both sides were changed. PR #457's review proposed to pass the first row as `ReadDifferences`'s second argument, which is the values' origin; the reply said so and added a parameter.
 
 Read the pull request's comments again just before posting a reply to a review: a re-review can land while the reply waits for the checks, and a reply posted without reading it answers a review that is no longer the latest.
 

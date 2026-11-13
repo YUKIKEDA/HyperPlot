@@ -504,6 +504,9 @@ public sealed class ProvisionalFrameTests
             }
 
             var learnings = engine.Plan!.Learnings;
+
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             var provisional = true;
             for (var i = 0; i < 20; i++)

@@ -65,6 +65,8 @@ public sealed class PyramidKernelTests
         long sink = 0;
         Run();
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 10; i++)
         {

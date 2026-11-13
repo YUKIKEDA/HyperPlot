@@ -440,6 +440,8 @@ public sealed class ColumnTests
             Read(native);
             Read(mapped);
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 100; i++)
             {

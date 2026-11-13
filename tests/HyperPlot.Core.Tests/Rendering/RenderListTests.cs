@@ -148,6 +148,8 @@ public sealed partial class RenderListTests
         var list = new RenderList();
         Record();
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 10; i++)
         {

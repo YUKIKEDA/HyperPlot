@@ -285,7 +285,7 @@ public sealed class DescribeTests
     /// - A titled line plot with titled axes, drawn 10 frames.
     ///
     /// Steps:
-    /// - Describe; count the bytes this thread allocates over 20 frames that follow.
+    /// - Describe; collect; count the bytes this thread allocates over 20 frames that follow.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -311,6 +311,9 @@ public sealed class DescribeTests
         }
 
         _ = engine.Describe();
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 20; i++)
         {

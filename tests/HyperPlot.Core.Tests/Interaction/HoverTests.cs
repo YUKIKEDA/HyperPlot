@@ -968,7 +968,7 @@ public sealed class HoverTests
     ///
     /// Steps:
     /// - Move over 8 pixels of the panel in turn and draw after each, 3 times round to warm the shaping cache and the lists;
-    ///   then count the thread's allocations over 5 more rounds.
+    ///   collect; then count the thread's allocations over 5 more rounds.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -993,6 +993,8 @@ public sealed class HoverTests
             Round();
         }
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var k = 0; k < 5; k++)
         {

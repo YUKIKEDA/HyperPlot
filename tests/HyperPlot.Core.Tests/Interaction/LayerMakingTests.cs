@@ -513,6 +513,8 @@ public sealed class LayerMakingTests
                 engine.RenderFrame();
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             var (provisional, recorded) = (true, true);
             for (var i = 0; i < 20; i++)

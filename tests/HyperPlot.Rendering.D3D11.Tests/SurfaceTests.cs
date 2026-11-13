@@ -372,7 +372,8 @@ public sealed class SurfaceTests
     ///
     /// Steps:
     /// - Rounds of 20 frames, each a pan of 2 pixels, the draw and the copy in one frame of the backend, and the takes or
-    ///   reads until the copy is done, until a round allocates nothing (at most 6), then one more; for each surface.
+    ///   reads until the copy is done, until a round allocates nothing (at most 6), then a garbage collection and one more;
+    ///   for each surface.
     ///
     /// Expected:
     /// - The last round of each: 0 bytes.
@@ -401,6 +402,8 @@ public sealed class SurfaceTests
                 bytes = Round(show, present);
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             return Round(show, present);
         }
 

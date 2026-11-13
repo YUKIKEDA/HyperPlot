@@ -122,8 +122,8 @@ public sealed class SpanTextTests
     /// - An engine over the fake backend, recording no calls.
     ///
     /// Steps:
-    /// - Measure 8,192 texts "0" to "8191"; measure "0" again (the newest now); measure 100 new texts "a0" to "a99", counting
-    ///   the bytes; measure "0", then "1".
+    /// - Measure 8,192 texts "0" to "8191"; measure "0" again (the newest now); collect; measure 100 new texts "a0" to
+    ///   "a99", counting the bytes; measure "0", then "1".
     ///
     /// Expected:
     /// - 8,192 entries all along; 0 bytes for the 100 new texts; "0" is still kept (no backend call) and "1", dropped first,
@@ -143,6 +143,9 @@ public sealed class SpanTextTests
 
         _ = engine.Measure("0", Style);
         buffer[0] = 'a';
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {

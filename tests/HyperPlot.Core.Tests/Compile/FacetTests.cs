@@ -275,7 +275,7 @@ public sealed class FacetTests : IDisposable
                 using var pyramid = _pool.BuildPyramid(values);
                 await pyramid.WhenComplete();
                 await _pool.PrecomputeStats(x);
-                var expected = new M4Point[M4.MaxPointCount(panel.Boundaries.Length - 1)];
+                var expected = new M4Point[M4.MaxPointCount(panel.Boundaries.Count - 1)];
                 var count = M4.Extract(x, pyramid, new ScaleOrigin(panel.X.Origin, panel.Y.Origin), panel.Boundaries, expected).Count;
                 Assert.Equal(Values(expected.AsSpan(0, count)), Values(((LinePlan)panel.Layers[0]).Points(panel.Layers[0].Batch)));
             }
@@ -609,7 +609,7 @@ public sealed class FacetTests : IDisposable
     ///   four specs each, every node new.
     ///
     /// Steps:
-    /// - Render the first two a few times, then the four ten times in turn.
+    /// - Render the first two a few times; collect; then the four ten times in turn.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -639,6 +639,8 @@ public sealed class FacetTests : IDisposable
                 _ = plan.Render(specs[i % 2]);
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 10; i++)
             {

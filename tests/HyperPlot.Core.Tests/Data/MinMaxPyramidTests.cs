@@ -273,6 +273,8 @@ public sealed class MinMaxPyramidTests
         Eventually.Completes(pool.PrecomputeStats(stored));
         Run();
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {

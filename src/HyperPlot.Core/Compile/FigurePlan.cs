@@ -27,7 +27,7 @@ internal sealed class FigurePlan : IDisposable
     // The batches of the plots that extract this Render, gathered for one extraction; grown, never shrunk.
     private M4Batch[] _batches = [];
     private ScaleOrigin[] _origins = [];
-    private double[][] _boundaries = [];
+    private ArraySegment<double>[] _boundaries = [];
 
     internal FigurePlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale, ResidencyCache? images = null)
     {

@@ -312,6 +312,9 @@ public sealed class SpatialDensityTests
         var rows = built.Snapshot.Rows.ToArray();
         var found = 0;
         _ = tiles.TryGetTile(0, 0, out _);
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var round = 0; round < 20; round++)
         {

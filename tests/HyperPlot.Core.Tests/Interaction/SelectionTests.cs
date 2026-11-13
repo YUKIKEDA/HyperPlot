@@ -506,7 +506,7 @@ public sealed class SelectionTests
     /// - The engine fixture with a lasso selected.
     ///
     /// Steps:
-    /// - Move over 8 pixels and draw after each, 3 times round to warm; count the thread's allocations over 5 more rounds.
+    /// - Move over 8 pixels and draw after each, 3 times round to warm; collect; count the thread's allocations over 5 more rounds.
     ///
     /// Expected:
     /// - 0 bytes.
@@ -531,6 +531,8 @@ public sealed class SelectionTests
             Round();
         }
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var k = 0; k < 5; k++)
         {

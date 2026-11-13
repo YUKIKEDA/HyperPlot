@@ -466,7 +466,7 @@ public sealed class FigureTests : IDisposable
     /// - Figures of two line plots, made anew with a y domain of 5 or 10.
     ///
     /// Steps:
-    /// - Render the first two a few times, then four ten times in turn.
+    /// - Render the first two a few times; collect; then four ten times in turn.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -486,6 +486,8 @@ public sealed class FigureTests : IDisposable
                 plan.Render(figures[i % 2]);
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 10; i++)
             {

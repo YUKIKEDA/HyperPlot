@@ -503,7 +503,7 @@ public sealed class ImageGeomTests : IDisposable
     ///   4 views made beforehand.
     ///
     /// Steps:
-    /// - Render the 4 views twice to warm; render them again.
+    /// - Render the 4 views twice to warm; collect; render them again.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -530,6 +530,8 @@ public sealed class ImageGeomTests : IDisposable
             _ = plan.Render(spec);
         }
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         foreach (var spec in specs)
         {

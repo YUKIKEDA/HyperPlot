@@ -607,7 +607,7 @@ public sealed class MultiPanelTests
     ///
     /// Steps:
     /// - Rounds of 40 wheel turns on the second panel, drawing after each, until a round allocates nothing (at most 6), then
-    ///   one more. The same with 4 drags of 12 events on the second plot.
+    ///   a garbage collection and one more. The same with 4 drags of 12 events on the second plot.
     ///
     /// Expected:
     /// - The last round of each: 0 bytes.
@@ -636,6 +636,8 @@ public sealed class MultiPanelTests
                 bytes = round();
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             return round();
         }
 
