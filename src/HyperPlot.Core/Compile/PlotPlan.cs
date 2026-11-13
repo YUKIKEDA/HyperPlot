@@ -1936,7 +1936,8 @@ internal sealed partial class PlotPlan : IDisposable
             return new EmptyPlan(layer);
         }
 
-        var mapped = data.Map is { } map ? FacetData.Remap(layer, map) : layer;
+        // The path of a point layer is chosen by the layer's rows, not by the panel's gathered ones (design §5.5.2).
+        var mapped = data.Map is { } map ? FacetData.Remap(LayerPlan.Marked(layer), map) : layer;
         StatSource? source = null;
         if (layer.Stat is not null)
         {

@@ -69,6 +69,79 @@ public sealed class IndexedPointTests
     }
 
     /// <summary>
+    /// A facet's panels take the layer's path too (design §5.5.2 "2 つの道"): the rows are counted before the facet gathers
+    /// them, so a layer of 131,073 rows is drawn from an index in every panel, though each panel holds fewer than 131,072.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Seeded points over [0, 100]² in columns of 131,073 rows; a category of three names that takes turns row by row, so
+    ///   that each panel's rows are gathered: 43,691, 43,691, and 43,691.
+    ///
+    /// Steps:
+    /// - Render the point layer wrapped by the category, on a plan that waits for its indexes.
+    ///
+    /// Expected:
+    /// - No marker, and resident runs whose points add up to 131,073.
+    /// </remarks>
+    [Fact]
+    public void FacetPanels_TakeTheLayersPath()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        var random = new Random(31);
+        using var xs = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("y", ys)
+            .Add("c", Column.Categorical(Enumerable.Range(0, Over).Select(i => (string?)Three[i % 3]).ToArray()))
+            .Build();
+        var point = new PointLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") };
+
+        var list = plan.Render(Spec(table, point) with { Facet = new FacetWrapSpec { By = table.Cat("c").ToColumnRef() } });
+
+        Assert.Equal(0, list.Markers.Length);
+        Assert.Equal(Over, list.ResidentRuns.ToArray().Sum(r => r.Count));
+    }
+
+    /// <summary>
+    /// An axis that clamps draws the cells outside the view too (design §5.5.2 "常駐のセルとページ"): their points are
+    /// drawn at the view's end, as the CPU path draws them. Without the clamp such a cell asks for no page.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Seeded points over [0, 100]² in columns of 131,073 rows. The x domain is [200, 300], past every point; the y domain
+    ///   is [0, 100].
+    ///
+    /// Steps:
+    /// - Render the layer with an x scale that does not clamp, and with one that does, on a plan that waits.
+    ///
+    /// Expected:
+    /// - Without the clamp: no resident run. With it: runs whose points add up to 131,073, and no marker.
+    /// </remarks>
+    [Fact]
+    public void ClampedAxis_DrawsTheCellsOutsideTheView()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        var random = new Random(37);
+        using var xs = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        var spec = Spec(table, new PointLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") }) with
+        {
+            ScaleX = Scale.Linear().WithDomain(200, 300),
+            ScaleY = Scale.Linear().WithDomain(0, 100),
+        };
+
+        Assert.Equal(0, plan.Render(spec).ResidentRuns.Length);
+
+        var clamped = plan.Render(spec with { ScaleX = Scale.Linear().WithDomain(200, 300) with { Clamp = true } });
+        Assert.Equal((0, Over), (clamped.Markers.Length, clamped.ResidentRuns.ToArray().Sum(r => r.Count)));
+    }
+
+    /// <summary>
     /// The compile refuses what the index path does not draw in row R3a (design §5.5.2 "上限と例外"): more than 1e7 rows, a
     /// numeric color, polar coordinates, a column that is not stored, and more than 64 parts.
     /// </summary>

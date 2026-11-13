@@ -103,6 +103,9 @@ internal sealed class IndexedPointPlan : LayerPlan
     {
         if (_index is null)
         {
+            // The index waited for is not disposed before it ends while this part waits: a plan disposes its index when
+            // it is released, a plan on the index path is never stale and so never made again alone, and all the layers
+            // made together, which share the indexing, are released together.
             if (_indexing.Building is { IsComplete: false, Fault: null } other)
             {
                 if (!indexes.Waits)
@@ -240,6 +243,7 @@ internal sealed class IndexedPointPlan : LayerPlan
     {
         private readonly CartesianTransform _transform;
         private readonly bool _ofX;
+        private readonly bool _clamps;
         private readonly double _shift;
         private readonly double _low;
         private readonly double _high;
@@ -247,7 +251,7 @@ internal sealed class IndexedPointPlan : LayerPlan
 
         public AxisMap(in GeomFrame.Axis axis, CartesianTransform transform, bool ofX, long snapshotOrigin)
         {
-            (_transform, _ofX) = (transform, ofX);
+            (_transform, _ofX, _clamps) = (transform, ofX, axis.Clamp);
 
             // The copy's values are differences from the snapshot's origin; the transform takes differences from the domain's.
             _shift = (double)(snapshotOrigin - axis.Domain.Origin);
@@ -266,8 +270,11 @@ internal sealed class IndexedPointPlan : LayerPlan
 
         public float ClampHigh { get; }
 
-        /// <summary>Returns whether a cell reaches into the view on this axis.</summary>
-        public bool Sees(double corner, double extent) => corner <= _high && corner + extent >= _low;
+        /// <summary>
+        /// Returns whether a cell's points are drawn on this axis: the cell reaches into the view, or the axis clamps, so
+        /// that the points outside the view are drawn at its ends as the CPU path draws them.
+        /// </summary>
+        public bool Sees(double corner, double extent) => _clamps || (corner <= _high && corner + extent >= _low);
 
         /// <summary>
         /// Returns a cell's record on this axis (design §5.5.2 "セルの表"): the base, the view's lower end held in the cell,

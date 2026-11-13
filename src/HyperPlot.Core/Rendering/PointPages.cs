@@ -23,9 +23,10 @@ internal sealed class PointPages
     /// page's count. The step is a prime above the points of a page, so every point is taken once.
     /// </summary>
     /// <remarks>
-    /// In the copy's order a point's neighbors lie within a pixel of it, and markers drawn one after another over the same
-    /// pixels cost the GPU more: 1e7 discs of 6 pixels at alpha 0.6 took 15.9 ms a frame in the copy's order and 11.3 to
-    /// 12.0 ms in steps through the page (RTX 3060 Ti, 1,920 × 1,080; Issue #438).
+    /// Measured, not explained: 1e7 discs of 6 pixels at alpha 0.6 took 15.9 ms of GPU time a frame in the copy's order,
+    /// where a point's neighbors lie within a pixel of it, and 11.3 to 12.0 ms in steps through the page (RTX 3060 Ti,
+    /// 1,920 × 1,080; Issue #438). Steps within less than a page and across pages were slower, and what in the GPU makes
+    /// the difference was not found (docs/benchmarks/r3a-points.md).
     /// </remarks>
     internal const int Stride = 104_729;
 

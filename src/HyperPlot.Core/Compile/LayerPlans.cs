@@ -131,14 +131,15 @@ internal abstract class LayerPlan
     /// only the run; a stat's edges and ranges come from <paramref name="source"/>, or from the run when it is null.
     /// </summary>
     public static LayerPlan Create(LayerSpec spec, PlanBuild build, RowRange rows, StatSource? source) =>
-        // A point layer of more than 131,072 rows, counted before any split, takes the index path in each of its parts
-        // (design §5.5.2): a part cannot tell from its own rows.
-        CreateMarked(
-            spec is PointLayerSpec { Indexed: false } point && point.X.Column.Length > MaxElements ? point with { Indexed = true } : spec,
-            build,
-            rows,
-            source
-        );
+        CreateMarked(Marked(spec), build, rows, source);
+
+    /// <summary>
+    /// Returns a layer's spec with the index path marked on a point layer of more than 131,072 rows (design §5.5.2). The
+    /// rows are counted before any split, so that every part takes the layer's path: a part cannot tell from its own rows.
+    /// A facet marks the layer before it maps the layer's columns onto a panel's gathered ones, which are shorter.
+    /// </summary>
+    public static LayerSpec Marked(LayerSpec spec) =>
+        spec is PointLayerSpec { Indexed: false } point && point.X.Column.Length > MaxElements ? point with { Indexed = true } : spec;
 
     private static LayerPlan CreateMarked(LayerSpec spec, PlanBuild build, RowRange rows, StatSource? source) =>
         spec.Stat is not null ? new StatPlan(spec, build, rows, source)
