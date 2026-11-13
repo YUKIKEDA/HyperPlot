@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPIKE (row K0b, Issue #488): 3D line simplification by per-vertex additive importance, CPU only. Not product code. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>HyperPlot.Lines3D</RootNamespace>
+    <!-- Figures are taken from the NativeAOT Release build (.cursor/rules/bench.mdc). -->
+    <PublishAot>true</PublishAot>
+  </PropertyGroup>
+</Project>
