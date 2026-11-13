@@ -297,11 +297,19 @@ internal abstract unsafe class SpatialSnapshot
     /// whose box is at most half a pixel across (along x in <see cref="SpatialHitMode.X"/>) is answered by its first point;
     /// a leaf reads at most its first <see cref="SpatialNearestScratch.LeafCapacity"/> points. Allocates nothing.
     /// </summary>
+    /// <remarks>
+    /// As the CPU path's <c>HitScan.Points</c> does, <see cref="SpatialHitMode.XY"/> takes the point whose center is
+    /// nearest among those within the radius and the marker's own, so the search reaches the radius plus
+    /// <paramref name="largestPointRadius"/>. A layer whose points take their size from data (row R3f) passes its largest
+    /// radius: the search then reaches as far as that layer needs. The spike holds no column of radii, so every point
+    /// answers by the largest; the check of a point's own radius would only reject points the search already read.
+    /// </remarks>
     /// <param name="cursorX">The cursor's x, as a difference from the origin of <see cref="XRange"/>.</param>
     /// <param name="cursorY">The cursor's y, as a difference from the origin of <see cref="YRange"/>.</param>
     /// <param name="pixelsPerUnitX">The pixels of one unit of x on the screen.</param>
     /// <param name="pixelsPerUnitY">The pixels of one unit of y on the screen.</param>
-    /// <param name="radius">The radius in pixels: a point answers only when it is nearer than this.</param>
+    /// <param name="radius">The radius in pixels: a point answers only when it is nearer than this and its marker's radius.</param>
+    /// <param name="largestPointRadius">The largest radius of a point's marker in pixels, added to the reach in <see cref="SpatialHitMode.XY"/>.</param>
     /// <param name="mode">How the distance is measured.</param>
     /// <param name="bounds">The rectangle of the points that may answer: the panel's view.</param>
     /// <param name="scratch">The buffers of the query.</param>
@@ -312,6 +320,7 @@ internal abstract unsafe class SpatialSnapshot
         double pixelsPerUnitX,
         double pixelsPerUnitY,
         double radius,
+        double largestPointRadius,
         SpatialHitMode mode,
         in SpatialRect bounds,
         SpatialNearestScratch scratch
@@ -319,6 +328,7 @@ internal abstract unsafe class SpatialSnapshot
     {
         const double Tolerance = 0.5;
         CheckQuery(bounds, 0);
+        ArgumentOutOfRangeException.ThrowIfNegative(largestPointRadius);
         var rows = Rows;
         if (Stage != SpatialStage.Full || _copy == null || rows.IsEmpty || rows[0].Count == 0)
         {
@@ -337,8 +347,9 @@ internal abstract unsafe class SpatialSnapshot
         var overflowed = false;
         var visited = 0;
         long read = 0;
-        var best = radius;
-        var limit = radius;
+        var reach = mode == SpatialHitMode.XY ? radius + largestPointRadius : radius;
+        var best = reach;
+        var limit = reach;
         long bestPosition = -1;
         var (bestX, bestY) = (0.0, 0.0);
 

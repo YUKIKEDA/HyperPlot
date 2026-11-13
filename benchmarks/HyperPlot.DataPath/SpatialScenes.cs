@@ -17,11 +17,22 @@ internal static class SpatialScenes
     private const double ZoomShare = 0.01;
     private const double DeepShare = 0.0001;
     private const double HoverRadius = 8;
+
+    // The largest marker radius of a layer sized by data with the default range of SizeScaleSpec (16 DIPs across).
+    private const double LargestMarkerRadius = 8;
     private const int WritesBefore = 200;
     private const int TouchThreads = 8;
     private const int TouchPagesPerThread = 12_288;
     private const ulong PlaceSeed = 0x43_33_61_50_6C_61_63_65UL;
     private static readonly TimeSpan FramePeriod = TimeSpan.FromSeconds(1.0 / 60);
+
+    // The hit tests of the nearest scene: XY without a marker, XY with markers sized by data, and X.
+    private static readonly (SpatialHitMode Mode, double Marker)[] NearestHits =
+    [
+        (SpatialHitMode.XY, 0),
+        (SpatialHitMode.XY, LargestMarkerRadius),
+        (SpatialHitMode.X, 0),
+    ];
 
     // The empty snapshot has no range yet, so a frame during the build asks over the whole plane.
     private static readonly SpatialRect Everywhere = new(
@@ -239,9 +250,11 @@ internal static class SpatialScenes
     /// when missing or with <see cref="Options.Cold"/>), then times <see cref="SpatialSnapshot.Nearest"/> at the seeded
     /// places of the C3a queries, and for the clustered distribution at each cluster's center and at 1, 2, and 3
     /// standard deviations from it in four directions, in the views of 1 % and 0.01 % of the C3a hover with a radius of
-    /// <see cref="HoverRadius"/> pixels, in both modes. Then checks the first <see cref="Options.CheckPlaces"/> places of
-    /// each line against the exhaustive answer of the C3a hover (GetCells at level 32 and the first LeafCapacity points
-    /// of each leaf), all of the cells, not the first 1,024.
+    /// <see cref="HoverRadius"/> pixels: in XY without a marker and with markers of <see cref="LargestMarkerRadius"/>
+    /// pixels at most (a layer sized by data), and in X. Then checks up to <see cref="Options.CheckPlaces"/> evenly spaced
+    /// places of each line (all of them by default) against the exhaustive answer of the C3a hover, GetCells at level 32
+    /// over every leaf under the reach (not the first 1,024 of Issue #473) and the first LeafCapacity points of each leaf,
+    /// and reports the time of that answer as a line of its own.
     /// </summary>
     internal static void Nearest(Options options)
     {
@@ -345,8 +358,9 @@ internal static class SpatialScenes
             {
                 var (spanX, spanY) = (width * share, height * share);
                 var (ppx, ppy) = (Width / spanX, Height / spanY);
-                foreach (var mode in (SpatialHitMode[])[SpatialHitMode.XY, SpatialHitMode.X])
+                foreach (var (mode, marker) in NearestHits)
                 {
+                    var reach = HoverRadius + marker;
                     var n = places.Length;
                     var times = new double[n];
                     var visited = new double[n];
@@ -354,14 +368,14 @@ internal static class SpatialScenes
                     var answers = new SpatialNearest[n];
 
                     // A warm-up call, then only the calls between the two reads of the counter.
-                    _ = snapshot.Nearest(places[0].X, places[0].Y, ppx, ppy, HoverRadius, mode, ViewAt(places[0], spanX, spanY), scratch);
+                    _ = snapshot.Nearest(places[0].X, places[0].Y, ppx, ppy, HoverRadius, marker, mode, ViewAt(places[0], spanX, spanY), scratch);
                     var allocated = GC.GetAllocatedBytesForCurrentThread();
                     for (var i = 0; i < n; i++)
                     {
                         var (px, py) = places[i];
                         var view = ViewAt(places[i], spanX, spanY);
                         var start = Stopwatch.GetTimestamp();
-                        answers[i] = snapshot.Nearest(px, py, ppx, ppy, HoverRadius, mode, view, scratch);
+                        answers[i] = snapshot.Nearest(px, py, ppx, ppy, HoverRadius, marker, mode, view, scratch);
                         times[i] = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
                     }
 
@@ -376,17 +390,19 @@ internal static class SpatialScenes
                         overflowed += answers[i].Overflowed ? 1 : 0;
                     }
 
-                    // The exhaustive answer at evenly spaced places, outside the timed calls.
+                    // The exhaustive answer at evenly spaced places, each timed alone: GetCells of every leaf under the
+                    // reach, grown to hold them all (Issue #473), then the first LeafCapacity points of each leaf.
                     var checks = Math.Min(options.CheckPlaces, n);
                     var (mismatches, excess) = (0, 0.0);
                     var referenceTimes = new double[Math.Max(1, checks)];
+                    var referenceLeaves = new double[Math.Max(1, checks)];
                     var referencePoints = new double[Math.Max(1, checks)];
                     for (var c = 0; c < checks; c++)
                     {
                         var i = (int)((long)c * n / checks);
                         var (px, py) = places[i];
                         var view = ViewAt(places[i], spanX, spanY);
-                        var (rx, ry) = (HoverRadius / ppx, HoverRadius / ppy);
+                        var (rx, ry) = (reach / ppx, reach / ppy);
                         var rect =
                             mode == SpatialHitMode.XY
                                 ? new SpatialRect(
@@ -400,7 +416,9 @@ internal static class SpatialScenes
                         var count = snapshot.GetCells(rect, 32, cells);
                         if (count > cells.Length)
                         {
+                            // The time is that of one call into a buffer that holds every leaf.
                             cells = new SpatialCell[count];
+                            start = Stopwatch.GetTimestamp();
                             count = snapshot.GetCells(rect, 32, cells);
                         }
 
@@ -425,11 +443,12 @@ internal static class SpatialScenes
                         }
 
                         referenceTimes[c] = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
+                        referenceLeaves[c] = count;
                         referencePoints[c] = points;
                         var answer = answers[i];
                         var agrees = answer.Found
-                            ? answer.Distance < HoverRadius && answer.Distance >= least - 1e-9 && answer.Distance <= least + 0.5 + 1e-9
-                            : least >= HoverRadius - 0.5;
+                            ? answer.Distance < reach && answer.Distance >= least - 1e-9 && answer.Distance <= least + 0.5 + 1e-9
+                            : least >= reach - 0.5;
                         mismatches += agrees ? 0 : 1;
                         if (answer.Found)
                         {
@@ -437,12 +456,11 @@ internal static class SpatialScenes
                         }
                     }
 
+                    (string Key, object Value)[] line = [("places", name), ("view_share", share), ("mode", mode), ("marker_radius", marker)];
                     yield return
                     [
                         ("query", "nearest"),
-                        ("places", name),
-                        ("view_share", share),
-                        ("mode", mode),
+                        .. line,
                         ("count", n),
                         ("found", found),
                         .. Percentiles(times),
@@ -458,10 +476,23 @@ internal static class SpatialScenes
                         ("checked", checks),
                         ("mismatches", mismatches),
                         ("max_excess_px", excess),
-                        ("exhaustive_p50_us", Quantile(referenceTimes, 0.5)),
-                        ("exhaustive_max_us", Quantile(referenceTimes, 1)),
-                        ("exhaustive_points_max", Quantile(referencePoints, 1)),
                     ];
+                    if (checks > 0)
+                    {
+                        yield return
+                        [
+                            ("query", "exhaustive"),
+                            .. line,
+                            ("count", checks),
+                            .. Percentiles(referenceTimes),
+                            ("leaves_p50", Quantile(referenceLeaves, 0.5)),
+                            ("leaves_p99", Quantile(referenceLeaves, 0.99)),
+                            ("leaves_max", Quantile(referenceLeaves, 1)),
+                            ("points_p50", Quantile(referencePoints, 0.5)),
+                            ("points_p99", Quantile(referencePoints, 0.99)),
+                            ("points_max", Quantile(referencePoints, 1)),
+                        ];
+                    }
                 }
             }
         }
@@ -607,13 +638,25 @@ internal static class SpatialScenes
         var (zoomWidth, zoomHeight) = (width * ZoomShare, height * ZoomShare);
         var wholeLevel = LevelFor(Width);
         var zoomLevel = LevelFor(Width / ZoomShare);
-        var cells = new SpatialCell[1024];
         var xs = new double[tuning.LeafCapacity];
         var ys = new double[tuning.LeafCapacity];
         var rows = new long[tuning.LeafCapacity];
         var wholeTimes = new double[Places];
         var zoomTimes = new double[Places];
         double[] shares = [ZoomShare, DeepShare];
+
+        // The hover reads every leaf under the radius (Issue #473): a pass before the timed one sizes the buffer for the
+        // most leaves of any place, so that the timed pass neither grows it nor allocates.
+        var mostCells = 0;
+        for (var i = 0; i < Places; i++)
+        {
+            foreach (var share in shares)
+            {
+                mostCells = Math.Max(mostCells, snapshot.GetCells(HoverRect(places[i], share, width, height), 32, []));
+            }
+        }
+
+        var cells = new SpatialCell[Math.Max(1, mostCells)];
         var hoverTimes = new double[shares.Length][];
         var leafCounts = new int[shares.Length][];
         var pointCounts = new long[shares.Length][];
@@ -641,11 +684,10 @@ internal static class SpatialScenes
 
             for (var h = 0; h < shares.Length; h++)
             {
-                var (rx, ry) = (HoverRadius * width * shares[h] / Width, HoverRadius * height * shares[h] / Height);
                 began = Stopwatch.GetTimestamp();
-                var found = snapshot.GetCells(new SpatialRect(px - rx, px + rx, py - ry, py + ry), 32, cells);
+                var found = snapshot.GetCells(HoverRect(places[i], shares[h], width, height), 32, cells);
                 long read = 0;
-                for (var c = 0; c < Math.Min(found, cells.Length); c++)
+                for (var c = 0; c < found; c++)
                 {
                     var length = (int)Math.Min(cells[c].Count, tuning.LeafCapacity);
                     snapshot.ReadPoints(cells[c].First, xs.AsSpan(0, length), ys.AsSpan(0, length), rows.AsSpan(0, length));
@@ -677,6 +719,13 @@ internal static class SpatialScenes
                 ("points_max", pointCounts[h][^1]),
             ];
         }
+    }
+
+    // The rectangle of the hover at a place: the radius in plot-area pixels of a view of a share of each side.
+    private static SpatialRect HoverRect((double X, double Y) place, double share, double width, double height)
+    {
+        var (rx, ry) = (HoverRadius * width * share / Width, HoverRadius * height * share / Height);
+        return new SpatialRect(place.X - rx, place.X + rx, place.Y - ry, place.Y + ry);
     }
 
     /// <summary>

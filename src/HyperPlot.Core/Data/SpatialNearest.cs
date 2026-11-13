@@ -11,7 +11,7 @@ internal enum SpatialHitMode
 }
 
 /// <summary>What <see cref="SpatialSnapshot.Nearest"/> found, and what it read to find it (spike of row R3c).</summary>
-/// <param name="Found">Whether a point lies nearer than the radius.</param>
+/// <param name="Found">Whether a point lies nearer than the radius (plus the marker's radius in <see cref="SpatialHitMode.XY"/>).</param>
 /// <param name="Row">The point's row in the columns.</param>
 /// <param name="X">The point's x, as a difference from the origin of <see cref="SpatialSnapshot.XRange"/>.</param>
 /// <param name="Y">The point's y, as a difference from the origin of <see cref="SpatialSnapshot.YRange"/>.</param>

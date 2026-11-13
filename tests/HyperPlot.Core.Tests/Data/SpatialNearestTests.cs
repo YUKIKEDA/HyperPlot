@@ -16,7 +16,8 @@ public sealed class SpatialNearestTests
     ///   outliers 1e4 away, indexed with leaves of 256 points and no cap on the table.
     /// - 300 seeded queries: the cursor on a seeded point, on a seeded point moved by up to 20 pixels, or anywhere in the
     ///   ranges; a view centered on the cursor whose x and y spans are each 10^-u of the range (u uniform in [0, 4)), seen
-    ///   at 1,920 × 1,080 pixels, so that the pixels of a unit differ on the two axes; a radius of 8 pixels.
+    ///   at 1,920 × 1,080 pixels, so that the pixels of a unit differ on the two axes; a radius of 8 pixels; markers of no
+    ///   radius, or of a largest radius of 6 pixels, as a layer whose points take their size from data passes.
     ///
     /// Steps:
     /// - For each query and each mode (XY and X), call Nearest with the view as the bounds.
@@ -25,15 +26,17 @@ public sealed class SpatialNearestTests
     ///
     /// Expected:
     /// - Nothing overflows the queue.
-    /// - A found point is in the view, nearer than the radius, no farther than the loop's least distance plus half a pixel,
-    ///   and its row, values, and distance agree with the copy.
-    /// - Nothing is found only when the loop's least distance is not below the radius less half a pixel.
+    /// - A found point is in the view, nearer than the reach (the radius, plus the marker's radius in XY), no farther
+    ///   than the loop's least distance plus half a pixel, and its row, values, and distance agree with the copy.
+    /// - Nothing is found only when the loop's least distance is not below the reach less half a pixel.
     /// - The second pass allocates 0 bytes.
     /// </remarks>
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Nearest_AgainstEveryPoint_IsWithinHalfAPixel(bool clustered)
+    [InlineData(false, 0)]
+    [InlineData(true, 0)]
+    [InlineData(false, 6)]
+    [InlineData(true, 6)]
+    public void Nearest_AgainstEveryPoint_IsWithinHalfAPixel(bool clustered, double largestPointRadius)
     {
         var (xs, ys) = clustered ? Clustered(seed: 70) : Uniform(seed: 71);
         var tuning = new SpatialIndexTuning(LeafCapacity: 256, RowsPerUnit: 1 << 12, TableShare: 1e6, WideRows: 1L << 32);
@@ -51,9 +54,10 @@ public sealed class SpatialNearestTests
         var queries = MakeQueries(snapshot, px, py, seed: clustered ? 72 : 73);
         foreach (var mode in (SpatialHitMode[])[SpatialHitMode.XY, SpatialHitMode.X])
         {
+            var reach = mode == SpatialHitMode.XY ? Radius + largestPointRadius : Radius;
             foreach (var q in queries)
             {
-                var found = snapshot.Nearest(q.X, q.Y, q.Ppx, q.Ppy, Radius, mode, q.View, scratch);
+                var found = snapshot.Nearest(q.X, q.Y, q.Ppx, q.Ppy, Radius, largestPointRadius, mode, q.View, scratch);
                 var least = double.PositiveInfinity;
                 for (var i = 0; i < px.Length; i++)
                 {
@@ -69,7 +73,7 @@ public sealed class SpatialNearestTests
                 {
                     var at = positionOfRow[found.Row];
                     Assert.True(In(q.View, found.X, found.Y), what);
-                    Assert.True(found.Distance < Radius, what);
+                    Assert.True(found.Distance < reach, what);
                     Assert.True(found.Distance <= least + Tolerance + 1e-9, what);
                     Assert.Equal(px[at], found.X);
                     Assert.Equal(py[at], found.Y);
@@ -77,15 +81,16 @@ public sealed class SpatialNearestTests
                 }
                 else
                 {
-                    Assert.True(least >= Radius - Tolerance, what);
+                    Assert.True(least >= reach - Tolerance, what);
                 }
             }
 
-            _ = snapshot.Nearest(queries[0].X, queries[0].Y, queries[0].Ppx, queries[0].Ppy, Radius, mode, queries[0].View, scratch);
+            var first = queries[0];
+            _ = snapshot.Nearest(first.X, first.Y, first.Ppx, first.Ppy, Radius, largestPointRadius, mode, first.View, scratch);
             var before = GC.GetAllocatedBytesForCurrentThread();
             foreach (var q in queries)
             {
-                _ = snapshot.Nearest(q.X, q.Y, q.Ppx, q.Ppy, Radius, mode, q.View, scratch);
+                _ = snapshot.Nearest(q.X, q.Y, q.Ppx, q.Ppy, Radius, largestPointRadius, mode, q.View, scratch);
             }
 
             Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);

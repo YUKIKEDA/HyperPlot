@@ -28,7 +28,21 @@ internal sealed record Options(
             );
         }
 
-        var options = new Options(args[0], string.Empty, 1_000_000_000, SeriesFile.DefaultSeed, 0, false, false, false, "uniform", 0, 0, null, 20);
+        var options = new Options(
+            args[0],
+            string.Empty,
+            1_000_000_000,
+            SeriesFile.DefaultSeed,
+            0,
+            false,
+            false,
+            false,
+            "uniform",
+            0,
+            0,
+            null,
+            int.MaxValue
+        );
         for (var i = 1; i < args.Length; i++)
         {
             options = args[i] switch
