@@ -376,7 +376,8 @@ internal static partial class Scene
 
     private static int Differing(byte[] a, byte[] b)
     {
-        var (left, right) = (MemoryMarshal.Cast<byte, uint>(a), MemoryMarshal.Cast<byte, uint>(b));
+        var left = MemoryMarshal.Cast<byte, uint>(a);
+        var right = MemoryMarshal.Cast<byte, uint>(b);
         var differing = 0;
         for (var i = 0; i < left.Length; i++)
         {
@@ -474,7 +475,10 @@ internal static partial class Scene
             for (var f = 0; f < _timed.Length; f++)
             {
                 var gpu = _timed[f]
-                    ? string.Join(',', Enumerable.Range(0, Buckets).Select(b => _times[(f * Buckets) + b].ToString("F4", CultureInfo.InvariantCulture)))
+                    ? string.Join(
+                        ',',
+                        Enumerable.Range(0, Buckets).Select(b => _times[(f * Buckets) + b].ToString("F4", CultureInfo.InvariantCulture))
+                    )
                     : new string(',', Buckets - 1);
                 writer.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{f},{cpu[f]:F4},{gpu}"));
             }

@@ -230,6 +230,5 @@ internal sealed class SceneData
 
     private static float Uniform(Random random) => (float)((random.NextDouble() * 2) - 1);
 
-    private static double Normal(Random random) =>
-        Math.Sqrt(-2 * Math.Log(1 - random.NextDouble())) * Math.Cos(2 * Math.PI * random.NextDouble());
+    private static double Normal(Random random) => Math.Sqrt(-2 * Math.Log(1 - random.NextDouble())) * Math.Cos(2 * Math.PI * random.NextDouble());
 }

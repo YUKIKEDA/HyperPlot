@@ -270,7 +270,7 @@ internal sealed unsafe class Gpu : IDisposable
                 continue;
             }
 
-            buckets.Fill(0);
+            buckets.Clear();
             var timedPasses = false;
             var count = _setStamps[set];
             for (var s = 1; s < count; s++)
@@ -387,8 +387,7 @@ internal sealed unsafe class Gpu : IDisposable
         Release(ref _device);
     }
 
-    private static Vector4 Unpack(uint color) =>
-        new Vector4(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, color >> 24) * (1f / 255);
+    private static Vector4 Unpack(uint color) => new Vector4(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF, color >> 24) * (1f / 255);
 
     private static void Check(HRESULT result, string call)
     {
@@ -814,7 +813,8 @@ internal sealed unsafe class Gpu : IDisposable
         }
 
         Check(result, "CreateShaderResourceView");
-        (made, madeView) = (buffer, resourceView);
+        made = buffer;
+        madeView = resourceView;
     }
 
     private void MakeShaders()

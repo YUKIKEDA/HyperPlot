@@ -108,7 +108,9 @@ float4 PlanePS(float4 position : SV_Position) : SV_Target
 
 struct SegmentVertex
 {
-    float4 Position : SV_Position;
+    // noperspective centroid: fxc requires it of a pixel shader that writes SV_DepthGreaterEqual and does not run per
+    // sample (X8000). The targets have one sample, so the centroid is the pixel's center.
+    noperspective centroid float4 Position : SV_Position;
     nointerpolation float2 Start : START;
     nointerpolation float2 End : END;
     nointerpolation float2 Depths : DEPTHS;     // at Start and at End

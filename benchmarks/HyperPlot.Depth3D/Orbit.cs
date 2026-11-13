@@ -25,7 +25,12 @@ internal static class Orbit
         var distance = radius / MathF.Sin(FieldOfView / 2);
         var eye = new Vector3(MathF.Cos(Elevation) * MathF.Cos(angle), MathF.Cos(Elevation) * MathF.Sin(angle), MathF.Sin(Elevation)) * distance;
         var view = Matrix4x4.CreateLookAt(eye, Vector3.Zero, Vector3.UnitZ);
-        var projection = Matrix4x4.CreatePerspectiveFieldOfView(FieldOfView, Width / (float)Height, distance - radius - 0.1f, distance + radius + 0.1f);
+        var projection = Matrix4x4.CreatePerspectiveFieldOfView(
+            FieldOfView,
+            Width / (float)Height,
+            distance - radius - 0.1f,
+            distance + radius + 0.1f
+        );
         return view * projection;
     }
 }
