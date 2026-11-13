@@ -274,6 +274,135 @@ public sealed class ImageTests : IDisposable
         }
     }
 
+    /// <summary>
+    /// The density cases: each norm, the layer's ramp and viridis, and three tiles: one at the chosen level whose bins cover
+    /// a square physical pixel, an ancestor 2 levels shallower whose bins cover 16, and the same ancestor at 2.5.
+    /// </summary>
+    public static TheoryData<DensityNorm, bool, int, double> DensityCases
+    {
+        get
+        {
+            var cases = new TheoryData<DensityNorm, bool, int, double>();
+            foreach (var norm in new[] { DensityNorm.Log, DensityNorm.Linear, DensityNorm.Cbrt })
+            {
+                foreach (var viridis in new[] { false, true })
+                {
+                    foreach (var (shallower, area) in new[] { (0, 1.0), (2, 16.0), (2, 2.5) })
+                    {
+                        cases.Add(norm, viridis, shallower, area);
+                    }
+                }
+            }
+
+            return cases;
+        }
+    }
+
+    /// <summary>
+    /// The image pixel shader paints a density tile's bins at the color the CPU gives the same normalized count, for each
+    /// norm, with the layer's ramp and with a color map, for a tile of the chosen level and for an ancestor's tile; a bin of
+    /// 0 is transparent in both (design §5.5.2 "描き方", "広さで正規化する", "祖先のタイル", §10's R3b1 row).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A top m of 1,000 points a square physical pixel. A tile of 2-byte bins requested from the backend's cache for the
+    ///   full snapshot of 100 points, each bin covering an area A of the screen in square physical pixels: a bin of c points
+    ///   a square pixel holds r = c · A points.
+    /// - One row of 11 bins: 0; nine counts from about 1 to 900 points a square pixel, each raised to the next raw count
+    ///   whose t · 256 lies at least 0.05 from an index's edge, so that float32 on the GPU and double on the CPU take the
+    ///   same index; 0 again; and m · A, the top.
+    /// - At k = 0 the row is the tile's first row from bin 0, read with SampleOrigin (0, 0) and SampleScale 1. At k = 2 it is
+    ///   row 128 from bin 64, read as the engine reads an ancestor: SampleOrigin (64, 128) and SampleScale 2^-2, the drawn
+    ///   range 4 tile texels a face texel.
+    /// - The cases: Log, Linear, and Cbrt; the ramp from transparent to (31, 119, 180) and viridis; a tile at the chosen
+    ///   level (k = 0) with A = 1, and an ancestor (k = 2) with A = 16, the 4^k of a level-0 bin of a pixel, and with
+    ///   A = 2.5, an area that is not a power of two. The area is the record's argument alone: the bins are drawn 16 pixels
+    ///   wide whatever it is, so the shader's formula is what is checked.
+    ///
+    /// Steps:
+    /// - Record one image instance with the transform, the constant, and the high end of DensityMath.Paint(norm, m, A), a low
+    ///   end of 0, the flag of bit 6, opacity 1, and the map's table; each bin 16 pixels wide. Draw it over the background and
+    ///   read the middle of each bin.
+    ///
+    /// Expected:
+    /// - The data: every count but the zeros and the top lies at least 0.05 from an index's edge (asserted while it is made).
+    /// - A bin of 0 is the background, with viridis too, whose first color is not the background.
+    /// - Every other bin is map.Map(DensityMath.Position(norm, r / A, m)) over the background, within 1 of 255 in each
+    ///   channel: the rounding of the blend.
+    /// </remarks>
+    [Theory]
+    [MemberData(nameof(DensityCases))]
+    public async Task DensityPaint_MatchesTheCpuColor(DensityNorm norm, bool viridis, int shallower, double area)
+    {
+        const double Top = 1_000;
+        var map = viridis ? ColorMaps.Viridis : DensityMath.Ramp(new Color(31, 119, 180, 255));
+        var counts = new List<ulong> { 0 };
+        foreach (var count in new[] { 1.0, 3, 10, 40, 120, 300, 550, 750, 900 })
+        {
+            counts.Add(AwayFromEdges(norm, (ulong)Math.Ceiling(count * area), area, Top));
+        }
+
+        counts.Add(0);
+        counts.Add((ulong)(Top * area));
+        var (originX, originY) = shallower == 0 ? (0, 0) : (64, 128);
+        var bins = new byte[DensityTiles.BinCount * 2];
+        for (var i = 0; i < counts.Count; i++)
+        {
+            var at = 2 * ((originY * DensityTiles.Side) + originX + i);
+            bins[at] = (byte)counts[i];
+            bins[at + 1] = (byte)(counts[i] >> 8);
+        }
+
+        var random = new Random(41);
+        using var xs = Column.Wrap(Enumerable.Range(0, 100).Select(_ => random.NextDouble()).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, 100).Select(_ => random.NextDouble()).ToArray());
+        using var index = _pool.BuildSpatialIndex(xs, ys, new SpatialIndexInput { Rows = RowRange.All });
+        await index.WhenComplete();
+        var snapshot = index.Acquire();
+        try
+        {
+            using var backend = D3D11Backend.Create(useWarp: true);
+            var width = counts.Count * 16;
+            using var target = backend.CreateRenderTarget(new RenderTargetDescription(width, Height));
+            backend.Images.BeginFrame();
+            var slot = backend.Images.RequestDensity(snapshot, 0, 0, new DensityTile(bins, 2, counts.Max()));
+            var (kind, constant, high) = DensityMath.Paint(norm, Top, area);
+            var texels = Math.Pow(2, shallower);
+            var record = new ImageInstance
+            {
+                AlongU = new Vector2((float)(16 / texels), 0),
+                AlongV = new Vector2(0, (float)(Height / texels)),
+                Range = new Vector4(0, 0, (float)(counts.Count * texels), (float)texels),
+                SampleOrigin = new Vector2(originX, originY),
+                SampleScale = (float)(1 / texels),
+                Slice = (uint)(slot % ResidencyCache.PageSlots),
+                Flags = (kind << 2) | ZeroTransparent,
+                Table = (uint)backend.Images.Table(map),
+                Constant = constant,
+                Low = 0,
+                High = high,
+                Opacity = 1,
+            };
+            var list = new RenderList();
+            list.DrawImage(record, ImagePlan.PageOf(false, slot));
+            target.Clear(Background);
+            backend.Draw(target, list);
+            var pixels = new byte[width * Height * 4];
+            target.ReadPixels(pixels);
+            for (var i = 0; i < counts.Count; i++)
+            {
+                var expected = counts[i] == 0 ? Background : Over(map.Map(DensityMath.Position(norm, counts[i] / area, Top)), 1);
+                AssertPixel(pixels, width, (16 * i) + 8, Height / 2, expected, 1);
+            }
+
+            Assert.NotEqual(Background, ColorMaps.Viridis.Map(0));
+        }
+        finally
+        {
+            snapshot.Release();
+        }
+    }
+
     /// <summary>After a device loss the cache forgets its tiles, and the next frame sends them again and draws the same (design §5.2).</summary>
     /// <remarks>
     /// Preconditions:
@@ -405,6 +534,26 @@ public sealed class ImageTests : IDisposable
             ? (s <= middle ? 0.5 * (s - low) / (middle - low) : 0.5 + (0.5 * (s - middle) / (high - middle)))
             : (s - low) / (high - low);
         return reverse ? 1 - t : t;
+    }
+
+    /// <summary>
+    /// Returns the first raw count from <paramref name="from"/> on, below the top, whose position under the top lies at least
+    /// 0.05 of an index from the edges of the table's indices: float32 rounding on the GPU moves t · 256 by far less.
+    /// </summary>
+    private static ulong AwayFromEdges(DensityNorm norm, ulong from, double area, double top)
+    {
+        for (var raw = Math.Max(1UL, from); raw < top * area; raw++)
+        {
+            var at = DensityMath.Position(norm, raw / area, top) * 256;
+            var part = at - Math.Floor(at);
+            if (part is >= 0.05 and <= 0.95)
+            {
+                return raw;
+            }
+        }
+
+        Assert.Fail($"No count from {from} below the top {top * area} lies away from an index's edge.");
+        return 0;
     }
 
     private static int Index(double t) =>

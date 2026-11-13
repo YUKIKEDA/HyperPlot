@@ -18,6 +18,8 @@
     <Compile Include="..\..\samples\Shared\HelloScene.cs" Link="Golden\HelloScene.cs" />
     <!-- The fake text backend of the T1 tests, shared with the Core tests (design §10). -->
     <Compile Include="..\HyperPlot.Core.Tests\Rendering\FakeTextBackend.cs" Link="Text\FakeTextBackend.cs" />
+    <!-- The storage whose worker reads a test holds, shared with the Core tests: the coarse density's scene (row R3b1). -->
+    <Compile Include="..\HyperPlot.Core.Tests\Data\TestStorage.cs" Link="Data\TestStorage.cs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="xunit.v3" />
