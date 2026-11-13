@@ -9,7 +9,7 @@ Correctness comes first. A performance claim comes with a measurement in the sam
 
 ## Tools
 
-- Allocation: the Zero-Alloc tests (`PerformanceAssert.DoesNotAllocate` in `HyperPlot.Testing`, design §10) measure `GC.GetAllocatedBytesForCurrentThread()` after a warm-up, in the scenarios the design names. They run in `./build.ps1` and are a gate. An allowed count stays or goes down; raising it needs an Issue.
+- Allocation: the Zero-Alloc tests (`PerformanceAssert.DoesNotAllocate` in `HyperPlot.Testing`) measure `GC.GetAllocatedBytesForCurrentThread()` after a warm-up, in the scenarios the design names. They run in `./build.ps1` and are a gate. An allowed count stays or goes down; raising it needs an Issue.
 - Kernels: BenchmarkDotNet with `[MemoryDiagnoser]` in `benchmarks/HyperPlot.Benchmarks` (design §9). Not a gate; CI does not run them on shared runners.
 - Data path: `benchmarks/HyperPlot.DataPath` on a NativeAOT Release build, no GPU: the scenes of 1e9 points that go through the workers and a mapped file (the pyramid build, the time until a provisional result is replaced, the first frame of a file not in the page cache, design §9). It also holds the seeded data generator. Recorded in `docs/benchmarks/`, not a gate.
 - End-to-end: `benchmarks/HyperPlot.E2E` on a NativeAOT Release build, headless, replaying a script of view ranges for zoom and pan (design §9; hover comes with row I2b), against the targets of `docs/requirements.ja.md` §5. Made in row S2, which measures the scenes of S1's samples. Recorded in `docs/benchmarks/`, not a gate.
