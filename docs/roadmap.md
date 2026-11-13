@@ -101,11 +101,7 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | R3d | 散布の色のカテゴリと点ごとの色（§5.5.2）: 索引の道で数の列の色を点ごとに付ける（エンコードの列の Morton 順の並べ直し）、索引の道の `SizeBy`（点ごとの大きさ。行 R3f は CPU の道だけ、Issue #448）、64 を超える部分に分かれる大きな層を 1 つの索引で描く、同じ列を描く層の間で索引を使い回すか（行 R3a は使い回さない）、カテゴリごとの密度の合成、色のスケールの写像をチャンクごとに持つ形。行 R3 から分けた | not-started | |
 | R3e | ほかの Geom の残り: point のスケールとカテゴリの x の line・step（行 G7b から、§4.2）、索引の道の polar の point（頂点シェーダで写す、§4.4）、pointrange、segment と rect の大きなデータの道（131,072 を超える要素の密度、§5.5.3）、線分ごとの色（rule・segment・errorbar の要素ごとの連続の色、行 G7c から、§4.1）。行 R3 から分けた | not-started | |
 | C4 | ストリーミングとリングバッファ（全体表示を追い続ける表示と、ビューの間に学び直した後の全体表示の値と通知、行 I1a の `FullStale`）。空間タイル索引への追記は v1 で作らない（要件 §7、Issue #401 の決定 6） | not-started | |
-| **E: XylemUI と公開** | | | |
-| X1 | XylemUI のホスト | not-started | |
-| Q1 | 性能の受け入れの計測（要件 §5） | not-started | |
-| V1 | v1 の公開（NuGet、利用者向けの文書、サンプル） | not-started | |
-| **v1 の後: 3D（v1.x）** | | | |
+| **3D（v1.x。作る順は X1 の前、オーナーの決定、Issue #505）** | | | |
 | K0a | 3D の共通の設計と八分木（要件 §4.6、§13）: 座標系（`CoordSpec` の 3D の cartesian、`PlotSpec` の z のスケール、層の Z チャネル、flip・polar・二次軸・band・Position・ファセット・Stat との組ごとに受けるか断るかの表）、GPU に送る位置の精度、深度の契約（3D のパネルに 2D のマークを深度付きで置く要件があるか）、カメラ、ビュー（3D のズームとパンが動かすもの）、K-7 のレイのヒットテスト、性能の仮説（P-11、八分木の構築時間、写しと節点の表のメモリ）。八分木（加法方式、シードつきの 128³ の格子の間引き、静止したときの描き足し）の節点の大きさと節点の表のメモリ、点の予算の単位と既定値、点の描き方（印のパイプラインと計算シェーダのラスタ化の試作）。ファセットの `Scales`（`Free` など）が z にも効くか。値は試作で確定する。行 K0 を分けた（Issue #470 の決定 2・4） | in-progress | [#470](https://github.com/YUKIKEDA/HyperPlot/issues/470)（設計）、[#477](https://github.com/YUKIKEDA/HyperPlot/issues/477)（試作） |
 | K0b | 3D の線の単純化の設計（§13.4）: 区間の分け方と誤差の段、K-3 の線（1e8 頂点）の回転の目標。区間の大きさ、K-3 の回転の目標、重要度と区間の誤差のメモリ（要件 P-8 の例外にするか）は試作で確定する。オーナーが決めること: 3D の半透明の線の結合の二重の濃さ（2D の MAX の被覆との関係）。行 K0 を分けた（Issue #470 の決定 2・4） | in-progress | [#481](https://github.com/YUKIKEDA/HyperPlot/issues/481)（設計）、[#488](https://github.com/YUKIKEDA/HyperPlot/issues/488)（試作） |
 | K0c | 面の LOD の設計（§13.5）: 格子のタイルと解像度の段、隣のタイルとの段の違いで生じる隙間の方式、P-12 の目標。タイルの大きさ、P-12 の目標、段の追加のメモリ（要件 P-8 の例外にするか）は試作で確定する。行 K0 を分けた（Issue #470 の決定 2） | in-progress | [#482](https://github.com/YUKIKEDA/HyperPlot/issues/482)（設計）、[#489](https://github.com/YUKIKEDA/HyperPlot/issues/489)（試作） |
@@ -117,6 +113,10 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 | K4 | 面（z = f(x, y)、格子の LOD）。設計は行 K0c（共通の部分は行 K0a） | not-started | |
 | K5 | メッシュと半透明の合成。設計は行 K0d（共通の部分は行 K0a） | not-started | |
 | K6 | ボリューム（レイマーチ、断面、等値面）。設計は行 K0e（共通の部分は行 K0a） | not-started | |
+| **E: XylemUI と公開** | | | |
+| X1 | XylemUI のホスト（XylemUI の外部サーフェスの行 XS1 を待つ。設計の決定は Issue #505） | blocked | [#505](https://github.com/YUKIKEDA/HyperPlot/issues/505)（設計） |
+| Q1 | 性能の受け入れの計測（要件 §5） | not-started | |
+| V1 | v1 の公開（NuGet、利用者向けの文書、サンプル） | not-started | |
 | **v1 の後: ホストとバックエンド** | | | |
 | A1 | Avalonia のホスト | not-started | |
 | P1 | wgpu-native のバックエンド（Linux） | not-started | |
