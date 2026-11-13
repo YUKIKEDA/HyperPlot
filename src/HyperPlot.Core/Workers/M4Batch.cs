@@ -17,7 +17,7 @@ public sealed class M4Batch
 
     // A plain object, not a Lock: the wait for the last job uses Monitor.Wait and PulseAll on it.
     private readonly object _sync = new();
-    private double[] _boundaries = [];
+    private ArraySegment<double> _boundaries = ArraySegment<double>.Empty;
     private ScaleOrigin _origin;
     private int _next;
     private int _remaining;
@@ -114,7 +114,7 @@ public sealed class M4Batch
     public Exception? GetError(int series) => JobAt(series).Error;
 
     /// <summary>Starts an extraction: every job is left to take, and the end event is reset.</summary>
-    internal void Begin(ScaleOrigin origin, double[] boundaries)
+    internal void Begin(ScaleOrigin origin, ArraySegment<double> boundaries)
     {
         (_origin, _boundaries) = (origin, boundaries);
         foreach (var job in _jobs)
@@ -196,7 +196,7 @@ public sealed class M4Batch
 
         public void Reset() => (Result, Error) = (default, null);
 
-        public void Run(ScaleOrigin origin, double[] boundaries)
+        public void Run(ScaleOrigin origin, ArraySegment<double> boundaries)
         {
             if (Skipped)
             {
@@ -214,7 +214,7 @@ public sealed class M4Batch
             }
         }
 
-        protected abstract M4Result Extract(ScaleOrigin origin, double[] boundaries);
+        protected abstract M4Result Extract(ScaleOrigin origin, ArraySegment<double> boundaries);
     }
 
     private sealed class ColumnJob<TX, TY>(Column<TX> x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options, RowRange rows) : Job
@@ -225,7 +225,7 @@ public sealed class M4Batch
         private long _checked = -1;
         private bool _nonDecreasing;
 
-        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries)
+        protected override M4Result Extract(ScaleOrigin origin, ArraySegment<double> boundaries)
         {
             if (rows == RowRange.All)
             {
@@ -245,7 +245,7 @@ public sealed class M4Batch
     private sealed class UniformJob<TY>(UniformColumn x, MinMaxPyramid<TY> y, M4Point[] destination, M4Options options, RowRange rows) : Job
         where TY : unmanaged, INumber<TY>
     {
-        protected override M4Result Extract(ScaleOrigin origin, double[] boundaries) =>
+        protected override M4Result Extract(ScaleOrigin origin, ArraySegment<double> boundaries) =>
             rows == RowRange.All
                 ? M4.Extract(x, y, origin, boundaries, destination, options)
                 : M4.Extract(x, y, origin, boundaries, destination, options, rows);
