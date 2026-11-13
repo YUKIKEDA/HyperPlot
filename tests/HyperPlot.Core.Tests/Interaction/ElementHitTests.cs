@@ -51,6 +51,7 @@ public sealed class ElementHitTests
             Assert.Equal((double)only.Row, only.X, 9);
             Assert.Equal(ys[only.Row], only.Y);
             Assert.False(only.Derived);
+            Assert.Equal(1, only.Count);
             var nearest = Enumerable.Range(0, rows).Where(i => !double.IsNaN(ys[i])).Min(i => Math.Abs(Pixel(engine, i, 0).X - cursor.X));
             Assert.Equal(nearest, Math.Abs(Pixel(engine, only.X, 0).X - cursor.X), 3);
         }

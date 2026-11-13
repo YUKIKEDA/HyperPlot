@@ -44,7 +44,7 @@ public sealed class PointHitTests
         var hits = new SeriesHit[2];
 
         var column = Assert.Single(hits[..engine.HitTest(Pixel(engine, 2, 5.5), 8, HitMode.X, hits)]);
-        Assert.Equal((0L, 2.0, 2.0), (column.Row, column.X, column.Y));
+        Assert.Equal((0L, 2.0, 2.0, 1L), (column.Row, column.X, column.Y, column.Count));
         Assert.Equal(2, Assert.Single(hits[..engine.HitTest(Pixel(engine, 5, 1), 8, HitMode.X, hits)]).Row);
         Assert.Equal(0, engine.HitTest(Pixel(engine, 3.5, 5), 8, HitMode.X, hits));
 
