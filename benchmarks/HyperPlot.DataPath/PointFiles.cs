@@ -94,6 +94,10 @@ internal static class PointFiles
         }
     }
 
+    /// <summary>Returns the center and the standard deviation of each cluster of the clustered distribution of a seed.</summary>
+    internal static (double X, double Y, double Sigma)[] ClusterShapes(ulong seed) =>
+        Array.ConvertAll(MakeClusters(seed), static c => (c.X, c.Y, c.Sigma));
+
     /// <summary>Returns the SHA-256 of the x file and of the y file in hex. Reading them puts them into the page cache.</summary>
     internal static (string X, string Y) Hash(string prefix)
     {

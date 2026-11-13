@@ -234,6 +234,249 @@ internal static class SpatialScenes
         }
     }
 
+    /// <summary>
+    /// The nearest-point query of the spike of row R3c: builds the index once (over the files as they are, written first
+    /// when missing or with <see cref="Options.Cold"/>), then times <see cref="SpatialSnapshot.Nearest"/> at the seeded
+    /// places of the C3a queries, and for the clustered distribution at each cluster's center and at 1, 2, and 3
+    /// standard deviations from it in four directions, in the views of 1 % and 0.01 % of the C3a hover with a radius of
+    /// <see cref="HoverRadius"/> pixels, in both modes. Then checks the first <see cref="Options.CheckPlaces"/> places of
+    /// each line against the exhaustive answer of the C3a hover (GetCells at level 32 and the first LeafCapacity points
+    /// of each leaf), all of the cells, not the first 1,024.
+    /// </summary>
+    internal static void Nearest(Options options)
+    {
+        using var ownPool = options.Workers > 0 ? new PlotWorkerPool(options.Workers) : null;
+        var pool = ownPool ?? PlotWorkerPool.Shared;
+        var (xPath, yPath) = PointFiles.Paths(options.File);
+        if (options.Cold || !File.Exists(xPath) || !File.Exists(yPath))
+        {
+            var written = Stopwatch.GetTimestamp();
+            PointFiles.Write(options.File, options.Points, options.Seed, options.Distribution);
+            Report(options, 1, "generate", [("distribution", options.Distribution), ("seconds", Stopwatch.GetElapsedTime(written).TotalSeconds)]);
+        }
+
+        using var x = Column.MapFile<float>(xPath);
+        using var y = Column.MapFile<float>(yPath);
+        var tuning = Tuning(options);
+        var copies = new Copies();
+        var began = Stopwatch.GetTimestamp();
+        var index = pool.BuildSpatialIndex(x, y, Input(options), tuning, copies);
+        try
+        {
+            index.Completion.Wait();
+            var common = Common(options, pool, tuning);
+            Report(options, 1, "nearest_build", [.. common, ("points", x.Length), ("seconds", Stopwatch.GetElapsedTime(began).TotalSeconds)]);
+            var snapshot = index.Acquire();
+            try
+            {
+                foreach (var line in NearestQueries(snapshot, x, y, tuning, options))
+                {
+                    Report(options, 1, "nearest", [.. common, .. line]);
+                }
+            }
+            finally
+            {
+                snapshot.Release();
+            }
+        }
+        finally
+        {
+            index.Dispose();
+            copies.WaitClosed();
+        }
+    }
+
+    private static IEnumerable<(string Key, object Value)[]> NearestQueries(
+        SpatialSnapshot snapshot,
+        Column<float> x,
+        Column<float> y,
+        SpatialIndexTuning tuning,
+        Options options
+    )
+    {
+        var xr = snapshot.XRange;
+        var yr = snapshot.YRange;
+        var (width, height) = (xr.Upper - xr.Lower, yr.Upper - yr.Lower);
+
+        // The places of the C3a queries: the points of seeded rows.
+        var sets = new List<(string Name, (double X, double Y)[] Places)>();
+        var rowsPlaces = new (double X, double Y)[Places];
+        var state = PlaceSeed;
+        for (var i = 0; i < Places; i++)
+        {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            var row = (long)((state * 0x2545F4914F6CDD1DUL) % (ulong)x.Length);
+            rowsPlaces[i] = (x.GetValue(row) - (double)xr.Origin, y.GetValue(row) - (double)yr.Origin);
+        }
+
+        sets.Add(("rows", rowsPlaces));
+        if (options.Distribution == "clustered")
+        {
+            var clusters = PointFiles.ClusterShapes(options.Seed);
+            var centers = new (double X, double Y)[clusters.Length];
+            var edges = new List<(double X, double Y)>();
+            for (var k = 0; k < clusters.Length; k++)
+            {
+                var (cx, cy, sigma) = clusters[k];
+                centers[k] = (cx - xr.Origin, cy - yr.Origin);
+                foreach (var reach in (double[])[1, 2, 3])
+                {
+                    foreach (var (ux, uy) in ((double, double)[])[(1, 0), (0, 1), (-1, 0), (0, -1)])
+                    {
+                        edges.Add((cx + (reach * sigma * ux) - xr.Origin, cy + (reach * sigma * uy) - yr.Origin));
+                    }
+                }
+            }
+
+            sets.Add(("centers", centers));
+            sets.Add(("edges", [.. edges]));
+        }
+
+        var scratch = new SpatialNearestScratch(tuning.LeafCapacity);
+        var xs = new double[tuning.LeafCapacity];
+        var ys = new double[tuning.LeafCapacity];
+        var rows = new long[tuning.LeafCapacity];
+        var cells = new SpatialCell[1 << 16];
+        foreach (var (name, places) in sets)
+        {
+            foreach (var share in (double[])[ZoomShare, DeepShare])
+            {
+                var (spanX, spanY) = (width * share, height * share);
+                var (ppx, ppy) = (Width / spanX, Height / spanY);
+                foreach (var mode in (SpatialHitMode[])[SpatialHitMode.XY, SpatialHitMode.X])
+                {
+                    var n = places.Length;
+                    var times = new double[n];
+                    var visited = new double[n];
+                    var read = new double[n];
+                    var answers = new SpatialNearest[n];
+
+                    // A warm-up call, then only the calls between the two reads of the counter.
+                    _ = snapshot.Nearest(places[0].X, places[0].Y, ppx, ppy, HoverRadius, mode, ViewAt(places[0], spanX, spanY), scratch);
+                    var allocated = GC.GetAllocatedBytesForCurrentThread();
+                    for (var i = 0; i < n; i++)
+                    {
+                        var (px, py) = places[i];
+                        var view = ViewAt(places[i], spanX, spanY);
+                        var start = Stopwatch.GetTimestamp();
+                        answers[i] = snapshot.Nearest(px, py, ppx, ppy, HoverRadius, mode, view, scratch);
+                        times[i] = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
+                    }
+
+                    allocated = GC.GetAllocatedBytesForCurrentThread() - allocated;
+                    var (found, peak, overflowed) = (0, 0, 0);
+                    for (var i = 0; i < n; i++)
+                    {
+                        visited[i] = answers[i].CellsVisited;
+                        read[i] = answers[i].PointsRead;
+                        found += answers[i].Found ? 1 : 0;
+                        peak = Math.Max(peak, answers[i].QueuePeak);
+                        overflowed += answers[i].Overflowed ? 1 : 0;
+                    }
+
+                    // The exhaustive answer at evenly spaced places, outside the timed calls.
+                    var checks = Math.Min(options.CheckPlaces, n);
+                    var (mismatches, excess) = (0, 0.0);
+                    var referenceTimes = new double[Math.Max(1, checks)];
+                    var referencePoints = new double[Math.Max(1, checks)];
+                    for (var c = 0; c < checks; c++)
+                    {
+                        var i = (int)((long)c * n / checks);
+                        var (px, py) = places[i];
+                        var view = ViewAt(places[i], spanX, spanY);
+                        var (rx, ry) = (HoverRadius / ppx, HoverRadius / ppy);
+                        var rect =
+                            mode == SpatialHitMode.XY
+                                ? new SpatialRect(
+                                    Math.Max(view.XMin, px - rx),
+                                    Math.Min(view.XMax, px + rx),
+                                    Math.Max(view.YMin, py - ry),
+                                    Math.Min(view.YMax, py + ry)
+                                )
+                                : new SpatialRect(Math.Max(view.XMin, px - rx), Math.Min(view.XMax, px + rx), view.YMin, view.YMax);
+                        var start = Stopwatch.GetTimestamp();
+                        var count = snapshot.GetCells(rect, 32, cells);
+                        if (count > cells.Length)
+                        {
+                            cells = new SpatialCell[count];
+                            count = snapshot.GetCells(rect, 32, cells);
+                        }
+
+                        var least = double.PositiveInfinity;
+                        long points = 0;
+                        for (var k = 0; k < count; k++)
+                        {
+                            var length = (int)Math.Min(cells[k].Count, tuning.LeafCapacity);
+                            snapshot.ReadPoints(cells[k].First, xs.AsSpan(0, length), ys.AsSpan(0, length), rows.AsSpan(0, length));
+                            points += length;
+                            for (var p = 0; p < length; p++)
+                            {
+                                if (xs[p] < view.XMin || xs[p] > view.XMax || ys[p] < view.YMin || ys[p] > view.YMax)
+                                {
+                                    continue;
+                                }
+
+                                var dx = (xs[p] - px) * ppx;
+                                var dy = mode == SpatialHitMode.XY ? (ys[p] - py) * ppy : 0;
+                                least = Math.Min(least, Math.Sqrt((dx * dx) + (dy * dy)));
+                            }
+                        }
+
+                        referenceTimes[c] = Stopwatch.GetElapsedTime(start).TotalMicroseconds;
+                        referencePoints[c] = points;
+                        var answer = answers[i];
+                        var agrees = answer.Found
+                            ? answer.Distance < HoverRadius && answer.Distance >= least - 1e-9 && answer.Distance <= least + 0.5 + 1e-9
+                            : least >= HoverRadius - 0.5;
+                        mismatches += agrees ? 0 : 1;
+                        if (answer.Found)
+                        {
+                            excess = Math.Max(excess, answer.Distance - least);
+                        }
+                    }
+
+                    yield return
+                    [
+                        ("query", "nearest"),
+                        ("places", name),
+                        ("view_share", share),
+                        ("mode", mode),
+                        ("count", n),
+                        ("found", found),
+                        .. Percentiles(times),
+                        ("cells_p50", Quantile(visited, 0.5)),
+                        ("cells_p99", Quantile(visited, 0.99)),
+                        ("cells_max", Quantile(visited, 1)),
+                        ("points_p50", Quantile(read, 0.5)),
+                        ("points_p99", Quantile(read, 0.99)),
+                        ("points_max", Quantile(read, 1)),
+                        ("queue_peak", peak),
+                        ("overflowed", overflowed),
+                        ("allocated_bytes", allocated),
+                        ("checked", checks),
+                        ("mismatches", mismatches),
+                        ("max_excess_px", excess),
+                        ("exhaustive_p50_us", Quantile(referenceTimes, 0.5)),
+                        ("exhaustive_max_us", Quantile(referenceTimes, 1)),
+                        ("exhaustive_points_max", Quantile(referencePoints, 1)),
+                    ];
+                }
+            }
+        }
+    }
+
+    private static SpatialRect ViewAt((double X, double Y) place, double spanX, double spanY) =>
+        new(place.X - (spanX / 2), place.X + (spanX / 2), place.Y - (spanY / 2), place.Y + (spanY / 2));
+
+    // The value at a share of the sorted values; sorts the array.
+    private static double Quantile(double[] values, double share)
+    {
+        Array.Sort(values);
+        return values[Math.Max(0, (int)Math.Ceiling(values.Length * share) - 1)];
+    }
+
     private static SpatialIndexTuning Tuning(Options options)
     {
         var tuning = SpatialIndexTuning.Default;

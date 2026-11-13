@@ -291,6 +291,157 @@ internal abstract unsafe class SpatialSnapshot
     }
 
     /// <summary>
+    /// Finds the point nearest to a cursor within a radius, to half a pixel (spike of row R3c; design §6.3, Issue #341
+    /// decision 5). The cells are opened best first, in the order of their boxes' distance from the cursor in pixels. A
+    /// cell whose box is no nearer than the best point found less half a pixel is not opened; a cell inside the bounds
+    /// whose box is at most half a pixel across (along x in <see cref="SpatialHitMode.X"/>) is answered by its first point;
+    /// a leaf reads at most its first <see cref="SpatialNearestScratch.LeafCapacity"/> points. Allocates nothing.
+    /// </summary>
+    /// <param name="cursorX">The cursor's x, as a difference from the origin of <see cref="XRange"/>.</param>
+    /// <param name="cursorY">The cursor's y, as a difference from the origin of <see cref="YRange"/>.</param>
+    /// <param name="pixelsPerUnitX">The pixels of one unit of x on the screen.</param>
+    /// <param name="pixelsPerUnitY">The pixels of one unit of y on the screen.</param>
+    /// <param name="radius">The radius in pixels: a point answers only when it is nearer than this.</param>
+    /// <param name="mode">How the distance is measured.</param>
+    /// <param name="bounds">The rectangle of the points that may answer: the panel's view.</param>
+    /// <param name="scratch">The buffers of the query.</param>
+    /// <returns>The point and what was read. A snapshot that is not <see cref="SpatialStage.Full"/> finds nothing.</returns>
+    public SpatialNearest Nearest(
+        double cursorX,
+        double cursorY,
+        double pixelsPerUnitX,
+        double pixelsPerUnitY,
+        double radius,
+        SpatialHitMode mode,
+        in SpatialRect bounds,
+        SpatialNearestScratch scratch
+    )
+    {
+        const double Tolerance = 0.5;
+        CheckQuery(bounds, 0);
+        var rows = Rows;
+        if (Stage != SpatialStage.Full || _copy == null || rows.IsEmpty || rows[0].Count == 0)
+        {
+            return default;
+        }
+
+        var cursor = new Cursor(cursorX, cursorY, pixelsPerUnitX, mode == SpatialHitMode.XY ? pixelsPerUnitY : 0);
+        var grid = new GridRect(bounds, _xAxis, _yAxis);
+        var keys = scratch.Keys;
+        var cells = scratch.Cells;
+        var xs = scratch.Xs;
+        var ys = scratch.Ys;
+        var leafCapacity = scratch.LeafCapacity;
+        var size = 0;
+        var peak = 0;
+        var overflowed = false;
+        var visited = 0;
+        long read = 0;
+        var best = radius;
+        var limit = radius;
+        long bestPosition = -1;
+        var (bestX, bestY) = (0.0, 0.0);
+
+        if (grid.Cover(rows[0].Code, rows[0].Level) != Covering.None)
+        {
+            var key = BoxDistance(rows[0], cursor);
+            if (key < limit)
+            {
+                Push(keys, cells, ref size, key, 0);
+                peak = 1;
+            }
+        }
+
+        while (size > 0 && keys[0] < limit)
+        {
+            var index = Pop(keys, cells, ref size);
+            ref readonly var row = ref rows[index];
+            visited++;
+            var covering = grid.Cover(row.Code, row.Level);
+            var across = Across(row.Level, cursor);
+            if (covering == Covering.Whole && across <= Tolerance)
+            {
+                // Every point of the cell is within half a pixel of the cell's first point.
+                ReadValues(_copy, row.First, xs.AsSpan(0, 1), ys.AsSpan(0, 1));
+                read++;
+                var distance = cursor.DistanceTo(xs[0], ys[0]);
+                if (distance < best)
+                {
+                    (best, bestPosition, bestX, bestY) = (distance, row.First, xs[0], ys[0]);
+                    limit = best - Tolerance;
+                }
+
+                continue;
+            }
+
+            if (row.FirstChild >= 0)
+            {
+                for (var c = 0; c < 4; c++)
+                {
+                    var childIndex = row.FirstChild + c;
+                    ref readonly var child = ref rows[childIndex];
+                    if (child.Count == 0 || grid.Cover(child.Code, child.Level) == Covering.None)
+                    {
+                        continue;
+                    }
+
+                    var key = BoxDistance(child, cursor);
+                    if (key >= limit)
+                    {
+                        continue;
+                    }
+
+                    if (size == keys.Length)
+                    {
+                        overflowed = true;
+                        continue;
+                    }
+
+                    Push(keys, cells, ref size, key, childIndex);
+                    peak = Math.Max(peak, size);
+                }
+
+                continue;
+            }
+
+            // A leaf: its first LeafCapacity points, as the hit test of design §3.4 reads a coincident or capped leaf.
+            var count = (int)Math.Min(row.Count, leafCapacity);
+            ReadValues(_copy, row.First, xs.AsSpan(0, count), ys.AsSpan(0, count));
+            read += count;
+            for (var i = 0; i < count; i++)
+            {
+                var (x, y) = (xs[i], ys[i]);
+                if (x < bounds.XMin || x > bounds.XMax || y < bounds.YMin || y > bounds.YMax)
+                {
+                    continue;
+                }
+
+                var distance = cursor.DistanceTo(x, y);
+                if (distance < best)
+                {
+                    (best, bestPosition, bestX, bestY) = (distance, row.First + i, x, y);
+                }
+            }
+
+            if (bestPosition >= 0)
+            {
+                limit = best - Tolerance;
+            }
+        }
+
+        if (bestPosition < 0)
+        {
+            return new SpatialNearest(false, -1, 0, 0, 0, visited, read, peak, overflowed);
+        }
+
+        Span<double> oneX = stackalloc double[1];
+        Span<double> oneY = stackalloc double[1];
+        Span<long> oneRow = stackalloc long[1];
+        ReadCore(_copy, bestPosition, oneX, oneY, oneRow);
+        return new SpatialNearest(true, oneRow[0], bestX, bestY, best, visited, read, peak, overflowed);
+    }
+
+    /// <summary>
     /// Reads points of the copy as the GPU holds them (design §5.5.2 "常駐のセルとページ"): each point's position in its
     /// resident cell, in units of 2^-32 of the cell's extent on each axis, and the cell's number. Neither allocates nor
     /// grows with the number of points of the index.
@@ -511,6 +662,95 @@ internal abstract unsafe class SpatialSnapshot
         return [.. cells];
     }
 
+    private static void Push(double[] keys, int[] cells, ref int size, double key, int cell)
+    {
+        var i = size++;
+        while (i > 0)
+        {
+            var parent = (i - 1) >> 1;
+            if (keys[parent] <= key)
+            {
+                break;
+            }
+
+            keys[i] = keys[parent];
+            cells[i] = cells[parent];
+            i = parent;
+        }
+
+        keys[i] = key;
+        cells[i] = cell;
+    }
+
+    private static int Pop(double[] keys, int[] cells, ref int size)
+    {
+        var top = cells[0];
+        var last = --size;
+        if (last == 0)
+        {
+            return top;
+        }
+
+        var key = keys[last];
+        var cell = cells[last];
+        var i = 0;
+        while (true)
+        {
+            var child = (2 * i) + 1;
+            if (child >= last)
+            {
+                break;
+            }
+
+            if (child + 1 < last && keys[child + 1] < keys[child])
+            {
+                child++;
+            }
+
+            if (keys[child] >= key)
+            {
+                break;
+            }
+
+            keys[i] = keys[child];
+            cells[i] = cells[child];
+            i = child;
+        }
+
+        keys[i] = key;
+        cells[i] = cell;
+        return top;
+    }
+
+    // The distance in pixels from the cursor to the box of a cell: 0 inside it.
+    private double BoxDistance(in SpatialRow row, in Cursor cursor)
+    {
+        var shift = DeepestLevel - row.Level;
+        var x0 = _xAxis.DifferenceOf((ulong)SpatialCode.Axis2(row.Code, 0) << shift);
+        var y0 = _yAxis.DifferenceOf((ulong)SpatialCode.Axis2(row.Code, 1) << shift);
+        var x1 = x0 + _xAxis.ExtentAt(row.Level);
+        var y1 = y0 + _yAxis.ExtentAt(row.Level);
+        var dx =
+            cursor.X < x0 ? x0 - cursor.X
+            : cursor.X > x1 ? cursor.X - x1
+            : 0;
+        var dy =
+            cursor.Y < y0 ? y0 - cursor.Y
+            : cursor.Y > y1 ? cursor.Y - y1
+            : 0;
+        dx *= cursor.PixelsPerUnitX;
+        dy *= cursor.PixelsPerUnitY;
+        return Math.Sqrt((dx * dx) + (dy * dy));
+    }
+
+    // The diagonal of a cell of a level in pixels: its width alone when the distance is along x.
+    private double Across(int level, in Cursor cursor)
+    {
+        var ex = _xAxis.ExtentAt(level) * cursor.PixelsPerUnitX;
+        var ey = _yAxis.ExtentAt(level) * cursor.PixelsPerUnitY;
+        return Math.Sqrt((ex * ex) + (ey * ey));
+    }
+
     private SpatialCount CountRows(in GridRect grid, int maxLevel)
     {
         var rows = Rows;
@@ -623,6 +863,25 @@ internal abstract unsafe class SpatialSnapshot
         None,
         Part,
         Whole,
+    }
+
+    // The cursor of a nearest query. In the X mode the pixels per unit of y are 0, so y adds nothing to a distance.
+    private readonly struct Cursor(double x, double y, double pixelsPerUnitX, double pixelsPerUnitY)
+    {
+        public double X { get; } = x;
+
+        public double Y { get; } = y;
+
+        public double PixelsPerUnitX { get; } = pixelsPerUnitX;
+
+        public double PixelsPerUnitY { get; } = pixelsPerUnitY;
+
+        public double DistanceTo(double x, double y)
+        {
+            var dx = (x - X) * PixelsPerUnitX;
+            var dy = PixelsPerUnitY == 0 ? 0 : (y - Y) * PixelsPerUnitY;
+            return Math.Sqrt((dx * dx) + (dy * dy));
+        }
     }
 
     // A rectangle of the grid, both ends in it. The quantization is non-decreasing, so the grid cells of the rectangle's
