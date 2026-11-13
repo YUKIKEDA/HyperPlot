@@ -15,12 +15,21 @@ using HyperPlot.Samples;
 //     [--hover-frames <frames of the hover's scene, 300 by default>]
 //   <dir>/HyperPlot.E2E.exe points <count> <diameter DIPs> <opacity> <uniform|cluster> [frames]: the scene of the raw points
 //     of row R3a instead, with no data file (PointsScene).
+//   <dir>/HyperPlot.E2E.exe annotations <shapes> [frames]: the scene of 1,024 marker annotations of row R3f instead, with
+//     no data file (AnnotationsScene).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
 if (args.Length > 0 && args[0] == "points")
 {
     using var own = Process.GetCurrentProcess();
     own.PriorityClass = ProcessPriorityClass.High;
     return HyperPlot.E2E.PointsScene.Run(args.AsSpan(1));
+}
+
+if (args.Length > 0 && args[0] == "annotations")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.AnnotationsScene.Run(args.AsSpan(1));
 }
 
 string? directory = null;
