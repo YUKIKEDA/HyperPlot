@@ -561,12 +561,14 @@ public sealed class DensityTests
             hold.Watch(index);
             storage.Release(0);
             engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(37.5, 62.5), ViewRange.FromValues(37.5, 62.5)));
-            do
+            var drawn = false;
+            while (!drawn)
             {
                 Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The coarse density was not drawn in 60 s.");
                 backend.Images.Sent();
                 engine.RenderFrame();
-            } while (backend.LastList!.Images.Length == 0);
+                drawn = backend.LastList!.Images.Length > 0;
+            }
 
             var snapshot = index.Acquire();
             var stage = snapshot.Stage;
@@ -588,7 +590,8 @@ public sealed class DensityTests
             storage.Release(0);
         }
 
-        do
+        var provisional = true;
+        while (provisional)
         {
             Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The frames stayed provisional for 60 s.");
 
@@ -596,7 +599,8 @@ public sealed class DensityTests
             storage.Release(0);
             backend.Images.Sent();
             engine.RenderFrame();
-        } while (engine.IsProvisional);
+            provisional = engine.IsProvisional;
+        }
 
         var full = backend.LastList!;
         if (draw == PointDraw.Density)
