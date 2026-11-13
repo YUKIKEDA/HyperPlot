@@ -1071,6 +1071,7 @@ internal sealed class PointPlan : LayerPlan
     // The radius of each point of the last recording in physical pixels, by row, when the layer has a SizeBy; else empty.
     private float[] _radii = [];
     private double[] _diameters = [];
+    private int _diametersRead;
     private bool _sized;
 
     public PointPlan(PointLayerSpec spec, RowRange rows)
@@ -1087,6 +1088,9 @@ internal sealed class PointPlan : LayerPlan
     }
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
+
+    /// <summary>Gets the number of sizes the last recording read (row R3f). Tests only.</summary>
+    internal int DiametersRead => _diametersRead;
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -1155,7 +1159,7 @@ internal sealed class PointPlan : LayerPlan
     /// <summary>
     /// Records the points of a layer with a SizeBy or a ShapeBy (design §5.5.2 "大きさと形のチャネル"): each with its own
     /// diameter and shape through the plot's scales, and its own color when the layer is colored by a number. A point whose
-    /// size or color value is NaN draws nothing and is not hit.
+    /// size or color value is NaN, or whose shape category is missing, draws nothing and is not hit.
     /// </summary>
     private void RecordLooks(
         RecordContext context,
@@ -1180,27 +1184,32 @@ internal sealed class PointPlan : LayerPlan
             _radii = new float[Math.Max(end, _x.Length)];
         }
 
-        // The sizes read and mapped at once: one at a time through the column took 2 to 4 ms of 131,072 points (Issue #456).
+        // The part's sizes read and mapped at once: one at a time through the column took 2 to 4 ms of 131,072 points
+        // (Issue #456). Only the part's rows: a part over a run of the layer's column reads its run (PR #457's review).
         var diameters = default(ReadOnlySpan<double>);
         if (sizeBy is not null)
         {
-            if (_diameters.Length < sizeBy.Length)
+            if (_diameters.Length < length)
             {
-                _diameters = new double[sizeBy.Length];
+                _diameters = new double[length];
             }
 
-            var all = _diameters.AsSpan(0, (int)sizeBy.Length);
-            sizeBy.ReadDifferences(all, 0);
-            Sizes!.Diameters(all, context.Scale);
-            diameters = all;
+            var part = _diameters.AsSpan(0, length);
+            sizeBy.ReadDifferences(part, 0, start);
+            _diametersRead = length;
+            Sizes!.Diameters(part, context.Scale);
+            diameters = part;
         }
 
         var count = 0;
         for (var i = start; i < end; i++)
         {
             var color = values is null ? default(Color?) : ElementColor(values, i);
-            var size = sizeBy is null ? 0 : (float)diameters[i];
-            if ((values is not null && color is null) || float.IsNaN(size))
+            var size = sizeBy is null ? 0 : (float)diameters[i - start];
+
+            // A missing category has no shape: the point is not drawn, as one of a NaN size (design §5.5.2, PR #457's review).
+            var code = shapeBy is null ? 0 : shapeBy.GetCode(i);
+            if ((values is not null && color is null) || float.IsNaN(size) || code < 0)
             {
                 // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.
                 _x[i] = double.NaN;
@@ -1221,7 +1230,7 @@ internal sealed class PointPlan : LayerPlan
 
             if (shapeBy is not null)
             {
-                shapes[count] = Shapes!.Of(shapeBy.GetCode(i));
+                shapes[count] = Shapes!.Of(code);
             }
 
             count++;

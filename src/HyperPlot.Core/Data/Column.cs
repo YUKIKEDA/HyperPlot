@@ -262,8 +262,11 @@ public abstract class Column
     /// <summary>Returns d(v(i)), the difference of the element's value from an origin (design §3.6): exact for integer columns.</summary>
     internal abstract double DifferenceAt(long index, long origin);
 
-    /// <summary>Writes d(v(i)) of the first elements into <paramref name="destination"/>, at most a chunk of them.</summary>
-    internal abstract void ReadDifferences(Span<double> destination, long origin);
+    /// <summary>
+    /// Writes d(v(i)) of the elements from <paramref name="first"/> into <paramref name="destination"/>, all inside the first
+    /// chunk.
+    /// </summary>
+    internal abstract void ReadDifferences(Span<double> destination, long origin, int first = 0);
 
     /// <summary>
     /// Returns the least i whose difference from <paramref name="origin"/> reaches <paramref name="boundary"/>, or the length

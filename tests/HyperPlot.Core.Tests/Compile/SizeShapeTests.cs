@@ -606,6 +606,106 @@ public sealed class SizeShapeTests
         Assert.Contains("R3d", refused.Message, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// The parts over runs of the layer's rows read their own sizes (design §5.5.2 "大きさと形のチャネル", PR #457's
+    /// review): a part whose rows start past the column's first takes the sizes of its rows.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Nine points in three color categories, each on a run of three rows, sized 0 to 80 by row in steps of 10, with the
+    ///   range of 2 to 16 DIPs; the plan's buffers for the parts, kept from the first frame.
+    ///
+    /// Steps:
+    /// - Render colored by the category and sized.
+    ///
+    /// Expected:
+    /// - Each point's diameter is the one of its own row's size, the third part's rows 6 to 8 included; each part's buffer of
+    ///   diameters holds 3, not 9.
+    /// </remarks>
+    [Fact]
+    public void RunParts_ReadTheirOwnSizes()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        using var xs = Column.Wrap(Enumerable.Range(0, 9).Select(i => (double)(i + 1)).ToArray());
+        using var sizes = Column.Wrap(Enumerable.Range(0, 9).Select(i => i * 10.0).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("s", sizes)
+            .Add("c", Column.Categorical(Enumerable.Range(0, 9).Select(i => (string?)Three[i / 3]).ToArray()))
+            .Build();
+        var point = new PointLayerSpec
+        {
+            X = table.Col<double>("x"),
+            Y = table.Col<double>("x"),
+            SizeBy = table.Col<double>("s"),
+            ColorBy = table.Cat("c").ToColumnRef(),
+        };
+
+        var list = plan.Render(Spec(table, point) with { ScaleColor = Scale.Ordinal() });
+        var bySize = list.Markers.ToArray()[..9].OrderBy(m => m.Center.X).Select(m => m.Size).ToArray();
+        Assert.Equal(Enumerable.Range(0, 9).Select(i => (float)Math.Sqrt(4 + (i / 8.0 * (256 - 4)))), bySize, new Near());
+        Assert.All(((SplitPlan)plan.Layers[0]).Parts, part => Assert.Equal(3, ((PointPlan)part).DiametersRead));
+    }
+
+    /// <summary>
+    /// A point whose shape category is missing is not drawn and not hit, on either path (design §5.5.2 "大きさと形のチャネル",
+    /// PR #457's review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Six points shaped by a category whose second row is null, on the CPU path; 131,073 points shaped by a category whose
+    ///   every seventh row is null, on the index path.
+    ///
+    /// Steps:
+    /// - Render each on a plan that waits for its indexes; hit the CPU path's second point in XY mode with a radius of 4.
+    ///
+    /// Expected:
+    /// - CPU path: 5 points recorded besides the legend's marks, and no hit at the second. Index path: the runs hold the
+    ///   points that have a category.
+    /// </remarks>
+    [Fact]
+    public void MissingShapes_AreNotDrawn()
+    {
+        using var xs = Column.Wrap(new[] { 1.0, 2, 3, 4, 5, 6 });
+        string?[] kinds = ["a", null, "b", "a", "b", "c"];
+        var table = DataTable.Create().Add("x", xs).Add("k", Column.Categorical(kinds, Three)).Build();
+        var spec = Plot.Create(table)
+            .Point(table.Col<double>("x"), table.Col<double>("x"), p => p.ShapeBy(table.Cat("k")))
+            .ScaleX(Scale.Linear().WithDomain(0, 10))
+            .ScaleY(Scale.Linear().WithDomain(0, 10))
+            .Build();
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(spec);
+        engine.RenderFrame();
+        Assert.Equal(5 + 3, backend.LastList!.Markers.Length);
+        var hits = new SeriesHit[1];
+        var second = engine.ViewToPixel(Panel, ViewRange.FromValues(2, 2), ViewRange.FromValues(2, 2));
+        Assert.Equal(0, engine.HitTest(second, 4, HitMode.XY, hits));
+
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        var random = new Random(13);
+        using var bx = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        using var by = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        var big = DataTable
+            .Create()
+            .Add("x", bx)
+            .Add("y", by)
+            .Add("k", Column.Categorical(Enumerable.Range(0, Over).Select(i => i % 7 == 0 ? null : (string?)Three[i % 3]).ToArray()))
+            .Build();
+        var indexed = new PointLayerSpec
+        {
+            X = big.Col<double>("x"),
+            Y = big.Col<double>("y"),
+            ShapeBy = big.Cat("k").ToColumnRef(),
+        };
+        var drawn = plan.Render(Spec(big, indexed)).ResidentRuns.ToArray().Sum(r => r.Count);
+        Assert.Equal(Enumerable.Range(0, Over).Count(i => i % 7 != 0), drawn);
+    }
+
     /// <summary>Frames of the size and shape channels allocate nothing in steady state (invariant 3).</summary>
     /// <remarks>
     /// Preconditions:

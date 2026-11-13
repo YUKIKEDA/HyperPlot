@@ -325,7 +325,7 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn, ISpatialCol
     internal override double DifferenceAt(long index, long origin) => ScaleSpace.Difference(GetValue(index), origin);
 
     /// <inheritdoc />
-    internal override void ReadDifferences(Span<double> destination, long origin)
+    internal override void ReadDifferences(Span<double> destination, long origin, int first = 0)
     {
         // A segment's or a rect's columns hold at most 131,072 elements (design §5.5.3): all in the first chunk (2^20).
         if (destination.IsEmpty)
@@ -333,7 +333,7 @@ public sealed class Column<T> : Column, IDisposable, IPyramidColumn, ISpatialCol
             return;
         }
 
-        var values = GetChunk(0)[..destination.Length];
+        var values = GetChunk(0).Slice(first, destination.Length);
         if (ScaleSpace.IsInteger<T>())
         {
             for (var i = 0; i < values.Length; i++)

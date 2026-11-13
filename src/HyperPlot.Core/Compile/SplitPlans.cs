@@ -459,6 +459,9 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     /// <summary>Gets or sets the palette of the categories' colors: the ordinal scale's, or the theme's (design §4.2).</summary>
     public Palette? Palette { get; set; }
 
+    /// <summary>Gets the plans of the parts in their order. Tests only.</summary>
+    internal IEnumerable<LayerPlan> Parts => _parts.Select(p => p.Plan);
+
     /// <summary>Gets the number of category series the layer is split into. Tests only.</summary>
     public int SeriesCount => _parts.Count(p => p.Category >= 0);
 
