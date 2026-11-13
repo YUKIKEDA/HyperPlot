@@ -310,6 +310,8 @@ public sealed partial class PlotEngine : IDisposable
             Animate(k);
         }
 
+        // The texts this frame shapes are of it: a long one may take a grown entry this frame has not used.
+        _renderer.Text.BeginFrame();
         using var frame = _renderer.BeginFrame();
 
         // The kept plot when nothing it was drawn from moved (design §5.4): the data layer is not recorded again.

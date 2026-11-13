@@ -163,6 +163,82 @@ public sealed class SpanTextTests
     }
 
     /// <summary>
+    /// In a full cache of short texts, a new text longer than an entry's first room takes the grown entry used longest ago
+    /// when the current frame has not used it, and allocates nothing once warm; a long text each frame uses stays (design
+    /// §5.6, Issue #378).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine over the fake backend, recording no calls, its cache full of 8,192 short texts.
+    ///
+    /// Steps:
+    /// - 40 frames, each measuring the long text "a title of the plot, kept" and a new long text "tooltip line: n, n"; then
+    ///   20 more frames counting the bytes; then measure the title; then a frame measuring the title, 8 new long texts,
+    ///   and the title again.
+    ///
+    /// Expected:
+    /// - 0 bytes; 8,192 entries; the title is shaped once only, at its first frame, and the last frame shapes its 8 texts
+    ///   only.
+    /// </remarks>
+    [Fact]
+    public void Cache_Full_LongTextTakesAGrownEntryNoFrameUses()
+    {
+        var backend = new FakeTextBackend { RecordShapes = false };
+        var engine = new TextEngine(backend);
+        var buffer = new char[32];
+        var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        for (var i = 0; i < TextEngine.CacheCapacity; i++)
+        {
+            _ = i.TryFormat(buffer, out var written, default, invariant);
+            _ = engine.Measure(buffer.AsSpan(0, written), Style);
+        }
+
+        const string Title = "a title of the plot, kept";
+        const string Prefix = "tooltip line: ";
+        Prefix.CopyTo(buffer);
+        void Frame(int n)
+        {
+            engine.BeginFrame();
+            _ = engine.Measure(Title, Style);
+            _ = n.TryFormat(buffer.AsSpan(Prefix.Length), out var a, default, invariant);
+            var at = Prefix.Length + a;
+            buffer[at++] = ',';
+            buffer[at++] = ' ';
+            _ = (n * 7).TryFormat(buffer.AsSpan(at), out var b, default, invariant);
+            _ = engine.Measure(buffer.AsSpan(0, at + b), Style);
+        }
+
+        // The title's first frame shapes it and the frame's tooltip; each frame after shapes its tooltip only.
+        var shapes = backend.ShapeCount;
+        for (var n = 0; n < 40; n++)
+        {
+            Frame(n);
+        }
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var n = 40; n < 60; n++)
+        {
+            Frame(n);
+        }
+
+        Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        Assert.Equal(TextEngine.CacheCapacity, engine.CacheCount);
+        _ = engine.Measure(Title, Style);
+        Assert.Equal(shapes + 61, backend.ShapeCount);
+
+        // A frame of more new long texts than there are grown entries no frame uses: the title, used in it, stays.
+        engine.BeginFrame();
+        _ = engine.Measure(Title, Style);
+        for (var i = 0; i < 8; i++)
+        {
+            _ = engine.Measure("another long text " + i.ToString(invariant), Style);
+        }
+
+        _ = engine.Measure(Title, Style);
+        Assert.Equal(shapes + 69, backend.ShapeCount);
+    }
+
+    /// <summary>
     /// A shaped text that is reused holds only the last text: its glyphs, lines, and size (design §5.6, row I1c).
     /// </summary>
     /// <remarks>

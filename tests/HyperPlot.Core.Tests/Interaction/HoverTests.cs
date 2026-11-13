@@ -1004,6 +1004,67 @@ public sealed class HoverTests
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
     }
 
+    /// <summary>
+    /// Warm frames of wheel zooms under a hover allocate nothing (invariant 3, Issue #378): each frame drawn again hits again,
+    /// and a new tooltip, longer than a tick label, takes a grown entry of the full shaping cache that no frame since the last
+    /// one used, rather than growing an entry of a short text.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's line with no zoom animation; the shaping cache full of 8,192 short texts.
+    ///
+    /// Steps:
+    /// - Rounds of 8 moves over the panel drawn after each, then 20 wheel turns at the panel's middle (10 in, 10 out) drawn
+    ///   after each: 4 rounds to warm, a collection, then 2 rounds counted.
+    ///
+    /// Expected:
+    /// - The counted rounds: 0 bytes; the hover holds a hit at the end.
+    /// </remarks>
+    [Fact]
+    public void WheelFramesUnderAHover_AllocateNothing()
+    {
+        using var f = new EngineFixture();
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        for (var i = 0; i < TextEngine.CacheCapacity; i++)
+        {
+            _ = f.Backend.Text.Measure(
+                "filler " + i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new TextStyle(new Color(0, 0, 0, 255), 9)
+            );
+        }
+
+        f.Changes.Capacity = 20_000;
+        var (left, top, _, _) = f.Rect;
+        var middle = f.Middle;
+        long Round()
+        {
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 8; i++)
+            {
+                _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, new Vector2(left + 20 + (i * 23), top + 30 + (i * 7))));
+                f.Engine.RenderFrame();
+            }
+
+            for (var i = 0; i < 20; i++)
+            {
+                f.Time.Advance(TimeSpan.FromMilliseconds(16));
+                _ = f.Engine.OnWheel(new WheelEvent(middle, 0, i < 10 ? 1 : -1, ModifierKeys.None, f.Time.GetTimestamp()));
+                f.Engine.RenderFrame();
+            }
+
+            return GC.GetAllocatedBytesForCurrentThread() - before;
+        }
+
+        for (var i = 0; i < 4; i++)
+        {
+            _ = Round();
+        }
+
+        GC.Collect();
+        Assert.Equal(0, Round() + Round());
+        Assert.False(f.Engine.Hover.IsEmpty);
+    }
+
     private static PointerEvent Move(Vector2 at) =>
         new(PointerEventKind.Move, at, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0);
 
