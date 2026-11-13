@@ -160,6 +160,8 @@ public sealed class ColumnTests
         var list = new RenderList();
         Frame();
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

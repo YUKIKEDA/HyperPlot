@@ -82,6 +82,8 @@ public sealed class D3D11BackendTests
         target.Clear(new Color(1, 2, 3, 255));
         target.ReadPixels(pixels);
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 20; i++)
         {

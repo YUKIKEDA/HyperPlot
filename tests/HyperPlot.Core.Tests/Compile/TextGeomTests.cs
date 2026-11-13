@@ -532,8 +532,8 @@ public sealed class TextGeomTests : IDisposable
     /// - A label column of 1 and 2 that the test writes and invalidates, and a static format.
     ///
     /// Steps:
-    /// - Render; write 7 into the first row and invalidate; render with the format; render a new node of the same format,
-    ///   warm, counting the bytes.
+    /// - Render; write 7 into the first row and invalidate; render with the format; collect; render a new node of the same
+    ///   format, warm, counting the bytes.
     ///
     /// Expected:
     /// - "1", "2"; then "7", "2"; then the format's; the writes count 1, 2, 3, 3; 0 bytes for the new node.
@@ -568,6 +568,9 @@ public sealed class TextGeomTests : IDisposable
 
         _ = plan.Render(GeomTesting.Spec(table, layer with { Format = format }));
         var again = GeomTesting.Spec(table, layer with { Format = format });
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         _ = plan.Render(again);
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
@@ -747,7 +750,7 @@ public sealed class TextGeomTests : IDisposable
     /// - Two layers of 2,048 rows: numbers, and categories split by a ColorBy.
     ///
     /// Steps:
-    /// - Render twice to warm; render five times.
+    /// - Render twice to warm; collect; render five times.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -767,6 +770,8 @@ public sealed class TextGeomTests : IDisposable
         );
         _ = plan.Render(spec);
         _ = plan.Render(spec);
+
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

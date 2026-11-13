@@ -170,6 +170,8 @@ public sealed class SectorTests
         list.DrawSectors(wedges, Center, new Color(0, 0, 0, 255));
         backend.Draw(target, list);
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

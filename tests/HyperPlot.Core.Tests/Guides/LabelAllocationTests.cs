@@ -75,7 +75,7 @@ public sealed class LabelAllocationTests
     ///
     /// Steps:
     /// - Render the domains in turn until a run of 300 frames allocates nothing (at most 4 runs: the buffers grow and the
-    ///   entries take their largest texts), then render 300 more domains, none drawn before.
+    ///   entries take their largest texts); collect; then render 300 more domains, none drawn before.
     ///
     /// Expected:
     /// - 0 bytes over the 300 frames; the last frame's first x label is not among the labels of the warm-up's last frame.
@@ -143,6 +143,9 @@ public sealed class LabelAllocationTests
 
         Assert.Equal(0, bytes);
         var warm = plan.Guides.X.TickLabels.ToArray();
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         Assert.Equal(0, Measure(plan, specs.AsSpan(run * Frames, Frames)));
         Assert.DoesNotContain(plan.Guides.X.TickLabels.ToArray()[0], warm);
     }

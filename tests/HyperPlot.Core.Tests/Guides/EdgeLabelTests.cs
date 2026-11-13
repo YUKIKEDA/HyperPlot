@@ -237,6 +237,9 @@ public sealed class EdgeLabelTests : IDisposable
         var spec = Spec(Wide());
         _ = plan.Render(spec);
         _ = plan.Render(spec);
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

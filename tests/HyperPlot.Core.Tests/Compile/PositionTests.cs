@@ -1325,7 +1325,7 @@ public sealed class PositionTests
     ///   each spec and a new node of it in turn.
     ///
     /// Steps:
-    /// - Render each a few times, then five times more in turn.
+    /// - Render each a few times; collect; then five times more in turn.
     ///
     /// Expected:
     /// - 0 bytes on this thread.
@@ -1395,6 +1395,8 @@ public sealed class PositionTests
                 _ = plan.Render(renewed);
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             var before = GC.GetAllocatedBytesForCurrentThread();
             for (var i = 0; i < 5; i++)
             {

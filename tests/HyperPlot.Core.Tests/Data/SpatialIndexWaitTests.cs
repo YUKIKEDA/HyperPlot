@@ -18,7 +18,7 @@ public sealed class SpatialIndexWaitTests
     /// - One call of WhenComplete made before the measurement.
     ///
     /// Steps:
-    /// - Read the bytes allocated on the thread, call WhenComplete 100 times, and read the bytes again.
+    /// - Collect; read the bytes allocated on the thread, call WhenComplete 100 times, and read the bytes again.
     ///
     /// Expected:
     /// - Every task has ended without an exception.
@@ -33,6 +33,8 @@ public sealed class SpatialIndexWaitTests
         Assert.True(index.WhenComplete().IsCompletedSuccessfully);
         var ended = 0;
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {

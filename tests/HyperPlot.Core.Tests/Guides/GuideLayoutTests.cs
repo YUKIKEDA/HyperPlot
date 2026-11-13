@@ -603,6 +603,8 @@ public sealed class GuideLayoutTests : IDisposable
         _ = plan.Render(first);
         Assert.NotEqual(plan.Guides.Width, Width(second));
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 5; i++)
         {

@@ -198,8 +198,8 @@ public sealed class HitTestTests
     /// - A line of 100,000 rows; an engine with the plot set.
     ///
     /// Steps:
-    /// - Hit test before a frame. Draw; hit test with radius −1, NaN, +∞, and mode 2. Warm 10 hit tests of each mode; count the
-    ///   bytes this thread allocates over 100 more.
+    /// - Hit test before a frame. Draw; hit test with radius −1, NaN, +∞, and mode 2. Warm 10 hit tests of each mode; collect;
+    ///   count the bytes this thread allocates over 100 more.
     ///
     /// Expected:
     /// - InvalidOperationException before the frame; ArgumentOutOfRangeException for each bad argument; 0 bytes.
@@ -228,6 +228,8 @@ public sealed class HitTestTests
             _ = engine.HitTest(middle, 4, HitMode.XY, hits);
         }
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 100; i++)
         {

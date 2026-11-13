@@ -694,7 +694,7 @@ public sealed class LinkTests
     /// - Rounds of 8 moves over plot 0 drawn after each; the pointer leaves; rounds of 20 wheel turns on plot 0 drawn after each
     ///   (a zoom under a hover allocates on main too, Issue #378): 4 of each to
     ///   warm the lists, the caches, and the plans of both plots (a wheel's round allocates in its first 3 as the member's ticks
-    ///   and extractions first meet each view), then 2 more of each counted.
+    ///   and extractions first meet each view), a garbage collection, then 2 more of each counted.
     ///
     /// Expected:
     /// - The counted rounds: 0 bytes.
@@ -754,6 +754,8 @@ public sealed class LinkTests
                 _ = round();
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             return round() + round();
         }
     }

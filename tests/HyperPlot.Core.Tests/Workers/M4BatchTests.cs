@@ -82,6 +82,8 @@ public sealed class M4BatchTests
         var batch = fixture.Batch(16);
         pool.Extract(batch, default, fixture.Boundaries);
 
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
         for (var i = 0; i < 20; i++)
         {
@@ -101,8 +103,8 @@ public sealed class M4BatchTests
     ///   extraction's code is compiled outside the window.
     ///
     /// Steps:
-    /// - Hold the pool's lock on another thread for 50 ms; extract the batch together, which takes the lock to link it, and
-    ///   count the bytes this thread allocates.
+    /// - Collect; hold the pool's lock on another thread for 50 ms; extract the batch together, which takes the lock to link
+    ///   it, and count the bytes this thread allocates.
     ///
     /// Expected:
     /// - With the warm-up, 0 bytes; without it, more than 0 (the lock's wait event, 56 bytes under the JIT).
@@ -121,6 +123,7 @@ public sealed class M4BatchTests
         double[][] boundaries = [fixture.Boundaries];
         pool.ExtractTogether(batches, origins, boundaries, 0);
 
+        GC.Collect();
         var holder = pool.HoldGate(TimeSpan.FromMilliseconds(50));
         var before = GC.GetAllocatedBytesForCurrentThread();
         pool.ExtractTogether(batches, origins, boundaries, 1);

@@ -508,7 +508,7 @@ public sealed class MeasureTests
     ///
     /// Steps:
     /// - Rounds of 50 statistics queries; rounds of 8 moves drawn after each; the pointer leaves; rounds of 20 wheel turns
-    ///   drawn after each. 4 of each to warm, then 2 of each counted.
+    ///   drawn after each. 4 of each to warm, a garbage collection, then 2 of each counted.
     ///
     /// Expected:
     /// - The counted rounds: 0 bytes.
@@ -577,6 +577,8 @@ public sealed class MeasureTests
                 _ = round();
             }
 
+            // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+            GC.Collect();
             return round() + round();
         }
     }
