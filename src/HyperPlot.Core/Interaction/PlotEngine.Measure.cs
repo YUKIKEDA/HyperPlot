@@ -12,6 +12,9 @@ public sealed partial class PlotEngine
     // The measurement, the tool that made it (whose format writes its box), where its box goes, and the buffers its
     // statistics and its text are found in again without allocating.
     private readonly char[] _measureText = new char[HoverTool.TooltipLength];
+
+    // The readout shaped outside the shaping cache: it is new in each frame of a drag (Issue #378).
+    private readonly OwnedText _measureShaped = new();
     private Measurement2D? _measurement;
     private MeasureTool? _measureTool;
     private SeriesStatistics[] _statisticsBuffer = new SeriesStatistics[16];
@@ -282,7 +285,7 @@ public sealed partial class PlotEngine
 
         if (length > 0)
         {
-            DrawBox(list, _measureText.AsSpan(0, length), end, theme, (left, top, width, height), line);
+            DrawBox(list, _measureText.AsSpan(0, length), _measureShaped, end, theme, (left, top, width, height), line);
         }
     }
 }

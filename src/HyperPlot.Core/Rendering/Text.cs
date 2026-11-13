@@ -147,12 +147,6 @@ public sealed class ShapedText
     /// <summary>Gets the lines.</summary>
     public ReadOnlySpan<TextLine> Lines => _lines.AsSpan(0, _lineCount);
 
-    /// <summary>Gets the number of glyphs <see cref="Set"/> takes without growing.</summary>
-    internal int GlyphRoom => _glyphs.Length;
-
-    /// <summary>Gets the number of lines <see cref="Set"/> takes without growing.</summary>
-    internal int LineRoom => _lines.Length;
-
     /// <summary>
     /// Replaces the text with copies of the spans (row I1c): the arrays grow when they are short and never shrink, so a
     /// shaped text that is reused allocates nothing once it has held its largest text.

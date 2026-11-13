@@ -1006,8 +1006,8 @@ public sealed class HoverTests
 
     /// <summary>
     /// Warm frames of wheel zooms under a hover allocate nothing (invariant 3, Issue #378): each frame drawn again hits again,
-    /// and a new tooltip, longer than a tick label, takes a grown entry of the full shaping cache that no frame since the last
-    /// one used, rather than growing an entry of a short text.
+    /// and its new tooltip, longer than a tick label, is shaped into the tooltip's own shaped text, not into an entry of the
+    /// full shaping cache that held a short text.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -1063,6 +1063,109 @@ public sealed class HoverTests
         GC.Collect();
         Assert.Equal(0, Round() + Round());
         Assert.False(f.Engine.Hover.IsEmpty);
+    }
+
+    /// <summary>
+    /// A wheel frame after any number of hover frames shapes its new tooltip only, none of the plot's texts again (design
+    /// §5.6, Issue #378): the hover frames' tooltips take no entry of the shaping cache, so the plot's long texts stay in it.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's line with no zoom animation, a title and an x axis title over 16 characters, and a text layer that
+    ///   labels each of the 1,000 points "a data label of " and its y (over 16 characters); the shaping cache full of 8,192
+    ///   short texts.
+    ///
+    /// Steps:
+    /// - A move into the panel, drawn. 3 rounds of <c>hovers</c> moves drawn after each, a wheel turn in at the panel's
+    ///   middle drawn, <c>hovers</c> moves, and a turn out drawn; then <c>hovers</c> moves and a turn in, drawn with the
+    ///   backend's calls recorded. The cases: 0 (wheel frames back to back under the hover), 1, 8, and 64.
+    ///
+    /// Expected:
+    /// - The counted wheel frame calls <c>Shape</c> once, for the overlay's one text, the tooltip.
+    /// </remarks>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(8)]
+    [InlineData(64)]
+    public void WheelFrameAfterHoverFrames_ShapesItsTooltipOnly(int hovers)
+    {
+        using var f = new EngineFixture();
+        var (x, y) = (f.Table.Col<double>("x"), f.Table.Col<float>("y"));
+        f.Engine.SetPlot(
+            Plot.Create(f.Table)
+                .Line(x, y)
+                .ScaleY(Scale.Linear().WithDomain(-20, 20))
+                .ScaleX(Scale.Linear() with { Title = "the x axis title, long" })
+                .Title("a title of the plot, kept")
+                .Text(
+                    x,
+                    y,
+                    y,
+                    t =>
+                        t.Format(
+                            static (v, d, out w) =>
+                            {
+                                const string Prefix = "a data label of ";
+                                w = 0;
+                                if (
+                                    !Prefix.AsSpan().TryCopyTo(d)
+                                    || !v.TryFormat(d[Prefix.Length..], out var n, "F3", System.Globalization.CultureInfo.InvariantCulture)
+                                )
+                                {
+                                    return false;
+                                }
+
+                                w = Prefix.Length + n;
+                                return true;
+                            }
+                        )
+                )
+                .Build()
+        );
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        for (var i = 0; i < TextEngine.CacheCapacity; i++)
+        {
+            _ = f.Backend.Text.Measure(
+                "filler " + i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                new TextStyle(new Color(0, 0, 0, 255), 9)
+            );
+        }
+
+        var backend = (FakeTextBackend)f.Backend.Text.Backend;
+        var (left, top, _, _) = f.Rect;
+        var step = 0;
+        void Hovers()
+        {
+            for (var i = 0; i < hovers; i++)
+            {
+                _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, new Vector2(left + 20 + ((step++ % 40) * 7), top + 30)));
+                f.Engine.RenderFrame();
+            }
+        }
+
+        void Wheel(int notches)
+        {
+            f.Time.Advance(TimeSpan.FromMilliseconds(16));
+            _ = f.Wheel(f.Middle, notches);
+            f.Engine.RenderFrame();
+        }
+
+        _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, new Vector2(left + 10, top + 30)));
+        f.Engine.RenderFrame();
+        for (var round = 0; round < 3; round++)
+        {
+            Hovers();
+            Wheel(1);
+            Hovers();
+            Wheel(-1);
+        }
+
+        Hovers();
+        backend.RecordShapes = true;
+        Wheel(1);
+        var tooltip = Assert.Single(f.Backend.LastList!.Texts.ToArray()).Text;
+        Assert.Equal(tooltip, Assert.Single(backend.Shaped).Text);
     }
 
     private static PointerEvent Move(Vector2 at) =>

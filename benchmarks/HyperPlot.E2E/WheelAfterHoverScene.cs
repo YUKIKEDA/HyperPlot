@@ -61,8 +61,9 @@ internal static partial class WheelAfterHoverScene
 
         using var backend = D3D11Backend.Create();
 
-        // The cache full of short texts before the plot's first frame, as the tests of Issue #378 fill it: the plot's long
-        // texts then hold the only grown entries, the fewest a full cache can have.
+        // The cache full of short texts before the plot's first frame, as the tests of Issue #378 fill it: under PR #511's
+        // first fix the plot's long texts then held the only grown entries, the case where a hover made a whole frame shape
+        // them all again; run-511.ps1 runs that fix's tree beside main and the head.
         var filler = new TextStyle(new Color(0, 0, 0, 255), 9);
         for (var i = 0; i < TextEngine.CacheCapacity; i++)
         {

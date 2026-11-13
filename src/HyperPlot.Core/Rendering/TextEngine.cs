@@ -11,8 +11,7 @@ namespace HyperPlot.Rendering;
 /// <remarks>
 /// The thread that draws owns it, with no lock, as it owns the backend. The cache keeps 8,192 texts, looked up by their
 /// characters, and lets the one used longest ago go first; its entry, characters, and shaped text carry the next text, so
-/// that once the cache is full a new text allocates nothing (row I1c). A text longer than that entry's room goes to the
-/// grown entry used longest ago, when the engine's current frame has not used it (Issue #378).
+/// that once the cache is full a new text allocates nothing (row I1c).
 /// </remarks>
 public sealed class TextEngine
 {
@@ -25,11 +24,7 @@ public sealed class TextEngine
     private readonly HashSet<CacheEntry> _cache = new(EntryComparer.Instance);
     private readonly HashSet<CacheEntry>.AlternateLookup<ShapeProbe> _lookup;
     private readonly LinkedList<CacheEntry> _order = new();
-
-    // The entries whose room has grown past the first, in the order of use (Issue #378).
-    private readonly LinkedList<CacheEntry> _grown = new();
     private readonly GlyphAtlas _atlas;
-    private long _frame;
     private GlyphInstance[] _instances = new GlyphInstance[256];
     private DrawStep[] _steps = new DrawStep[16];
     private int _instanceCount;
@@ -105,33 +100,14 @@ public sealed class TextEngine
         {
             _order.Remove(entry.Node);
             _order.AddFirst(entry.Node);
-            if (entry.Grown.List is not null)
-            {
-                _grown.Remove(entry.Grown);
-                _grown.AddFirst(entry.Grown);
-            }
-
-            entry.Frame = _frame;
             return entry.Shaped;
         }
 
         if (_cache.Count == CacheCapacity)
         {
-            // The entry of the text used longest ago carries the new one. A text longer than its room takes the grown entry
-            // used longest ago instead, when the current frame has not used it (Issue #378): a new tooltip each frame would
-            // otherwise grow an entry of a short text each time, and allocate until every entry of the cache had grown.
+            // The entry of the text used longest ago carries the new one.
             entry = _order.Last!.Value;
-            if (!entry.Fits(text) && _grown.Last is { } grown && grown.Value.Frame < _frame)
-            {
-                entry = grown.Value;
-            }
-
-            _order.Remove(entry.Node);
-            if (entry.Grown.List is not null)
-            {
-                _grown.Remove(entry.Grown);
-            }
-
+            _order.RemoveLast();
             _ = _cache.Remove(entry);
         }
         else
@@ -144,26 +120,15 @@ public sealed class TextEngine
         Backend.Shape(text, style.FontFamily, style.Size, style.Weight, style.Locale, entry.Shaped);
         _ = _cache.Add(entry);
         _order.AddFirst(entry.Node);
-        if (entry.HasGrown)
-        {
-            _grown.AddFirst(entry.Grown);
-        }
-
-        entry.Frame = _frame;
         return entry.Shaped;
     }
-
-    /// <summary>
-    /// Starts a frame of the engine (Issue #378): the texts shaped from here on are of this frame. A text longer than an
-    /// entry's first room may take a grown entry that this frame has not used.
-    /// </summary>
-    internal void BeginFrame() => _frame++;
 
     /// <summary>
     /// Turns a list's commands into steps for a backend's <c>Draw</c> (design §5.6): a polyline is a step of its own, and the
     /// glyphs of the texts that follow one another go into one step until the page or the clip changes, and so do the
     /// rectangles that follow one another until the clip changes. Shapes what the
-    /// cache lacks, places in the atlas what it lacks, and starts a new <c>Draw</c> of the atlas.
+    /// cache lacks (a text its owner shaped, <see cref="OwnedText"/>, takes nothing from the cache), places in the atlas what
+    /// it lacks, and starts a new <c>Draw</c> of the atlas.
     /// </summary>
     /// <param name="list">The commands.</param>
     /// <param name="width">The target's width in pixels.</param>
@@ -275,7 +240,7 @@ public sealed class TextEngine
     private bool TryPlace(in TextRecord record, int width, int height)
     {
         var style = record.Style;
-        var shaped = Shape(record.Chars.Span, style);
+        var shaped = record.Shaped ?? Shape(record.Chars.Span, style);
         var metrics = shaped.Metrics;
         var glyphs = shaped.Glyphs;
         var top = AlignY(style.Vertical, metrics);
@@ -421,7 +386,7 @@ public sealed class TextEngine
             }
 
             ref readonly var record = ref list.Texts[commands[i].Index];
-            var shaped = Shape(record.Chars.Span, record.Style);
+            var shaped = record.Shaped ?? Shape(record.Chars.Span, record.Style);
             foreach (ref readonly var glyph in shaped.Glyphs)
             {
                 var phase = (int)(RoundPixel(4 * glyph.Position.X) & 3);
@@ -464,27 +429,15 @@ public sealed class TextEngine
     /// <summary>A text the cache keeps: a copy of its characters, its style, its shape, and its place in the order of use.</summary>
     private sealed class CacheEntry
     {
-        // Room for a tick label: an entry carries texts of all lengths in turn, and one that held a short text would grow
-        // again for each longer one (row I1c). 16 glyphs and 2 lines are 288 bytes, about 2.4 MB over a full cache.
-        private const int Glyphs = 16;
-        private const int Lines = 2;
+        private char[] _chars = new char[16];
 
-        private char[] _chars = new char[Glyphs];
-
-        public CacheEntry() => (Node, Grown) = (new LinkedListNode<CacheEntry>(this), new LinkedListNode<CacheEntry>(this));
+        public CacheEntry() => Node = new LinkedListNode<CacheEntry>(this);
 
         public LinkedListNode<CacheEntry> Node { get; }
 
-        /// <summary>Gets the entry's node in the list of grown entries, in it once the entry has grown.</summary>
-        public LinkedListNode<CacheEntry> Grown { get; }
-
-        public ShapedText Shaped { get; } = new(Glyphs, Lines);
-
-        /// <summary>Gets or sets the engine's frame that last used the entry.</summary>
-        public long Frame { get; set; }
-
-        /// <summary>Gets a value indicating whether any of the entry's buffers is larger than the first room.</summary>
-        public bool HasGrown => _chars.Length > Glyphs || Shaped.GlyphRoom > Glyphs || Shaped.LineRoom > Lines;
+        // Room for a tick label: an entry carries texts of all lengths in turn, and one that held a short text would grow
+        // again for each longer one (row I1c). 16 glyphs and 2 lines are 288 bytes, about 2.4 MB over a full cache.
+        public ShapedText Shaped { get; } = new(16, 2);
 
         public int Length { get; private set; }
 
@@ -497,13 +450,6 @@ public sealed class TextEngine
         public string Locale { get; private set; } = string.Empty;
 
         public ReadOnlySpan<char> Text => _chars.AsSpan(0, Length);
-
-        /// <summary>
-        /// Returns whether a text fits the entry's buffers with no growing: its characters, as many glyphs (a guess the
-        /// backend's shaping may pass), and its lines.
-        /// </summary>
-        public bool Fits(ReadOnlySpan<char> text) =>
-            text.Length <= _chars.Length && text.Length <= Shaped.GlyphRoom && text.Count('\n') < Shaped.LineRoom;
 
         /// <summary>Takes a text and its style; the characters' buffer grows when it is short and never shrinks.</summary>
         public void Set(ReadOnlySpan<char> text, in TextStyle style)

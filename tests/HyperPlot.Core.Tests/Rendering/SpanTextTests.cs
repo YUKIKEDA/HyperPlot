@@ -163,157 +163,77 @@ public sealed class SpanTextTests
     }
 
     /// <summary>
-    /// In a full cache of short texts, a new text longer than an entry's first room takes the grown entry used longest ago
-    /// when the current frame has not used it, and allocates nothing once warm; a long text each frame uses stays (design
-    /// §5.6, Issue #378).
+    /// A text shaped outside the cache (<c>OwnedText</c>, design §5.6, Issue #378) takes no entry of the cache, shapes again
+    /// only when its characters or its font, size, weight, or locale change, allocates nothing once it has held its longest
+    /// text, and a list draws it as it draws the same text from the cache.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - An engine over the fake backend, recording no calls, its cache full of 8,192 short texts.
+    /// - An engine over the fake backend, recording no calls, its cache full of 8,192 short texts "0" to "8191".
     ///
     /// Steps:
-    /// - 40 frames, each measuring the long text "a title of the plot, kept" and a new long text "tooltip line: n, n"; then
-    ///   20 more frames counting the bytes; then measure the title; then a frame measuring the title, 8 new long texts,
-    ///   and the title again.
+    /// - Shape "a tooltip line: 000" into an owned text twice; then with the size 15; collect; shape 100 new texts of
+    ///   its length, "a tooltip line: 100" to "a tooltip line: 199", counting the bytes.
+    /// - Record the last at (10, 20) with its shape in one list and without it in another; prepare each on a 200 × 100 target.
     ///
     /// Expected:
-    /// - 0 bytes; 8,192 entries; the title is shaped once only, at its first frame, and the last frame shapes its 8 texts
-    ///   only.
+    /// - The backend shapes the first text once, again for the new size, and once for each new text; 0 bytes for the 100.
+    /// - The cache holds 8,192 entries all along and still holds "0" (no backend call to measure it); the first list adds
+    ///   nothing to it and the second shapes once; both lists give the same glyph records.
     /// </remarks>
     [Fact]
-    public void Cache_Full_LongTextTakesAGrownEntryNoFrameUses()
+    public void OwnedText_ShapesOnlyANewTextAndTakesNoCacheEntry()
     {
         var backend = new FakeTextBackend { RecordShapes = false };
         var engine = new TextEngine(backend);
-        var buffer = new char[32];
         var invariant = System.Globalization.CultureInfo.InvariantCulture;
+        var buffer = new char[32];
         for (var i = 0; i < TextEngine.CacheCapacity; i++)
         {
             _ = i.TryFormat(buffer, out var written, default, invariant);
             _ = engine.Measure(buffer.AsSpan(0, written), Style);
         }
 
-        const string Title = "a title of the plot, kept";
-        const string Prefix = "tooltip line: ";
+        var owned = new OwnedText();
+        var calls = backend.ShapeCount;
+        _ = owned.Shape(engine, "a tooltip line: 000", Style);
+        Assert.Same(owned.Shaped, owned.Shape(engine, "a tooltip line: 000", Style));
+        Assert.Equal(calls + 1, backend.ShapeCount);
+        _ = owned.Shape(engine, "a tooltip line: 000", Style with { Size = 15 });
+        Assert.Equal(calls + 2, backend.ShapeCount);
+
+        const string Prefix = "a tooltip line: ";
         Prefix.CopyTo(buffer);
-        void Frame(int n)
-        {
-            engine.BeginFrame();
-            _ = engine.Measure(Title, Style);
-            _ = n.TryFormat(buffer.AsSpan(Prefix.Length), out var a, default, invariant);
-            var at = Prefix.Length + a;
-            buffer[at++] = ',';
-            buffer[at++] = ' ';
-            _ = (n * 7).TryFormat(buffer.AsSpan(at), out var b, default, invariant);
-            _ = engine.Measure(buffer.AsSpan(0, at + b), Style);
-        }
+        var length = 0;
 
-        // The title's first frame shapes it and the frame's tooltip; each frame after shapes its tooltip only.
-        var shapes = backend.ShapeCount;
-        for (var n = 0; n < 40; n++)
-        {
-            Frame(n);
-        }
-
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
         var before = GC.GetAllocatedBytesForCurrentThread();
-        for (var n = 40; n < 60; n++)
+        for (var i = 100; i < 200; i++)
         {
-            Frame(n);
+            _ = i.TryFormat(buffer.AsSpan(Prefix.Length), out var written, default, invariant);
+            length = Prefix.Length + written;
+            _ = owned.Shape(engine, buffer.AsSpan(0, length), Style);
         }
 
         Assert.Equal(0, GC.GetAllocatedBytesForCurrentThread() - before);
+        Assert.Equal(calls + 102, backend.ShapeCount);
         Assert.Equal(TextEngine.CacheCapacity, engine.CacheCount);
-        _ = engine.Measure(Title, Style);
-        Assert.Equal(shapes + 61, backend.ShapeCount);
+        _ = engine.Measure("0", Style);
+        Assert.Equal(calls + 102, backend.ShapeCount);
 
-        // A frame of more new long texts than there are grown entries no frame uses: the title, used in it, stays.
-        engine.BeginFrame();
-        _ = engine.Measure(Title, Style);
-        for (var i = 0; i < 8; i++)
-        {
-            _ = engine.Measure("another long text " + i.ToString(invariant), Style);
-        }
-
-        _ = engine.Measure(Title, Style);
-        Assert.Equal(shapes + 69, backend.ShapeCount);
-    }
-
-    /// <summary>
-    /// In a full cache of short texts, a frame drawn whole after one or more frames of a new tooltip alone shapes every long
-    /// text it draws again (Issue #378's review): each hover frame's tooltip takes the grown entry of the long text used
-    /// longest ago, and each long text the whole frame shapes again takes the entry of the next one it draws.
-    /// </summary>
-    /// <remarks>
-    /// Preconditions:
-    /// - An engine over the fake backend, recording no calls, its cache full of 8,192 short texts.
-    /// - A whole frame measures 19 long texts (a title, two axis titles, 16 data labels, each over 16 characters) and then a
-    ///   new tooltip; a hover frame measures a new tooltip alone, as the engine's frames that keep the plot do.
-    ///
-    /// Steps:
-    /// - A whole frame; 4 rounds of <c>hovers</c> hover frames and a whole frame; then <c>hovers</c> hover frames and a whole
-    ///   frame counted. The cases: 0 (whole frames back to back), 1, 8, and 64 (more than the 20 grown entries).
-    ///
-    /// Expected:
-    /// - The counted whole frame calls <c>Shape</c> once (its tooltip) with no hover frame before it, and 20 times (its 19
-    ///   long texts and its tooltip) after any number of them.
-    /// </remarks>
-    [Theory]
-    [InlineData(0, 1)]
-    [InlineData(1, 20)]
-    [InlineData(8, 20)]
-    [InlineData(64, 20)]
-    public void Cache_Full_WholeFrameAfterHoverFrames_ShapesItsLongTextsAgain(int hovers, int expected)
-    {
-        var backend = new FakeTextBackend { RecordShapes = false };
-        var engine = new TextEngine(backend);
-        var buffer = new char[32];
-        var invariant = System.Globalization.CultureInfo.InvariantCulture;
-        for (var i = 0; i < TextEngine.CacheCapacity; i++)
-        {
-            _ = i.TryFormat(buffer, out var written, default, invariant);
-            _ = engine.Measure(buffer.AsSpan(0, written), Style);
-        }
-
-        string[] texts =
-        [
-            "a title of the plot, kept",
-            "the x axis title, long",
-            "the y axis title, long",
-            .. Enumerable.Range(0, 16).Select(i => "a data label of row " + i.ToString(invariant)),
-        ];
-        var tooltip = 0;
-        void Tooltip() => _ = engine.Measure("a tooltip line: " + (tooltip++).ToString(invariant), Style);
-        void Whole()
-        {
-            engine.BeginFrame();
-            foreach (var text in texts)
-            {
-                _ = engine.Measure(text, Style);
-            }
-
-            Tooltip();
-        }
-
-        void Hovers()
-        {
-            for (var i = 0; i < hovers; i++)
-            {
-                engine.BeginFrame();
-                Tooltip();
-            }
-        }
-
-        Whole();
-        for (var round = 0; round < 4; round++)
-        {
-            Hovers();
-            Whole();
-        }
-
-        Hovers();
-        var before = backend.ShapeCount;
-        Whole();
-        Assert.Equal(expected, backend.ShapeCount - before);
+        var text = buffer.AsSpan(0, length);
+        var withShape = new RenderList();
+        withShape.DrawText(text, new Vector2(10, 20), Style, owned.Shape(engine, text, Style));
+        engine.Prepare(withShape, 200, 100);
+        var owns = engine.Instances.ToArray();
+        Assert.Equal(calls + 102, backend.ShapeCount);
+        var fromCache = new RenderList();
+        fromCache.DrawText(text, new Vector2(10, 20), Style);
+        engine.Prepare(fromCache, 200, 100);
+        Assert.Equal(calls + 103, backend.ShapeCount);
+        Assert.NotEmpty(owns);
+        Assert.Equal(owns, engine.Instances.ToArray());
     }
 
     /// <summary>
