@@ -378,7 +378,7 @@ public sealed class PlotWorkerPool : IDisposable
     /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
     /// <exception cref="InvalidOperationException">Called on one of a pool's worker threads.</exception>
     /// <remarks>After all have ended, the first failed series' exception of the first batch that has one is thrown again as it was, unless <paramref name="rethrow"/> is false.</remarks>
-    internal void ExtractTogether(M4Batch[] batches, ScaleOrigin[] origins, double[][] boundaries, int count, bool rethrow = true)
+    internal void ExtractTogether(M4Batch[] batches, ScaleOrigin[] origins, ArraySegment<double>[] boundaries, int count, bool rethrow = true)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (_isWorkerThread)
