@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- SPIKE (row K0e, Issue #491): a bricked volume ray marched on D3D11, measured headless. Not product code. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+    <RootNamespace>HyperPlot.Volume</RootNamespace>
+    <!-- Figures are taken from the NativeAOT Release build (.cursor/rules/bench.mdc). -->
+    <PublishAot>true</PublishAot>
+    <!-- D3D11 is called through its COM vtables, as in the backend; the bricks live in native memory (.cursor/rules/interop.mdc). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="TerraFX.Interop.Windows" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Compiled at startup with D3DCompile, so the prototype needs no change to tools/ShaderGen. -->
+    <None Include="Shaders\Volume.hlsl" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
