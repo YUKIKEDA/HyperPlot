@@ -274,19 +274,22 @@ public sealed class ImageTests : IDisposable
         }
     }
 
-    /// <summary>The density cases: each norm, the layer's ramp and viridis, a tile at the chosen level and one 2 levels shallower.</summary>
-    public static TheoryData<DensityNorm, bool, int> DensityCases
+    /// <summary>
+    /// The density cases: each norm, the layer's ramp and viridis, and three tiles: one at the chosen level whose bins cover
+    /// a square physical pixel, an ancestor 2 levels shallower whose bins cover 16, and the same ancestor at 2.5.
+    /// </summary>
+    public static TheoryData<DensityNorm, bool, int, double> DensityCases
     {
         get
         {
-            var cases = new TheoryData<DensityNorm, bool, int>();
+            var cases = new TheoryData<DensityNorm, bool, int, double>();
             foreach (var norm in new[] { DensityNorm.Log, DensityNorm.Linear, DensityNorm.Cbrt })
             {
                 foreach (var viridis in new[] { false, true })
                 {
-                    foreach (var shallower in new[] { 0, 2 })
+                    foreach (var (shallower, area) in new[] { (0, 1.0), (2, 16.0), (2, 2.5) })
                     {
-                        cases.Add(norm, viridis, shallower);
+                        cases.Add(norm, viridis, shallower, area);
                     }
                 }
             }
@@ -302,34 +305,36 @@ public sealed class ImageTests : IDisposable
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A top m of 1,000 points a bin of the chosen level. A tile of 2-byte bins requested from the backend's cache for the
-    ///   full snapshot of 100 points. For a tile k levels shallower than the chosen level (k of 0 and 2), the bins hold raw
-    ///   counts r of the ancestor's bins: a count c a bin of the chosen level is r = c · 4^k.
-    /// - One row of 11 bins: 0; nine counts from about 1 to 900 points a bin of the chosen level, each raised to the next raw
-    ///   count whose t · 256 lies at least 0.05 from an index's edge, so that float32 on the GPU and double on the CPU take
-    ///   the same index; 0 again; and m · 4^k, the top.
+    /// - A top m of 1,000 points a square physical pixel. A tile of 2-byte bins requested from the backend's cache for the
+    ///   full snapshot of 100 points, each bin covering an area A of the screen in square physical pixels: a bin of c points
+    ///   a square pixel holds r = c · A points.
+    /// - One row of 11 bins: 0; nine counts from about 1 to 900 points a square pixel, each raised to the next raw count
+    ///   whose t · 256 lies at least 0.05 from an index's edge, so that float32 on the GPU and double on the CPU take the
+    ///   same index; 0 again; and m · A, the top.
     /// - At k = 0 the row is the tile's first row from bin 0, read with SampleOrigin (0, 0) and SampleScale 1. At k = 2 it is
     ///   row 128 from bin 64, read as the engine reads an ancestor: SampleOrigin (64, 128) and SampleScale 2^-2, the drawn
     ///   range 4 tile texels a face texel.
-    /// - The cases: Log, Linear, and Cbrt; the ramp from transparent to (31, 119, 180) and viridis; k of 0 and 2.
+    /// - The cases: Log, Linear, and Cbrt; the ramp from transparent to (31, 119, 180) and viridis; a tile at the chosen
+    ///   level (k = 0) with A = 1, and an ancestor (k = 2) with A = 16, the 4^k of a level-0 bin of a pixel, and with
+    ///   A = 2.5, an area that is not a power of two. The area is the record's argument alone: the bins are drawn 16 pixels
+    ///   wide whatever it is, so the shader's formula is what is checked.
     ///
     /// Steps:
-    /// - Record one image instance with the transform, the constant, and the high end of DensityMath.Paint(norm, m, k), a low
+    /// - Record one image instance with the transform, the constant, and the high end of DensityMath.Paint(norm, m, A), a low
     ///   end of 0, the flag of bit 6, opacity 1, and the map's table; each bin 16 pixels wide. Draw it over the background and
     ///   read the middle of each bin.
     ///
     /// Expected:
     /// - The data: every count but the zeros and the top lies at least 0.05 from an index's edge (asserted while it is made).
     /// - A bin of 0 is the background, with viridis too, whose first color is not the background.
-    /// - Every other bin is map.Map(DensityMath.Position(norm, r / 4^k, m)) over the background, within 1 of 255 in each
+    /// - Every other bin is map.Map(DensityMath.Position(norm, r / A, m)) over the background, within 1 of 255 in each
     ///   channel: the rounding of the blend.
     /// </remarks>
     [Theory]
     [MemberData(nameof(DensityCases))]
-    public async Task DensityPaint_MatchesTheCpuColor(DensityNorm norm, bool viridis, int shallower)
+    public async Task DensityPaint_MatchesTheCpuColor(DensityNorm norm, bool viridis, int shallower, double area)
     {
         const double Top = 1_000;
-        var area = Math.Pow(4, shallower);
         var map = viridis ? ColorMaps.Viridis : DensityMath.Ramp(new Color(31, 119, 180, 255));
         var counts = new List<ulong> { 0 };
         foreach (var count in new[] { 1.0, 3, 10, 40, 120, 300, 550, 750, 900 })
@@ -361,7 +366,7 @@ public sealed class ImageTests : IDisposable
             using var target = backend.CreateRenderTarget(new RenderTargetDescription(width, Height));
             backend.Images.BeginFrame();
             var slot = backend.Images.RequestDensity(snapshot, 0, 0, new DensityTile(bins, 2, counts.Max()));
-            var (kind, constant, high) = DensityMath.Paint(norm, Top, shallower);
+            var (kind, constant, high) = DensityMath.Paint(norm, Top, area);
             var texels = Math.Pow(2, shallower);
             var record = new ImageInstance
             {
