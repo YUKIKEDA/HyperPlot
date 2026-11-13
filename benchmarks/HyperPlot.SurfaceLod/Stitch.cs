@@ -27,8 +27,19 @@ internal static class Stitch
                     var b = Vertex(i + 1, j, tile, mask);
                     var c = Vertex(i, j + 1, tile, mask);
                     var d = Vertex(i + 1, j + 1, tile, mask);
-                    Add(indices, a, b, c);
-                    Add(indices, d, c, b);
+
+                    // At the corner (tile, tile) with both of its edges coarse, the cut from 10 to 01 leaves the
+                    // triangle (00, 10, 01) on a line: that one cell is cut from 00 to 11 instead.
+                    if (Flat(a, b, c, tile) || Flat(d, c, b, tile))
+                    {
+                        Add(indices, a, b, d);
+                        Add(indices, a, d, c);
+                    }
+                    else
+                    {
+                        Add(indices, a, b, c);
+                        Add(indices, d, c, b);
+                    }
                 }
             }
 
@@ -100,6 +111,21 @@ internal static class Stitch
         }
 
         return (uint)((j * (tile + 1)) + i);
+    }
+
+    // Three distinct vertices on one line: a triangle without area that Add would keep.
+    private static bool Flat(uint a, uint b, uint c, int tile)
+    {
+        if (a == b || b == c || a == c)
+        {
+            return false;
+        }
+
+        var side = (uint)(tile + 1);
+        var (ai, aj) = ((int)(a % side), (int)(a / side));
+        var (bi, bj) = ((int)(b % side), (int)(b / side));
+        var (ci, cj) = ((int)(c % side), (int)(c / side));
+        return ((bi - ai) * (cj - aj)) - ((bj - aj) * (ci - ai)) == 0;
     }
 
     private static void Add(List<uint> indices, uint a, uint b, uint c)
