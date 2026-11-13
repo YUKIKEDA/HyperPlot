@@ -786,7 +786,19 @@ internal sealed partial class PlotPlan : IDisposable
                 );
             }
 
-            _guides.Layout(spec, _xTransform, _yTransform, BandColumn(spec), Color, _xTransform2, _yTransform2, _facet?.Arrangement, _learned);
+            _guides.Layout(
+                spec,
+                _xTransform,
+                _yTransform,
+                BandColumn(spec),
+                Color,
+                Size,
+                Shape,
+                _xTransform2,
+                _yTransform2,
+                _facet?.Arrangement,
+                _learned
+            );
 
             // The full view: what the plot draws with no view (row I1a). An axis with a view keeps the last one it drew, which
             // a learning since may have moved.

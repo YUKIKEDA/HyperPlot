@@ -17,6 +17,9 @@ internal sealed class PlotGuides
     /// <summary>The legend's sample of a text layer (design §5.5.3, row G8).</summary>
     private const string SampleText = "a";
 
+    /// <summary>The most rows of the size legend (design §4.6 "大きさの凡例").</summary>
+    private const int MaxSizeRows = 5;
+
     // The panel's sides, the places of the axes (row G6a).
     internal const int SideBottom = 0;
     internal const int SideTop = 1;
@@ -25,6 +28,10 @@ internal sealed class PlotGuides
 
     private readonly TextEngine _text;
     private readonly Vector2[] _segment = new Vector2[2];
+
+    // The indices of the size axis's ticks the size legend shows, and their diameters in pixels (row R3f).
+    private readonly int[] _sizeTicks = new int[MaxSizeRows];
+    private readonly float[] _sizeDiameters = new float[MaxSizeRows];
 
     // The panels' guides (row G6b): one without a facet. The layout and the recording work on the current one.
     private readonly List<PanelGuide> _panels = [];
@@ -39,6 +46,15 @@ internal sealed class PlotGuides
     private Vector2[] _curve = new Vector2[256];
     private CategoricalColumn? _categories;
     private ColorScale? _color;
+    private SizeScale? _size;
+    private ShapeScale? _shape;
+
+    // The size legend's rows of the last layout (row R3f): their number and widest diameter in pixels; with a domain of no
+    // width, one row whose label is kept for its value.
+    private int _sizeRows;
+    private float _sizeWidest;
+    private double _singleValue = double.NaN;
+    private string _singleLabel = string.Empty;
 
     // The scales the secondary axes of a transform format their labels with, kept while their format is the same (row G6a).
     private LinearScaleSpec? _formatX;
@@ -66,7 +82,17 @@ internal sealed class PlotGuides
         _current = new PanelGuide(text);
         _panels.Add(_current);
         ColorBar.Text = text;
+        SizeAxis.Text = text;
     }
+
+    /// <summary>
+    /// Gets the ticks the size legend chooses its values from (row R3f): the size scale's domain as an axis, laid out by the
+    /// axes' algorithm.
+    /// </summary>
+    internal TickAxis SizeAxis { get; } = new();
+
+    /// <summary>Gets the number of the size legend's rows of the last layout (row R3f); 0 without a SizeBy. Tests only.</summary>
+    internal int SizeRows => _sizeRows;
 
     /// <summary>Gets the number of panels the last layout laid out (row G6b): one without a facet.</summary>
     internal int PanelCount => _panelCount;
@@ -213,6 +239,8 @@ internal sealed class PlotGuides
         IScale? yTransform,
         CategoricalColumn? categories,
         ColorScale? color,
+        SizeScale? size,
+        ShapeScale? shape,
         IScale? xTransform2,
         IScale? yTransform2,
         FacetArrangement? facet,
@@ -221,6 +249,7 @@ internal sealed class PlotGuides
     {
         _categories = categories;
         _color = color;
+        (_size, _shape) = (size, shape);
         _facet = facet;
         var theme = spec.Theme;
         Flipped = spec.Coord is CartesianCoordSpec { Flip: true };
@@ -843,9 +872,135 @@ internal sealed class PlotGuides
             bar = Math.Max(Round(theme.ColorBarThickness) + tick + gap + Ceiling(labels), Ceiling(TitleWidth(inner.Title, style, 0)));
         }
 
+        // The shape legend's rows, unless they are the color legend's (design §4.6 "形と大きさの凡例", row R3f).
+        if (_shape is { } shapes && !ShapesWithColors(spec))
+        {
+            widest = TitleWidth(shapes.Spec!.Title, style, widest);
+            for (var c = 0; c < shapes.Categories.CategoryCount; c++)
+            {
+                widest = MathF.Max(widest, _text.Measure(shapes.Categories.Categories[c], style).Width);
+            }
+        }
+
         var rows = widest > 0 ? Ceiling(Round(theme.LegendSwatch) + gap + widest) : 0;
-        var band = Math.Max(rows, bar);
+        var sized = SizeLegend(theme, tickStyle, lineHeight, style, gap);
+        var band = Math.Max(Math.Max(rows, bar), sized);
         return band > 0 ? band + gap : 0;
+    }
+
+    /// <summary>
+    /// Chooses the size legend's rows (design §4.6 "大きさの凡例", row R3f) and returns its width: the values of the size
+    /// axis's ticks inside the domain, from 3 to 5 of them, each a circle of its diameter and its label. The ticks are chosen
+    /// for about 4 over the axis, then for more when fewer than 3 lie in the domain. A domain of no width has one row.
+    /// </summary>
+    private int SizeLegend(Theme theme, in TextStyle tickStyle, float lineHeight, in TextStyle style, int gap)
+    {
+        (_sizeRows, _sizeWidest) = (0, 0);
+        if (_size is not { } size)
+        {
+            return 0;
+        }
+
+        var (low, high) = (size.Domain.Origin + size.Domain.Lower, size.Domain.Origin + size.Domain.Upper);
+        var labels = 0f;
+        if (!(high > low))
+        {
+            if (_singleValue != low)
+            {
+                // Kept for its value: drawing the same domain again allocates nothing.
+                (_singleValue, _singleLabel) = (low, SizeAxis.Inverse(low).ToString("G6", System.Globalization.CultureInfo.InvariantCulture));
+            }
+
+            (_sizeRows, _sizeDiameters[0]) = (1, size.Diameter(SizeAxis.Inverse(low)) * _scale);
+            labels = _text.Measure(_singleLabel, tickStyle).Width;
+        }
+        else
+        {
+            // About 4 ticks over the axis's length, then twice and four times as many, until 3 lie in the domain.
+            foreach (var spacing in (ReadOnlySpan<float>)[40, 20, 10])
+            {
+                Prepare(
+                    SizeAxis,
+                    new AxisScale(size.Inner),
+                    size.Transform,
+                    size.Domain,
+                    Round(160),
+                    spacing,
+                    tickStyle,
+                    lineHeight,
+                    theme,
+                    legend: true
+                );
+                if (SizeTicks(low, high) >= 3)
+                {
+                    break;
+                }
+            }
+
+            var pixels = SizeAxis.Pixels;
+            var all = SizeAxis.TickLabels;
+            for (var r = 0; r < _sizeRows; r++)
+            {
+                var s = low + ((high - low) * pixels[_sizeTicks[r]] / SizeAxis.Length);
+                _sizeDiameters[r] = size.Diameter(SizeAxis.Inverse(s)) * _scale;
+                labels = MathF.Max(labels, _text.Measure(all[_sizeTicks[r]], tickStyle).Width);
+            }
+        }
+
+        for (var r = 0; r < _sizeRows; r++)
+        {
+            _sizeWidest = MathF.Max(_sizeWidest, _sizeDiameters[r]);
+        }
+
+        var swatch = MathF.Max(Round(theme.LegendSwatch), _sizeWidest);
+        return Ceiling(Math.Max(swatch + gap + labels, TitleWidth(size.Inner.Title, style, 0)));
+    }
+
+    /// <summary>Keeps the indices of the size axis's ticks inside [low, high], at most 5 spread over them, and returns how many lie inside.</summary>
+    private int SizeTicks(double low, double high)
+    {
+        var pixels = SizeAxis.Pixels;
+        var (first, inside) = (-1, 0);
+        for (var i = 0; i < pixels.Length; i++)
+        {
+            var s = low + ((high - low) * pixels[i] / SizeAxis.Length);
+            if (s >= low - (1e-9 * (high - low)) && s <= high + (1e-9 * (high - low)))
+            {
+                first = first < 0 ? i : first;
+                inside++;
+            }
+        }
+
+        _sizeRows = Math.Min(inside, MaxSizeRows);
+        for (var r = 0; r < _sizeRows; r++)
+        {
+            // Spread over the inside ticks: the first and the last, and the ones between at even steps.
+            _sizeTicks[r] = first + (_sizeRows == 1 ? 0 : (int)Math.Round((double)r * (inside - 1) / (_sizeRows - 1)));
+        }
+
+        return inside;
+    }
+
+    /// <summary>
+    /// Returns whether the color legend's rows show the shapes too (design §4.6 "同じ列の色と形"): a ShapeBy of the same
+    /// column as the categorical color, on a point layer that is the first layer the color scale splits.
+    /// </summary>
+    private bool ShapesWithColors(PlotSpec spec)
+    {
+        if (_shape is null || Categories(spec) is null)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (SplitPlan.Splits(spec.Layers[i]))
+            {
+                return spec.Layers[i] is PointLayerSpec { ShapeBy: { } shape, ColorBy: { } color } && shape.Column == color.Column;
+            }
+        }
+
+        return false;
     }
 
     private float TitleWidth(string? title, in TextStyle style, float widest) =>
@@ -1930,19 +2085,138 @@ internal sealed class PlotGuides
 
         if (Categories(spec) is { } categories)
         {
-            RecordCategories(list, spec, theme, categories, x, y, swatch, gap, lineHeight, style);
+            y = RecordCategories(list, spec, theme, categories, x, y, swatch, gap, lineHeight, style);
         }
         else if (_color is { Inner: { } inner } && ColorBarLength > 0)
         {
-            RecordColorBar(list, theme, inner, x, y, gap, lineHeight, style);
+            y = RecordColorBar(list, theme, inner, x, y, gap, lineHeight, style);
         }
+
+        if (_shape is { } shapes && !ShapesWithColors(spec))
+        {
+            y = RecordShapes(list, spec, theme, shapes, x, y, swatch, gap, lineHeight, style);
+        }
+
+        if (_sizeRows > 0)
+        {
+            RecordSizes(list, spec, theme, x, y, swatch, gap, lineHeight, style);
+        }
+    }
+
+    /// <summary>
+    /// Records the shape legend (design §4.6 "形の凡例", row R3f): the shape scale's title, then a mark and a name a category,
+    /// in the theme's foreground, as large as the first shaped layer's points up to the row's height. Returns the y below it.
+    /// </summary>
+    private float RecordShapes(
+        RenderList list,
+        PlotSpec spec,
+        Theme theme,
+        ShapeScale shapes,
+        float x,
+        float y,
+        int swatch,
+        int gap,
+        float lineHeight,
+        in TextStyle style
+    )
+    {
+        var middle = style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle };
+        if (shapes.Spec!.Title is { Length: > 0 } title)
+        {
+            list.DrawText(title, new Vector2(x, y + (lineHeight / 2)), middle);
+            y += lineHeight;
+        }
+
+        var size = 6f;
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (spec.Layers[i] is PointLayerSpec { ShapeBy: not null } point)
+            {
+                size = point.Size;
+                break;
+            }
+        }
+
+        var categories = shapes.Categories;
+        for (var c = 0; c < categories.CategoryCount; c++)
+        {
+            _segment[0] = new Vector2(x + (swatch / 2f), y + (lineHeight / 2));
+            list.DrawMarkers(
+                _segment.AsSpan(0, 1),
+                new MarkerStyle(theme.Foreground, MathF.Min(size * _scale, lineHeight), shapes.Of(c), MathF.Max(1, MathF.Round(_scale)))
+            );
+            list.DrawText(categories.Categories[c], new Vector2(x + swatch + gap, y + (lineHeight / 2)), middle);
+            y += lineHeight;
+        }
+
+        return y;
+    }
+
+    /// <summary>
+    /// Records the size legend (design §4.6 "大きさの凡例", row R3f): the size scale's title, then a circle and a label a value,
+    /// the circles centered in a column as wide as the largest, each row as high as its circle or the text. The circles take
+    /// the theme's foreground, or the value's color when a layer is colored by numbers of the same column.
+    /// </summary>
+    private void RecordSizes(RenderList list, PlotSpec spec, Theme theme, float x, float y, int swatch, int gap, float lineHeight, in TextStyle style)
+    {
+        var size = _size!;
+        var middle = style with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle };
+        if (HasText(size.Inner.Title))
+        {
+            list.DrawText(size.Inner.Title!, new Vector2(x, y + (lineHeight / 2)), middle);
+            y += lineHeight;
+        }
+
+        var colored = _color is { Inner: not null } && SizeColoredBySameColumn(spec);
+        var column = MathF.Max(swatch, _sizeWidest);
+        var tickStyle = Style(theme, theme.TickLabelSize) with { Horizontal = TextAlign.Left, Vertical = TextBaseline.Middle };
+        var (low, high) = (size.Domain.Origin + size.Domain.Lower, size.Domain.Origin + size.Domain.Upper);
+        var labels = SizeAxis.TickLabels;
+        var pixels = SizeAxis.Pixels;
+        for (var r = 0; r < _sizeRows; r++)
+        {
+            var diameter = _sizeDiameters[r];
+            var row = MathF.Max(lineHeight, diameter);
+            var s = high > low ? low + ((high - low) * pixels[_sizeTicks[r]] / SizeAxis.Length) : low;
+            var color = colored ? _color!.Of(SizeAxis.Inverse(s)) : theme.Foreground;
+            _segment[0] = new Vector2(x + (column / 2), y + (row / 2));
+            list.DrawMarkers(_segment.AsSpan(0, 1), new MarkerStyle(color, diameter));
+            var at = new Vector2(x + column + gap, y + (row / 2));
+            if (high > low)
+            {
+                list.DrawText(labels[_sizeTicks[r]], at, tickStyle);
+            }
+            else
+            {
+                list.DrawText(_singleLabel, at, tickStyle);
+            }
+
+            y += row;
+        }
+    }
+
+    /// <summary>Returns whether a point layer is sized and colored by numbers of the same column (design §4.6 "大きさの凡例").</summary>
+    private static bool SizeColoredBySameColumn(PlotSpec spec)
+    {
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (
+                spec.Layers[i] is PointLayerSpec { SizeBy: { } sized, ColorBy: { Column: not CategoricalColumn } colored }
+                && sized.Column == colored.Column
+            )
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
     /// Records the rows of the categories (design §4.6, row G7c): the ordinal scale's title, then a swatch and a name a
     /// category, in their numbers' order. The swatch is the first split layer's, in the category's color.
     /// </summary>
-    private void RecordCategories(
+    private float RecordCategories(
         RenderList list,
         PlotSpec spec,
         Theme theme,
@@ -1968,9 +2242,11 @@ internal sealed class PlotGuides
             first = SplitPlan.Splits(spec.Layers[i]) ? spec.Layers[i] : null;
         }
 
+        // The same column's shapes go on these rows (design §4.6 "同じ列の色と形", row R3f).
+        var shapes = ShapesWithColors(spec) ? _shape : null;
         for (var c = 0; c < categories.CategoryCount; c++)
         {
-            var row = Sample(list, first!, color.Palette.Series(c), x, y, swatch, lineHeight, style);
+            var row = Sample(list, first!, color.Palette.Series(c), x, y, swatch, lineHeight, style, shapes?.Of(c));
             list.DrawText(
                 categories.Categories[c],
                 new Vector2(x + swatch + gap, y + (row / 2)),
@@ -1982,13 +2258,15 @@ internal sealed class PlotGuides
             );
             y += row;
         }
+
+        return y;
     }
 
     /// <summary>
     /// Records the color bar (design §4.6, row G7c): its title, then a bar of Lc rows of a pixel, each in the color of its
     /// center's value, the domain's low end at the bottom; ticks on its right, and their labels.
     /// </summary>
-    private void RecordColorBar(
+    private float RecordColorBar(
         RenderList list,
         Theme theme,
         ContinuousScaleSpec inner,
@@ -2039,6 +2317,9 @@ internal sealed class PlotGuides
                 list.DrawText(labels[i], new Vector2(x + thickness + tick + gap, at), tickStyle);
             }
         }
+
+        // The rows below the bar start under its last label.
+        return y + length + lineHeight;
     }
 
     /// <summary>
@@ -2046,7 +2327,17 @@ internal sealed class PlotGuides
     /// geom's square of the row's height in its fill (row G4), a text layer's "a" in its color at the legend's size in the
     /// middle of the swatch (row G8), else a line of the swatch's length in the layer's stroke.
     /// </summary>
-    private float Sample(RenderList list, LayerSpec layer, Color series, float x, float y, int swatch, float lineHeight, in TextStyle style)
+    private float Sample(
+        RenderList list,
+        LayerSpec layer,
+        Color series,
+        float x,
+        float y,
+        int swatch,
+        float lineHeight,
+        in TextStyle style,
+        MarkerShape? shape = null
+    )
     {
         if (layer is TextLayerSpec text)
         {
@@ -2065,7 +2356,7 @@ internal sealed class PlotGuides
                 new MarkerStyle(
                     point.Opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * point.Opacity) },
                     MathF.Min(point.Size * _scale, lineHeight),
-                    point.Shape,
+                    shape ?? point.Shape,
                     MathF.Max(1, MathF.Round(_scale))
                 )
             );
