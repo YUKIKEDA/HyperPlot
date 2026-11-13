@@ -201,8 +201,8 @@ internal sealed partial class PlotPlan
         static void Coordinate(PlotSpec plot, int i, in AnnotationValue value, bool ofX)
         {
             // The named values are compared one by one, not with Enum.IsDefined: a drag checks the annotations on every
-            // event, and with Enum.IsDefined the counted rounds of AnnotationTests.Frames_AllocateNothing allocated 992
-            // bytes, 4 times the 248 bytes of MarkerStyle.IsShape, when the whole project ran in Debug (Issue #400).
+            // event, and with Enum.IsDefined the drags after a garbage collection allocated 992 bytes, 4 times the 248
+            // bytes of MarkerStyle.IsShape (AnnotationTests.Frames_AllocateNothing, Issue #400).
             if (value.Coord is not (AnnotationCoord.Data or AnnotationCoord.Data2 or AnnotationCoord.Panel))
             {
                 throw new ArgumentOutOfRangeException(nameof(plot), $"Annotation {i} has a coordinate whose Coord is not a named value.");

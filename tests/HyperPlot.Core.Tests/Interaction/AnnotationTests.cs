@@ -607,7 +607,8 @@ public sealed class AnnotationTests
     ///
     /// Steps:
     /// - Rounds of 8 moves drawn after each, and rounds of a drag of the marker over 12 events drawn after each (back and
-    ///   forth): 4 of each to warm, then 2 of each counted.
+    ///   forth): 4 of each to warm, a garbage collection, then 2 of each counted. Enum.IsDefined in the annotation checks
+    ///   allocated 992 bytes in the counted drags after a collection and nothing without one (Issue #400).
     ///
     /// Expected:
     /// - The counted rounds: 0 bytes.
@@ -691,6 +692,7 @@ public sealed class AnnotationTests
                 _ = round();
             }
 
+            GC.Collect();
             return round() + round();
         }
     }
