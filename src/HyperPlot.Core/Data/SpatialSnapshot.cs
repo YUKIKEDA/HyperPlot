@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using HyperPlot.Interaction;
 
 namespace HyperPlot;
 
@@ -30,6 +31,9 @@ internal abstract unsafe class SpatialSnapshot
     internal const double CellUnits = 4294967296.0;
 
     private const int DeepestLevel = 32;
+
+    // How much nearer than the best point found a cell must be able to come to be taken, in pixels (design §6.3 "同じ距離").
+    private const double NearestTolerance = 0.5;
 
     // A walk pops one cell and pushes its four children, so the stack grows by three a level: 1 + 3 × 32 cells.
     private const int StackLength = 1 + (3 * DeepestLevel);
@@ -333,26 +337,11 @@ internal abstract unsafe class SpatialSnapshot
             return;
         }
 
-        // The cell of the first point: the last cell that begins at or before it.
         var cells = ResidentCells;
-        var (low, high) = (0, cells.Length - 1);
-        while (low < high)
-        {
-            var middle = (low + high + 1) / 2;
-            if (cells[middle].First <= first)
-            {
-                low = middle;
-            }
-            else
-            {
-                high = middle - 1;
-            }
-        }
-
         const int Chunk = 256;
         Span<double> xs = stackalloc double[Chunk];
         Span<double> ys = stackalloc double[Chunk];
-        var cell = low;
+        var cell = ResidentCellAt(first);
         for (var done = 0; done < points.Length; done += Chunk)
         {
             var count = Math.Min(Chunk, points.Length - done);
@@ -369,16 +358,143 @@ internal abstract unsafe class SpatialSnapshot
                 points[done + i] = new ResidentPoint(UnitOf(xs[i] - c.CornerX, c.ExtentX), UnitOf(ys[i] - c.CornerY, c.ExtentY), (uint)cell);
             }
         }
+    }
 
-        // The position in a cell: the difference from its corner over its extent, in 2^32 units, kept in the cell. A point
-        // at the upper edge, or one a rounding put outside, takes the nearest unit. An extent of 0 gives NaN, which is 0.
-        static uint UnitOf(double difference, double extent)
+    /// <summary>
+    /// Finds the point drawn nearest a cursor within a reach, to half a pixel (design §6.3 "探し方", row R3c, Issue #471
+    /// Decisions 1, 19, 20, and 21). The cells are taken best first, in the order of the distance in pixels from the cursor
+    /// to the box their points are drawn in; a cell no nearer than the best point found less half a pixel is not taken. A
+    /// cell whose box is at most half a pixel across (along x alone in <see cref="HitMode.X"/>) answers by its first point,
+    /// and a leaf reads at most its first <see cref="SpatialNearestScratch.LeafCapacity"/> points. Only the row of the point
+    /// that wins is read. Allocates nothing.
+    /// </summary>
+    /// <remarks>
+    /// The answer is a point within half a pixel of the nearest distance, decided by the snapshot and the cursor alone: the
+    /// same snapshot and cursor give the same point, which need not be the one of the least row (Issue #471 Decision 21).
+    /// Distances are measured where <paramref name="screen"/> draws the points: on a unit of their resident cell, which may
+    /// be a pixel or more from their value past the limit of design §5.5.2.
+    /// </remarks>
+    /// <typeparam name="TScreen">Where the frame draws the points.</typeparam>
+    /// <param name="screen">Where the frame draws the points, in the pixels of the cursor.</param>
+    /// <param name="along">The cursor's pixel along x.</param>
+    /// <param name="across">The cursor's pixel across, along y.</param>
+    /// <param name="radius">The radius in pixels: a point answers only when it is drawn nearer than this, plus the marker's radius in XY.</param>
+    /// <param name="markerRadius">The largest radius of a point's marker in pixels, added to the reach in <see cref="HitMode.XY"/>.</param>
+    /// <param name="mode">How the distance is measured: in both directions, or along x alone.</param>
+    /// <param name="scratch">The buffers of the query.</param>
+    /// <returns>The point and what was read. A snapshot that is not <see cref="SpatialStage.Full"/>, or holds no point, finds nothing.</returns>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="radius"/> or <paramref name="markerRadius"/> is negative or NaN.</exception>
+    public SpatialNearest Nearest<TScreen>(
+        ref TScreen screen,
+        double along,
+        double across,
+        double radius,
+        double markerRadius,
+        HitMode mode,
+        SpatialNearestScratch scratch
+    )
+        where TScreen : struct, ISpatialScreen
+    {
+        if (!(radius >= 0))
         {
-            var unit = Math.Floor(difference / extent * CellUnits);
-            return unit >= CellUnits - 1 ? uint.MaxValue
-                : unit > 0 ? (uint)unit
-                : 0;
+            ThrowHelper.ThrowNearestRadiusOutOfRange(nameof(radius), radius);
         }
+
+        if (!(markerRadius >= 0))
+        {
+            ThrowHelper.ThrowNearestRadiusOutOfRange(nameof(markerRadius), markerRadius);
+        }
+
+        var rows = Rows;
+        if (Stage != SpatialStage.Full || _copy is not { } copy || rows.IsEmpty || rows[0].Count == 0)
+        {
+            return default;
+        }
+
+        var search = new NearestSearch(along, across, mode == HitMode.X, mode == HitMode.XY ? radius + markerRadius : radius);
+        var (keys, cells, xs, ys) = (scratch.Keys, scratch.Cells, scratch.Xs, scratch.Ys);
+        var size = 0;
+        var overflowed = false;
+        var visited = 0;
+        long read = 0;
+
+        var rootKey = BoxDistance(ref screen, rows[0], search, out _);
+        if (rootKey < search.Limit)
+        {
+            Push(keys, cells, ref size, rootKey, 0);
+        }
+
+        while (size > 0 && keys[0] < search.Limit)
+        {
+            var index = Pop(keys, cells, ref size);
+            ref readonly var row = ref rows[index];
+            visited++;
+            _ = BoxDistance(ref screen, row, search, out var boxAcross);
+            if (boxAcross <= NearestTolerance)
+            {
+                // Every point of the cell is drawn within half a pixel of its first point, which answers for them.
+                var cell = ResidentCells[ResidentCellAt(row.First)];
+                screen.Enter(cell);
+                ReadValues(copy, row.First, xs.AsSpan(0, 1), ys.AsSpan(0, 1));
+                read++;
+                search.Consider(ref screen, cell, xs[0], ys[0], row.First);
+                continue;
+            }
+
+            if (row.FirstChild >= 0)
+            {
+                for (var c = 0; c < 4; c++)
+                {
+                    var childIndex = row.FirstChild + c;
+                    ref readonly var child = ref rows[childIndex];
+                    if (child.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var key = BoxDistance(ref screen, child, search, out _);
+                    if (key >= search.Limit)
+                    {
+                        continue;
+                    }
+
+                    if (size == keys.Length)
+                    {
+                        // The queue is full: the cell is left out, and the answer is provisional (Issue #471 Decision 20).
+                        overflowed = true;
+                        continue;
+                    }
+
+                    Push(keys, cells, ref size, key, childIndex);
+                }
+
+                continue;
+            }
+
+            // A leaf: its first points, as design §3.4 "点の多い葉" reads a coincident or a capped leaf. A leaf lies in one
+            // resident cell, whose record places all its points.
+            var count = (int)Math.Min(row.Count, scratch.LeafCapacity);
+            var resident = ResidentCells[ResidentCellAt(row.First)];
+            screen.Enter(resident);
+            ReadValues(copy, row.First, xs.AsSpan(0, count), ys.AsSpan(0, count));
+            read += count;
+            for (var i = 0; i < count; i++)
+            {
+                search.Consider(ref screen, resident, xs[i], ys[i], row.First + i);
+            }
+        }
+
+        if (search.Position < 0)
+        {
+            return new SpatialNearest(false, -1, 0, 0, 0, 0, 0, overflowed, visited, read);
+        }
+
+        // Only the winner's row is read (Issue #471 Decision 21).
+        Span<double> oneX = stackalloc double[1];
+        Span<double> oneY = stackalloc double[1];
+        Span<long> oneRow = stackalloc long[1];
+        ReadCore(copy, search.Position, oneX, oneY, oneRow);
+        return new SpatialNearest(true, oneRow[0], search.X, search.Y, search.Along, search.Across, search.Best, overflowed, visited, read);
     }
 
     /// <summary>
@@ -495,6 +611,121 @@ internal abstract unsafe class SpatialSnapshot
         {
             ThrowHelper.ThrowSpatialLevelOutOfRange(maxLevel);
         }
+    }
+
+    /// <summary>Returns the resident cell that holds a point of the copy: the last cell that begins at or before it.</summary>
+    /// <param name="position">The point's position in the copy: one of the snapshot's points.</param>
+    private int ResidentCellAt(long position)
+    {
+        var cells = ResidentCells;
+        var (low, high) = (0, cells.Length - 1);
+        while (low < high)
+        {
+            var middle = (low + high + 1) / 2;
+            if (cells[middle].First <= position)
+            {
+                low = middle;
+            }
+            else
+            {
+                high = middle - 1;
+            }
+        }
+
+        return low;
+    }
+
+    // The position in a cell: the difference from its corner over its extent, in 2^32 units, kept in the cell. A point at
+    // the upper edge, or one a rounding put outside, takes the nearest unit. An extent of 0 gives NaN, which is 0.
+    private static uint UnitOf(double difference, double extent)
+    {
+        var unit = Math.Floor(difference / extent * CellUnits);
+        return unit >= CellUnits - 1 ? uint.MaxValue
+            : unit > 0 ? (uint)unit
+            : 0;
+    }
+
+    private static void Push(double[] keys, int[] cells, ref int size, double key, int cell)
+    {
+        var i = size++;
+        while (i > 0)
+        {
+            var parent = (i - 1) >> 1;
+            if (keys[parent] <= key)
+            {
+                break;
+            }
+
+            keys[i] = keys[parent];
+            cells[i] = cells[parent];
+            i = parent;
+        }
+
+        keys[i] = key;
+        cells[i] = cell;
+    }
+
+    private static int Pop(double[] keys, int[] cells, ref int size)
+    {
+        var top = cells[0];
+        var last = --size;
+        if (last == 0)
+        {
+            return top;
+        }
+
+        var key = keys[last];
+        var cell = cells[last];
+        var i = 0;
+        while (true)
+        {
+            var child = (2 * i) + 1;
+            if (child >= last)
+            {
+                break;
+            }
+
+            if (child + 1 < last && keys[child + 1] < keys[child])
+            {
+                child++;
+            }
+
+            if (keys[child] >= key)
+            {
+                break;
+            }
+
+            keys[i] = keys[child];
+            cells[i] = cells[child];
+            i = child;
+        }
+
+        keys[i] = key;
+        cells[i] = cell;
+        return top;
+    }
+
+    /// <summary>
+    /// Returns the distance in pixels from the cursor to the box a cell's points are drawn in, and the box's diagonal (its
+    /// width alone along x). A point is drawn on a unit of its resident cell at or below its value, by less than a unit,
+    /// so the box reaches a unit below the cell on each axis: the unit of the resident cell that holds the cell, or the
+    /// cell's own when the cell holds resident cells, which are no wider.
+    /// </summary>
+    private double BoxDistance<TScreen>(ref TScreen screen, in SpatialRow row, in NearestSearch search, out double across)
+        where TScreen : struct, ISpatialScreen
+    {
+        var shift = DeepestLevel - row.Level;
+        var x0 = _xAxis.DifferenceOf((ulong)SpatialCode.Axis2(row.Code, 0) << shift);
+        var y0 = _yAxis.DifferenceOf((ulong)SpatialCode.Axis2(row.Code, 1) << shift);
+        var (extentX, extentY) = (_xAxis.ExtentAt(row.Level), _yAxis.ExtentAt(row.Level));
+        var resident = ResidentCells[ResidentCellAt(row.First)];
+        var (unitX, unitY) =
+            resident.First + resident.Count >= row.First + row.Count
+                ? (resident.ExtentX / CellUnits, resident.ExtentY / CellUnits)
+                : (extentX / CellUnits, extentY / CellUnits);
+        var (a0, a1) = (screen.Along(x0 - unitX), screen.Along(x0 + extentX));
+        var (c0, c1) = (screen.Across(y0 - unitY), screen.Across(y0 + extentY));
+        return search.BoxDistance(Math.Min(a0, a1), Math.Max(a0, a1), Math.Min(c0, c1), Math.Max(c0, c1), out across);
     }
 
     /// <summary>
@@ -693,6 +924,87 @@ internal abstract unsafe class SpatialSnapshot
         None,
         Part,
         Whole,
+    }
+
+    /// <summary>
+    /// The state of one query of <see cref="Nearest{TScreen}"/>: the cursor, the best point drawn so far, and the limit
+    /// under which a cell is still taken, half a pixel below the best (design §6.3 "同じ距離"). In
+    /// <see cref="HitMode.X"/> a distance is along x alone.
+    /// </summary>
+    private struct NearestSearch
+    {
+        private readonly double _along;
+        private readonly double _across;
+        private readonly bool _alongOnly;
+
+        public NearestSearch(double along, double across, bool alongOnly, double reach)
+        {
+            (_along, _across, _alongOnly) = (along, across, alongOnly);
+            (Best, Limit, Position) = (reach, reach, -1);
+        }
+
+        /// <summary>Gets the distance of the best point, or the reach before one is found.</summary>
+        public double Best { get; private set; }
+
+        /// <summary>Gets the distance under which a cell is taken.</summary>
+        public double Limit { get; private set; }
+
+        /// <summary>Gets the position in the copy of the best point, or −1.</summary>
+        public long Position { get; private set; }
+
+        public double X { get; private set; }
+
+        public double Y { get; private set; }
+
+        public double Along { get; private set; }
+
+        public double Across { get; private set; }
+
+        public readonly double DistanceTo(double along, double across)
+        {
+            var da = along - _along;
+            if (_alongOnly)
+            {
+                return Math.Abs(da);
+            }
+
+            var dc = across - _across;
+            return Math.Sqrt((da * da) + (dc * dc));
+        }
+
+        public readonly double BoxDistance(double alongLow, double alongHigh, double acrossLow, double acrossHigh, out double across)
+        {
+            var da =
+                _along < alongLow ? alongLow - _along
+                : _along > alongHigh ? _along - alongHigh
+                : 0;
+            if (_alongOnly)
+            {
+                across = alongHigh - alongLow;
+                return da;
+            }
+
+            var dc =
+                _across < acrossLow ? acrossLow - _across
+                : _across > acrossHigh ? _across - acrossHigh
+                : 0;
+            var (width, height) = (alongHigh - alongLow, acrossHigh - acrossLow);
+            across = Math.Sqrt((width * width) + (height * height));
+            return Math.Sqrt((da * da) + (dc * dc));
+        }
+
+        /// <summary>Takes a point of a resident cell the screen has entered: kept when it is drawn nearer than the best.</summary>
+        public void Consider<TScreen>(ref TScreen screen, in ResidentCell cell, double x, double y, long position)
+            where TScreen : struct, ISpatialScreen
+        {
+            var (along, across) = screen.Place(UnitOf(x - cell.CornerX, cell.ExtentX), UnitOf(y - cell.CornerY, cell.ExtentY));
+            var distance = DistanceTo(along, across);
+            if (distance < Best)
+            {
+                (Best, Position, X, Y, Along, Across) = (distance, position, x, y, along, across);
+                Limit = distance - NearestTolerance;
+            }
+        }
     }
 
     // A rectangle of the grid, both ends in it. The quantization is non-decreasing, so the grid cells of the rectangle's
