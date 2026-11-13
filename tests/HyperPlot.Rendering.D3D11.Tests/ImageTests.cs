@@ -10,6 +10,9 @@ namespace HyperPlot.Rendering.D3D11.Tests;
 public sealed class ImageTests : IDisposable
 {
     private const int Height = 32;
+
+    // The flag of ImageInstance.Flags that leaves a number of exactly 0 transparent (row R3b1).
+    private const uint ZeroTransparent = 64;
     private static readonly Color Background = new(250, 245, 235, 255);
     private readonly PlotWorkerPool _pool = new(1);
 
@@ -158,6 +161,113 @@ public sealed class ImageTests : IDisposable
         AssertPixel(rgba, 16, 8, Height / 2, Over(new Color(200, 100, 50, 128), 0.8), 2);
     }
 
+    /// <summary>
+    /// The flag of bit 6 leaves a number of exactly 0 transparent and paints every other number as before; without it, 0
+    /// is painted as any number (design §5.5.2 "描き方", row R3b1).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A raster of 6 values with 0 at the first, the third, and the last texel, nearest, each texel 16 pixels wide;
+    ///   viridis over [0, 1].
+    ///
+    /// Steps:
+    /// - Draw it with the flag and without; read the middle of each texel.
+    ///
+    /// Expected:
+    /// - With the flag: the background at the texels of 0, viridis.Map(value) at the others.
+    /// - Without: viridis.Map(value) at every texel, the first color at the texels of 0.
+    /// </remarks>
+    [Fact]
+    public void ZeroTransparent_LeavesOnlyZeroTransparent()
+    {
+        var map = ColorMaps.Viridis;
+        double[] values = [0, 0.5, 0, 1, 0.25, 0];
+        var (flagged, width) = Draw(values, 0, 0, 0, 1, 0, false, false, map, bilinear: false, opacity: 1, zeroTransparent: true);
+        var (plain, _) = Draw(values, 0, 0, 0, 1, 0, false, false, map, bilinear: false, opacity: 1);
+        for (var i = 0; i < values.Length; i++)
+        {
+            AssertPixel(flagged, width, (16 * i) + 8, Height / 2, values[i] == 0 ? Background : map.Map(values[i]), 0);
+            AssertPixel(plain, width, (16 * i) + 8, Height / 2, map.Map(values[i]), 0);
+        }
+
+        Assert.NotEqual(Background, map.Map(0));
+    }
+
+    /// <summary>
+    /// A density tile's face, read nearest through the symlog of constant 1 up to its largest count, draws each bin's count
+    /// at its color and the empty bins transparent (design §5.5.2 "描き方", row R3b1).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A tile of 2-byte bins whose first row begins 0, 1, 5, 0, 300, 1,000 and whose other bins are 0, requested from
+    ///   the backend's cache for the full snapshot of 100 points; viridis.
+    ///
+    /// Steps:
+    /// - Draw the first 6 bins of the first row, 16 pixels each, with the flag of bit 6, symlog of constant 1, and the
+    ///   domain [0, symlog(1,000)]; read the middle of each bin.
+    ///
+    /// Expected:
+    /// - The background at the bins of 0; at the others, viridis at log10(1 + c) / log10(1,001), within an index of the
+    ///   table (log10 on the GPU and on the CPU may round apart at an index's edge).
+    /// </remarks>
+    [Fact]
+    public void DensityFace_DrawsTheCountsAndLeavesEmptyBinsTransparent()
+    {
+        ulong[] counts = [0, 1, 5, 0, 300, 1_000];
+        var bins = new byte[DensityTiles.BinCount * 2];
+        for (var x = 0; x < counts.Length; x++)
+        {
+            bins[2 * x] = (byte)counts[x];
+            bins[(2 * x) + 1] = (byte)(counts[x] >> 8);
+        }
+
+        using var pool = new PlotWorkerPool(1);
+        var random = new Random(37);
+        using var xs = Column.Wrap(Enumerable.Range(0, 100).Select(_ => random.NextDouble()).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, 100).Select(_ => random.NextDouble()).ToArray());
+        using var index = pool.BuildSpatialIndex(xs, ys, new SpatialIndexInput { Rows = RowRange.All });
+        index.WhenComplete().GetAwaiter().GetResult();
+        var snapshot = index.Acquire();
+        try
+        {
+            using var backend = D3D11Backend.Create(useWarp: true);
+            var width = counts.Length * 16;
+            using var target = backend.CreateRenderTarget(new RenderTargetDescription(width, Height));
+            var map = ColorMaps.Viridis;
+            backend.Images.BeginFrame();
+            var slot = backend.Images.RequestDensity(snapshot, 0, 0, new DensityTile(bins, 2));
+            var high = Forward(1_000, 2, 1);
+            var record = Paint(2, 1, 0, high, 0, false, false, (uint)backend.Images.Table(map), bilinear: false, opacity: 1);
+            record.Flags |= ZeroTransparent;
+            record.AlongU = new Vector2(16, 0);
+            record.AlongV = new Vector2(0, Height);
+            record.Range = new Vector4(0, 0, counts.Length, 1);
+            record.SampleScale = 1;
+            record.Slice = (uint)(slot % ResidencyCache.PageSlots);
+            var list = new RenderList();
+            list.DrawImage(record, ImagePlan.PageOf(false, slot));
+            target.Clear(Background);
+            backend.Draw(target, list);
+            var pixels = new byte[width * Height * 4];
+            target.ReadPixels(pixels);
+            for (var i = 0; i < counts.Length; i++)
+            {
+                if (counts[i] == 0)
+                {
+                    AssertPixel(pixels, width, (16 * i) + 8, Height / 2, Background, 0);
+                    continue;
+                }
+
+                var expected = Index(Forward(counts[i], 2, 1) / high);
+                AssertPixel(pixels, width, (16 * i) + 8, Height / 2, [map[Math.Max(0, expected - 1)], map[expected], map[Math.Min(255, expected + 1)]]);
+            }
+        }
+        finally
+        {
+            snapshot.Release();
+        }
+    }
+
     /// <summary>After a device loss the cache forgets its tiles, and the next frame sends them again and draws the same (design §5.2).</summary>
     /// <remarks>
     /// Preconditions:
@@ -220,7 +330,8 @@ public sealed class ImageTests : IDisposable
         bool reverse,
         ColorMap map,
         bool bilinear,
-        float opacity
+        float opacity,
+        bool zeroTransparent = false
     )
     {
         using var column = Column.Wrap(values.Select(v => (float)v).ToArray());
@@ -232,6 +343,7 @@ public sealed class ImageTests : IDisposable
         backend.Images.BeginFrame();
         var slot = backend.Images.Request(new ResidencyCache.TileKey(mipmap, ResidencyCache.Format.Float, 0, 0, 0, mipmap.Stamp(0, 0), 0), mipmap);
         var record = Paint(kind, constant, low, high, middle, diverging, reverse, (uint)backend.Images.Table(map), bilinear, opacity);
+        record.Flags |= zeroTransparent ? ZeroTransparent : 0;
         record.AlongU = new Vector2(16, 0);
         record.AlongV = new Vector2(0, Height);
         record.Range = new Vector4(0, 0, values.Length, 1);
