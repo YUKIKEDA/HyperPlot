@@ -154,7 +154,7 @@ public sealed class IndexedPointTests
     ///   131,073 rows split by 65 categories, and by 64.
     ///
     /// Expected:
-    /// - InvalidOperationException naming row R3d, R3e, and R3d for the first two and the 65 categories; ArgumentException
+    /// - InvalidOperationException naming row R3d, R3e2, and R3d for the first two and the 65 categories; ArgumentException
     ///   naming a stored column for the evenly spaced x; the 64 categories render 64 parts' runs.
     /// </remarks>
     [Fact]
@@ -178,7 +178,7 @@ public sealed class IndexedPointTests
         var numbered = Spec(table, point with { ColorBy = v }) with { ScaleColor = Scale.Sequential() };
         Assert.Contains("R3d", Assert.Throws<InvalidOperationException>(() => plan.Render(numbered)).Message, StringComparison.Ordinal);
         Assert.Contains(
-            "R3e",
+            "R3e2",
             Assert.Throws<InvalidOperationException>(() => plan.Render(Spec(table, point) with { Coord = Coord.Polar() })).Message,
             StringComparison.Ordinal
         );
