@@ -469,6 +469,143 @@ public sealed class SizeShapeTests
         Assert.True(plan.Guides.ColorBarLength > 0);
     }
 
+    /// <summary>
+    /// The legend's band holds the size legend (design §4.6 "凡例" 3, "大きさの凡例"): it is at least the largest circle and
+    /// a gap wide, and widens with the circle.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 30 points sized by values from 0 to 100; the fake text backend; a plan of 640 × 360 at a scale of 1.
+    ///
+    /// Steps:
+    /// - Render with the range of 2 to 16 DIPs, and with 2 to 60.
+    ///
+    /// Expected:
+    /// - The largest circle is the range's top. Each band is at least that circle + the gap wide; the band of 60 is wider than
+    ///   the band of 16 by at least 60 − max(16, the swatch).
+    /// </remarks>
+    [Fact]
+    public void LegendBand_HoldsTheSizeLegend()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, 640, 360);
+        using var xs = Column.Wrap(Enumerable.Range(0, 30).Select(i => (double)i).ToArray());
+        using var mass = Column.Wrap(Enumerable.Range(0, 30).Select(i => i * 100 / 29.0).ToArray());
+        var table = DataTable.Create().Add("x", xs).Add("m", mass).Build();
+        var point = new PointLayerSpec
+        {
+            X = table.Col<double>("x"),
+            Y = table.Col<double>("x"),
+            SizeBy = table.Col<double>("m"),
+        };
+        var theme = Theme.Light;
+        int Band(float max)
+        {
+            var list = plan.Render(Spec(table, point) with { Theme = theme, ScaleSize = Scale.Size().WithRange(2, max) });
+            var widest = list.Markers.ToArray()[30..].Max(m => m.Size);
+            Assert.Equal(max, widest, 3);
+            var gap = plan.Guides.Round(theme.Spacing);
+            Assert.True(plan.Guides.LegendWidth >= widest + gap, $"The band {plan.Guides.LegendWidth} is narrower than {widest} + {gap}.");
+            return plan.Guides.LegendWidth;
+        }
+
+        Assert.True(Band(60) - Band(16) >= 60 - Math.Max(16, plan.Guides.Round(theme.LegendSwatch)));
+    }
+
+    /// <summary>
+    /// A change of the size scale draws again with it (design §4.2 "差分"): the range alone is a change of looks, the domain
+    /// one of the scale, and another size column one of the data.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Three points of sizes 0, 50, and 100, and another column of 100, 50, and 0.
+    ///
+    /// Steps:
+    /// - Render with the range of 2 to 16 DIPs; then 4 to 8; then the domain [0, 50]; then the other column.
+    ///
+    /// Expected:
+    /// - The diameters are 2, √130, 16; then 4, √40, 8; then 4, 8, 8; then 8, √40, 4.
+    /// </remarks>
+    [Fact]
+    public void Changes_DrawWithTheNewScale()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        using var xs = Column.Wrap(new[] { 1.0, 2, 3 });
+        using var sizes = Column.Wrap(new[] { 0.0, 50, 100 });
+        using var others = Column.Wrap(new[] { 100.0, 50, 0 });
+        var table = DataTable.Create().Add("x", xs).Add("s", sizes).Add("o", others).Build();
+        var point = new PointLayerSpec
+        {
+            X = table.Col<double>("x"),
+            Y = table.Col<double>("x"),
+            SizeBy = table.Col<double>("s"),
+        };
+        float[] Drawn(PlotSpec spec) => [.. plan.Render(spec).Markers.ToArray()[..3].Select(m => m.Size)];
+
+        Assert.Equal([2f, (float)Math.Sqrt(130), 16f], Drawn(Spec(table, point) with { ScaleSize = Scale.Size() }), new Near());
+        Assert.Equal([4f, (float)Math.Sqrt(40), 8f], Drawn(Spec(table, point) with { ScaleSize = Scale.Size().WithRange(4, 8) }), new Near());
+        Assert.Equal(
+            [4f, 8f, 8f],
+            Drawn(Spec(table, point) with { ScaleSize = Scale.Size(Scale.Linear().WithDomain(0, 50)).WithRange(4, 8) }),
+            new Near()
+        );
+        Assert.Equal(
+            [8f, (float)Math.Sqrt(40), 4f],
+            Drawn(Spec(table, point with { SizeBy = table.Col<double>("o") }) with { ScaleSize = Scale.Size().WithRange(4, 8) }),
+            new Near()
+        );
+    }
+
+    /// <summary>
+    /// On the index path, the parts of a layer split by a color and a shape column are counted by the pairs that have rows:
+    /// 64 render and 65 throw (design §5.5.2 "上限と例外").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 131,073 seeded points; a shape column of two names taking turns; a color column of 32 names over the rows, and one
+    ///   of 33 names whose last is on one row only.
+    ///
+    /// Steps:
+    /// - Render shaped and colored by the 32 names, then by the 33, on a plan that waits for its indexes.
+    ///
+    /// Expected:
+    /// - 32 × 2 = 64 pairs render as 64 parts, whose runs hold every point; 65 pairs throw InvalidOperationException naming
+    ///   row R3d.
+    /// </remarks>
+    [Fact]
+    public void IndexPath_SixtyFourPairsAndNoMore()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var plan = TestPlans.Create(pool, Size, Size);
+        var random = new Random(7);
+        using var xs = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("y", ys)
+            .Add("k", Column.Categorical(Enumerable.Range(0, Over).Select(i => (string?)(i % 2 == 0 ? "a" : "b")).ToArray()))
+            .Add("c32", Column.Categorical(Enumerable.Range(0, Over).Select(i => (string?)$"c{(i / 2) % 32:D2}").ToArray()))
+            .Add("c33", Column.Categorical(Enumerable.Range(0, Over).Select(i => (string?)(i == 0 ? "c32" : $"c{(i / 2) % 32:D2}")).ToArray()))
+            .Build();
+        var point = new PointLayerSpec
+        {
+            X = table.Col<double>("x"),
+            Y = table.Col<double>("y"),
+            ShapeBy = table.Cat("k").ToColumnRef(),
+        };
+
+        var pairs = plan.Render(Spec(table, point with { ColorBy = table.Cat("c32").ToColumnRef() }) with { ScaleColor = Scale.Ordinal() });
+        Assert.Equal(64, ((SplitPlan)plan.Layers[0]).SeriesCount);
+        Assert.Equal(Over, pairs.ResidentRuns.ToArray().Sum(r => r.Count));
+
+        var refused = Assert.Throws<InvalidOperationException>(() =>
+            plan.Render(Spec(table, point with { ColorBy = table.Cat("c33").ToColumnRef() }) with { ScaleColor = Scale.Ordinal() })
+        );
+        Assert.Contains("R3d", refused.Message, StringComparison.Ordinal);
+    }
+
     /// <summary>Frames of the size and shape channels allocate nothing in steady state (invariant 3).</summary>
     /// <remarks>
     /// Preconditions:
