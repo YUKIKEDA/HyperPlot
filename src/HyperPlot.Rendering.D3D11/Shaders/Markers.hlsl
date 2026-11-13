@@ -1,4 +1,4 @@
-// Point markers (design §5.1, row R3a). One quad per marker: MarkerVS makes it from SV_VertexID over the marker's box
+// Point markers (design §5.1, rows R3a and R3f). One quad per marker: MarkerVS makes it from SV_VertexID over the marker's box
 // widened outward to whole pixels, and MarkerPS covers each pixel by the marker's shape and multiplies the premultiplied
 // color by the coverage. Positions and sizes are physical pixels of the target, origin at the top left; SV_Position.xy is
 // the pixel center, so the pixel's top left is SV_Position.xy − 0.5.
@@ -13,8 +13,9 @@ cbuffer Markers : register(b0)
 struct Marker
 {
     float2 Center;
-    float Size;           // the diameter, the side of a square, or the span of a cross's arms
-    uint Kind;            // the shape in the low 8 bits (0 disc, 1 square, 2 cross); a cross's stroke above them, in 1/16 pixel
+    float Size;           // the diameter: the side of the box every shape fits in
+    uint Kind;            // the shape in the low 8 bits (0 disc, 1 square, 2 cross, 3 triangle, 4 diamond, 5 x); the stroke of a
+                          // cross or an x above them, in 1/16 pixel
     float4 Color;         // premultiplied, 0..1
 };
 
@@ -24,7 +25,7 @@ struct MarkerVertex
 {
     float4 Position : SV_Position;
     nointerpolation float2 Center : CENTER;
-    nointerpolation float2 Extent : EXTENT;   // the half size, and half a cross's stroke
+    nointerpolation float2 Extent : EXTENT;   // the half size, and half the stroke of a cross or an x
     nointerpolation uint Shape : SHAPE;
     nointerpolation float4 Color : COLOR;
 };
@@ -55,34 +56,58 @@ float BoxCoverage(float2 pixel, float2 center, float2 halfSize)
     return overlap.x * overlap.y;
 }
 
-float4 MarkerPS(MarkerVertex input) : SV_Target
+// The share of the pixel whose center is at position that a marker covers (design §5.1 "形", "行 R3f の形"): the shape
+// fits in the box of the half size radius around center, and stroke is half the stroke of a cross or an x.
+float ShapeCoverage(uint shape, float2 position, float2 center, float radius, float stroke)
 {
-    float radius = input.Extent.x;
-    float coverage;
-    if (input.Shape == 0)
+    if (shape == 0)
     {
         // A disc: the edge crosses a pixel in a band half a pixel to each side of the radius.
-        coverage = saturate(radius + 0.5 - length(input.Position.xy - input.Center));
-    }
-    else
-    {
-        float2 pixel = floor(input.Position.xy);
-        if (input.Shape == 1)
-        {
-            coverage = BoxCoverage(pixel, input.Center, float2(radius, radius));
-        }
-        else
-        {
-            // A cross: the two bars, less the square they share.
-            float stroke = input.Extent.y;
-            coverage =
-                BoxCoverage(pixel, input.Center, float2(radius, stroke))
-                + BoxCoverage(pixel, input.Center, float2(stroke, radius))
-                - BoxCoverage(pixel, input.Center, float2(stroke, stroke));
-        }
+        return saturate(radius + 0.5 - length(position - center));
     }
 
-    return input.Color * coverage;
+    float2 pixel = floor(position);
+    if (shape == 1)
+    {
+        return BoxCoverage(pixel, center, float2(radius, radius));
+    }
+
+    if (shape == 2)
+    {
+        // A cross: the two bars, less the square they share.
+        return BoxCoverage(pixel, center, float2(radius, stroke))
+            + BoxCoverage(pixel, center, float2(stroke, radius))
+            - BoxCoverage(pixel, center, float2(stroke, stroke));
+    }
+
+    float2 from = position - center;
+
+    // How far the pixel's center lies outside the box. A sharp corner's sides alone would cover pixels past the corner,
+    // beyond the marker's quad: the box's sides end the shape there.
+    float box = max(abs(from.x), abs(from.y)) - radius;
+    if (shape == 3)
+    {
+        // A triangle that points up: its apex at the middle of the box's top side, its base the box's bottom side. The
+        // signed distance to the nearest of the two slanted sides, whose slope is 2, and of the box.
+        float outside = max(box, (2 * abs(from.x) - (from.y + radius)) * 0.4472135955);
+        return saturate(0.5 - outside);
+    }
+
+    if (shape == 4)
+    {
+        // A diamond: its corners at the middles of the box's sides.
+        return saturate(0.5 - max(box, (abs(from.x) + abs(from.y) - radius) * 0.7071067812));
+    }
+
+    // An x: the bands along the box's two diagonals, cut by the box.
+    float down = saturate(0.5 - (abs(from.x - from.y) * 0.7071067812 - stroke));
+    float up = saturate(0.5 - (abs(from.x + from.y) * 0.7071067812 - stroke));
+    return max(down, up) * BoxCoverage(pixel, center, float2(radius, radius));
+}
+
+float4 MarkerPS(MarkerVertex input) : SV_Target
+{
+    return input.Color * ShapeCoverage(input.Shape, input.Position.xy, input.Center, input.Extent.x, input.Extent.y);
 }
 
 // Resident markers (design §5.5.2 "GPU での写し方と精度", row R3a): the points stay on the GPU, each as its position in its
@@ -155,29 +180,11 @@ ResidentVertex ResidentMarkerVS(uint vertex : SV_VertexID, uint instance : SV_In
 
 float4 ResidentMarkerPS(ResidentVertex input) : SV_Target
 {
-    float radius = ResidentSize * 0.5;
-    uint shape = ResidentKind & 0xFF;
-    float coverage;
-    if (shape == 0)
-    {
-        coverage = saturate(radius + 0.5 - length(input.Position.xy - input.Center));
-    }
-    else
-    {
-        float2 pixel = floor(input.Position.xy);
-        if (shape == 1)
-        {
-            coverage = BoxCoverage(pixel, input.Center, float2(radius, radius));
-        }
-        else
-        {
-            float stroke = (ResidentKind >> 8) * (0.5 / 16.0);
-            coverage =
-                BoxCoverage(pixel, input.Center, float2(radius, stroke))
-                + BoxCoverage(pixel, input.Center, float2(stroke, radius))
-                - BoxCoverage(pixel, input.Center, float2(stroke, stroke));
-        }
-    }
-
+    float coverage = ShapeCoverage(
+        ResidentKind & 0xFF,
+        input.Position.xy,
+        input.Center,
+        ResidentSize * 0.5,
+        (ResidentKind >> 8) * (0.5 / 16.0));
     return ResidentColor * coverage;
 }

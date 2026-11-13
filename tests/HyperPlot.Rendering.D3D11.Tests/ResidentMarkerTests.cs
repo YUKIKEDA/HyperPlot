@@ -47,6 +47,37 @@ public sealed class ResidentMarkerTests
     }
 
     /// <summary>
+    /// A run draws each of the six shapes as the recorded markers of the same shape (design §5.1 "行 R3f の形"): the
+    /// resident points' pixel shader takes its look from the run.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The snapshot and the target of the test above; markers of 7 pixels at alpha 160 with a stroke of 1.
+    ///
+    /// Steps:
+    /// - For every value of MarkerShape: draw a run over each whole page, and the same points with DrawMarkers.
+    ///
+    /// Expected:
+    /// - No channel of any pixel differs by more than 6 between the two, for each shape; no two shapes draw the same picture.
+    /// </remarks>
+    [Fact]
+    public void Runs_DrawEveryShapeAsTheRecordedMarkers()
+    {
+        using var built = new Built();
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(Size, Size));
+        var pictures = new List<byte[]>();
+        foreach (var shape in Enum.GetValues<MarkerShape>())
+        {
+            var style = Style with { Size = 7, Shape = shape };
+            var resident = Read(backend, target, Resident(backend, built.Snapshot, swap: false, style));
+            AssertClose(Read(backend, target, Recorded(built.Snapshot, swap: false, style)), resident, 6);
+            Assert.DoesNotContain(pictures, p => p.AsSpan().SequenceEqual(resident));
+            pictures.Add(resident);
+        }
+    }
+
+    /// <summary>
     /// After a device loss the cache forgets its pages and the pipeline its buffers; the next frame reads the pages again
     /// and draws the same pixels (design §5.2, invariant 10).
     /// </summary>
@@ -141,8 +172,9 @@ public sealed class ResidentMarkerTests
     // The pixel of a value: [0.4, 0.5] over the target's 96 pixels.
     private static double Pixel(double value) => (value - 0.4) * 10 * Size;
 
-    private static RenderList Resident(D3D11Backend backend, SpatialSnapshot snapshot, bool swap)
+    private static RenderList Resident(D3D11Backend backend, SpatialSnapshot snapshot, bool swap, MarkerStyle? style = null)
     {
+        var look = style ?? Style;
         var list = new RenderList();
         var cells = snapshot.ResidentCells;
         var offset = list.AddResidentCells(cells.Length, out var records);
@@ -171,9 +203,9 @@ public sealed class ResidentMarkerTests
                     slot,
                     PointPages.PointsOf(snapshot, page),
                     offset,
-                    Style.Size,
-                    (uint)Style.Shape | (16u << 8),
-                    RenderList.Premultiply(Style.Color),
+                    look.Size,
+                    (uint)look.Shape | (16u << 8),
+                    RenderList.Premultiply(look.Color),
                     swap,
                     new Vector2(float.MinValue),
                     new Vector2(float.MaxValue),
@@ -185,7 +217,7 @@ public sealed class ResidentMarkerTests
         return list;
     }
 
-    private static RenderList Recorded(SpatialSnapshot snapshot, bool swap)
+    private static RenderList Recorded(SpatialSnapshot snapshot, bool swap, MarkerStyle? style = null)
     {
         var (xs, ys) = (new double[snapshot.PointCount], new double[snapshot.PointCount]);
         snapshot.ReadPoints(0, xs, ys, new long[xs.Length]);
@@ -197,7 +229,7 @@ public sealed class ResidentMarkerTests
         }
 
         var list = new RenderList();
-        list.DrawMarkers(centers, Style);
+        list.DrawMarkers(centers, style ?? Style);
         return list;
     }
 

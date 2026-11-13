@@ -268,7 +268,7 @@ public sealed partial class RenderListTests
     /// - An empty list.
     ///
     /// Steps:
-    /// - Draw markers with sizes of 0, NaN, and ∞, strokes of 0 and 4,097, a shape of 3, and two colors for one center.
+    /// - Draw markers with sizes of 0, NaN, and ∞, strokes of 0 and 4,097, a shape of 6, and two colors for one center.
     /// - Draw only centers that are not finite. Under a clip, draw three centers of which the second is NaN, as crosses of
     ///   stroke 2.5 in one half-transparent color; then two squares with a color each.
     ///
@@ -292,7 +292,7 @@ public sealed partial class RenderListTests
                 new MarkerStyle(black, float.PositiveInfinity),
                 new MarkerStyle(black, 4, MarkerShape.Cross, 0),
                 new MarkerStyle(black, 4, MarkerShape.Cross, 4097),
-                new MarkerStyle(black, 4, (MarkerShape)3),
+                new MarkerStyle(black, 4, (MarkerShape)6),
             }
         )
         {
@@ -330,5 +330,81 @@ public sealed partial class RenderListTests
         list.Clear();
         Assert.Equal(0, list.Markers.Length);
         Assert.Equal(0, list.MarkerCalls.Length);
+    }
+
+    /// <summary>
+    /// DrawMarkers with a color, a size, and a shape a marker (design §5.1 "マーカー", row R3f): an empty span takes the
+    /// style's value; a span of another length and an unnamed shape throw, and a call that throws records nothing; a size
+    /// that is not finite and above 0 draws nothing.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An empty list; three centers.
+    ///
+    /// Steps:
+    /// - Call with two colors, two sizes, and two shapes for the three centers; with an unnamed shape last of three; with
+    ///   empty sizes and a style of size 0; with empty shapes and an unnamed shape in the style; with a stroke of 0.
+    /// - Draw the three centers with sizes of 4, NaN, and 9, the shapes X, Circle, and Triangle, a color each, and a stroke
+    ///   of 2. Draw them again with the style's values alone, a diamond of 5. Draw them with sizes of 0, −1, and ∞.
+    /// - Draw every value of Enum.GetValues of MarkerShape as the style's shape, and the value past the largest.
+    ///
+    /// Expected:
+    /// - ArgumentException naming colors, sizes, and shapes; ArgumentOutOfRangeException naming shapes and style; no record
+    ///   after any of them.
+    /// - Two records of the first draw (the NaN size left out) with their own size, shape with the stroke 32, and color, in
+    ///   one call; three diamonds of 5 in the style's color; nothing for the last sizes.
+    /// - Every named shape is recorded with its number; the value past the largest throws.
+    /// </remarks>
+    [Fact]
+    public void DrawMarkers_PerMarkerLooks_ArgumentsAndRecords()
+    {
+        var list = new RenderList();
+        var black = new Color(0, 0, 0, 255);
+        var red = new Color(255, 0, 0, 255);
+        System.Numerics.Vector2[] centers = [new(1, 2), new(3, 4), new(5, 6)];
+        var style = new MarkerStyle(black, 5, MarkerShape.Diamond, 2);
+        MarkerShape[] three = [MarkerShape.X, MarkerShape.Circle, MarkerShape.Triangle];
+
+        Assert.Equal("colors", Assert.Throws<ArgumentException>(() => list.DrawMarkers(centers, [red, red], [], [], style)).ParamName);
+        Assert.Equal("sizes", Assert.Throws<ArgumentException>(() => list.DrawMarkers(centers, [], [1, 2], [], style)).ParamName);
+        Assert.Equal("shapes", Assert.Throws<ArgumentException>(() => list.DrawMarkers(centers, [], [], three.AsSpan(0, 2), style)).ParamName);
+        MarkerShape[] unnamed = [MarkerShape.Circle, MarkerShape.X, (MarkerShape)6];
+        var noShape = style with { Shape = (MarkerShape)6 };
+        Assert.Equal("shapes", Range(() => list.DrawMarkers(centers, [], [], unnamed, style)));
+        Assert.Equal("style", Range(() => list.DrawMarkers(centers, [], [], three, style with { Size = 0 })));
+        Assert.Equal("style", Range(() => list.DrawMarkers(centers, [], [4, 4, 4], [], noShape)));
+        Assert.Equal("style", Range(() => list.DrawMarkers(centers, [], [4, 4, 4], three, style with { Stroke = 0 })));
+        Assert.Equal((0, 0), (list.Markers.Length, list.Commands.Length));
+
+        // The style's size and shape are not read when a span gives them.
+        list.DrawMarkers(centers, [red, black, new Color(0, 255, 0, 128)], [4, float.NaN, 9], three, style with { Size = 0, Shape = (MarkerShape)6 });
+        list.DrawMarkers(centers, [], [], [], style);
+        list.DrawMarkers(centers, [], [0, -1, float.PositiveInfinity], [], style);
+        var ink = new System.Numerics.Vector4(0, 0, 0, 1);
+        Assert.Equal(
+            [
+                new MarkerInstance(new(1, 2), 4, 5 | (32u << 8), new System.Numerics.Vector4(1, 0, 0, 1)),
+                new MarkerInstance(new(5, 6), 9, 3 | (32u << 8), new System.Numerics.Vector4(0, 128 / 255f, 0, 128 / 255f)),
+                new MarkerInstance(new(1, 2), 5, 4 | (32u << 8), ink),
+                new MarkerInstance(new(3, 4), 5, 4 | (32u << 8), ink),
+                new MarkerInstance(new(5, 6), 5, 4 | (32u << 8), ink),
+            ],
+            list.Markers.ToArray()
+        );
+        Assert.Equal([new MarkerCall(0, 2, ClipRect.All), new MarkerCall(2, 3, ClipRect.All)], list.MarkerCalls.ToArray());
+
+        list.Clear();
+        var shapes = Enum.GetValues<MarkerShape>();
+        foreach (var shape in shapes)
+        {
+            list.DrawMarkers(centers.AsSpan(0, 1), new MarkerStyle(black, 4, shape));
+        }
+
+        Assert.Equal(shapes.Select(s => (uint)s | (16u << 8)), list.Markers.ToArray().Select(m => m.Kind));
+        Assert.Equal(6, shapes.Length);
+        var past = (MarkerShape)(shapes.Max(s => (int)s) + 1);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawMarkers(centers, new MarkerStyle(black, 4, past)));
+
+        static string? Range(Action draw) => Assert.Throws<ArgumentOutOfRangeException>(draw).ParamName;
     }
 }

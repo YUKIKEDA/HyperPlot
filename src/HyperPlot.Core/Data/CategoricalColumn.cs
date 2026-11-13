@@ -129,11 +129,11 @@ public sealed class CategoricalColumn : Column
     internal override double DifferenceAt(long index, long origin) => _codes[index] - origin;
 
     /// <inheritdoc />
-    internal override void ReadDifferences(Span<double> destination, long origin)
+    internal override void ReadDifferences(Span<double> destination, long origin, int first = 0)
     {
         for (var i = 0; i < destination.Length; i++)
         {
-            destination[i] = _codes[i] - origin;
+            destination[i] = _codes[first + i] - origin;
         }
     }
 

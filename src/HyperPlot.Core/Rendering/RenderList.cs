@@ -470,7 +470,7 @@ public sealed class RenderList
     /// <exception cref="ArgumentOutOfRangeException">
     /// The style's size or stroke is not finite or not above 0, the stroke is above 4,096, or the shape is not a named value.
     /// </exception>
-    public void DrawMarkers(ReadOnlySpan<Vector2> centers, in MarkerStyle style) => AddMarkers(centers, default, style, perMarker: false);
+    public void DrawMarkers(ReadOnlySpan<Vector2> centers, in MarkerStyle style) => AddMarkers(centers, default, default, default, style);
 
     /// <summary>
     /// Records markers of one size and shape, each with its own color (design §5.1, row R3a). The style's color is not used.
@@ -490,7 +490,61 @@ public sealed class RenderList
             throw new ArgumentException("There is one color for each center.", nameof(colors));
         }
 
-        AddMarkers(centers, colors, style, perMarker: true);
+        AddMarkers(centers, colors, default, default, style);
+    }
+
+    /// <summary>
+    /// Records markers, each with its own color, size, and shape (design §5.1 "マーカー", row R3f). An empty span takes the
+    /// style's value for every marker. A center that is not finite, or a size that is not finite and above 0, draws
+    /// nothing. When the call throws, it has recorded nothing.
+    /// </summary>
+    /// <param name="centers">The centers, in physical pixels.</param>
+    /// <param name="colors">The color of each marker, or empty for the style's color.</param>
+    /// <param name="sizes">The size of each marker in physical pixels, or empty for the style's size.</param>
+    /// <param name="shapes">The shape of each marker, or empty for the style's shape.</param>
+    /// <param name="style">The values of the empty spans, and the stroke of the crosses and the x's.</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="colors"/>, <paramref name="sizes"/>, or <paramref name="shapes"/> is neither empty nor as long as
+    /// <paramref name="centers"/>.
+    /// </exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The style's stroke is not finite or not above 0 or is above 4,096; <paramref name="sizes"/> is empty and the style's
+    /// size is not finite or not above 0; a shape, or the style's shape when <paramref name="shapes"/> is empty, is not a
+    /// named value.
+    /// </exception>
+    public void DrawMarkers(
+        ReadOnlySpan<Vector2> centers,
+        ReadOnlySpan<Color> colors,
+        ReadOnlySpan<float> sizes,
+        ReadOnlySpan<MarkerShape> shapes,
+        in MarkerStyle style
+    )
+    {
+        if (!colors.IsEmpty && colors.Length != centers.Length)
+        {
+            throw new ArgumentException("There is one color for each center, or none.", nameof(colors));
+        }
+
+        if (!sizes.IsEmpty && sizes.Length != centers.Length)
+        {
+            throw new ArgumentException("There is one size for each center, or none.", nameof(sizes));
+        }
+
+        if (!shapes.IsEmpty && shapes.Length != centers.Length)
+        {
+            throw new ArgumentException("There is one shape for each center, or none.", nameof(shapes));
+        }
+
+        // Before any marker is recorded, so that a call that throws records nothing.
+        foreach (var shape in shapes)
+        {
+            if (!MarkerStyle.IsShape(shape))
+            {
+                throw new ArgumentOutOfRangeException(nameof(shapes), shape, "A shape is a named MarkerShape value.");
+            }
+        }
+
+        AddMarkers(centers, colors, sizes, shapes, style);
     }
 
     /// <summary>
@@ -728,9 +782,16 @@ public sealed class RenderList
             color.A / 255f
         );
 
-    private void AddMarkers(ReadOnlySpan<Vector2> centers, ReadOnlySpan<Color> colors, in MarkerStyle style, bool perMarker)
+    /// <summary>Records the markers: an empty span of colors, sizes, or shapes takes the style's value. The shapes are named values.</summary>
+    private void AddMarkers(
+        ReadOnlySpan<Vector2> centers,
+        ReadOnlySpan<Color> colors,
+        ReadOnlySpan<float> sizes,
+        ReadOnlySpan<MarkerShape> shapes,
+        in MarkerStyle style
+    )
     {
-        if (!float.IsFinite(style.Size) || style.Size <= 0)
+        if (sizes.IsEmpty && (!float.IsFinite(style.Size) || style.Size <= 0))
         {
             throw new ArgumentOutOfRangeException(nameof(style), style.Size, "The size is finite and above 0.");
         }
@@ -740,7 +801,7 @@ public sealed class RenderList
             throw new ArgumentOutOfRangeException(nameof(style), style.Stroke, "The stroke is finite, above 0, and at most 4,096.");
         }
 
-        if (!MarkerStyle.IsShape(style.Shape))
+        if (shapes.IsEmpty && !MarkerStyle.IsShape(style.Shape))
         {
             throw new ArgumentOutOfRangeException(nameof(style), style.Shape, "The shape is a named MarkerShape value.");
         }
@@ -750,19 +811,27 @@ public sealed class RenderList
             Array.Resize(ref _markers, Math.Max(_markerCount + centers.Length, _markers.Length * 2));
         }
 
-        // The shape in the low 8 bits, and the stroke of a cross above them in sixteenths of a pixel, as Markers.hlsl reads it.
-        var kind = (uint)style.Shape | ((uint)MathF.Round(style.Stroke * 16) << 8);
-        var one = perMarker ? default : Premultiply(style.Color);
+        // The shape in the low 8 bits, and the stroke of a cross or an x above them in sixteenths of a pixel, as Markers.hlsl
+        // reads it.
+        var stroke = (uint)MathF.Round(style.Stroke * 16) << 8;
+        var kind = (uint)style.Shape | stroke;
+        var one = colors.IsEmpty ? Premultiply(style.Color) : default;
         var first = _markerCount;
         for (var i = 0; i < centers.Length; i++)
         {
             var center = centers[i];
-            if (!float.IsFinite(center.X) || !float.IsFinite(center.Y))
+            var size = sizes.IsEmpty ? style.Size : sizes[i];
+            if (!float.IsFinite(center.X) || !float.IsFinite(center.Y) || !float.IsFinite(size) || size <= 0)
             {
                 continue;
             }
 
-            _markers[_markerCount++] = new MarkerInstance(center, style.Size, kind, perMarker ? Premultiply(colors[i]) : one);
+            _markers[_markerCount++] = new MarkerInstance(
+                center,
+                size,
+                shapes.IsEmpty ? kind : (uint)shapes[i] | stroke,
+                colors.IsEmpty ? one : Premultiply(colors[i])
+            );
         }
 
         if (_markerCount == first)
@@ -1154,9 +1223,9 @@ internal struct ImageInstance
 
 /// <summary>The look of the markers of one <see cref="RenderList.DrawMarkers(ReadOnlySpan{Vector2}, in MarkerStyle)"/> call (design §5.1, row R3a).</summary>
 /// <param name="Color">The color. Not used by the call that takes a color for each marker.</param>
-/// <param name="Size">The diameter of a disc, the side of a square, or the span of a cross's arms, in physical pixels: finite and above 0.</param>
+/// <param name="Size">The diameter of a disc, and the side of the box any other shape fits in, in physical pixels: finite and above 0.</param>
 /// <param name="Shape">The shape.</param>
-/// <param name="Stroke">The width of a cross's two lines, in physical pixels: finite, above 0, and at most 4,096. Other shapes do not use it.</param>
+/// <param name="Stroke">The width of the two lines of a cross or an x, in physical pixels: finite, above 0, and at most 4,096. Other shapes do not use it.</param>
 public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape Shape = MarkerShape.Circle, float Stroke = 1)
 {
     /// <summary>The greatest stroke: the record holds it in sixteenths of a pixel in 24 bits.</summary>
@@ -1167,12 +1236,13 @@ public readonly record struct MarkerStyle(Color Color, float Size, MarkerShape S
     /// <c>DrawMarkers</c> of a frame allocated 248 bytes in 1 to 3 of 5 frames when the D3D11 tests ran beside a build, and
     /// nothing with this comparison (PR #439). Why it allocates was not confirmed.
     /// </summary>
-    internal static bool IsShape(MarkerShape shape) => shape is MarkerShape.Circle or MarkerShape.Square or MarkerShape.Cross;
+    internal static bool IsShape(MarkerShape shape) =>
+        shape is MarkerShape.Circle or MarkerShape.Square or MarkerShape.Cross or MarkerShape.Triangle or MarkerShape.Diamond or MarkerShape.X;
 }
 
 /// <summary>
 /// One marker as the GPU reads it (design §5.1, §5.3, row R3a): its center and size in physical pixels, its shape with a
-/// cross's stroke, and its premultiplied color. 32 bytes, laid out as the HLSL structure of Markers.hlsl.
+/// stroke of a cross or an x, and its premultiplied color. 32 bytes, laid out as the HLSL structure of Markers.hlsl.
 /// </summary>
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
 internal readonly record struct MarkerInstance(Vector2 Center, float Size, uint Kind, Vector4 Color);
@@ -1193,7 +1263,7 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// <param name="Count">The number of points of the page.</param>
 /// <param name="Cells">Where the part's cells begin in <see cref="RenderList.ResidentCells"/>: a point's cell number is added to it.</param>
 /// <param name="Size">The size of each marker, in physical pixels.</param>
-/// <param name="Kind">The shape and a cross's stroke, as <see cref="MarkerInstance.Kind"/>.</param>
+/// <param name="Kind">The shape and the stroke of a cross or an x, as <see cref="MarkerInstance.Kind"/>.</param>
 /// <param name="Color">The premultiplied color.</param>
 /// <param name="Swap">Whether x runs down the target and y across it: a flipped plot.</param>
 /// <param name="ClampLow">The least pixel a center takes on each of the data's axes: an axis that holds values to its domain.</param>

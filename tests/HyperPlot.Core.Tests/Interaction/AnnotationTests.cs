@@ -117,6 +117,63 @@ public sealed class AnnotationTests
     }
 
     /// <summary>
+    /// A marker annotation of each shape is one marker record (design §5.1 "行 R3f の形", §5.4): its point's pixel, twice
+    /// its radius, its shape with a stroke of one pixel, and its color.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's line; one marker annotation of radius 3 + i DIPs for the i-th value of Enum.GetValues of MarkerShape,
+    ///   at x = 100 + 100 i, the third in red.
+    ///
+    /// Steps:
+    /// - Draw a frame.
+    ///
+    /// Expected:
+    /// - Six marker records in the annotations' order: each at its point's pixel, of the size 2 (3 + i), with its shape's
+    ///   number and the stroke 16 sixteenths; the third red, the others the foreground. No sector call.
+    /// </remarks>
+    [Fact]
+    public void Record_DrawsAMarkerOfEachShape()
+    {
+        using var f = new EngineFixture();
+        var shapes = Enum.GetValues<MarkerShape>();
+        var red = new Color(255, 0, 0, 255);
+        f.Engine.SetPlot(
+            f.Spec with
+            {
+                Annotations =
+                [
+                    .. shapes.Select(
+                        (shape, i) =>
+                            (AnnotationSpec)(
+                                Annotation.Marker(new(AnnotationValue.Data(100 + (100 * i)), AnnotationValue.Data(0))) with
+                                {
+                                    Shape = shape,
+                                    Radius = 3 + i,
+                                    Color = i == 2 ? red : null,
+                                }
+                            )
+                    ),
+                ],
+            }
+        );
+        f.Engine.RenderFrame();
+
+        var list = f.Engine.Plan!.List;
+        var markers = list.Markers.ToArray();
+        Assert.Equal(6, markers.Length);
+        Assert.Equal(0, list.SectorCalls.Length);
+        for (var i = 0; i < markers.Length; i++)
+        {
+            var x = 100.0 + (100 * i);
+            var at = f.Engine.ViewToPixel(Panel, ViewRange.FromValues(x, x), ViewRange.FromValues(0, 0));
+            Assert.True(Near(markers[i].Center, at));
+            Assert.Equal((2f * (3 + i), (uint)shapes[i] | (16u << 8)), (markers[i].Size, markers[i].Kind));
+            Assert.Equal(RenderList.Premultiply(i == 2 ? red : Theme.Light.Foreground), markers[i].Color);
+        }
+    }
+
+    /// <summary>
     /// The subtitle takes a band below the title and the caption one at the bottom, and the panel gives up their height
     /// (design §4.6, Issue #382 Decisions 2 and 14), in a plot and in a figure's cell.
     /// </summary>
@@ -180,8 +237,8 @@ public sealed class AnnotationTests
     /// Expected:
     /// - The line: a polyline of one segment between the points' pixels, 1 pixel wide, the foreground, clipped to the panel,
     ///   after the data line. The rectangle: a red rect between the corners' pixels, and a closed polyline of 4 edges 2 pixels
-    ///   wide. The text: "note" at its point, 12 pixels, left and bottom aligned. The circle: a sector call at its point; the
-    ///   square: a rect 10 pixels a side; the cross: two polylines.
+    ///   wide. The text: "note" at its point, 12 pixels, left and bottom aligned. The markers: three marker records at
+    ///   their point, a disc of 8 pixels, a square of 10, and a cross of 8 with a stroke of 1 pixel, in the foreground.
     /// </remarks>
     [Fact]
     public void Record_DrawsTheFourKinds()
@@ -238,17 +295,10 @@ public sealed class AnnotationTests
         Assert.Equal((12f, TextAlign.Left, TextBaseline.Bottom), (text.Style.Size, text.Style.Horizontal, text.Style.Vertical));
 
         var at = Pixel(600, 0);
-        _ = Assert.Single(list.SectorCalls.ToArray(), c => Near(c.Center, at));
-        _ = Assert.Single(list.Rects.ToArray(), r => r.Width == 10 && r.Height == 10 && Near(new Vector2(r.X + 5, r.Y + 5), at));
-        Assert.Equal(
-            2,
-            polylines.Count(p =>
-                p.SegmentCount == 1
-                && p.MaxX - p.MinX <= 9
-                && p.MaxY - p.MinY <= 9
-                && Near(new Vector2((p.MinX + p.MaxX) / 2, (p.MinY + p.MaxY) / 2), at)
-            )
-        );
+        var markers = list.Markers.ToArray();
+        Assert.All(markers, m => Assert.True(Near(m.Center, at)));
+        Assert.Equal([(8f, 0u | (16u << 8)), (10f, 1u | (16u << 8)), (8f, 2u | (16u << 8))], markers.Select(m => (m.Size, m.Kind)));
+        Assert.All(markers, m => Assert.Equal(RenderList.Premultiply(Theme.Light.Foreground), m.Color));
     }
 
     /// <summary>
@@ -745,7 +795,7 @@ public sealed class AnnotationTests
         }
     }
 
-    private static Vector2[] Centers(EngineFixture f) => [.. f.Engine.Plan!.List.SectorCalls.ToArray().Select(c => c.Center)];
+    private static Vector2[] Centers(EngineFixture f) => [.. f.Engine.Plan!.List.Markers.ToArray().Select(m => m.Center)];
 
     private static bool Near(Vector2 a, Vector2 b) => Vector2.Distance(a, b) < 0.75f;
 

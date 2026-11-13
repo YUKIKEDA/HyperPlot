@@ -25,6 +25,12 @@ public sealed class PointBuilder
     /// <summary>Gets the column set so far to color the points by.</summary>
     internal ColumnRef? ColorByRef { get; private set; }
 
+    /// <summary>Gets the column set so far to size the points by.</summary>
+    internal ColumnRef? SizeByRef { get; private set; }
+
+    /// <summary>Gets the column set so far to shape the points by.</summary>
+    internal ColumnRef? ShapeByRef { get; private set; }
+
     /// <summary>Gets a value indicating whether the layer's x goes on the secondary x scale (row G6a).</summary>
     internal bool SecondaryXValue { get; private set; }
 
@@ -41,7 +47,7 @@ public sealed class PointBuilder
     }
 
     /// <summary>Sets the points' size.</summary>
-    /// <param name="size">The diameter of a disc, the side of a square, or the span of a cross, in DIPs: finite, above 0, and at most 512.</param>
+    /// <param name="size">The diameter of a disc, and the side of the box any other shape fits in, in DIPs: finite, above 0, and at most 512.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="size"/> is not finite, above 0, and at most 512.</exception>
     public PointBuilder Size(float size)
@@ -110,6 +116,29 @@ public sealed class PointBuilder
         where T : unmanaged, INumber<T>
     {
         ColorByRef = values;
+        return this;
+    }
+
+    /// <summary>
+    /// Sizes each point by a number, through the plot's size scale (design §4.1, §5.5.2, row R3f). A layer of at most
+    /// 131,072 rows is drawn so.
+    /// </summary>
+    /// <typeparam name="T">The element type of the column.</typeparam>
+    /// <param name="values">The numeric column of the plot's table, as long as the layer's points.</param>
+    /// <returns>This builder.</returns>
+    public PointBuilder SizeBy<T>(ColumnRef<T> values)
+        where T : unmanaged, INumber<T>
+    {
+        SizeByRef = values;
+        return this;
+    }
+
+    /// <summary>Shapes each point by its category, through the plot's shape scale (design §4.1, §5.5.2, row R3f).</summary>
+    /// <param name="category">The categorical column of the plot's table.</param>
+    /// <returns>This builder.</returns>
+    public PointBuilder ShapeBy(CategoryRef category)
+    {
+        ShapeByRef = category.ToColumnRef();
         return this;
     }
 

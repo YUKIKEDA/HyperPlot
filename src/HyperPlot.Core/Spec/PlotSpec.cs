@@ -34,6 +34,18 @@ public sealed record PlotSpec : SpecNode
     public ColorScaleSpec? ScaleColor { get; init; }
 
     /// <summary>
+    /// Gets the size scale that the point layers' <see cref="PointLayerSpec.SizeBy"/> share (design §4.2, row R3f). Null
+    /// takes <see cref="Scale.Size"/>. Not used, and not checked, when no layer has a <see cref="PointLayerSpec.SizeBy"/>.
+    /// </summary>
+    public SizeScaleSpec? ScaleSize { get; init; }
+
+    /// <summary>
+    /// Gets the shape scale that the point layers' <see cref="PointLayerSpec.ShapeBy"/> share (design §4.2, row R3f). Null
+    /// takes <see cref="Scale.Shape"/>. Not used, and not checked, when no layer has a <see cref="PointLayerSpec.ShapeBy"/>.
+    /// </summary>
+    public ShapeScaleSpec? ScaleShape { get; init; }
+
+    /// <summary>
     /// Gets a secondary x scale, independent of <see cref="ScaleX"/> (design §4.1, row G6a): the layers with
     /// <see cref="LayerSpec.SecondaryX"/> are mapped by it, and it learns its domain from them only. Null for none.
     /// </summary>

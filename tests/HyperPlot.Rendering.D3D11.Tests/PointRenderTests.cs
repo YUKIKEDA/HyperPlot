@@ -60,6 +60,202 @@ public sealed class PointRenderTests
         Check(spec, pool, "points.png");
     }
 
+    /// <summary>The six shapes, small and large, opaque and half transparent (design §5.1 "行 R3f の形", §10.1 scene 45).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - For each of the six shapes, each size of 4, 9, and 24 DIPs, and each opacity of 1 and 0.5: a layer of three points
+    ///   12 units apart, so that the larger ones overlap; the shapes side by side along x, the sizes and opacities in rows
+    ///   along y. The fake text backend; Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/points-shapes.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void SixShapes_MatchBaseline()
+    {
+        using var pool = new PlotWorkerPool(2);
+        var shapes = Enum.GetValues<MarkerShape>();
+        float[] sizes = [4, 9, 24];
+        var columns = new List<IDisposable>();
+        try
+        {
+            var data = DataTable.Create();
+            for (var layer = 0; layer < shapes.Length * sizes.Length * 2; layer++)
+            {
+                var (shape, row) = (layer % shapes.Length, layer / shapes.Length);
+                var x = Column.Wrap(Enumerable.Range(0, 3).Select(i => 20.0 + (shape * 60) + (i * 12)).ToArray());
+                var y = Column.Wrap(Enumerable.Repeat(10.0 + (row * 16), 3).ToArray());
+                columns.Add(x);
+                columns.Add(y);
+                data = data.Add($"x{layer}", x).Add($"y{layer}", y);
+            }
+
+            var table = data.Build();
+            var plot = Plot.Create(table);
+            for (var layer = 0; layer < shapes.Length * sizes.Length * 2; layer++)
+            {
+                var (shape, row) = (shapes[layer % shapes.Length], layer / shapes.Length);
+                plot = plot.Point(
+                    table.Col<double>($"x{layer}"),
+                    table.Col<double>($"y{layer}"),
+                    p => p.Shape(shape).Size(sizes[row / 2]).Opacity(row % 2 == 0 ? 1 : 0.5).Color(new Color(30, 90, 170, 255))
+                );
+            }
+
+            var spec = plot.ScaleX(Scale.Linear().WithDomain(0, 380)).ScaleY(Scale.Linear().WithDomain(0, 100)).Title("Marker shapes").Build();
+            Check(spec, pool, "points-shapes.png");
+        }
+        finally
+        {
+            foreach (var column in columns)
+            {
+                column.Dispose();
+            }
+        }
+    }
+
+    /// <summary>Marker annotations of the six shapes, drawn as a point layer's markers (design §5.1 "行 R3f の形", §10.1 scene 49).</summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A line of 100 points of a sine; one marker annotation for each of the six shapes at x = 10, 25, …, 85 on y = 0, of
+    ///   radii 4 to 14 DIPs, the fourth in red. The fake text backend; Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360; compare with <c>Golden/annotation-markers.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void AnnotationMarkers_MatchBaseline()
+    {
+        using var pool = new PlotWorkerPool(2);
+        using var x = Column.Wrap(Enumerable.Range(0, 100).Select(i => (double)i).ToArray());
+        using var y = Column.Wrap(Enumerable.Range(0, 100).Select(i => Math.Sin(i / 9.0) * 3).ToArray());
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        var shapes = Enum.GetValues<MarkerShape>();
+        var plot = Plot.Create(table)
+            .Line(table.Col<double>("x"), table.Col<double>("y"))
+            .ScaleY(Scale.Linear().WithDomain(-5, 5))
+            .Title("Marker annotations");
+        for (var i = 0; i < shapes.Length; i++)
+        {
+            plot = plot.Annotate(
+                Annotation.Marker(new(AnnotationValue.Data(10 + (15 * i)), AnnotationValue.Data(0))) with
+                {
+                    Shape = shapes[i],
+                    Radius = 4 + (2 * i),
+                    Color = i == 3 ? new Color(200, 30, 30, 255) : null,
+                }
+            );
+        }
+
+        Check(plot.Build(), pool, "annotation-markers.png");
+    }
+
+    /// <summary>
+    /// Points sized by a number and shaped and colored by the same category, with the merged color and shape legend and the
+    /// size legend (design §4.6 "形と大きさの凡例", §5.5.2 "大きさと形のチャネル", §10.1 scenes 46 and 47), and flipped.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 120 seeded points over [0, 100]²; a mass from 1 to 50; three species taking turns. The size scale titled "Mass",
+    ///   the ordinal color scale titled "Species". The fake text backend; Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360 at an opacity of 0.7; compare with <c>Golden/points-size-shape.png</c>. Render it flipped;
+    ///   compare with <c>Golden/points-size-shape-flip.png</c>.
+    ///
+    /// Expected:
+    /// - The images match their baselines.
+    /// </remarks>
+    [Theory]
+    [InlineData(false, "points-size-shape.png")]
+    [InlineData(true, "points-size-shape-flip.png")]
+    public void SizeAndShape_MatchBaseline(bool flip, string baseline)
+    {
+        const int Count = 120;
+        var random = new Random(41);
+        string[] species = ["Adelie", "Chinstrap", "Gentoo"];
+        using var pool = new PlotWorkerPool(2);
+        using var x = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        using var y = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        using var mass = Column.Wrap(Enumerable.Range(0, Count).Select(_ => 1 + (random.NextDouble() * 49)).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", x)
+            .Add("y", y)
+            .Add("mass", mass)
+            .Add("species", Column.Categorical(Enumerable.Range(0, Count).Select(i => (string?)species[i % 3]).ToArray()))
+            .Build();
+        var spec = Plot.Create(table)
+            .Point(
+                table.Col<double>("x"),
+                table.Col<double>("y"),
+                p => p.Opacity(0.7).ColorBy(table.Cat("species")).ShapeBy(table.Cat("species")).SizeBy(table.Col<double>("mass"))
+            )
+            .ScaleSize(Scale.Size(Scale.Linear().WithTitle("Mass")))
+            .ScaleColor(Scale.Ordinal().WithTitle("Species"))
+            .Coord(Coord.Cartesian(flip: flip))
+            .Title("Points by mass and species")
+            .Build();
+
+        Check(spec, pool, baseline);
+    }
+
+    /// <summary>
+    /// A layer on the index path shaped by a category: a part a shape, each drawn from its index (design §5.5.2 "大きさと形の
+    /// チャネル", §10.1 scene 48), with the shape legend.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 150,000 seeded points in three clusters, each cluster its own category of three; the fake text backend; Theme.Light.
+    ///
+    /// Steps:
+    /// - Render at 640 × 360, shaped by the category, markers of 5 DIPs at an opacity of 0.15; compare with
+    ///   <c>Golden/points-indexed-shapes.png</c>.
+    ///
+    /// Expected:
+    /// - The image matches the baseline.
+    /// </remarks>
+    [Fact]
+    public void IndexedShapes_MatchBaseline()
+    {
+        const int Count = 150_000;
+        var random = new Random(43);
+        string[] names = ["low", "middle", "high"];
+        var (xs, ys) = (new double[Count], new double[Count]);
+        for (var i = 0; i < Count; i++)
+        {
+            var c = i % 3;
+            var r = 8 * Math.Sqrt(-2 * Math.Log(1 - random.NextDouble()));
+            var a = 2 * Math.PI * random.NextDouble();
+            (xs[i], ys[i]) = (25 + (25 * c) + (r * Math.Cos(a)), 30 + (20 * c) + (r * Math.Sin(a)));
+        }
+
+        using var pool = new PlotWorkerPool(2);
+        using var x = Column.Wrap(xs);
+        using var y = Column.Wrap(ys);
+        var table = DataTable
+            .Create()
+            .Add("x", x)
+            .Add("y", y)
+            .Add("kind", Column.Categorical(Enumerable.Range(0, Count).Select(i => (string?)names[i % 3]).ToArray()))
+            .Build();
+        var spec = Plot.Create(table)
+            .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Size(5).Opacity(0.15).ShapeBy(table.Cat("kind")))
+            .ScaleX(Scale.Linear().WithDomain(0, 100))
+            .ScaleY(Scale.Linear().WithDomain(0, 100))
+            .ScaleShape(Scale.Shape().WithShapes(MarkerShape.Circle, MarkerShape.Triangle, MarkerShape.X).WithTitle("Kind"))
+            .Title("Shapes from an index")
+            .Build();
+
+        Check(spec, pool, "points-indexed-shapes.png");
+    }
+
     /// <summary>A flipped layer of points colored by a number, with the color bar (design §5.5.2 "CPU の道").</summary>
     /// <remarks>
     /// Preconditions:

@@ -115,6 +115,21 @@ public static class Scale
         return new(map ?? ColorMaps.RdBu, scale ?? Linear()) { Mid = mid };
     }
 
+    /// <summary>
+    /// Returns a size scale for points (design §4.2, row R3f): a value's area is linear between the diameters of 2 and 16
+    /// DIPs at the domain's ends.
+    /// </summary>
+    /// <param name="scale">The continuous scale of the transform, the domain, and the title; null takes <see cref="Linear"/>.</param>
+    /// <returns>The scale.</returns>
+    public static SizeScaleSpec Size(ContinuousScaleSpec? scale = null) => new(scale ?? Linear());
+
+    /// <summary>
+    /// Returns a shape scale for points (design §4.2, row R3f): category i takes the i-th of Circle, Square, Triangle,
+    /// Diamond, Cross, and X.
+    /// </summary>
+    /// <returns>The scale.</returns>
+    public static ShapeScaleSpec Shape() => new();
+
     private static void CheckPositive(double value, string name)
     {
         if (!double.IsFinite(value) || !(value > 0))

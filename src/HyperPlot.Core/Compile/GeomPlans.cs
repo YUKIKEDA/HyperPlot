@@ -1068,8 +1068,14 @@ internal sealed class PointPlan : LayerPlan
     private long _mapped;
     private double _radius;
 
+    // The radius of each point of the last recording in physical pixels, by row, when the layer has a SizeBy; else empty.
+    private float[] _radii = [];
+    private double[] _diameters = [];
+    private int _diametersRead;
+    private bool _sized;
+
     public PointPlan(PointLayerSpec spec, RowRange rows)
-        : base(spec, rows) => SetColumns(AndColors(spec.X.Column, spec.Y.Column));
+        : base(spec, rows) => SetColumns(Read(spec, AndColors(spec.X.Column, spec.Y.Column)));
 
     /// <summary>Answers from the pixels the last recording mapped: every point, up to 131,072 (design §6.3).</summary>
     internal override void Hit(ref HitScan scan)
@@ -1077,11 +1083,14 @@ internal sealed class PointPlan : LayerPlan
         var end = Math.Min(Rows.EndIn(_mapped), _mapped);
         if (end > Rows.Start)
         {
-            scan.Points(_x, _y, Rows.Start, end, Columns[0], Columns[1], _radius);
+            scan.Points(_x, _y, Rows.Start, end, Columns[0], Columns[1], _radius, _sized ? _radii : default);
         }
     }
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
+
+    /// <summary>Gets the number of sizes the last recording read (row R3f). Tests only.</summary>
+    internal int DiametersRead => _diametersRead;
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)
     {
@@ -1106,6 +1115,15 @@ internal sealed class PointPlan : LayerPlan
 
         var centers = context.Points(end - start)[..(end - start)];
         var style = new MarkerStyle(Faded(point.Color ?? SeriesColor, point.Opacity), point.Size, point.Shape);
+        _sized = point.SizeBy is not null;
+        if (_sized || point.ShapeBy is not null)
+        {
+            // The reach of the hit test's first cut is the largest radius drawn.
+            _radius = _sized ? 0 : _radius;
+            RecordLooks(context, point, centers, xs, ys, start, end, style);
+            return;
+        }
+
         if (ElementColors is not { } values)
         {
             // A point that does not map is NaN, which the list passes.
@@ -1137,6 +1155,105 @@ internal sealed class PointPlan : LayerPlan
 
         context.DrawMarkers(centers[..count], colors[..count], style);
     }
+
+    /// <summary>
+    /// Records the points of a layer with a SizeBy or a ShapeBy (design §5.5.2 "大きさと形のチャネル"): each with its own
+    /// diameter and shape through the plot's scales, and its own color when the layer is colored by a number. A point whose
+    /// size or color value is NaN, or whose shape category is missing, draws nothing and is not hit.
+    /// </summary>
+    private void RecordLooks(
+        RecordContext context,
+        PointLayerSpec point,
+        Span<Vector2> centers,
+        ReadOnlySpan<double> xs,
+        ReadOnlySpan<double> ys,
+        int start,
+        int end,
+        in MarkerStyle style
+    )
+    {
+        var length = end - start;
+        var values = ElementColors;
+        var sizeBy = point.SizeBy?.Column;
+        var shapeBy = point.ShapeBy?.Column as CategoricalColumn;
+        var colors = values is null ? default : context.MarkerColors(length);
+        var sizes = sizeBy is null ? default : context.MarkerSizes(length);
+        var shapes = shapeBy is null ? default : context.MarkerShapes(length);
+        if (sizeBy is not null && _radii.Length < end)
+        {
+            _radii = new float[Math.Max(end, _x.Length)];
+        }
+
+        // The part's sizes read and mapped at once: one at a time through the column took 2 to 4 ms of 131,072 points
+        // (Issue #456). Only the part's rows: a part over a run of the layer's column reads its run (PR #457's review).
+        var diameters = default(ReadOnlySpan<double>);
+        if (sizeBy is not null)
+        {
+            if (_diameters.Length < length)
+            {
+                _diameters = new double[length];
+            }
+
+            var part = _diameters.AsSpan(0, length);
+            sizeBy.ReadDifferences(part, 0, start);
+            _diametersRead = length;
+            Sizes!.Diameters(part, context.Scale);
+            diameters = part;
+        }
+
+        var count = 0;
+        for (var i = start; i < end; i++)
+        {
+            var color = values is null ? default(Color?) : ElementColor(values, i);
+            var size = sizeBy is null ? 0 : (float)diameters[i - start];
+
+            // A missing category has no shape: the point is not drawn, as one of a NaN size (design §5.5.2, PR #457's review).
+            var code = shapeBy is null ? 0 : shapeBy.GetCode(i);
+            if ((values is not null && color is null) || float.IsNaN(size) || code < 0)
+            {
+                // Not drawn, so not hit either (design §6.3): the hit test passes a point whose pixel is NaN.
+                _x[i] = double.NaN;
+                continue;
+            }
+
+            centers[count] = new Vector2((float)xs[i], (float)ys[i]);
+            if (values is not null)
+            {
+                colors[count] = Faded(color!.Value, point.Opacity);
+            }
+
+            if (sizeBy is not null)
+            {
+                (sizes[count], _radii[i]) = (size, size / 2);
+                _radius = Math.Max(_radius, size / 2);
+            }
+
+            if (shapeBy is not null)
+            {
+                shapes[count] = Shapes!.Of(code);
+            }
+
+            count++;
+        }
+
+        context.DrawMarkers(
+            centers[..count],
+            values is null ? default : colors[..count],
+            sizeBy is null ? default : sizes[..count],
+            shapeBy is null ? default : shapes[..count],
+            style
+        );
+    }
+
+    /// <summary>Returns the columns a point layer reads: its positions, its numeric color, and its size and shape columns.</summary>
+    private static Column[] Read(PointLayerSpec spec, Column[] columns) =>
+        (spec.SizeBy, spec.ShapeBy) switch
+        {
+            ({ } size, { } shape) => [.. columns, size.Column, shape.Column],
+            ({ } size, null) => [.. columns, size.Column],
+            (null, { } shape) => [.. columns, shape.Column],
+            _ => columns,
+        };
 
     /// <summary>Returns a color with its alpha multiplied by an opacity.</summary>
     private static Color Faded(Color color, double opacity) => opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * opacity) };

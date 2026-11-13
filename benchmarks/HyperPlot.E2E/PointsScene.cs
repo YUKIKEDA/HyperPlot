@@ -17,12 +17,14 @@ internal static partial class PointsScene
     private const int Warmup = 30;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), and the categories the layer is split by (0 by default).</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), and the layer's shape.</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         if (args.Length < 4)
         {
-            Console.Error.WriteLine("points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole]");
+            Console.Error.WriteLine(
+                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape]"
+            );
             return 2;
         }
 
@@ -33,6 +35,10 @@ internal static partial class PointsScene
         var frames = args.Length > 4 ? int.Parse(args[4], CultureInfo.InvariantCulture) : 600;
         var categories = args.Length > 5 ? int.Parse(args[5], CultureInfo.InvariantCulture) : 0;
         var whole = args.Length > 6 && args[6] == "whole";
+
+        // Row R3f: what the categories set (the color, the shape, or both), whether a number sizes the points, and the shape.
+        var channel = args.Length > 7 ? args[7] : "color";
+        var shape = args.Length > 8 ? Enum.Parse<MarkerShape>(args[8]) : MarkerShape.Circle;
 
         // Seeded: uniform over [0, 100]², or a normal blob of a tenth of the side around the middle.
         var random = new Random(1);
@@ -53,7 +59,8 @@ internal static partial class PointsScene
 
         using var x = Column.Wrap(xs);
         using var y = Column.Wrap(ys);
-        var builder = DataTable.Create().Add("x", x).Add("y", y);
+        using var size = Column.Wrap(Enumerable.Range(0, count).Select(i => (double)(i % 101)).ToArray());
+        var builder = DataTable.Create().Add("x", x).Add("y", y).Add("s", size);
         if (categories > 0)
         {
             var names = Enumerable.Range(0, categories).Select(i => $"k{i:D3}").ToArray();
@@ -65,7 +72,13 @@ internal static partial class PointsScene
             .Point(
                 table.Col<double>("x"),
                 table.Col<double>("y"),
-                p => _ = categories > 0 ? p.Size(diameter).Opacity(opacity).ColorBy(table.Cat("c")) : p.Size(diameter).Opacity(opacity)
+                p =>
+                {
+                    _ = p.Size(diameter).Opacity(opacity).Shape(shape);
+                    _ = categories > 0 && channel is "color" or "both" ? p.ColorBy(table.Cat("c")) : p;
+                    _ = categories > 0 && channel is "shape" or "both" or "shapesize" ? p.ShapeBy(table.Cat("c")) : p;
+                    _ = channel is "size" or "shapesize" ? p.SizeBy(table.Col<double>("s")) : p;
+                }
             )
             .ScaleX(Scale.Linear().WithDomain(0, 100))
             .ScaleY(Scale.Linear().WithDomain(0, 100))
@@ -183,7 +196,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} categories={categories} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(

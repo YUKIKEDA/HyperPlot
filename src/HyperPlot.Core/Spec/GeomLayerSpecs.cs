@@ -247,7 +247,7 @@ public sealed record PointLayerSpec : LayerSpec
     /// <summary>Gets the points' color, or null for the layer's series color (design §4.1).</summary>
     public Color? Color { get; init; }
 
-    /// <summary>Gets the diameter of a disc, the side of a square, or the span of a cross, in DIPs: above 0 and at most 512.</summary>
+    /// <summary>Gets the points' size in DIPs, above 0 and at most 512: the diameter of a disc, and the side of the box any other shape fits in.</summary>
     public float Size { get; init; } = 6;
 
     /// <summary>Gets the points' shape.</summary>
@@ -255,6 +255,19 @@ public sealed record PointLayerSpec : LayerSpec
 
     /// <summary>Gets the opacity, from 0 to 1, which multiplies the alpha of each point's color.</summary>
     public double Opacity { get; init; } = 1;
+
+    /// <summary>
+    /// Gets the numeric column that gives each point its size through <see cref="PlotSpec.ScaleSize"/>, or null (design
+    /// §5.5.2 "大きさと形のチャネル", row R3f). With it, <see cref="Size"/> does not size the points. A layer of at most
+    /// 131,072 rows takes it.
+    /// </summary>
+    public ColumnRef? SizeBy { get; init; }
+
+    /// <summary>
+    /// Gets the categorical column that gives each point its shape through <see cref="PlotSpec.ScaleShape"/>, or null
+    /// (design §5.5.2 "大きさと形のチャネル", row R3f). With it, <see cref="Shape"/> does not shape the points.
+    /// </summary>
+    public ColumnRef? ShapeBy { get; init; }
 
     /// <summary>
     /// Gets a value indicating whether the layer has more than 131,072 rows and each of its parts is drawn from a spatial

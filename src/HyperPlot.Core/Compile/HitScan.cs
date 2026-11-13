@@ -485,7 +485,16 @@ internal ref struct HitScan
     /// nearest across; <see cref="HitMode.XY"/> the point whose center is nearest among those within the radius and the
     /// marker's own. Of equal distances the later row stays: it is drawn over. The x and y are the point's, in data units.
     /// </summary>
-    public void Points(ReadOnlySpan<double> xs, ReadOnlySpan<double> ys, long start, long end, Column x, Column y, double markerRadius)
+    public void Points(
+        ReadOnlySpan<double> xs,
+        ReadOnlySpan<double> ys,
+        long start,
+        long end,
+        Column x,
+        Column y,
+        double markerRadius,
+        ReadOnlySpan<float> radii = default
+    )
     {
         if (_summing)
         {
@@ -522,6 +531,13 @@ internal ref struct HitScan
             else
             {
                 var squared = (dx * dx) + (dy * dy);
+
+                // A point with a radius of its own (row R3f) is within reach by that radius, not by the largest.
+                if (!radii.IsEmpty && squared > ((double)Radius + radii[i]) * ((double)Radius + radii[i]))
+                {
+                    continue;
+                }
+
                 if (squared <= best)
                 {
                     (best, bestAlong, bestAcross, bestRow) = (squared, dx, dy, i);

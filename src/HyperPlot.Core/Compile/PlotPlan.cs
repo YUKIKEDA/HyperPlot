@@ -37,6 +37,8 @@ internal sealed partial class PlotPlan : IDisposable
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
     private readonly ColorScale _color = new();
+    private readonly SizeScale _size = new();
+    private readonly ShapeScale _shape = new();
 
     // How the layers reach their indexes: waited for (a headless render) or read as they are (the engine's frame, row W1b1).
     private readonly LayerIndexes _indexes;
@@ -52,6 +54,8 @@ internal sealed partial class PlotPlan : IDisposable
     // The default color scales (design §4.2, row G7c), made once: a spec without one draws without allocating.
     private static readonly OrdinalScaleSpec DefaultOrdinal = Scale.Ordinal();
     private static readonly SequentialScaleSpec DefaultSequential = Scale.Sequential();
+    private static readonly SizeScaleSpec DefaultSize = Scale.Size();
+    private static readonly ShapeScaleSpec DefaultShape = Scale.Shape();
 
     // The channels of a layer's node and of the one before it, for the checks and the diff (design §4.8).
     private readonly ColumnRef[] _channels = new ColumnRef[4];
@@ -157,6 +161,12 @@ internal sealed partial class PlotPlan : IDisposable
 
     /// <summary>Gets the color scale of the last spec drawn, or null when no layer has a color channel. Tests only.</summary>
     internal ColorScale? Color { get; private set; }
+
+    /// <summary>Gets the size scale of the last spec drawn, or null when no layer has a SizeBy (row R3f). Tests only.</summary>
+    internal SizeScale? Size { get; private set; }
+
+    /// <summary>Gets the shape scale of the last spec drawn, or null when no layer has a ShapeBy (row R3f). Tests only.</summary>
+    internal ShapeScale? Shape { get; private set; }
 
     /// <summary>Gets the layers' plans. Tests only.</summary>
     internal IReadOnlyList<LayerPlan> Layers => _panels[0].Layers;
@@ -482,6 +492,8 @@ internal sealed partial class PlotPlan : IDisposable
             || !previous.Theme.Equals(spec.Theme)
             || CoordLooksChanged(previous.Coord, spec.Coord)
             || previous.ScaleColor?.Id != spec.ScaleColor?.Id
+            || previous.ScaleSize?.Id != spec.ScaleSize?.Id
+            || previous.ScaleShape?.Id != spec.ScaleShape?.Id
             || OptionsChanged(previous.ScaleX2, spec.ScaleX2)
             || OptionsChanged(previous.ScaleY2, spec.ScaleY2)
             || AxesChanged(previous.ScaleX, spec.ScaleX)
@@ -754,6 +766,12 @@ internal sealed partial class PlotPlan : IDisposable
                 LearnColor(spec);
             }
 
+            // The size domain, learned as the color domain is (design §4.2, row R3f).
+            if (Size is not null)
+            {
+                LearnSize(spec);
+            }
+
             // The layout chooses the ticks, which nice may widen the domains to (design §4.6, §4.8).
             for (var p = 0; p < _panels.Length; p++)
             {
@@ -768,7 +786,19 @@ internal sealed partial class PlotPlan : IDisposable
                 );
             }
 
-            _guides.Layout(spec, _xTransform, _yTransform, BandColumn(spec), Color, _xTransform2, _yTransform2, _facet?.Arrangement, _learned);
+            _guides.Layout(
+                spec,
+                _xTransform,
+                _yTransform,
+                BandColumn(spec),
+                Color,
+                Size,
+                Shape,
+                _xTransform2,
+                _yTransform2,
+                _facet?.Arrangement,
+                _learned
+            );
 
             // The full view: what the plot draws with no view (row I1a). An axis with a view keeps the last one it drew, which
             // a learning since may have moved.
@@ -1194,6 +1224,146 @@ internal sealed partial class PlotPlan : IDisposable
         }
 
         CheckColor(plot);
+        CheckMarkerScales(plot);
+    }
+
+    /// <summary>
+    /// Throws unless the point layers' size and shape columns and their scales go together (design §4.2, §4.8 "検査（行
+    /// R3f）"), and takes the scales. A scale no layer uses is neither taken nor checked.
+    /// </summary>
+    private void CheckMarkerScales(PlotSpec plot)
+    {
+        (Size, Shape) = (null, null);
+        var sized = false;
+        CategoricalColumn? categories = null;
+        for (var i = 0; i < plot.Layers.Count; i++)
+        {
+            if (plot.Layers[i] is not PointLayerSpec point)
+            {
+                continue;
+            }
+
+            sized |= point.SizeBy is not null;
+            if (point.ShapeBy is { Column: CategoricalColumn column } reference)
+            {
+                categories ??= column;
+                if (!categories.SameCategories(column))
+                {
+                    throw new ArgumentException(
+                        $"The shape column \"{plot.Data.GetName(reference.Index)}\" of layer {i} has other categories than the first shape column; the layers share one order of categories (design §4.2)."
+                    );
+                }
+            }
+        }
+
+        if (sized)
+        {
+            var scale = plot.ScaleSize ?? DefaultSize;
+            if (scale.Scale is null)
+            {
+                throw new ArgumentNullException(nameof(plot), "The size scale's Scale must not be null.");
+            }
+
+            if (!SizeScaleSpec.IsRange(scale.RangeMin, scale.RangeMax))
+            {
+                throw new ArgumentException(
+                    $"The size scale's range is {scale.RangeMin} to {scale.RangeMax}; its diameters are 0 < RangeMin ≤ RangeMax ≤ 512 DIPs (design §4.2)."
+                );
+            }
+
+            if (scale.Scale.Side is not null || scale.Scale.SecondaryAxis is not null)
+            {
+                throw new ArgumentException(
+                    "The size scale's inner scale has a side or a secondary axis; the size legend is a legend, not an axis (design §4.1)."
+                );
+            }
+
+            if (_spec?.ScaleSize is not { } before || before.Id != scale.Id)
+            {
+                scale.Scale.CheckGivenDomain();
+            }
+
+            _size.Set(scale);
+            Size = _size;
+        }
+
+        if (categories is not null)
+        {
+            var scale = plot.ScaleShape ?? DefaultShape;
+            var shapes = scale.Shapes ?? throw new ArgumentNullException(nameof(plot), "The shape scale's Shapes must not be null.");
+            if (shapes.Count == 0)
+            {
+                throw new ArgumentException("The shape scale has no shape; it has one or more (design §4.2).");
+            }
+
+            for (var i = 0; i < shapes.Count; i++)
+            {
+                if (!MarkerStyle.IsShape(shapes[i]))
+                {
+                    throw new ArgumentException($"The shape scale's shape {i} is {(int)shapes[i]}; a shape is a named MarkerShape value.");
+                }
+
+                for (var j = 0; j < i; j++)
+                {
+                    if (shapes[j] == shapes[i])
+                    {
+                        throw new ArgumentException($"The shape scale holds {shapes[i]} twice; it holds each shape once (design §4.2).");
+                    }
+                }
+            }
+
+            if (categories.CategoryCount > shapes.Count)
+            {
+                throw new ArgumentException(
+                    $"The shape columns have {categories.CategoryCount} categories, and the shape scale {shapes.Count} shapes; a shape is not used twice (design §4.2)."
+                );
+            }
+
+            _shape.Set(scale, categories);
+            Shape = _shape;
+        }
+    }
+
+    /// <summary>
+    /// Learns the size domain (design §4.2, row R3f): the inner scale's given one, or the union of the ranges of the point
+    /// layers' size columns, by the rules of a position scale.
+    /// </summary>
+    private void LearnSize(PlotSpec spec)
+    {
+        var inner = _size.Inner;
+        if (inner is TimeScaleSpec { Domain: { } time })
+        {
+            _size.Domain = ScaleRange.FromInteger(time.Min, time.Max);
+            return;
+        }
+
+        if (inner.GivenDomain is { } domain)
+        {
+            _size.Domain = _size.Transform is null
+                ? ScaleRange.FromDouble(domain.Min, domain.Max)
+                : Mapped(_size.Transform, domain.Min, domain.Max, string.Empty, string.Empty);
+            return;
+        }
+
+        _sink.Reset();
+        for (var i = 0; i < spec.Layers.Count; i++)
+        {
+            if (Failed(i) || spec.Layers[i] is not PointLayerSpec { SizeBy: { } reference })
+            {
+                continue;
+            }
+
+            try
+            {
+                _sink.AddColumn(reference.Column, spec.Data.GetName(reference.Index));
+            }
+            catch (Exception exception) when (!Waits)
+            {
+                Fail(i, exception);
+            }
+        }
+
+        _size.Domain = FromSink(inner, _size.Transform);
     }
 
     /// <summary>
@@ -2549,6 +2719,7 @@ internal sealed partial class PlotPlan : IDisposable
             layer.SeriesColor = palette.Series(i);
             layer.Index = i;
             layer.Colors = Color;
+            (layer.Sizes, layer.Shapes) = (Size, Shape);
             if (Drawn(i, layer))
             {
                 layer.Record(_context);
