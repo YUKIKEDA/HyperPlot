@@ -126,11 +126,19 @@ internal sealed class PointPages
         var ordered = _ordered.AsSpan(0, count);
         snapshot.ReadBlock((long)page * PagePoints, ordered);
         var staged = _staging.AsSpan(_staged, count);
-        var from = 0;
-        for (var k = 0; k < staged.Length; k++)
+
+        // Spike R3b2: the page in SplitProbe.ShuffleBlocks runs of the copy's order, each in steps alone; 1 is main's order.
+        var blocks = Math.Min(SplitProbe.ShuffleBlocks, count);
+        for (var b = 0; b < blocks; b++)
         {
-            staged[k] = ordered[from];
-            from = (int)((from + (long)Stride) % count);
+            var (start, end) = ((int)((long)count * b / blocks), (int)((long)count * (b + 1) / blocks));
+            var length = end - start;
+            var from = 0;
+            for (var k = 0; k < length; k++)
+            {
+                staged[start + k] = ordered[start + from];
+                from = (int)((from + (long)Stride) % length);
+            }
         }
 
         _uploads.Add(new PointUpload(slot, _staged, count));

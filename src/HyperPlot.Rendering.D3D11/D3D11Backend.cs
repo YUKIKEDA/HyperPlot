@@ -102,6 +102,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     /// <inheritdoc />
     public GpuFrameTime? LastFrameTime => _timer.Last;
 
+    /// <summary>Gets the GPU time of the newest timed frame's point pass. Spike R3b2.</summary>
+    public GpuFrameTime? LastPassTime => _timer.LastPass;
+
     /// <inheritdoc />
     public long DeviceGeneration { get; private set; }
 
@@ -244,8 +247,10 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         var polylines = list.Polylines;
         var sectorCalls = list.SectorCalls;
         DrawStepKind? bound = null;
-        foreach (ref readonly var step in steps)
+        for (var at = 0; at < steps.Length; at++)
         {
+            ref readonly var step = ref steps[at];
+
             // The steps go in the list's order; each pipeline binds what it shares when the kind changes.
             if (step.Kind != bound)
             {
@@ -302,8 +307,21 @@ public sealed unsafe class D3D11Backend : IGpuBackend
                     _markers.Draw(own, step);
                     break;
                 case DrawStepKind.ResidentMarkers:
-                    _residentMarkers.Draw(own, residentRuns[step.Index]);
+                {
+                    // Spike R3b2: the consecutive resident steps go as a group, in the probe's order, timed as the point pass.
+                    var end = at + 1;
+                    while (end < steps.Length && steps[end].Kind == DrawStepKind.ResidentMarkers)
+                    {
+                        end++;
+                    }
+
+                    _timer.MarkPassStart();
+                    _residentMarkers.DrawGroup(own, residentRuns, steps[at..end]);
+                    _timer.MarkPassEnd();
+                    at = end - 1;
                     break;
+                }
+
                 default:
                     _columns.Draw(own, step);
                     break;

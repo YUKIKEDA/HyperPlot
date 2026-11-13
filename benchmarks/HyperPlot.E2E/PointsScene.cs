@@ -14,7 +14,8 @@ namespace HyperPlot.E2E;
 /// </summary>
 internal static partial class PointsScene
 {
-    private const int Warmup = 30;
+    // Spike R3b2: 2 seconds of frames before the measured ones (.cursor/rules/bench.mdc); HP_PROBE_WARMUP sets the count.
+    private static readonly int Warmup = int.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_WARMUP"), out var w) ? w : 120;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
     /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), and the layer's shape.</param>
@@ -26,6 +27,12 @@ internal static partial class PointsScene
                 "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape]"
             );
             return 2;
+        }
+
+        // Spike R3b2: high priority, as the records' runs, so that a run started from Bash with its switches needs no wrapper.
+        using (var self = Process.GetCurrentProcess())
+        {
+            self.PriorityClass = ProcessPriorityClass.High;
         }
 
         var count = int.Parse(args[0], CultureInfo.InvariantCulture);
@@ -64,7 +71,19 @@ internal static partial class PointsScene
         if (categories > 0)
         {
             var names = Enumerable.Range(0, categories).Select(i => $"k{i:D3}").ToArray();
-            builder = builder.Add("c", Column.Categorical(Enumerable.Range(0, count).Select(i => (string?)names[i % categories]).ToArray()));
+
+            // Spike R3b2: HP_PROBE_CATEGORIES=region gives the categories bands of x of equal width (a part covers a band), and
+            // otherwise row i takes category i mod n (every part covers the whole view), as on main.
+            var region = Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") == "region";
+            builder = builder.Add(
+                "c",
+                Column.Categorical(
+                    Enumerable
+                        .Range(0, count)
+                        .Select(i => (string?)names[region ? Math.Clamp((int)(xs[i] / 100 * categories), 0, categories - 1) : i % categories])
+                        .ToArray()
+                )
+            );
         }
 
         var table = builder.Build();
@@ -133,7 +152,9 @@ internal static partial class PointsScene
         var cpu = new double[total];
         var allocated = new long[total];
         var gpu = new List<double>(frames);
+        var pass = new List<double>(frames);
         long lastTimed = -1;
+        long lastPass = -1;
         var period = TimeSpan.FromMilliseconds(1000.0 / 60);
 
         // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
@@ -153,6 +174,18 @@ internal static partial class PointsScene
                 gpu.Add(time.Duration.TotalMilliseconds);
             }
 
+            if (f >= Warmup && backend.LastPassTime is { } passTime && passTime.Frame > lastPass)
+            {
+                lastPass = passTime.Frame;
+                pass.Add(passTime.Duration.TotalMilliseconds);
+            }
+
+            // The probe's counts cover the measured frames only.
+            if (f == Warmup - 1)
+            {
+                ResetProbe();
+            }
+
             // A frame a period at the fastest: back to back, the GPU's clock rises and its time reads low (.cursor/rules/bench.mdc).
             var left = period - Stopwatch.GetElapsedTime(start);
             if (left > TimeSpan.Zero)
@@ -163,6 +196,11 @@ internal static partial class PointsScene
 
         var seconds = Stopwatch.GetElapsedTime(began).TotalSeconds;
         _ = TimeEndPeriod(1);
+        var probeFrames = (double)frames;
+        var probe = string.Create(
+            CultureInfo.InvariantCulture,
+            $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
+        );
 
         // Hit tests at seeded pixels of the whole view, each timed alone.
         engine.Views.SetView(panel, new PanelView2D(ViewRange.FromValues(0, 100), ViewRange.FromValues(0, 100)));
@@ -211,6 +249,14 @@ internal static partial class PointsScene
                 $"gpu_frame: frames={gpuKept.Length} p50={Percentile(gpuKept, 0.5):F3} p95={Percentile(gpuKept, 0.95):F3} p99={Percentile(gpuKept, 0.99):F3} max={gpuKept.Max():F3} ms"
             )
         );
+        var passKept = pass.ToArray();
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"gpu_points: frames={passKept.Length} p50={Percentile(passKept, 0.5):F3} p95={Percentile(passKept, 0.95):F3} p99={Percentile(passKept, 0.99):F3} max={(passKept.Length > 0 ? passKept.Max() : double.NaN):F3} ms"
+            )
+        );
+        Console.WriteLine(probe);
         Console.WriteLine(
             string.Create(CultureInfo.InvariantCulture, $"allocated after warm-up: {allocated.Skip(Warmup).Sum()} bytes over {frames} frames")
         );
@@ -229,6 +275,17 @@ internal static partial class PointsScene
             )
         );
         return 0;
+    }
+
+    private static void ResetProbe()
+    {
+        HyperPlot.Rendering.SplitProbe.Groups = 0;
+        HyperPlot.Rendering.SplitProbe.Parts = 0;
+        HyperPlot.Rendering.SplitProbe.PipelineBinds = 0;
+        HyperPlot.Rendering.SplitProbe.Draws = 0;
+        HyperPlot.Rendering.SplitProbe.PageBinds = 0;
+        HyperPlot.Rendering.SplitProbe.ConstantWrites = 0;
+        HyperPlot.Rendering.SplitProbe.ColorChanges = 0;
     }
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]

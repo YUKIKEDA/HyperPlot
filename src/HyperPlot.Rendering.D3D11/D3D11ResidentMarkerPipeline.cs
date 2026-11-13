@@ -218,6 +218,8 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
     /// <summary>Sets what every run shares: after a step of another kind, which binds its own.</summary>
     internal void Bind(D3D11RenderTarget target)
     {
+        SplitProbe.PipelineBinds++;
+        _written = false;
         var context = _backend.Context;
         var viewport = new D3D11_VIEWPORT
         {
@@ -243,12 +245,116 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         context->OMSetRenderTargets(1, &view, null);
     }
 
+    /// <summary>
+    /// Spike R3b2: draws a group of consecutive resident steps in the probe's order (<see cref="SplitProbe"/>): each page as
+    /// <see cref="SplitProbe.Split"/> calls, part after part or round the parts.
+    /// </summary>
+    internal void DrawGroup(D3D11RenderTarget target, ReadOnlySpan<ResidentMarkerRun> runs, ReadOnlySpan<DrawStep> steps)
+    {
+        SplitProbe.Groups++;
+
+        // The parts: a part's runs share their cells' offset, and come together.
+        var parts = 0;
+        for (var i = 0; i < steps.Length; i++)
+        {
+            if (i == 0 || runs[steps[i].Index].Cells != runs[steps[i - 1].Index].Cells)
+            {
+                if (parts + 1 >= _partStarts.Length)
+                {
+                    Array.Resize(ref _partStarts, _partStarts.Length * 2);
+                }
+
+                _partStarts[parts++] = i;
+            }
+        }
+
+        _partStarts[parts] = steps.Length;
+        SplitProbe.Parts += parts;
+        var split = SplitProbe.Split;
+        var first = runs[steps[0].Index].Color;
+        _ordinal = 0;
+        if (!SplitProbe.Interleave)
+        {
+            for (var i = 0; i < steps.Length; i++)
+            {
+                for (var s = 0; s < split; s++)
+                {
+                    DrawPiece(target, runs[steps[i].Index], s, split, first);
+                }
+            }
+
+            return;
+        }
+
+        var longest = 0;
+        for (var p = 0; p < parts; p++)
+        {
+            longest = Math.Max(longest, _partStarts[p + 1] - _partStarts[p]);
+        }
+
+        for (var k = 0; k < longest; k++)
+        {
+            for (var s = 0; s < split; s++)
+            {
+                for (var p = 0; p < parts; p++)
+                {
+                    var i = _partStarts[p] + k;
+                    if (i < _partStarts[p + 1])
+                    {
+                        DrawPiece(target, runs[steps[i].Index], s, split, first);
+                    }
+                }
+            }
+        }
+    }
+
+    private void DrawPiece(D3D11RenderTarget target, in ResidentMarkerRun run, int piece, int pieces, Vector4 first)
+    {
+        var start = (int)((long)run.Count * piece / pieces);
+        var count = (int)((long)run.Count * (piece + 1) / pieces) - start;
+        var color = SplitProbe.Color switch
+        {
+            "one" => first,
+            "cycle" => Palette[_ordinal % Palette.Length] * run.Color.W,
+            _ => run.Color,
+        };
+        _ordinal++;
+        Draw(target, run with { Count = count, Color = color }, start);
+    }
+
+    // Eight opaque colors, premultiplied by the run's alpha when drawn (spike R3b2).
+    private static readonly Vector4[] Palette =
+    [
+        new(0.122f, 0.467f, 0.706f, 1),
+        new(1.000f, 0.498f, 0.055f, 1),
+        new(0.173f, 0.627f, 0.173f, 1),
+        new(0.839f, 0.153f, 0.157f, 1),
+        new(0.580f, 0.404f, 0.741f, 1),
+        new(0.549f, 0.337f, 0.294f, 1),
+        new(0.890f, 0.467f, 0.761f, 1),
+        new(0.498f, 0.498f, 0.498f, 1),
+    ];
+
+    private int[] _partStarts = new int[16];
+    private int _ordinal;
+    private bool _written;
+    private RunConstants _last;
+    private Vector4 _lastColor;
+
     /// <summary>Draws one run: points of one page under one clip, in one call. A run whose page has no buffer draws nothing.</summary>
-    internal void Draw(D3D11RenderTarget target, in ResidentMarkerRun run)
+    internal void Draw(D3D11RenderTarget target, in ResidentMarkerRun run, int start = 0)
     {
         if ((uint)run.Slot >= (uint)_pageViews.Length || _pageViews[run.Slot] == 0 || run.Count <= 0)
         {
             return;
+        }
+
+        SplitProbe.Draws++;
+        SplitProbe.PageBinds++;
+        if (run.Color != _lastColor)
+        {
+            SplitProbe.ColorChanges++;
+            _lastColor = run.Color;
         }
 
         var width = target.Description.Width;
@@ -267,6 +373,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         {
             InverseSize = new Vector2(1f / width, 1f / height),
             Cells = (uint)run.Cells,
+            First = (uint)start,
             Size = run.Size,
             Kind = run.Kind,
             Swap = run.Swap ? 1u : 0u,
@@ -274,10 +381,16 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
             ClampLow = run.ClampLow,
             ClampHigh = run.ClampHigh,
         };
-        D3D11_MAPPED_SUBRESOURCE mapped;
-        _backend.Check(context->Map((ID3D11Resource*)_constants, 0, D3D11_MAP.D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map");
-        *(RunConstants*)mapped.pData = values;
-        context->Unmap((ID3D11Resource*)_constants, 0);
+        if (!SplitProbe.ConstantsWhenChanged || !_written || !values.Equals(_last))
+        {
+            SplitProbe.ConstantWrites++;
+            D3D11_MAPPED_SUBRESOURCE mapped;
+            _backend.Check(context->Map((ID3D11Resource*)_constants, 0, D3D11_MAP.D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map");
+            *(RunConstants*)mapped.pData = values;
+            context->Unmap((ID3D11Resource*)_constants, 0);
+            (_last, _written) = (values, true);
+        }
+
         context->DrawInstanced(4, (uint)run.Count, 0, 0);
     }
 
@@ -318,11 +431,11 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
 
     /// <summary>The <c>ResidentMarkers</c> constant buffer of Markers.hlsl, 64 bytes.</summary>
     [StructLayout(LayoutKind.Sequential)]
-    private struct RunConstants
+    private record struct RunConstants
     {
         public Vector2 InverseSize;
         public uint Cells;
-        public uint Unused0;
+        public uint First;
         public float Size;
         public uint Kind;
         public uint Swap;

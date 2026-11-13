@@ -1,0 +1,54 @@
+namespace HyperPlot.Rendering;
+
+/// <summary>
+/// Scratch switches of the spike for row R3b2 (Issue #472, decision 1): why a split point layer on the index path draws
+/// slower than one part. Read once from the environment; not for merging.
+/// </summary>
+internal static class SplitProbe
+{
+    /// <summary>HP_PROBE_SHUFFLE_BLOCKS: a page is staged as this many runs of the copy's order, each shuffled in steps alone (1: the page whole, as on main).</summary>
+    internal static readonly int ShuffleBlocks = Read("HP_PROBE_SHUFFLE_BLOCKS", 1);
+
+    /// <summary>HP_PROBE_SPLIT: each page is drawn as this many calls over equal runs of its points (1: one call, as on main).</summary>
+    internal static readonly int Split = Read("HP_PROBE_SPLIT", 1);
+
+    /// <summary>HP_PROBE_ORDER=interleave: the calls of the parts go round the parts page by page (and split call by split call); otherwise part after part.</summary>
+    internal static readonly bool Interleave = Environment.GetEnvironmentVariable("HP_PROBE_ORDER") == "interleave";
+
+    /// <summary>HP_PROBE_COLOR: "one" draws every call with the first call's color; "cycle" gives call i of the frame the i-th of 8 colors (mod 8), with the run's alpha; otherwise the run's color.</summary>
+    internal static readonly string Color = Environment.GetEnvironmentVariable("HP_PROBE_COLOR") ?? "keep";
+
+    /// <summary>HP_PROBE_CB=changed: the run's constants are written only when they differ from the last written.</summary>
+    internal static readonly bool ConstantsWhenChanged = Environment.GetEnvironmentVariable("HP_PROBE_CB") == "changed";
+
+    /// <summary>Gets or sets the frame's counts, added by the backend and read and cleared by the scene.</summary>
+    internal static long Draws { get; set; }
+
+    /// <summary>Gets or sets the writes of the run's constants.</summary>
+    internal static long ConstantWrites { get; set; }
+
+    /// <summary>Gets or sets the binds of a page's view.</summary>
+    internal static long PageBinds { get; set; }
+
+    /// <summary>Gets or sets the binds of the pipeline (one at each change of the step kind to resident markers).</summary>
+    internal static long PipelineBinds { get; set; }
+
+    /// <summary>Gets or sets the groups of consecutive resident steps.</summary>
+    internal static long Groups { get; set; }
+
+    /// <summary>Gets or sets the parts seen in the groups (a change of the cells' offset).</summary>
+    internal static long Parts { get; set; }
+
+    /// <summary>Gets or sets the changes of the color between two consecutive calls.</summary>
+    internal static long ColorChanges { get; set; }
+
+    /// <summary>Gets the switches as one line.</summary>
+    internal static string Describe() =>
+        string.Create(
+            System.Globalization.CultureInfo.InvariantCulture,
+            $"probe: shuffle_blocks={ShuffleBlocks} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")}"
+        );
+
+    private static int Read(string name, int fallback) =>
+        int.TryParse(Environment.GetEnvironmentVariable(name), out var value) && value >= 1 ? value : fallback;
+}

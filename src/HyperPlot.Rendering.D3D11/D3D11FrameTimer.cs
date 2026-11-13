@@ -21,6 +21,34 @@ internal sealed unsafe class D3D11FrameTimer
     /// <summary>Gets the time of the newest frame whose time is known.</summary>
     internal GpuFrameTime? Last { get; private set; }
 
+    /// <summary>Gets the time of the point pass (the first resident step to the end of the last) of the newest timed frame. Spike R3b2.</summary>
+    internal GpuFrameTime? LastPass { get; private set; }
+
+    /// <summary>Marks the start of the timed frame's point pass, once a frame. Spike R3b2.</summary>
+    internal void MarkPassStart()
+    {
+        if (_current < 0)
+        {
+            return;
+        }
+
+        ref var set = ref _sets[_current];
+        if (!set.PassMarked && set.PassStart != null)
+        {
+            _backend.Context->End((ID3D11Asynchronous*)set.PassStart);
+            set.PassMarked = true;
+        }
+    }
+
+    /// <summary>Marks the end of the timed frame's point pass; a later mark in the frame replaces it. Spike R3b2.</summary>
+    internal void MarkPassEnd()
+    {
+        if (_current >= 0 && _sets[_current].PassMarked && _sets[_current].PassEnd != null)
+        {
+            _backend.Context->End((ID3D11Asynchronous*)_sets[_current].PassEnd);
+        }
+    }
+
     /// <summary>Gets or sets a test hook called with every time read, in the order read.</summary>
     internal Action<GpuFrameTime>? TestTimed { get; set; }
 
@@ -41,6 +69,8 @@ internal sealed unsafe class D3D11FrameTimer
                 Disjoint = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP_DISJOINT),
                 Start = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP),
                 End = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP),
+                PassStart = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP),
+                PassEnd = MakeQuery(device, D3D11_QUERY.D3D11_QUERY_TIMESTAMP),
             };
 
             // A set with any query missing is not used: Begin looks only at Disjoint, so all three go.
@@ -64,6 +94,8 @@ internal sealed unsafe class D3D11FrameTimer
             Release(ref set.Disjoint);
             Release(ref set.Start);
             Release(ref set.End);
+            Release(ref set.PassStart);
+            Release(ref set.PassEnd);
             set.Pending = false;
         }
 
@@ -83,6 +115,7 @@ internal sealed unsafe class D3D11FrameTimer
         _current = _next;
         _next = (_next + 1) % Sets;
         set.Frame = frame;
+        set.PassMarked = false;
         var context = _backend.Context;
         context->Begin((ID3D11Asynchronous*)set.Disjoint);
         context->End((ID3D11Asynchronous*)set.Start);
@@ -162,6 +195,21 @@ internal sealed unsafe class D3D11FrameTimer
                 // The ticks of the GPU clock over its frequency in Hz (design §5.3).
                 var seconds = (end - start) / (double)info.Frequency;
                 Last = new GpuFrameTime(set.Frame, TimeSpan.FromSeconds(seconds));
+
+                // Spike R3b2: the point pass of the same frame, under the same disjoint query.
+                ulong passStart;
+                ulong passEnd;
+                if (
+                    set.PassMarked
+                    && set.PassStart != null
+                    && context->GetData((ID3D11Asynchronous*)set.PassStart, &passStart, sizeof(ulong), flags) == S.S_OK
+                    && context->GetData((ID3D11Asynchronous*)set.PassEnd, &passEnd, sizeof(ulong), flags) == S.S_OK
+                    && passEnd >= passStart
+                )
+                {
+                    LastPass = new GpuFrameTime(set.Frame, TimeSpan.FromSeconds((passEnd - passStart) / (double)info.Frequency));
+                }
+
                 TestTimed?.Invoke(Last.Value);
             }
         }
@@ -172,6 +220,9 @@ internal sealed unsafe class D3D11FrameTimer
         public ID3D11Query* Disjoint;
         public ID3D11Query* Start;
         public ID3D11Query* End;
+        public ID3D11Query* PassStart;
+        public ID3D11Query* PassEnd;
+        public bool PassMarked;
         public long Frame;
         public bool Pending;
     }
