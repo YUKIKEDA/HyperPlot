@@ -169,7 +169,7 @@ Rejected:
 ## 3D の仕様の形（行 K0a）
 
 Decision:
-  3D の cartesian は `CoordSpec` の新しい種類にし、`PlotSpec` に z のスケール、層に Z チャネルを足す。ファセットと要件 G-6 のすべての軸の種類（カテゴリも）を受け、flip・polar・二次軸・Position（dodge・stack）・identity 以外の Stat は仕様の検査で例外にする（Issue #470 の決定 3・13、設計書 §13.2）。
+  3D の cartesian は `CoordSpec` の新しい種類にし、`PlotSpec` に z のスケール、層に Z チャネルを足す。ファセットと要件 G-6 のすべての軸の種類（カテゴリも）を受け、flip・polar・二次軸・identity 以外のすべての Position（fill も）・identity 以外の Stat は仕様の検査で例外にする（Issue #470 の決定 3・13・15、設計書 §13.2）。
 
 Reason:
   設計書 §4.4 は、3D の cartesian が同じ契約で変換を返すとしている。§13.1 の G1 の行は、z のチャネルを後から足しても既存のコードが壊れない形を v1 に持たせた。
