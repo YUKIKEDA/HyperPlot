@@ -1175,6 +1175,9 @@ internal enum RenderCommandKind : byte
 [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
 internal struct ImageInstance
 {
+    /// <summary>The bit of <see cref="Flags"/> that leaves a number read as exactly 0 transparent (row R3b1).</summary>
+    internal const uint ZeroTransparent = 64;
+
     /// <summary>The target point of the tile's texel corner (0, 0), in physical pixels.</summary>
     public Vector2 Origin;
 

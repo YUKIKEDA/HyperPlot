@@ -507,6 +507,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         if (_snapshot is { } snapshot)
         {
             _cache?.Points.Forget(snapshot);
+            _cache?.ForgetDensity(snapshot);
             snapshot.Release();
             _snapshot = null;
         }
