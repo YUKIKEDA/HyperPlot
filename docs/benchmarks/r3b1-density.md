@@ -31,7 +31,7 @@ dotnet publish benchmarks/HyperPlot.E2E -c Release -r win-x64 -o .dev/r3b1-pub
 .dev/r3b1-pub/HyperPlot.E2E.exe density D:\...\.dev\r3b1-data 1e8 uniform categories 600
 ```
 
-ファイルがないか長さが違えば、場面が種から書く（バッファを通さずに書くので、ページキャッシュに載っていない）。1e9 点は分布ごとに 8 GB で、索引の写し（12 GB）は一時ファイルに置かれ、索引を捨てるときに消える。
+この記録の全部の回は `benchmarks/HyperPlot.E2E/run-485.ps1 <出力のファイル>` が順に流す（機械の記録と GPU のクロックも、出力のファイルの横に書く）。ファイルがないか長さが違えば、場面が種から書く（バッファを通さずに書くので、ページキャッシュに載っていない）。1e9 点は分布ごとに 8 GB で、索引の写し（12 GB）は一時ファイルに置かれ、索引を捨てるときに消える。
 
 ## 要件 P-3: 1e9 点の拡大の台本
 
