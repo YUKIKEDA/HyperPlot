@@ -338,42 +338,81 @@ public sealed class IndexedPointHitTests
     }
 
     /// <summary>
-    /// A click of the selection of points on a density's bin selects nothing: a bin is no point (Issue #523 Decision 1). A
-    /// click on a point of another layer over the density selects that point alone.
+    /// A click of the selection of points on a density's bin, where no point answers, selects the range of the bin drawn there
+    /// as a rectangle: a bin of the chosen level's own tile, an ancestor's larger bin, or a leaf's fill whole, so that the
+    /// range changes with the zoom (design §6.4 "密度のクリック", Issue #471 Decisions 9 and 17). A click on a point of another
+    /// layer over the density selects that point alone.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 400,000 seeded points over [0, 100]² drawn as a density (layer 0), and a line along y = 50 (layer 1), at the view
-    ///   [0, 100]², 640 × 360, the default bindings (Shift and a click select points).
+    /// - 1,100,000 seeded points over [0, 100]² drawn as a density (layer 0), and a line along y = 50 (layer 1), at the view
+    ///   [0, 100]², 640 × 360, the default bindings (Shift and a click select points). Each cell of level 1 holds about
+    ///   275,000 points, past the density split of 262,144, so it has a tile of its own.
     ///
     /// Steps:
-    /// - Shift-click at (30, 80), where only the density answers. Shift-click at (30, 50), on the line.
+    /// - Shift-click at (30, 70), where only the density answers. Find the bin drawn there by the design's rule: of the
+    ///   root's tile (level 0, bins of level 8).
+    /// - Zoom to the view [25, 75]² (tile level 1) and shift-click at (30, 70) again; find the bin drawn there: of its
+    ///   level-1 cell's own tile (bins of level 9).
+    /// - Shift-click at (30, 50), on the line.
     ///
     /// Expected:
-    /// - After the first click the plot has no selection. After the second, a selection of points with one point, the
-    ///   line's (layer 1, a row of 0 or more).
+    /// - After each click on the density: a rectangle on the panel whose x and y ranges, as values, are the bin's box. The
+    ///   two bins are of other levels, so the ranges differ.
+    /// - After the click on the line: a selection of points with one point, the line's (layer 1, a row of 0 or more).
     /// </remarks>
     [Fact]
-    public void PointsClick_OnADensitysBin_SelectsNothing()
+    public void PointsClick_OnADensitysBin_SelectsTheBinsRange()
     {
-        using var engine = LineOverDensity(new NullBackend(), seed: 17);
+        var backend = new NullBackend();
+        using var engine = LineOverDensity(backend, seed: 17, count: 1_100_000);
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
         var hits = new SeriesHit[4];
-        var bin = Pixel(engine, 30, 80);
-        Assert.Equal(-1, Assert.Single(hits[..engine.HitTest(bin, 8, HitMode.XY, hits)]).Row);
+        var time = 0L;
+        Assert.Equal(-1, Assert.Single(hits[..engine.HitTest(Pixel(engine, 30, 70), 8, HitMode.XY, hits)]).Row);
 
-        Click(engine, bin, 0);
-        Assert.Null(engine.Selection(0));
+        var wide = ClickBin();
+        Show(engine, backend, (25, 75, 25, 75));
+        var narrow = ClickBin();
+        Assert.Equal((8, 9), (wide, narrow));
 
-        // Ten seconds later, so that the second click is no double click.
-        Click(engine, Pixel(engine, 30, 50), 10 * System.Diagnostics.Stopwatch.Frequency);
+        Click(Pixel(engine, 30, 50));
         var selection = Assert.IsType<Selection2D>(engine.Selection(0));
         Assert.Equal(SelectionKind.Points, selection.Kind);
         var point = Assert.Single(selection.Points.ToArray());
         Assert.Equal(1, point.Layer);
         Assert.True(point.Row >= 0);
 
-        static void Click(PlotEngine engine, Vector2 at, long time)
+        // Clicks the density at (30, 70) and checks the rectangle against the bin drawn there; returns the bin's level.
+        int ClickBin()
         {
+            Click(Pixel(engine, 30, 70));
+            var rectangle = Assert.IsType<Selection2D>(engine.Selection(0));
+            Assert.Equal((SelectionKind.Rectangle, Panel), (rectangle.Kind, rectangle.Panel));
+            var snapshot = plan.SpatialIndex!.Acquire();
+            try
+            {
+                var (ox, oy) = (snapshot.XRange.Origin, snapshot.YRange.Origin);
+                var (level, _) = DrawnBin(snapshot, 30 - ox, 70 - oy, plan.TileLevel);
+                var (gx, gy) = snapshot.GridAt(30 - ox, 70 - oy);
+                var code = level == 0 ? 0 : SpatialCode.Interleave(gx >> (32 - level), gy >> (32 - level));
+                var (cornerX, cornerY, extentX, extentY) = snapshot.CellBox(code, level);
+                Assert.Equal(ox + cornerX, rectangle.X.LowValue, 9);
+                Assert.Equal(ox + cornerX + extentX, rectangle.X.HighValue, 9);
+                Assert.Equal(oy + cornerY, rectangle.Y.LowValue, 9);
+                Assert.Equal(oy + cornerY + extentY, rectangle.Y.HighValue, 9);
+                return level;
+            }
+            finally
+            {
+                snapshot.Release();
+            }
+        }
+
+        // Ten seconds apart, so that no two clicks make a double click.
+        void Click(Vector2 at)
+        {
+            time += 10 * System.Diagnostics.Stopwatch.Frequency;
             engine.OnPointer(
                 new PointerEvent(PointerEventKind.Down, at, PointerButtons.Left, PointerButtons.Left, ModifierKeys.Shift, PointerKind.Mouse, time)
             );
@@ -718,11 +757,11 @@ public sealed class IndexedPointHitTests
         }
     }
 
-    private static PlotEngine LineOverDensity(NullBackend backend, int seed)
+    private static PlotEngine LineOverDensity(NullBackend backend, int seed, int count = Dense)
     {
-        var (_, _, table) = Uniform(Dense, seed);
-        var lineX = Column.Wrap(Enumerable.Range(0, Dense).Select(i => i * 100.0 / Dense).ToArray());
-        var lineY = Column.Wrap(Enumerable.Repeat(50.0, Dense).ToArray());
+        var (_, _, table) = Uniform(count, seed);
+        var lineX = Column.Wrap(Enumerable.Range(0, count).Select(i => i * 100.0 / count).ToArray());
+        var lineY = Column.Wrap(Enumerable.Repeat(50.0, count).ToArray());
         var both = DataTable
             .Create()
             .Add("x", table.Col<double>("x").Column)

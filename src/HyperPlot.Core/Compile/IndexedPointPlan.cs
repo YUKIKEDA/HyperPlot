@@ -87,6 +87,10 @@ internal sealed class IndexedPointPlan : LayerPlan
     private SpatialIndex? _index;
     private SpatialSnapshot? _snapshot;
 
+    // Ends with the index once Poll starts it, or with null once the part is released: a selection's rows asked before
+    // wait for it (design §6.4 "索引ができる前の行の集合").
+    private TaskCompletionSource<SpatialIndex?>? _started;
+
     // The coarse snapshot drawn as a density until the first full one is there (design §5.5.2 "索引ができるまで").
     private SpatialSnapshot? _coarse;
     private ResidencyCache? _cache;
@@ -180,6 +184,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             };
             _index = ((ISpatialColumn)point.X.Column).BuildSpatialIndex(_pool, point.Y.Column, input);
             _indexing.Building = _index;
+            _started?.TrySetResult(_index);
         }
 
         if (indexes.Waits)
@@ -260,7 +265,8 @@ internal sealed class IndexedPointPlan : LayerPlan
             Swap: context.Flipped,
             ClampLow: new Vector2(x.ClampLow, y.ClampLow),
             ClampHigh: new Vector2(x.ClampHigh, y.ClampHigh),
-            Clip: default
+            Clip: default,
+            Highlight: context.Highlight
         );
         var pages = context.Images.Points;
         var drawn = -1L;
@@ -369,16 +375,7 @@ internal sealed class IndexedPointPlan : LayerPlan
     internal override bool HitBin(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit, out PixelBox box)
     {
         box = default;
-        var snapshot = _snapshot ?? _coarse;
-        if (hit.Row >= 0 || !_drawsDensity || snapshot is null)
-        {
-            return false;
-        }
-
-        var transform = CartesianTransform.Create(x, y);
-        var mapX = new AxisMap(x, transform, ofX: true, snapshot.XRange.Origin);
-        var mapY = new AxisMap(y, transform, ofX: false, snapshot.YRange.Origin);
-        if (!TryBin(snapshot, mapX.DifferenceOfValue(hit.X), mapY.DifferenceOfValue(hit.Y), out var bin))
+        if (!TryHitBin(x, y, hit, out var mapX, out var mapY, out var bin))
         {
             return false;
         }
@@ -387,6 +384,54 @@ internal sealed class IndexedPointPlan : LayerPlan
         var (c0, c1) = (mapY.Pixel(bin.CornerY), mapY.Pixel(bin.CornerY + bin.ExtentY));
         box = new PixelBox(Math.Min(a0, a1), Math.Max(a0, a1), Math.Min(c0, c1), Math.Max(c0, c1));
         return true;
+    }
+
+    /// <summary>
+    /// Returns the range of the scale space of the density's bin a hit of this part stands for, from the bin at its center
+    /// (design §6.4 "密度のクリック", Issue #471 Decisions 9 and 17): the bin drawn there, an ancestor's bin or a leaf's fill
+    /// whole, as the snapshot's origin and differences from it.
+    /// </summary>
+    internal override bool HitBinRange(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out Interaction.ViewRange rangeX,
+        out Interaction.ViewRange rangeY
+    )
+    {
+        (rangeX, rangeY) = (default, default);
+        if (!TryHitBin(x, y, hit, out _, out _, out var bin))
+        {
+            return false;
+        }
+
+        var snapshot = (_snapshot ?? _coarse)!;
+        rangeX = new Interaction.ViewRange(snapshot.XRange.Origin, bin.CornerX, bin.CornerX + bin.ExtentX);
+        rangeY = new Interaction.ViewRange(snapshot.YRange.Origin, bin.CornerY, bin.CornerY + bin.ExtentY);
+        return true;
+    }
+
+    /// <summary>Finds the bin a density's hit of this part stands for, from its center, and the axes' maps of the snapshot it was drawn from.</summary>
+    private bool TryHitBin(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out AxisMap mapX,
+        out AxisMap mapY,
+        out DensityBin bin
+    )
+    {
+        (mapX, mapY, bin) = (default, default, default);
+        var snapshot = _snapshot ?? _coarse;
+        if (hit.Row >= 0 || !_drawsDensity || snapshot is null)
+        {
+            return false;
+        }
+
+        var transform = CartesianTransform.Create(x, y);
+        mapX = new AxisMap(x, transform, ofX: true, snapshot.XRange.Origin);
+        mapY = new AxisMap(y, transform, ofX: false, snapshot.YRange.Origin);
+        return TryBin(snapshot, mapX.DifferenceOfValue(hit.X), mapY.DifferenceOfValue(hit.Y), out bin);
     }
 
     /// <summary>
@@ -489,6 +534,12 @@ internal sealed class IndexedPointPlan : LayerPlan
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
 
+    /// <summary>
+    /// Gets a value indicating whether the part highlights a selection, which it does (design §6.4 "生の点の強調", "密度の強調",
+    /// row R3c): its runs and its density's tiles name the region of the panel's selection, whose outside the shaders fade.
+    /// </summary>
+    internal override bool HighlightsSelection => true;
+
     /// <summary>Gives back the snapshot, lets its pages go, and disposes the index.</summary>
     public override void Release()
     {
@@ -496,6 +547,60 @@ internal sealed class IndexedPointPlan : LayerPlan
         DropCoarse();
         _index?.Dispose();
         _index = null;
+        _started?.TrySetResult(null);
+    }
+
+    /// <summary>
+    /// Returns the rows of the part a selection holds, found through its index on the workers (design §6.4 "行の集合" and
+    /// "索引ができる前の行の集合", Issue #471 Decisions 4 and 13): from the full snapshot drawn, at once while a new one is
+    /// built; before the first is full, once it is, so that the rows are exact. Points answer by their values, whatever is
+    /// drawn. A part released before its index ends answers no rows.
+    /// </summary>
+    internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
+    {
+        var length = Rows.EndIn(((PointLayerSpec)Spec).X.Column.Length);
+        if (_snapshot is { } drawn && drawn.TryAddReference())
+        {
+            return Select(drawn, query, length);
+        }
+
+        return SelectWhenFull(query, length);
+    }
+
+    private static async ValueTask<Interaction.RowSelection> Select(SpatialSnapshot snapshot, SelectionQuery query, long length)
+    {
+        try
+        {
+            return await SpatialSelection.Select(snapshot, query.Selection, length, query.Pool).ConfigureAwait(false);
+        }
+        finally
+        {
+            snapshot.Release();
+        }
+    }
+
+    private async ValueTask<Interaction.RowSelection> SelectWhenFull(SelectionQuery query, long length)
+    {
+        var index = _index ?? await (_started ??= new(TaskCreationOptions.RunContinuationsAsynchronously)).Task.ConfigureAwait(false);
+        if (index is null)
+        {
+            return Interaction.RowSelection.Empty;
+        }
+
+        SpatialSnapshot snapshot;
+        try
+        {
+            // The first build's end: its snapshot is full. A build that fails throws its exception here.
+            await index.Completion.ConfigureAwait(false);
+            snapshot = index.Acquire();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The part was released: its layer is drawn no more.
+            return Interaction.RowSelection.Empty;
+        }
+
+        return await Select(snapshot, query, length).ConfigureAwait(false);
     }
 
     private void DropCoarse()
@@ -657,7 +762,7 @@ internal sealed class IndexedPointPlan : LayerPlan
                 fill = fill with { A = (byte)Math.Round(fill.A * point.Opacity) };
                 if (fill.A > 0)
                 {
-                    context.DrawRect(x.Pixel(cornerX), x.Pixel(cornerX + extentX), y.Pixel(cornerY), y.Pixel(cornerY + extentY), fill);
+                    context.DrawHighlighted(x.Pixel(cornerX), x.Pixel(cornerX + extentX), y.Pixel(cornerY), y.Pixel(cornerY + extentY), fill);
                 }
 
                 continue;
@@ -707,6 +812,7 @@ internal sealed class IndexedPointPlan : LayerPlan
                 Low = 0,
                 High = high,
                 Opacity = (float)point.Opacity,
+                Highlight = (uint)context.Highlight,
             };
             context.List.DrawImage(record, ImagePlan.PageOf(rgba: false, slot));
         }

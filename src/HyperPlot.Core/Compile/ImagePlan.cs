@@ -91,7 +91,11 @@ internal sealed class ImagePlan : LayerPlan
         var (raster, extent) = (image.Raster, image.ExtentOrDefault);
         var (w, h) = (raster.Width, raster.Height);
         var upper = image.Origin == RasterOrigin.Upper;
-        var rows = new List<long>();
+
+        // A bit an element of the raster, not a list of the texels held: a large raster selected whole stays at an eighth of
+        // a byte an element (PR #549's review).
+        var length = (long)w * h * raster.Channels;
+        var bits = new ulong[(length + 63) / 64];
         for (var row = 0; row < h; row++)
         {
             var cy = upper
@@ -102,12 +106,13 @@ internal sealed class ImagePlan : LayerPlan
                 var cx = extent.Left + ((column + 0.5) * (extent.Right - extent.Left) / w);
                 if (query.HoldsData(cx, cy) || (query.Selection.Kind == Interaction.SelectionKind.XRange && query.SpanHolds(cx, cy, cy)))
                 {
-                    rows.Add((((long)row * w) + column) * raster.Channels);
+                    var element = (((long)row * w) + column) * raster.Channels;
+                    bits[element >> 6] |= 1UL << (int)(element & 63);
                 }
             }
         }
 
-        return ValueTask.FromResult(Interaction.RowSelection.OfRows(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows), derived: false));
+        return ValueTask.FromResult(Interaction.RowSelection.OfBits(bits, length, derived: false));
     }
 
     public override void AddRanges(RangeSink sink, bool ofX, DataTable data)

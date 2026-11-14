@@ -665,13 +665,33 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         return false;
     }
 
+    internal override bool HitBinRange(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out Interaction.ViewRange rangeX,
+        out Interaction.ViewRange rangeY
+    )
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Category >= 0 && part.Category == hit.Series / part.Plan.HitWidth)
+            {
+                return part.Plan.HitBinRange(x, y, hit, out rangeX, out rangeY);
+            }
+        }
+
+        (rangeX, rangeY) = (default, default);
+        return false;
+    }
+
     /// <summary>
     /// Answers with the layer's rows its categories' parts hold (row I3a): a gathered part's rows taken back to the rows they
     /// were gathered from (Issue #337 Decision 3).
     /// </summary>
     internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
     {
-        var parts = new List<(Task<Interaction.RowSelection>, Func<long, long>?)>();
+        var parts = new List<(Task<Interaction.RowSelection>, (ISourceRows, int)?)>();
         foreach (var part in _parts)
         {
             if (part.Category < 0)
@@ -679,8 +699,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
                 continue;
             }
 
-            var category = part.Category;
-            parts.Add((part.Plan.SelectRows(query).AsTask(), part.Table is null ? null : row => ((ISourceRows)this).SourceRow(category, row)));
+            parts.Add((part.Plan.SelectRows(query).AsTask(), part.Table is null ? null : (this, part.Category)));
         }
 
         return SelectionQuery.Union(parts, query.Derived);
@@ -694,11 +713,34 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         }
     }
 
+    internal override bool HighlightsSelection
+    {
+        get
+        {
+            foreach (var part in _parts)
+            {
+                if (part.Plan.HighlightsSelection)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered)
     {
         return SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
     }
+
+    /// <summary>Gets the number of the layer's rows: a set of them has a bit a row.</summary>
+    long ISourceRows.SourceCount => _keys!.Column.Length;
+
+    /// <summary>Sets the bits of the layer's rows a category's gathered rows came from (row R3c).</summary>
+    void ISourceRows.MarkSourceRows(int key, IEnumerable<(long Start, long End)> gathered, ulong[] bits) =>
+        MarkSourceRows(_keys!, _runs!, _starts, Rows, key, gathered, bits);
 
     /// <summary>
     /// Returns the row a key's gathered row came from, or −1 (row I2a): the chunk where the key's gathered position lies, then
@@ -740,6 +782,90 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         }
 
         return -1;
+    }
+
+    /// <summary>
+    /// Sets, in a set of a bit a source row, the rows a key's gathered rows came from (row R3c, PR #549's review): the gathered
+    /// rows come as runs in increasing order and are never listed one by one, and each chunk that holds some has its key's
+    /// codes counted once. The memory is the bits' alone, whatever the number of rows; one row at a time through
+    /// <see cref="SourceRow"/> would read a chunk's keys a row.
+    /// </summary>
+    internal static void MarkSourceRows(
+        RowKeys keys,
+        CategoryRuns runs,
+        long[] starts,
+        RowRange rows,
+        int key,
+        IEnumerable<(long Start, long End)> gathered,
+        ulong[] bits
+    )
+    {
+        using var ranges = gathered.GetEnumerator();
+        if (!ranges.MoveNext())
+        {
+            return;
+        }
+
+        var (from, to) = ranges.Current;
+        var categories = keys.Column;
+        var n = keys.Count;
+        var (firstChunk, endChunk) = StatWork.ChunksOf(categories, rows);
+        for (var chunk = firstChunk; chunk < endChunk; chunk++)
+        {
+            // The key's gathered positions run on from chunk to chunk: a run that ends before the chunk's start is done.
+            var (start, count) = (starts[(chunk * n) + key], runs.ChunkCounts[(chunk * n) + key]);
+            while (to <= start)
+            {
+                if (!ranges.MoveNext())
+                {
+                    return;
+                }
+
+                (from, to) = ranges.Current;
+            }
+
+            if (from >= start + count)
+            {
+                continue;
+            }
+
+            var (lo, hi) = StatWork.PartOf(categories, chunk, rows);
+            var scratch = keys.Scratch();
+            try
+            {
+                var codes = keys.Codes(chunk, scratch)[lo..hi];
+                var position = start;
+                for (var i = 0; i < codes.Length && from < start + count; i++)
+                {
+                    if (codes[i] != key)
+                    {
+                        continue;
+                    }
+
+                    while (position >= to)
+                    {
+                        if (!ranges.MoveNext())
+                        {
+                            return;
+                        }
+
+                        (from, to) = ranges.Current;
+                    }
+
+                    if (position >= from)
+                    {
+                        var source = ((long)chunk << Column.ChunkShift) + lo + i;
+                        bits[source >> 6] |= 1UL << (int)(source & 63);
+                    }
+
+                    position++;
+                }
+            }
+            finally
+            {
+                keys.Return(scratch);
+            }
+        }
     }
 
     public override void Record(RecordContext context)

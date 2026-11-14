@@ -200,6 +200,9 @@ public sealed class ToolContext
     /// <summary>Answers a hit test at a pixel (row I3a's points).</summary>
     internal int HitTest(Vector2 pixel, float radius, Span<SeriesHit> results) => _engine.HitTest(pixel, radius, HitMode.XY, results);
 
+    /// <summary>Returns the range of the scale space of the density's bin a hit stands for (row R3c): what a click selects for it.</summary>
+    internal bool BinRange(in SeriesHit hit, out ViewRange x, out ViewRange y) => _engine.BinRange(hit, out x, out y);
+
     /// <summary>Returns whether a panel's x runs along the screen's vertical (row I3a): an x range's frame then runs across.</summary>
     internal bool Flipped(PanelId panel) => _engine.Flipped(panel);
 

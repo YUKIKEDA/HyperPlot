@@ -63,25 +63,6 @@ internal sealed class SpatialSnapshot<TX, TY> : SpatialSnapshot
     private protected override void ReadCore(SpatialCopy copy, long first, Span<double> x, Span<double> y, Span<long> rows)
     {
         ReadValues(copy, first, x, y);
-
-        // The last region holds each point's row as an offset from the first row the index reads, 4 or 8 bytes wide.
-        var region = copy.RegionCount - 1;
-        var firstRow = FirstRow;
-        if (copy.Width(region) == sizeof(uint))
-        {
-            var positions = copy.GetRegion<uint>(region).Read(first, rows.Length);
-            for (var i = 0; i < positions.Length; i++)
-            {
-                rows[i] = firstRow + positions[i];
-            }
-        }
-        else
-        {
-            var positions = copy.GetRegion<long>(region).Read(first, rows.Length);
-            for (var i = 0; i < positions.Length; i++)
-            {
-                rows[i] = firstRow + positions[i];
-            }
-        }
+        ReadRowsCore(copy, first, rows);
     }
 }

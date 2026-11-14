@@ -27,13 +27,54 @@ struct Image
     float High;
     float Middle;
     float Opacity;
-    float3 Padding;
+    uint Highlight;      // the number of the region whose outside the tile fades: its index in Highlights plus 1; 0 for none
+    float2 Padding;
 };
 
 StructuredBuffer<Image> Instances : register(t0);
 Texture2DArray<float> Values : register(t1);
 Texture2DArray<float4> Colors : register(t2);
 Texture2D<float4> Tables : register(t3);
+
+// The regions of the selections the frame's highlights keep (design §6.4 "密度の強調", row R3c): as HighlightRegion in Core,
+// and as Markers.hlsl has them, whose Holds this one repeats (a file is compiled alone).
+struct HighlightRegion
+{
+    float4 Box;
+    int2 MaskOrigin;
+    uint MaskFirst;
+    uint MaskStride;          // 0 for a region of no mask
+};
+
+StructuredBuffer<HighlightRegion> Highlights : register(t4);
+StructuredBuffer<uint> HighlightMasks : register(t5);
+
+// The share of its opacity a pixel outside the region keeps (Issue #471 Decision 12).
+static const float Faded = 0.2;
+
+// Whether a point of the target lies in a region, as RenderList.Holds judges it; true for the number 0, no region.
+bool Holds(uint number, float2 position)
+{
+    if (number == 0)
+    {
+        return true;
+    }
+
+    HighlightRegion region = Highlights[number - 1];
+    if (!(all(position >= region.Box.xy) && all(position <= region.Box.zw)))
+    {
+        return false;
+    }
+
+    if (region.MaskStride == 0)
+    {
+        return true;
+    }
+
+    uint2 at = (uint2)(int2(floor(position)) - region.MaskOrigin);
+    uint word = HighlightMasks[region.MaskFirst + at.y * region.MaskStride + (at.x >> 5)];
+    return ((word >> (at.x & 31)) & 1) != 0;
+}
 
 struct ImageVertex
 {
@@ -153,5 +194,6 @@ float4 ImagePS(ImageVertex input) : SV_Target
         }
     }
 
-    return color * image.Opacity;
+    // A density's highlight cuts the tile by the region at each pixel's center (design §6.4 "密度の強調").
+    return color * (image.Opacity * (Holds(image.Highlight, input.Position.xy) ? 1 : Faded));
 }

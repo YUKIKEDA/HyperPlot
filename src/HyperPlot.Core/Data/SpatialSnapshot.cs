@@ -30,7 +30,8 @@ internal abstract unsafe class SpatialSnapshot
     /// <summary>The units a resident cell's extent is cut into on each axis: a resident point's position is one of them.</summary>
     internal const double CellUnits = 4294967296.0;
 
-    private const int DeepestLevel = 32;
+    /// <summary>The deepest level of the grid: its cells are the grid cells of the quantization.</summary>
+    internal const int DeepestLevel = 32;
 
     // How much nearer than the best point found a cell must be able to come to be taken, in pixels (design §6.3 "同じ距離").
     private const double NearestTolerance = 0.5;
@@ -171,6 +172,12 @@ internal abstract unsafe class SpatialSnapshot
     /// </summary>
     public ReadOnlySpan<ResidentCell> ResidentCells => _cells;
 
+    /// <summary>Gets a value indicating whether the index found the range of x itself: no point of the copy lies outside it (design §3.4 "範囲で切る").</summary>
+    internal bool FoundXRange => _clipsX;
+
+    /// <summary>Gets a value indicating whether the index found the range of y itself: no point of the copy lies outside it.</summary>
+    internal bool FoundYRange => _clipsY;
+
     /// <summary>Gets a value indicating whether the versions the build recorded are the columns' versions now.</summary>
     internal bool MatchesColumns => _xVersion == _owner.X.Version && _yVersion == _owner.Y.Version;
 
@@ -308,6 +315,58 @@ internal abstract unsafe class SpatialSnapshot
         if (x.Length > 0 && _copy != null)
         {
             ReadCore(_copy, first, x, y, rows);
+        }
+    }
+
+    /// <summary>
+    /// Reads the rows points of the copy came from, without their values (design §6.4 "行の集合", row R3c): the rows of a
+    /// cell that lies inside a selection whole.
+    /// </summary>
+    /// <param name="first">The position in the copy of the first point to read.</param>
+    /// <param name="rows">Where the row numbers in the columns go.</param>
+    /// <exception cref="InvalidOperationException">The snapshot is not <see cref="SpatialStage.Full"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The points to read are not all among the <see cref="PointCount"/> points.</exception>
+    internal void ReadRows(long first, Span<long> rows)
+    {
+        if (Stage != SpatialStage.Full)
+        {
+            ThrowHelper.ThrowSpatialSnapshotNotFull();
+        }
+
+        if (first < 0 || rows.Length > PointCount - first)
+        {
+            ThrowHelper.ThrowSpatialPointsOutOfRange(first, rows.Length, PointCount);
+        }
+
+        if (rows.Length > 0 && _copy != null)
+        {
+            ReadRowsCore(_copy, first, rows);
+        }
+    }
+
+    /// <summary>Reads the rows points of the copy came from: the last region, each an offset from the first row the index reads, 4 or 8 bytes wide.</summary>
+    /// <param name="copy">The copy.</param>
+    /// <param name="first">The position of the first point: the points to read are in the copy.</param>
+    /// <param name="rows">Where the row numbers go.</param>
+    private protected void ReadRowsCore(SpatialCopy copy, long first, Span<long> rows)
+    {
+        var region = copy.RegionCount - 1;
+        var firstRow = FirstRow;
+        if (copy.Width(region) == sizeof(uint))
+        {
+            var positions = copy.GetRegion<uint>(region).Read(first, rows.Length);
+            for (var i = 0; i < positions.Length; i++)
+            {
+                rows[i] = firstRow + positions[i];
+            }
+        }
+        else
+        {
+            var positions = copy.GetRegion<long>(region).Read(first, rows.Length);
+            for (var i = 0; i < positions.Length; i++)
+            {
+                rows[i] = firstRow + positions[i];
+            }
         }
     }
 

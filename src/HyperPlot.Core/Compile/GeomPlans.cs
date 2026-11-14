@@ -1115,6 +1115,9 @@ internal sealed class PointPlan : LayerPlan
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
 
+    /// <summary>Gets the points as a selection reads them (design §6.4 "散布の選択", row R3c): a bit a row the workers set.</summary>
+    internal override SelectionShape? Shape => new(ShapeKind.Point, Columns[0], null, Columns[1], Rows, Sorted: false);
+
     /// <summary>Gets the number of rows the last recording mapped: the part's own (Issue #459). Tests only.</summary>
     internal long MappedRows => _mapped;
 
@@ -1164,7 +1167,20 @@ internal sealed class PointPlan : LayerPlan
                 centers[i - start] = new Vector2((float)xs[i - start], (float)ys[i - start]);
             }
 
-            context.DrawMarkers(centers, default, style);
+            if (context.Highlight == 0)
+            {
+                context.DrawMarkers(centers, default, style);
+                return;
+            }
+
+            // A selection's highlight: each point in the layer's color, faded outside the selection's region.
+            var looks = context.MarkerColors(end - start);
+            for (var i = 0; i < looks.Length; i++)
+            {
+                looks[i] = Look(context, centers[i], point.Color ?? SeriesColor, point.Opacity);
+            }
+
+            context.DrawMarkers(centers, looks, style);
             return;
         }
 
@@ -1176,7 +1192,8 @@ internal sealed class PointPlan : LayerPlan
             if (ElementColor(values, i) is { } color)
             {
                 centers[count] = new Vector2((float)xs[i - start], (float)ys[i - start]);
-                colors[count++] = Faded(color, point.Opacity);
+                colors[count] = Look(context, centers[count], color, point.Opacity);
+                count++;
             }
             else
             {
@@ -1208,7 +1225,7 @@ internal sealed class PointPlan : LayerPlan
         var values = ElementColors;
         var sizeBy = point.SizeBy?.Column;
         var shapeBy = point.ShapeBy?.Column as CategoricalColumn;
-        var colors = values is null ? default : context.MarkerColors(length);
+        var colors = values is null && context.Highlight == 0 ? default : context.MarkerColors(length);
         var sizes = sizeBy is null ? default : context.MarkerSizes(length);
         var shapes = shapeBy is null ? default : context.MarkerShapes(length);
         if (sizeBy is not null && _radii.Length < length)
@@ -1249,9 +1266,9 @@ internal sealed class PointPlan : LayerPlan
             }
 
             centers[count] = new Vector2((float)xs[i - start], (float)ys[i - start]);
-            if (values is not null)
+            if (!colors.IsEmpty)
             {
-                colors[count] = Faded(color!.Value, point.Opacity);
+                colors[count] = Look(context, centers[count], color ?? point.Color ?? SeriesColor, point.Opacity);
             }
 
             if (sizeBy is not null)
@@ -1270,7 +1287,7 @@ internal sealed class PointPlan : LayerPlan
 
         context.DrawMarkers(
             centers[..count],
-            values is null ? default : colors[..count],
+            colors.IsEmpty ? default : colors[..count],
             sizeBy is null ? default : sizes[..count],
             shapeBy is null ? default : shapes[..count],
             style
@@ -1289,4 +1306,14 @@ internal sealed class PointPlan : LayerPlan
 
     /// <summary>Returns a color with its alpha multiplied by an opacity.</summary>
     private static Color Faded(Color color, double opacity) => opacity >= 1 ? color : color with { A = (byte)Math.Round(color.A * opacity) };
+
+    /// <summary>
+    /// Returns a point's color at the layer's opacity, which a point outside the region of the panel's selection takes times
+    /// 0.2 (design §6.4 "見た目", row R3c, Issue #471 Decision 12): judged at its center along × across, as the index path's
+    /// shader judges.
+    /// </summary>
+    private static Color Look(RecordContext context, Vector2 center, Color color, double opacity) =>
+        Faded(color, context.Holds(center.X, center.Y) ? opacity : opacity * HighlightRegion.Faded);
+
+    internal override bool HighlightsSelection => true;
 }

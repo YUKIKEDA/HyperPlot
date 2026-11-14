@@ -236,6 +236,12 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         context->PSSetConstantBuffers(1, 1, &constants);
         var cellView = _cellView;
         context->VSSetShaderResources(2, 1, &cellView);
+
+        // The regions of the list's selections, which the vertex shader judges each center by (row R3c).
+        var regions = _backend.Highlights.Regions;
+        context->VSSetShaderResources(3, 1, &regions);
+        var masks = _backend.Highlights.Masks;
+        context->VSSetShaderResources(4, 1, &masks);
         context->VSSetShader(_vertexShader, null, 0);
         context->PSSetShader(_pixelShader, null, 0);
         context->OMSetBlendState(_overBlend, null, 0xFFFFFFFF);
@@ -267,6 +273,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         {
             InverseSize = new Vector2(1f / width, 1f / height),
             Cells = (uint)run.Cells,
+            Highlight = (uint)run.Highlight,
             Size = run.Size,
             Kind = run.Kind,
             Swap = run.Swap ? 1u : 0u,
@@ -288,6 +295,8 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         ID3D11ShaderResourceView* noView = null;
         context->VSSetShaderResources(1, 1, &noView);
         context->VSSetShaderResources(2, 1, &noView);
+        context->VSSetShaderResources(3, 1, &noView);
+        context->VSSetShaderResources(4, 1, &noView);
         context->OMSetRenderTargets(0, null, null);
     }
 
@@ -322,7 +331,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
     {
         public Vector2 InverseSize;
         public uint Cells;
-        public uint Unused0;
+        public uint Highlight;
         public float Size;
         public uint Kind;
         public uint Swap;

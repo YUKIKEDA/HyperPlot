@@ -32,6 +32,9 @@ public sealed class RowSelection
     /// </summary>
     public bool Derived { get; }
 
+    /// <summary>Gets the row after the set's last possible row: the bits' length, or the last run's end; 0 for an empty set.</summary>
+    internal long End => _bits is not null ? _length : (_ends.Length > 0 ? _ends[^1] : 0);
+
     /// <summary>Returns whether a row is in the set.</summary>
     /// <param name="row">The row.</param>
     /// <returns>Whether it is.</returns>
@@ -79,6 +82,18 @@ public sealed class RowSelection
         if (start >= 0)
         {
             yield return (start, _length);
+        }
+    }
+
+    /// <summary>Sets the bits of a run of rows [start, end) in a set of a bit a row, a word at a time.</summary>
+    internal static void SetRun(ulong[] bits, long start, long end)
+    {
+        while (start < end)
+        {
+            var (word, bit) = ((int)(start >> 6), (int)(start & 63));
+            var count = (int)Math.Min(64 - bit, end - start);
+            bits[word] |= (count == 64 ? ulong.MaxValue : (1UL << count) - 1) << bit;
+            start += count;
         }
     }
 

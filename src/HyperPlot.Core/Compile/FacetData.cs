@@ -376,6 +376,13 @@ internal sealed class FacetData : IDisposable, ISourceRows
     /// <summary>Returns the row of the plot's table a panel's gathered row came from (row I2a, Issue #337 Decision 3).</summary>
     long ISourceRows.SourceRow(int key, long gathered) => SplitPlan.SourceRow(_keys!, _runs!, _starts, RowRange.All, key, gathered);
 
+    /// <inheritdoc />
+    long ISourceRows.SourceCount => _keys!.Column.Length;
+
+    /// <inheritdoc />
+    void ISourceRows.MarkSourceRows(int key, IEnumerable<(long Start, long End)> gathered, ulong[] bits) =>
+        SplitPlan.MarkSourceRows(_keys!, _runs!, _starts, RowRange.All, key, gathered, bits);
+
     public void GatherMarked(PlotWorkerPool pool) => SplitPlan.GatherRows(pool, _keys!, _runs!, _gathers, ref _starts, RowRange.All);
 
     /// <summary>Tells the gathered columns that their values changed, so that their pyramids and statistics follow.</summary>

@@ -119,7 +119,7 @@ cbuffer ResidentMarkers : register(b1)
 {
     float2 ResidentInverseSize;   // 1 / target size
     uint ResidentCells;           // where the part's cells begin in Cells
-    uint ResidentUnused0;
+    uint ResidentHighlight;       // the number of the region whose outside the run fades: its index in Highlights plus 1; 0 for none
     float ResidentSize;           // the markers' size
     uint ResidentKind;            // as Marker.Kind
     uint ResidentSwap;            // not 0 when x runs down the target: a flipped plot
@@ -146,6 +146,47 @@ struct ResidentCell
 StructuredBuffer<ResidentPoint> Points : register(t1);
 StructuredBuffer<ResidentCell> Cells : register(t2);
 
+// The regions of the selections the frame's highlights keep (design §6.4 "生の点の強調", row R3c): as HighlightRegion in Core,
+// and as Image.hlsl has them. A box of the target's pixels, its ends included; a lasso's mask of a bit a pixel over it, a
+// row of MaskStride words after another from MaskFirst, whose bit i of a word is the pixel of its column i to the right.
+struct HighlightRegion
+{
+    float4 Box;
+    int2 MaskOrigin;
+    uint MaskFirst;
+    uint MaskStride;          // 0 for a region of no mask
+};
+
+StructuredBuffer<HighlightRegion> Highlights : register(t3);
+StructuredBuffer<uint> HighlightMasks : register(t4);
+
+// The share of its opacity a marker outside the region keeps (Issue #471 Decision 12).
+static const float Faded = 0.2;
+
+// Whether a point of the target lies in a region, as RenderList.Holds judges it; true for the number 0, no region.
+bool Holds(uint number, float2 position)
+{
+    if (number == 0)
+    {
+        return true;
+    }
+
+    HighlightRegion region = Highlights[number - 1];
+    if (!(all(position >= region.Box.xy) && all(position <= region.Box.zw)))
+    {
+        return false;
+    }
+
+    if (region.MaskStride == 0)
+    {
+        return true;
+    }
+
+    uint2 at = (uint2)(int2(floor(position)) - region.MaskOrigin);
+    uint word = HighlightMasks[region.MaskFirst + at.y * region.MaskStride + (at.x >> 5)];
+    return ((word >> (at.x & 31)) & 1) != 0;
+}
+
 // The signed distance of two unsigned positions, taken in integers before the conversion.
 float UnitsFrom(uint position, uint base)
 {
@@ -154,7 +195,8 @@ float UnitsFrom(uint position, uint base)
 
 // A run has one look, so the size, the shape, and the color reach the pixel shader from the run's constants, not through
 // every vertex: a frame of 1e7 points has 4 × 10^7 vertices, and with the look carried by each vertex its GPU time was
-// 12.8 ms where it is 7.3 ms without (discs of 2 pixels, the whole view; Issue #438).
+// 12.8 ms where it is 7.3 ms without (discs of 2 pixels, the whole view; Issue #438). The one thing a marker has of its own,
+// the share of its opacity a selection's highlight leaves it (row R3c), rides in the depth, which nothing else reads.
 struct ResidentVertex
 {
     float4 Position : SV_Position;
@@ -172,8 +214,11 @@ ResidentVertex ResidentMarkerVS(uint vertex : SV_VertexID, uint instance : SV_In
     float2 low = floor(center - reach);
     float2 high = ceil(center + reach);
     float2 corner = float2((vertex & 2) != 0 ? high.x : low.x, (vertex & 1) != 0 ? high.y : low.y);
+
+    // The predicate is judged at the center, so that a marker is faded whole, never cut (design §6.4 "生の点の強調").
+    float share = Holds(ResidentHighlight, center) ? 1 : Faded;
     ResidentVertex output;
-    output.Position = float4(corner.x * ResidentInverseSize.x * 2 - 1, 1 - corner.y * ResidentInverseSize.y * 2, 0, 1);
+    output.Position = float4(corner.x * ResidentInverseSize.x * 2 - 1, 1 - corner.y * ResidentInverseSize.y * 2, share, 1);
     output.Center = center;
     return output;
 }
@@ -186,5 +231,5 @@ float4 ResidentMarkerPS(ResidentVertex input) : SV_Target
         input.Center,
         ResidentSize * 0.5,
         (ResidentKind >> 8) * (0.5 / 16.0));
-    return ResidentColor * coverage;
+    return ResidentColor * (coverage * input.Position.z);
 }

@@ -889,8 +889,9 @@ internal sealed partial class PlotPlan : IDisposable
                 SkipSeries();
             }
         }
-        else if (_pendingAnnotations && !_guides.Empty)
+        else if ((_pendingAnnotations || _selectionChanged) && !_guides.Empty)
         {
+            // A new selection is recorded again alone, as annotations are: the point layers highlight it (row R3c).
             _pendingRecord = true;
         }
 
@@ -2606,6 +2607,7 @@ internal sealed partial class PlotPlan : IDisposable
     private void Record(PlotSpec spec, bool flipped)
     {
         _list.Clear();
+        _selectionChanged = false;
         _context.Theme = spec.Theme;
         if (_ownImages && !_inFigure)
         {
@@ -2648,6 +2650,9 @@ internal sealed partial class PlotPlan : IDisposable
             var polarX = new GeomFrame.Axis(_xTransform, panel.X, xReverse, xClamp, 0, polar.AlongSize, band);
             var polarY = new GeomFrame.Axis(_yTransform, panel.Y, yScale.Reverse, yScale.Clamp, 0, polar.AcrossSize);
             _context.Begin(polarX, polarY, panel.Boundaries, _scale, flipped: false, (left, top, width, height), polar);
+
+            // A polar panel takes no selection (design §6.4).
+            _context.Highlight = 0;
             RecordLayers(panel, spec.Theme.Palette, flipped: false);
             RecordAnnotations(spec, index, guide, new AnnotationAxes(polarX, polarY, polarX, polarY, Flipped: false));
             return;
@@ -2678,6 +2683,9 @@ internal sealed partial class PlotPlan : IDisposable
 
         panel.Frames = (x, y, x2, y2);
         _context.Begin(x, y, panel.Boundaries, _scale, flipped, (left, top, width, height), null);
+
+        // The region of the plot's selection on the panel, which its point layers highlight (row R3c): of the panel's scales.
+        _context.Highlight = AddHighlight(index, x, y, flipped, (left, top, width, height));
         RecordLayers(panel, spec.Theme.Palette, flipped);
         RecordAnnotations(spec, index, guide, new AnnotationAxes(x, y, x2, y2, flipped));
     }
