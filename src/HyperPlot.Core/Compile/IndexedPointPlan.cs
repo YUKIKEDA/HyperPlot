@@ -323,7 +323,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         var x = new AxisMap(scan.X, transform, ofX: true, snapshot.XRange.Origin);
         var y = new AxisMap(scan.Y, transform, ofX: false, snapshot.YRange.Origin);
         var screen = new DrawnScreen(x, y);
-        var scratch = scan.Nearest ??= new SpatialNearestScratch();
+        var scratch = scan.Scratch ??= new SpatialNearestScratch();
         var found = snapshot.Nearest(ref screen, scan.Along, scan.Across, scan.Radius, _markerRadius, scan.Mode, scratch);
         if (!found.Found)
         {

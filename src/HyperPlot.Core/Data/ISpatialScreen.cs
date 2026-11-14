@@ -13,20 +13,23 @@ namespace HyperPlot;
 /// </remarks>
 internal interface ISpatialScreen
 {
-    /// <summary>Returns the pixel along of a difference of x from the snapshot's origin, held where the axis clamps.</summary>
+    /// <summary>Maps a difference of x from the snapshot's origin to the pixel along.</summary>
     /// <param name="x">The difference, in units of the scale space.</param>
+    /// <returns>The pixel along, held where the axis clamps.</returns>
     double Along(double x);
 
-    /// <summary>Returns the pixel across of a difference of y from the snapshot's origin, held where the axis clamps.</summary>
+    /// <summary>Maps a difference of y from the snapshot's origin to the pixel across.</summary>
     /// <param name="y">The difference, in units of the scale space.</param>
+    /// <returns>The pixel across, held where the axis clamps.</returns>
     double Across(double y);
 
     /// <summary>Takes the resident cell whose points the next calls of <see cref="Place"/> place: its record of this frame.</summary>
     /// <param name="cell">The cell.</param>
     void Enter(in ResidentCell cell);
 
-    /// <summary>Returns the pixels of a point of the entered cell from its position in the cell, as the vertex shader draws it.</summary>
+    /// <summary>Places a point of the entered cell from its position in the cell, as the vertex shader draws it.</summary>
     /// <param name="unitX">The point's x in the cell, in units of 2^-32 of the cell's width.</param>
     /// <param name="unitY">The point's y in the cell, in units of 2^-32 of the cell's height.</param>
+    /// <returns>The point's pixels along and across.</returns>
     (double Along, double Across) Place(uint unitX, uint unitY);
 }

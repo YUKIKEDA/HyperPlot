@@ -27,7 +27,7 @@ internal sealed partial class PlotPlan
         var target = _panels[panel];
         var frames = target.Frames;
         var (along, across) = _guides.Flipped ? (pixel.Y, pixel.X) : (pixel.X, pixel.Y);
-        var scan = new HitScan(results, _store, plot, panel, mode, radius, along, across) { Nearest = _nearest };
+        var scan = new HitScan(results, _store, plot, panel, mode, radius, along, across) { Scratch = _nearest };
         for (var i = 0; i < target.Layers.Length && i < spec.Layers.Count; i++)
         {
             var layer = target.Layers[i];
@@ -51,7 +51,7 @@ internal sealed partial class PlotPlan
             }
         }
 
-        _nearest = scan.Nearest;
+        _nearest = scan.Scratch;
         BinsLast(results[..Math.Min(scan.Found, results.Length)]);
         return scan.Found;
     }

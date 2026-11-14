@@ -91,7 +91,7 @@ internal ref struct HitScan
     /// Gets or sets the buffers of the search over a spatial index (design §6.3 "探し方", row R3c): the plot's plan lends
     /// its own, and the first layer on the index path that a hit test reaches makes it when the plan has none yet.
     /// </summary>
-    public SpatialNearestScratch? Nearest { get; set; }
+    public SpatialNearestScratch? Scratch { get; set; }
 
     /// <summary>Gets a value indicating whether the scan sums statistics (row I4b) in place of finding hits.</summary>
     public readonly bool Summing => _summing;
