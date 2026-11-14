@@ -891,4 +891,13 @@ internal interface ISourceRows
     /// <param name="gathered">The row among the key's gathered rows.</param>
     /// <returns>The row it was gathered from, or −1 past the key's rows.</returns>
     long SourceRow(int key, long gathered);
+
+    /// <summary>
+    /// Writes the rows many of a key's gathered rows were gathered from, in one pass over the chunks that hold them (row R3c):
+    /// a selection's rows of a split or a facet's part, which one by one would read a chunk's keys a row.
+    /// </summary>
+    /// <param name="key">The key: a category, a panel's.</param>
+    /// <param name="gathered">The rows among the key's gathered rows, in increasing order.</param>
+    /// <param name="sources">Where each one's row goes: −1 past the key's rows.</param>
+    void SourceRows(int key, ReadOnlySpan<long> gathered, Span<long> sources);
 }

@@ -671,7 +671,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     /// </summary>
     internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
     {
-        var parts = new List<(Task<Interaction.RowSelection>, Func<long, long>?)>();
+        var parts = new List<(Task<Interaction.RowSelection>, (ISourceRows, int)?)>();
         foreach (var part in _parts)
         {
             if (part.Category < 0)
@@ -679,8 +679,7 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
                 continue;
             }
 
-            var category = part.Category;
-            parts.Add((part.Plan.SelectRows(query).AsTask(), part.Table is null ? null : row => ((ISourceRows)this).SourceRow(category, row)));
+            parts.Add((part.Plan.SelectRows(query).AsTask(), part.Table is null ? null : (this, part.Category)));
         }
 
         return SelectionQuery.Union(parts, query.Derived);
@@ -695,10 +694,11 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     }
 
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
-    long ISourceRows.SourceRow(int key, long gathered)
-    {
-        return SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
-    }
+    long ISourceRows.SourceRow(int key, long gathered) => SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
+
+    /// <summary>Writes the rows of the layer's rows a category's gathered rows came from (row R3c).</summary>
+    void ISourceRows.SourceRows(int key, ReadOnlySpan<long> gathered, Span<long> sources) =>
+        SourceRows(_keys!, _runs!, _starts, Rows, key, gathered, sources);
 
     /// <summary>
     /// Returns the row a key's gathered row came from, or −1 (row I2a): the chunk where the key's gathered position lies, then
@@ -706,13 +706,40 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     /// </summary>
     internal static long SourceRow(RowKeys keys, CategoryRuns runs, long[] starts, RowRange rows, int key, long gathered)
     {
+        Span<long> source = stackalloc long[1];
+        SourceRows(keys, runs, starts, rows, key, [gathered], source);
+        return source[0];
+    }
+
+    /// <summary>
+    /// Writes the rows a key's gathered rows came from, or −1, the gathered rows in increasing order (rows I2a and R3c): the
+    /// chunks where their gathered positions lie, each chunk's codes of the key counted once for all of its rows.
+    /// </summary>
+    internal static void SourceRows(
+        RowKeys keys,
+        CategoryRuns runs,
+        long[] starts,
+        RowRange rows,
+        int key,
+        ReadOnlySpan<long> gathered,
+        Span<long> sources
+    )
+    {
+        sources.Fill(-1);
         var categories = keys.Column;
         var n = keys.Count;
         var (firstChunk, endChunk) = StatWork.ChunksOf(categories, rows);
-        for (var chunk = firstChunk; chunk < endChunk; chunk++)
+        var at = 0;
+        for (var chunk = firstChunk; chunk < endChunk && at < gathered.Length; chunk++)
         {
+            // The key's gathered positions run on from chunk to chunk: one before the chunk's start was not found before it.
             var (start, count) = (starts[(chunk * n) + key], runs.ChunkCounts[(chunk * n) + key]);
-            if (gathered >= start + count)
+            while (at < gathered.Length && gathered[at] < start)
+            {
+                at++;
+            }
+
+            if (at == gathered.Length || gathered[at] >= start + count)
             {
                 continue;
             }
@@ -722,24 +749,27 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             try
             {
                 var codes = keys.Codes(chunk, scratch)[lo..hi];
-                var left = gathered - start;
-                for (var i = 0; i < codes.Length; i++)
+                var position = start;
+                for (var i = 0; i < codes.Length && at < gathered.Length && gathered[at] < start + count; i++)
                 {
-                    if (codes[i] == key && left-- == 0)
+                    if (codes[i] != key)
                     {
-                        return ((long)chunk << Column.ChunkShift) + lo + i;
+                        continue;
                     }
+
+                    if (position == gathered[at])
+                    {
+                        sources[at++] = ((long)chunk << Column.ChunkShift) + lo + i;
+                    }
+
+                    position++;
                 }
             }
             finally
             {
                 keys.Return(scratch);
             }
-
-            return -1;
         }
-
-        return -1;
     }
 
     public override void Record(RecordContext context)

@@ -102,28 +102,35 @@ internal sealed class SelectionQuery(Selection2D selection, GeomFrame.Axis x, Ge
     public bool HoldsData(double dataX, double dataY) => selection.Holds(OfX(dataX), OfY(dataY));
 
     /// <summary>
-    /// Returns the union of the rows several parts answered, each row taken through a map (a gathered part's rows back to
-    /// the layer's), or as it is when the map is null (row I3a): a facet's panels a link stands a selection on too (row I3b).
-    /// Derived when the argument says so or a part is.
+    /// Returns the union of the rows several parts answered, each part's rows taken back through a gather (a split's or a
+    /// facet's part's rows to the layer's, all of them in one pass, row R3c), or as they are when it has none (row I3a): a
+    /// facet's panels a link stands a selection on too (row I3b). Derived when the argument says so or a part is.
     /// </summary>
-    public static async ValueTask<RowSelection> Union(List<(Task<RowSelection> Rows, Func<long, long>? Map)> parts, bool derived)
+    public static async ValueTask<RowSelection> Union(List<(Task<RowSelection> Rows, (ISourceRows Gather, int Key)? Map)> parts, bool derived)
     {
         var rows = new List<long>();
         foreach (var (pending, map) in parts)
         {
             var part = await pending.ConfigureAwait(false);
             derived |= part.Derived;
+            var first = rows.Count;
             foreach (var (start, end) in part.Ranges())
             {
                 for (var row = start; row < end; row++)
                 {
-                    var source = map is null ? row : map(row);
-                    if (source >= 0)
-                    {
-                        rows.Add(source);
-                    }
+                    rows.Add(row);
                 }
             }
+
+            if (map is not { } gather)
+            {
+                continue;
+            }
+
+            // The part's rows in increasing order, as the ranges give them, each replaced by its source; −1 is none.
+            var mapped = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows)[first..];
+            gather.Gather.SourceRows(gather.Key, mapped.ToArray(), mapped);
+            rows.RemoveAll(row => row < 0);
         }
 
         return RowSelection.OfRows(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows), derived);

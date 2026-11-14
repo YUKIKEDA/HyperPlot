@@ -159,7 +159,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
     internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
     {
         query.Derived = true;
-        var parts = new List<(Task<Interaction.RowSelection>, Func<long, long>?)>();
+        var parts = new List<(Task<Interaction.RowSelection>, (ISourceRows, int)?)>();
         foreach (var part in _parts)
         {
             if (part.Plan is not LinePlan)

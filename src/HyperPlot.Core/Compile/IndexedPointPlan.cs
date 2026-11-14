@@ -87,6 +87,10 @@ internal sealed class IndexedPointPlan : LayerPlan
     private SpatialIndex? _index;
     private SpatialSnapshot? _snapshot;
 
+    // Ends with the index once Poll starts it, or with null once the part is released: a selection's rows asked before
+    // wait for it (design §6.4 "索引ができる前の行の集合").
+    private TaskCompletionSource<SpatialIndex?>? _started;
+
     // The coarse snapshot drawn as a density until the first full one is there (design §5.5.2 "索引ができるまで").
     private SpatialSnapshot? _coarse;
     private ResidencyCache? _cache;
@@ -180,6 +184,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             };
             _index = ((ISpatialColumn)point.X.Column).BuildSpatialIndex(_pool, point.Y.Column, input);
             _indexing.Building = _index;
+            _started?.TrySetResult(_index);
         }
 
         if (indexes.Waits)
@@ -496,6 +501,60 @@ internal sealed class IndexedPointPlan : LayerPlan
         DropCoarse();
         _index?.Dispose();
         _index = null;
+        _started?.TrySetResult(null);
+    }
+
+    /// <summary>
+    /// Returns the rows of the part a selection holds, found through its index on the workers (design §6.4 "行の集合" and
+    /// "索引ができる前の行の集合", Issue #471 Decisions 4 and 13): from the full snapshot drawn, at once while a new one is
+    /// built; before the first is full, once it is, so that the rows are exact. Points answer by their values, whatever is
+    /// drawn. A part released before its index ends answers no rows.
+    /// </summary>
+    internal override ValueTask<Interaction.RowSelection> SelectRows(SelectionQuery query)
+    {
+        var length = Rows.EndIn(((PointLayerSpec)Spec).X.Column.Length);
+        if (_snapshot is { } drawn && drawn.TryAddReference())
+        {
+            return Select(drawn, query, length);
+        }
+
+        return SelectWhenFull(query, length);
+    }
+
+    private static async ValueTask<Interaction.RowSelection> Select(SpatialSnapshot snapshot, SelectionQuery query, long length)
+    {
+        try
+        {
+            return await SpatialSelection.Select(snapshot, query.Selection, length, query.Pool).ConfigureAwait(false);
+        }
+        finally
+        {
+            snapshot.Release();
+        }
+    }
+
+    private async ValueTask<Interaction.RowSelection> SelectWhenFull(SelectionQuery query, long length)
+    {
+        var index = _index ?? await (_started ??= new(TaskCreationOptions.RunContinuationsAsynchronously)).Task.ConfigureAwait(false);
+        if (index is null)
+        {
+            return Interaction.RowSelection.Empty;
+        }
+
+        SpatialSnapshot snapshot;
+        try
+        {
+            // The first build's end: its snapshot is full. A build that fails throws its exception here.
+            await index.Completion.ConfigureAwait(false);
+            snapshot = index.Acquire();
+        }
+        catch (ObjectDisposedException)
+        {
+            // The part was released: its layer is drawn no more.
+            return Interaction.RowSelection.Empty;
+        }
+
+        return await Select(snapshot, query, length).ConfigureAwait(false);
     }
 
     private void DropCoarse()

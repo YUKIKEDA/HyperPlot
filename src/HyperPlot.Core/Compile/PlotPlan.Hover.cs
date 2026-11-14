@@ -122,9 +122,7 @@ internal sealed partial class PlotPlan
         var answer = _panels[panel].Layers[layer].SelectRows(query);
         if (_panels[panel].Data is { Map: not null } data && _facet is { } facet && !FacetData.Rowless(layerSpec))
         {
-            ISourceRows rows = facet;
-            var key = data.Key;
-            return SelectionQuery.Union([(answer.AsTask(), row => rows.SourceRow(key, row))], query.Derived);
+            return SelectionQuery.Union([(answer.AsTask(), (facet, data.Key))], query.Derived);
         }
 
         return answer;

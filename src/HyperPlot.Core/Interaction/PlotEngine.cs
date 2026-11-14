@@ -543,7 +543,7 @@ public sealed partial class PlotEngine : IDisposable
         // A link that also stands the selection on more of the plot's panels (a facet's) adds their rows (row I3b).
         var (plan, origin) = (PlanOf(plot), selection.Panel.Panel);
         var answer = plan.SelectRows(origin, layer, selection, _renderer.Pool);
-        List<(Task<RowSelection> Rows, Func<long, long>? Map)>? parts = null;
+        List<(Task<RowSelection> Rows, (ISourceRows Gather, int Key)? Map)>? parts = null;
         for (var p = 0; p < plan.PanelCount; p++)
         {
             if (p != origin && selection.Kind != SelectionKind.Points && Applied(plot, p))

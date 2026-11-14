@@ -1115,6 +1115,9 @@ internal sealed class PointPlan : LayerPlan
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
 
+    /// <summary>Gets the points as a selection reads them (design §6.4 "散布の選択", row R3c): a bit a row the workers set.</summary>
+    internal override SelectionShape? Shape => new(ShapeKind.Point, Columns[0], null, Columns[1], Rows, Sorted: false);
+
     /// <summary>Gets the number of rows the last recording mapped: the part's own (Issue #459). Tests only.</summary>
     internal long MappedRows => _mapped;
 
