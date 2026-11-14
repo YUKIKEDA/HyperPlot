@@ -109,12 +109,13 @@ public sealed class IndexedPointHitTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - Seeded points over [0, 100]² drawn as a density, 640 × 360: 131,073 points at the view [0, 100]² (no cell has a
-    ///   tile: fills); 400,000 at [0, 100]² (the chosen level 1 has no tile: the root's); 400,000 at [−50, 150]² (the chosen
-    ///   level 0: the root's own tile).
+    /// - Seeded points over [0, 100]² drawn as a density, 640 × 360: 131,073 points at the view [0, 100]² (level 0, and no
+    ///   cell has more points than the density split of 262,144, so none has a tile: fills); 400,000 at [25, 75]² (the
+    ///   panel's height of about 316 pixels spans half the range: level 1, whose cells of about 100,000 points have no tile:
+    ///   the root's); 400,000 at [−50, 150]² (level 0: the root's own tile).
     ///
     /// Steps:
-    /// - At 30 cursors over [0, 100]², hit test in XY with a radius of 8 and in X with a radius of 0.
+    /// - At 30 cursors over the view's part of [0, 100]², hit test in XY with a radius of 8 and in X with a radius of 0.
     /// - Find the bin the recording draws there by the design's rule: the cell of the chosen level that holds the cursor (or
     ///   the leaf above it), its own tile or its deepest ancestor's, whose bins are cells 8 levels deeper, or the cell itself
     ///   as a fill; count by a loop the points whose grid cells lie in that bin.
@@ -127,7 +128,7 @@ public sealed class IndexedPointHitTests
     /// </remarks>
     [Theory]
     [InlineData(Over, 0.0, 100.0, BinKind.Fill)]
-    [InlineData(Dense, 0.0, 100.0, BinKind.Ancestor)]
+    [InlineData(Dense, 25.0, 75.0, BinKind.Ancestor)]
     [InlineData(Dense, -50.0, 150.0, BinKind.Own)]
     public void Density_AnswersWithTheBinUnderTheCursor(int points, double low, double high, BinKind kind)
     {
@@ -153,9 +154,10 @@ public sealed class IndexedPointHitTests
             var hits = new SeriesHit[2];
             var random = new Random(13);
             var kinds = new HashSet<BinKind>();
+            var (from, to) = (Math.Max(low, 0), Math.Min(high, 100));
             for (var k = 0; k < 30; k++)
             {
-                var (vx, vy) = (random.NextDouble() * 100, random.NextDouble() * 100);
+                var (vx, vy) = (from + (random.NextDouble() * (to - from)), from + (random.NextDouble() * (to - from)));
                 var (level, met) = DrawnBin(snapshot, vx - ox, vy - oy, plan.TileLevel);
                 kinds.Add(met);
                 var (gx, gy) = snapshot.GridAt(vx - ox, vy - oy);
@@ -207,7 +209,8 @@ public sealed class IndexedPointHitTests
         var (_, _, table) = Uniform(Dense, seed: 14);
         using var lineX = Column.Wrap(Enumerable.Range(0, Dense).Select(i => i * 100.0 / Dense).ToArray());
         using var lineY = Column.Wrap(Enumerable.Repeat(50.0, Dense).ToArray());
-        var both = DataTable.Create()
+        var both = DataTable
+            .Create()
             .Add("x", table.Col<double>("x").Column)
             .Add("y", table.Col<double>("y").Column)
             .Add("lx", lineX)
@@ -230,7 +233,9 @@ public sealed class IndexedPointHitTests
         Assert.True(found[0].Row >= 0);
         Assert.Equal((0, -1L), (found[1].Layer, found[1].Row));
 
-        engine.OnPointer(new PointerEvent(PointerEventKind.Move, cursor, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0));
+        engine.OnPointer(
+            new PointerEvent(PointerEventKind.Move, cursor, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0)
+        );
         engine.RenderFrame();
         var count = engine.Hover.ToArray().Single(h => h.Row < 0).Count;
         Assert.Contains(backend.LastList!.Texts.ToArray(), t => t.Text.Contains($", n = {count}", StringComparison.Ordinal));
@@ -303,7 +308,9 @@ public sealed class IndexedPointHitTests
         );
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
         var cursor = Pixel(engine, 30, 60);
-        engine.OnPointer(new PointerEvent(PointerEventKind.Move, cursor, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0));
+        engine.OnPointer(
+            new PointerEvent(PointerEventKind.Move, cursor, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0)
+        );
         engine.RenderFrame();
 
         var snapshot = plan.SpatialIndex!.Acquire();
@@ -367,8 +374,12 @@ public sealed class IndexedPointHitTests
 
         static void Click(PlotEngine engine, Vector2 at, long time)
         {
-            engine.OnPointer(new PointerEvent(PointerEventKind.Down, at, PointerButtons.Left, PointerButtons.Left, ModifierKeys.Shift, PointerKind.Mouse, time));
-            engine.OnPointer(new PointerEvent(PointerEventKind.Up, at, PointerButtons.Left, PointerButtons.None, ModifierKeys.Shift, PointerKind.Mouse, time));
+            engine.OnPointer(
+                new PointerEvent(PointerEventKind.Down, at, PointerButtons.Left, PointerButtons.Left, ModifierKeys.Shift, PointerKind.Mouse, time)
+            );
+            engine.OnPointer(
+                new PointerEvent(PointerEventKind.Up, at, PointerButtons.Left, PointerButtons.None, ModifierKeys.Shift, PointerKind.Mouse, time)
+            );
         }
     }
 
@@ -378,10 +389,15 @@ public sealed class IndexedPointHitTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 131,073 seeded points over [0, 100]², Auto with a threshold of 10,000, an engine that waits for its indexes.
+    /// - 131,073 seeded points over [0, 100]², Auto with a threshold of 10,000, an engine that waits for its indexes. The
+    ///   leaves are the cells of level 3, 12.5 wide, of about 2,048 points each (of 4,096 at most), and the upper count
+    ///   counts a leaf the view touches whole.
+    /// - Views centered on (53, 53), off the leaves' corners: a side under 6 touches one leaf (about 2,048, under the
+    ///   band), a side from 6 to 19 four (about 8,200, in it), a wider one nine or more (above it). A view centered on a
+    ///   corner of four leaves would never fall under the band.
     ///
     /// Steps:
-    /// - Zoom in from the whole view to a side of 2 in 200 steps, then out again, drawing each view. At each view whose
+    /// - Zoom in from a side of 100 to a side of 2 in 200 steps, then out again, drawing each view. At each view whose
     ///   upper count lies between 8,000 and 10,000, hit test the view's middle in XY with a radius of 40 pixels.
     ///
     /// Expected:
@@ -391,6 +407,7 @@ public sealed class IndexedPointHitTests
     [Fact]
     public void SwitchBand_AnswersWithTheLastDrawing()
     {
+        const double Center = 53;
         var (_, _, table) = Uniform(Over, seed: 18);
         var backend = new NullBackend();
         using var engine = Drawn(
@@ -402,16 +419,17 @@ public sealed class IndexedPointHitTests
         var hits = new SeriesHit[4];
         var sides = Enumerable.Range(0, 201).Select(i => 100 * Math.Pow(0.02, i / 200.0)).ToArray();
         var (asDensity, asPoints) = (false, false);
+
         foreach (var side in sides.Concat(sides.Reverse()))
         {
-            Show(engine, backend, (50 - (side / 2), 50 + (side / 2), 50 - (side / 2), 50 + (side / 2)));
+            Show(engine, backend, (Center - (side / 2), Center + (side / 2), Center - (side / 2), Center + (side / 2)));
             var count = plan.Switch.LastCount;
             if (count < 10_000 * DensitySwitch.Back || count > 10_000)
             {
                 continue;
             }
 
-            var found = hits[..engine.HitTest(Pixel(engine, 50, 50), 40, HitMode.XY, hits)];
+            var found = hits[..engine.HitTest(Pixel(engine, Center, Center), 40, HitMode.XY, hits)];
             if (found.Length == 0)
             {
                 continue;
@@ -496,10 +514,12 @@ public sealed class IndexedPointHitTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 400,000 seeded points over [0, 100]² drawn as raw points (7 pages), in an engine that waits for its indexes.
+    /// - 400,000 seeded points over [0, 100]² drawn as raw points (7 pages), in an engine that keeps the upload budget of a
+    ///   frame (one that waits for its indexes sends every page at once).
     ///
     /// Steps:
-    /// - Draw one frame, which sends at most 5 pages; hit test in XY at 20 points' pixels with a radius of 8.
+    /// - Draw a frame, wait for the index, and draw another without sending the first frame's uploads: the two send at most
+    ///   5 pages. Hit test in XY at 20 points' pixels with a radius of 8.
     /// - Draw until every page is sent; hit test again.
     ///
     /// Expected:
@@ -511,7 +531,7 @@ public sealed class IndexedPointHitTests
     {
         var (xs, ys, table) = Uniform(Dense, seed: 19);
         var backend = new NullBackend();
-        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        using var engine = new PlotEngine(backend, 640, 360);
         engine.SetPlot(
             Plot.Create(table)
                 .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
@@ -521,6 +541,11 @@ public sealed class IndexedPointHitTests
         );
         engine.RenderFrame();
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        Eventually.Completes(plan.SpatialIndex!.WhenComplete());
+
+        // No Sent since the first frame: the frames share one upload budget of 4 MiB, 5 pages.
+        engine.RenderFrame();
+        Assert.False(plan.DrewDensity);
         Assert.True(plan.MissedPages);
         var hits = new SeriesHit[2];
         for (var i = 0; i < 20; i++)
@@ -549,12 +574,15 @@ public sealed class IndexedPointHitTests
     ///   value mapped by the engine.
     ///
     /// Steps:
-    /// - Hit test in XY with a radius of 8 at each cluster point's drawn pixel; read the hover marker's pixel of the hit.
+    /// - Hit test in XY with a radius of 8 at the drawn pixel of each cluster point drawn in the panel (a point drawn up to a
+    ///   unit below its value may lie left of or below it, where no hit test reaches); read the hover marker's pixel of the
+    ///   hit.
     ///
     /// Expected:
     /// - Each finds a point at a distance under 0.01 pixels from its drawn pixel; the marker lies within 0.01 pixels of the
     ///   drawn pixel; the x and y are the row's values.
-    /// - Some cluster point is drawn more than a pixel from its value's pixel: the case is past the limit.
+    /// - Some cluster point is drawn in the panel, and some such point more than a pixel from its value's pixel: the case is
+    ///   past the limit.
     /// </remarks>
     [Fact]
     public void DeepZoom_MeasuresWhereThePointsAreDrawn()
@@ -565,9 +593,10 @@ public sealed class IndexedPointHitTests
         var ys = new double[Over];
         for (var i = 0; i < Over; i++)
         {
-            (xs[i], ys[i]) = i < Over - Cluster
-                ? (random.NextDouble() * 1e6, random.NextDouble() * 1e6)
-                : (500_000.3 + (random.NextDouble() * 1e-3), 500_000.7 + (random.NextDouble() * 1e-3));
+            (xs[i], ys[i]) =
+                i < Over - Cluster
+                    ? (random.NextDouble() * 1e6, random.NextDouble() * 1e6)
+                    : (500_000.3 + (random.NextDouble() * 1e-3), 500_000.7 + (random.NextDouble() * 1e-3));
         }
 
         using var x = Column.Wrap(xs);
@@ -595,6 +624,10 @@ public sealed class IndexedPointHitTests
             var (ox, oy) = (snapshot.XRange.Origin, snapshot.YRange.Origin);
             var hits = new SeriesHit[2];
             var snapped = false;
+            var tested = 0;
+
+            // The panel's pixels: the view's lower-left and upper-right corners, y downward.
+            var (low, high) = (Pixel(engine, 500_000.3, 500_000.701), Pixel(engine, 500_000.301, 500_000.7));
             for (var position = 0; position < px.Length; position++)
             {
                 if (rows[position] < Over - Cluster)
@@ -608,6 +641,14 @@ public sealed class IndexedPointHitTests
                     ox + cell.CornerX + (point.X / SpatialSnapshot.CellUnits * cell.ExtentX),
                     oy + cell.CornerY + (point.Y / SpatialSnapshot.CellUnits * cell.ExtentY)
                 );
+
+                // A point drawn a unit below its value may fall outside the panel, where no hit test reaches.
+                if (!(drawn.X >= low.X && drawn.X <= high.X && drawn.Y >= low.Y && drawn.Y <= high.Y))
+                {
+                    continue;
+                }
+
+                tested++;
                 snapped |= Vector2.Distance(drawn, Pixel(engine, xs[rows[position]], ys[rows[position]])) > 1;
                 var hit = Assert.Single(hits[..engine.HitTest(drawn, 8, HitMode.XY, hits)]);
                 Assert.True(hit.Distance < 0.01, $"The hit at {drawn} is {hit.Distance} pixels away.");
@@ -616,7 +657,8 @@ public sealed class IndexedPointHitTests
                 Assert.True(Vector2.Distance(marker, drawn) < 0.01, $"The marker {marker} is not at {drawn}.");
             }
 
-            Assert.True(snapped, "No cluster point is drawn a pixel from its value.");
+            Assert.True(tested > 0, "No cluster point is drawn in the panel.");
+            Assert.True(snapped, "No cluster point in the panel is drawn a pixel from its value.");
         }
         finally
         {
@@ -665,14 +707,15 @@ public sealed class IndexedPointHitTests
     private static void Settle(PlotEngine engine, NullBackend backend)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        do
+        var provisional = true;
+        while (provisional)
         {
             Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The frames stayed provisional for 60 s.");
             backend.Images.Sent();
             engine.RenderFrame();
             Thread.Sleep(1);
+            provisional = engine.IsProvisional;
         }
-        while (engine.IsProvisional);
     }
 
     private static PlotEngine LineOverDensity(NullBackend backend, int seed)
@@ -680,7 +723,8 @@ public sealed class IndexedPointHitTests
         var (_, _, table) = Uniform(Dense, seed);
         var lineX = Column.Wrap(Enumerable.Range(0, Dense).Select(i => i * 100.0 / Dense).ToArray());
         var lineY = Column.Wrap(Enumerable.Repeat(50.0, Dense).ToArray());
-        var both = DataTable.Create()
+        var both = DataTable
+            .Create()
             .Add("x", table.Col<double>("x").Column)
             .Add("y", table.Col<double>("y").Column)
             .Add("lx", lineX)

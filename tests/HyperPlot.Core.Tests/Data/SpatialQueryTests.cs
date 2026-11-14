@@ -186,9 +186,9 @@ public sealed class SpatialQueryTests
                 var expected = misses
                     ? []
                     : SpatialReference
-                    .Cells(snapshot, SpatialReference.Everything, level)
-                    .Where(cell => SpatialReference.Touches(cell, grid))
-                    .ToArray();
+                        .Cells(snapshot, SpatialReference.Everything, level)
+                        .Where(cell => SpatialReference.Touches(cell, grid))
+                        .ToArray();
                 var cells = SpatialReference.Cells(snapshot, rect, level);
                 Assert.True(expected.AsSpan().SequenceEqual(cells), $"The cells of {rect} at level {level} differ from the loop.");
                 Assert.DoesNotContain(cells, cell => cell.Level > level || (level == 32 && cell.Kind == SpatialCellKind.Inner));

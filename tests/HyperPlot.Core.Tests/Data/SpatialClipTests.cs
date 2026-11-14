@@ -39,13 +39,7 @@ public sealed class SpatialClipTests
         Assert.Equal(new ScaleRange(20, 0, 60), snapshot.YRange);
         var cells = new SpatialCell[Points];
 
-        SpatialRect[] misses =
-        [
-            new(-50, -1e-9, 0, 60),
-            new(80 + 1e-9, 200, 0, 60),
-            new(0, 80, -5, -1e-9),
-            new(0, 80, 60 + 1e-9, 70),
-        ];
+        SpatialRect[] misses = [new(-50, -1e-9, 0, 60), new(80 + 1e-9, 200, 0, 60), new(0, 80, -5, -1e-9), new(0, 80, 60 + 1e-9, 70)];
         foreach (var rect in misses)
         {
             Assert.Equal(new SpatialCount(0, 0), snapshot.Count(rect, 32));

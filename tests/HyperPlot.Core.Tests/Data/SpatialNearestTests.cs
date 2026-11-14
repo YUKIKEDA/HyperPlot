@@ -186,7 +186,12 @@ public sealed class SpatialNearestTests
         double[] xs = [8.5, 11.9];
         double[] ys = [10.1, 10.1];
         var range = new ScaleRange(0, 0, 16);
-        var input = new SpatialIndexInput { Rows = RowRange.All, XRange = range, YRange = range };
+        var input = new SpatialIndexInput
+        {
+            Rows = RowRange.All,
+            XRange = range,
+            YRange = range,
+        };
         var tuning = new SpatialIndexTuning(LeafCapacity: 1, RowsPerUnit: 1 << 12, TableShare: 1e6, WideRows: 1L << 32);
         using var built = SpatialBuilt.Of(xs, ys, input, tuning: tuning);
         var snapshot = built.Snapshot;
@@ -209,61 +214,47 @@ public sealed class SpatialNearestTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 50,000 evenly spread points, the whole range at 1,920 × 1,080 pixels.
-    /// - A cursor 12 pixels to the right of a point's drawn pixel, with no other point drawn nearer than 13 pixels: found by a
-    ///   loop over seeded points.
+    /// - Three points, A (10, 10), B (34, 40), and C (31, 60), with leaves of 1 point and both ranges passed as [0, 64]; a
+    ///   screen of 1 pixel a unit, on which every point is drawn at its value.
+    /// - A cursor at (22, 10): A lies 12 pixels from it, and 12 along x; B 12 along x and farther in XY; C 9 along x and far
+    ///   in XY. (X measures along x alone, so a cursor with no point within 8 pixels along x needs a few points.)
     ///
     /// Steps:
     /// - Call Nearest in XY with a radius of 8 and a marker radius of 6, then 3; in X with a radius of 8 and a marker radius
-    ///   of 6; in XY with a radius of 0 and no marker.
+    ///   of 6; in XY with a radius of 0 and no marker; in X with a radius of 10 and no marker.
     ///
     /// Expected:
-    /// - XY with 6: that point, at 12 pixels. XY with 3, X, and a radius of 0: nothing.
+    /// - XY with 6: A, at 12 pixels. XY with 3, X with a radius of 8, and a radius of 0: nothing. X with a radius of 10: C, at
+    ///   9 pixels.
     /// </remarks>
     [Fact]
     public void Nearest_Reach_IsTheRadiusPlusTheMarkersInXY()
     {
-        var (xs, ys) = Make(Shape.Uniform, seed: 73);
-        var tuning = new SpatialIndexTuning(LeafCapacity: 16, RowsPerUnit: 1 << 12, TableShare: 1e6, WideRows: 1L << 32);
-        using var built = SpatialBuilt.Of(xs, ys, tuning: tuning);
-        var snapshot = built.Snapshot;
-        var drawn = Drawn(snapshot, tuning.LeafCapacity);
-
-        // Zoomed in so that the points are tens of pixels apart: a cursor 12 pixels right of a lone point.
-        var (xr, yr) = (snapshot.XRange, snapshot.YRange);
-        var screen = new LinearScreen(1920 / ((xr.Upper - xr.Lower) / 100), -1080 / ((yr.Upper - yr.Lower) / 100), xr.Lower, yr.Upper);
-        var scratch = new SpatialNearestScratch(tuning.LeafCapacity);
-        var random = new Random(74);
-        for (var tries = 0; ; tries++)
+        double[] xs = [10, 34, 31];
+        double[] ys = [10, 40, 60];
+        var range = new ScaleRange(0, 0, 64);
+        var input = new SpatialIndexInput
         {
-            Assert.True(tries < 1000, "No lone point was found.");
-            var target = random.Next(Points);
-            var (a, c) = screen.At(drawn, target);
-            var cursor = (Along: a + 12, Across: c);
-            var others = double.PositiveInfinity;
-            for (var i = 0; i < Points; i++)
-            {
-                if (i != target)
-                {
-                    var (oa, oc) = screen.At(drawn, i);
-                    others = Math.Min(others, Math.Sqrt(((oa - cursor.Along) * (oa - cursor.Along)) + ((oc - cursor.Across) * (oc - cursor.Across))));
-                }
-            }
+            Rows = RowRange.All,
+            XRange = range,
+            YRange = range,
+        };
+        var tuning = new SpatialIndexTuning(LeafCapacity: 1, RowsPerUnit: 1 << 12, TableShare: 1e6, WideRows: 1L << 32);
+        using var built = SpatialBuilt.Of(xs, ys, input, tuning: tuning);
+        var snapshot = built.Snapshot;
+        var screen = new LinearScreen(1, 1, 0, 0);
+        var scratch = new SpatialNearestScratch(tuning.LeafCapacity);
 
-            if (!(others > 13))
-            {
-                continue;
-            }
-
-            var hit = snapshot.Nearest(ref screen, cursor.Along, cursor.Across, 8, 6, HitMode.XY, scratch);
-            Assert.True(hit.Found);
-            Assert.Equal(drawn.Rows[target], hit.Row);
-            Assert.Equal(12, hit.Distance, 9);
-            Assert.False(snapshot.Nearest(ref screen, cursor.Along, cursor.Across, 8, 3, HitMode.XY, scratch).Found);
-            Assert.False(snapshot.Nearest(ref screen, cursor.Along, cursor.Across, 8, 6, HitMode.X, scratch).Found);
-            Assert.False(snapshot.Nearest(ref screen, cursor.Along, cursor.Across, 0, 0, HitMode.XY, scratch).Found);
-            return;
-        }
+        var hit = snapshot.Nearest(ref screen, 22, 10, 8, 6, HitMode.XY, scratch);
+        Assert.True(hit.Found);
+        Assert.Equal(0, hit.Row);
+        Assert.Equal(12, hit.Distance, 9);
+        Assert.False(snapshot.Nearest(ref screen, 22, 10, 8, 3, HitMode.XY, scratch).Found);
+        Assert.False(snapshot.Nearest(ref screen, 22, 10, 8, 6, HitMode.X, scratch).Found);
+        Assert.False(snapshot.Nearest(ref screen, 22, 10, 0, 0, HitMode.XY, scratch).Found);
+        var along = snapshot.Nearest(ref screen, 22, 10, 10, 0, HitMode.X, scratch);
+        Assert.Equal(2, along.Row);
+        Assert.Equal(9, along.Distance, 9);
     }
 
     /// <summary>
@@ -389,7 +380,10 @@ public sealed class SpatialNearestTests
             var (x, y) = (i % 3) switch
             {
                 0 => (drawn.X[point], drawn.Y[point]),
-                1 => (drawn.X[point] + ((random.NextDouble() - 0.5) * 40 * spanX / 1920), drawn.Y[point] + ((random.NextDouble() - 0.5) * 40 * spanY / 1080)),
+                1 => (
+                    drawn.X[point] + ((random.NextDouble() - 0.5) * 40 * spanX / 1920),
+                    drawn.Y[point] + ((random.NextDouble() - 0.5) * 40 * spanY / 1080)
+                ),
                 _ => (xr.Lower + (random.NextDouble() * width), yr.Lower + (random.NextDouble() * height)),
             };
 
