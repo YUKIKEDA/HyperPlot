@@ -13,6 +13,70 @@ internal sealed class ReferenceImage(float[] rgb, bool[] touched)
     public bool[] Touched { get; } = touched;
 }
 
+/// <summary>One traced pixel of postpass (Reference.TracePostpass).</summary>
+internal sealed class TracedPixel
+{
+    /// <summary>The pixel's index, y × width + x.</summary>
+    public int Pixel { get; init; }
+
+    /// <summary>Whether the surface covers the pixel's center, as the GPU's rasterizer decides.</summary>
+    public bool PlaneCovers { get; init; }
+
+    /// <summary>The surface's depth at the pixel's center; NaN where it does not cover it.</summary>
+    public float PlaneDepth { get; init; }
+
+    /// <summary>The share of the reference's samples the surface wins.</summary>
+    public float ReferencePlaneShare { get; set; }
+
+    /// <summary>The share of the reference's samples nothing covers.</summary>
+    public float ReferenceBackgroundShare { get; set; }
+
+    /// <summary>postpass replayed on the CPU at the pixel's center: R, G, B in 0..255.</summary>
+    public Vector3 Replayed { get; set; }
+
+    /// <summary>The polylines with a segment whose quad reaches the pixel, in the order they are drawn.</summary>
+    public TracedPolyline[] Polylines { get; set; } = [];
+}
+
+/// <summary>One polyline at a traced pixel.</summary>
+internal sealed class TracedPolyline
+{
+    public int Polyline { get; init; }
+
+    /// <summary>Its segments whose quad reaches the pixel, in the order they are drawn.</summary>
+    public List<int> Segments { get; } = [];
+
+    /// <summary>Each segment's coverage at the pixel's center (Stroke in Depth3D.hlsl).</summary>
+    public List<float> Coverages { get; } = [];
+
+    /// <summary>Each segment's depth at the pixel's center, never below the nearer end's (Stroke in Depth3D.hlsl).</summary>
+    public List<float> Depths { get; } = [];
+
+    /// <summary>The share of the reference's samples this polyline wins.</summary>
+    public float ReferenceShare { get; set; }
+
+    /// <summary>The share of the reference's samples inside this polyline's stroke, whatever is in front.</summary>
+    public float ReferenceCoverage { get; set; }
+
+    /// <summary>The largest coverage of its segments, untested.</summary>
+    public float CoverageMax { get; set; }
+
+    /// <summary>The largest coverage of its segments that pass the depth test (the coverage pass's result).</summary>
+    public float CoveragePassed { get; set; }
+
+    /// <summary>The least depth of its segments with coverage.</summary>
+    public float DepthMin { get; set; }
+
+    /// <summary>The depth buffer at the pixel before the polyline's passes.</summary>
+    public float DepthBefore { get; set; }
+
+    /// <summary>The depth buffer at the pixel after its depth pass.</summary>
+    public float DepthAfter { get; set; }
+
+    /// <summary>Whether its depth pass wrote the pixel.</summary>
+    public bool WroteDepth { get; set; }
+}
+
 /// <summary>
 /// SPIKE (row K1, Issue #509): the exact area with depth order, by supersampling. Each pixel holds samples × samples
 /// samples on a regular grid ((i + 0.5) / samples); each sample keeps the nearest shape that covers it (a z-buffer of
@@ -69,6 +133,233 @@ internal static class Reference
         }
 
         return Render(shapes, transform, width, height, plane, samples);
+    }
+
+    /// <summary>
+    /// Traces pixels of the postpass method (Issue #513, decision 1): for each pixel, the segments whose stroke reaches it,
+    /// grouped by polyline; the share of the pixel's samples each polyline wins in the reference's z-buffer and covers
+    /// at all; and postpass replayed on the CPU at the pixel's center as Depth3D.hlsl draws it (the surface, then for each
+    /// polyline in order the coverage pass tested LESS_EQUAL against the depth so far, MAX into an R8 coverage, the color
+    /// over the 8-bit target, then the depth pass where a segment's coverage reaches the threshold), with the depth before
+    /// and after each polyline. The replayed color is checked against the GPU's by the caller.
+    /// </summary>
+    public static TracedPixel[] TracePostpass(
+        SceneData scene,
+        in Matrix4x4 transform,
+        int width,
+        int height,
+        float halfWidth,
+        float threshold,
+        PlaneOrder plane,
+        int samples,
+        IReadOnlyList<int> pixels
+    )
+    {
+        var vertices = scene.Vertices;
+        var (x, y, z) = (new float[vertices.Length], new float[vertices.Length], new float[vertices.Length]);
+        var visible = new bool[vertices.Length];
+        for (var i = 0; i < vertices.Length; i++)
+        {
+            visible[i] = Project(vertices[i].Position, transform, width, height, out x[i], out y[i], out z[i]);
+        }
+
+        var polylineOf = new int[scene.Segments.Length];
+        for (var p = 0; p < scene.Polylines.Length; p++)
+        {
+            Array.Fill(polylineOf, p, scene.Polylines[p].SegmentStart, scene.Polylines[p].SegmentCount);
+        }
+
+        // The segments whose quad on the GPU (half the width and 1 pixel around the segment) reaches each traced pixel, in
+        // the order they are drawn.
+        var index = new Dictionary<int, int>(pixels.Count);
+        for (var i = 0; i < pixels.Count; i++)
+        {
+            index[pixels[i]] = i;
+        }
+
+        var hits = new List<int>[pixels.Count];
+        for (var i = 0; i < hits.Length; i++)
+        {
+            hits[i] = [];
+        }
+
+        var reach = halfWidth + 1;
+        for (var s = 0; s < scene.Segments.Length; s++)
+        {
+            var a = (int)scene.Segments[s];
+            if (!visible[a] || !visible[a + 1])
+            {
+                continue;
+            }
+
+            var fromX = Math.Max(0, (int)MathF.Floor(MathF.Min(x[a], x[a + 1]) - reach));
+            var toX = Math.Min(width - 1, (int)MathF.Floor(MathF.Max(x[a], x[a + 1]) + reach));
+            var fromY = Math.Max(0, (int)MathF.Floor(MathF.Min(y[a], y[a + 1]) - reach));
+            var toY = Math.Min(height - 1, (int)MathF.Floor(MathF.Max(y[a], y[a + 1]) + reach));
+            for (var py = fromY; py <= toY; py++)
+            {
+                for (var px = fromX; px <= toX; px++)
+                {
+                    if (index.TryGetValue((py * width) + px, out var at))
+                    {
+                        hits[at].Add(s);
+                    }
+                }
+            }
+        }
+
+        var surface = plane != PlaneOrder.None ? new Surface(transform, width, height) : null;
+        var planeRgb = new Vector3(PlaneColor & 0xFF, (PlaneColor >> 8) & 0xFF, (PlaneColor >> 16) & 0xFF) / 255;
+        var traced = new TracedPixel[pixels.Count];
+        var n = samples;
+        var depths = new float[n * n];
+        var owners = new int[n * n];
+        for (var i = 0; i < pixels.Count; i++)
+        {
+            var (px, py) = (pixels[i] % width, pixels[i] / width);
+            var (cx, cy) = (px + 0.5f, py + 0.5f);
+            var covers = surface is not null && surface.Covers(cx, cy);
+            var planeDepth = covers ? surface!.Depth(cx, cy) : float.NaN;
+            var pixel = new TracedPixel
+            {
+                Pixel = pixels[i],
+                PlaneCovers = covers,
+                PlaneDepth = planeDepth,
+            };
+
+            // The reference's samples: the nearest of the surface and the strokes, the first of equal depths (owner -2 the
+            // surface, -1 the background, else the polyline).
+            Array.Fill(depths, float.PositiveInfinity);
+            Array.Fill(owners, -1);
+            if (covers)
+            {
+                for (var k = 0; k < n * n; k++)
+                {
+                    depths[k] = surface!.Depth(px + (((k % n) + 0.5f) / n), py + (((k / n) + 0.5f) / n));
+                    owners[k] = -2;
+                }
+            }
+
+            var byPolyline = new SortedDictionary<int, TracedPolyline>();
+            var coveredBy = new Dictionary<int, bool[]>();
+            foreach (var s in hits[i])
+            {
+                var a = (int)scene.Segments[s];
+                var (dx, dy) = (x[a + 1] - x[a], y[a + 1] - y[a]);
+                var lengthSquared = (dx * dx) + (dy * dy);
+                var inverse = lengthSquared > 1e-12f ? 1 / lengthSquared : 0;
+                var polyline = polylineOf[s];
+                if (!byPolyline.TryGetValue(polyline, out var entry))
+                {
+                    entry = new TracedPolyline { Polyline = polyline, DepthMin = float.PositiveInfinity };
+                    byPolyline[polyline] = entry;
+                    coveredBy[polyline] = new bool[n * n];
+                }
+
+                entry.Segments.Add(s);
+                var covered = coveredBy[polyline];
+                for (var k = 0; k < n * n; k++)
+                {
+                    var (sx, sy) = (px + (((k % n) + 0.5f) / n), py + (((k / n) + 0.5f) / n));
+                    if (Distance2(sx, sy, x[a], y[a], dx, dy, inverse, out var t) > halfWidth * halfWidth)
+                    {
+                        continue;
+                    }
+
+                    covered[k] = true;
+                    var depth = z[a] + ((z[a + 1] - z[a]) * t);
+                    if (depth < depths[k])
+                    {
+                        depths[k] = depth;
+                        owners[k] = polyline;
+                    }
+                }
+
+                // As Stroke in Depth3D.hlsl, at the pixel's center.
+                var d = MathF.Sqrt(Distance2(cx, cy, x[a], y[a], dx, dy, inverse, out var centerT));
+                var coverage = Math.Clamp(0.5f + halfWidth - d, 0, 1) - Math.Clamp(0.5f - halfWidth - d, 0, 1);
+                var centerDepth = MathF.Max(z[a] + ((z[a + 1] - z[a]) * centerT), MathF.Min(z[a], z[a + 1]));
+                entry.Coverages.Add(coverage);
+                entry.Depths.Add(centerDepth);
+                entry.CoverageMax = MathF.Max(entry.CoverageMax, coverage);
+                if (coverage > 0 && centerDepth < entry.DepthMin)
+                {
+                    entry.DepthMin = centerDepth;
+                }
+            }
+
+            for (var k = 0; k < n * n; k++)
+            {
+                if (owners[k] == -2)
+                {
+                    pixel.ReferencePlaneShare += 1f / (n * n);
+                }
+                else if (owners[k] == -1)
+                {
+                    pixel.ReferenceBackgroundShare += 1f / (n * n);
+                }
+                else
+                {
+                    byPolyline[owners[k]].ReferenceShare += 1f / (n * n);
+                }
+            }
+
+            foreach (var (polyline, covered) in coveredBy)
+            {
+                byPolyline[polyline].ReferenceCoverage = covered.AsSpan().Count(true) / (float)(n * n);
+            }
+
+            // postpass replayed at the center: a cleared depth of 1 and a white target, 8 bits a channel after each blend.
+            var target = Vector3.One;
+            var depthBuffer = 1f;
+            if (plane == PlaneOrder.Before && covers && planeDepth < depthBuffer)
+            {
+                (target, depthBuffer) = (planeRgb, planeDepth);
+            }
+
+            foreach (var entry in byPolyline.Values)
+            {
+                entry.DepthBefore = depthBuffer;
+                var passed = 0f;
+                for (var k = 0; k < entry.Segments.Count; k++)
+                {
+                    if (entry.Coverages[k] > 0 && entry.Depths[k] <= depthBuffer)
+                    {
+                        passed = MathF.Max(passed, entry.Coverages[k]);
+                    }
+                }
+
+                entry.CoveragePassed = passed;
+                var stored = MathF.Round(passed * 255) / 255;
+                var color = scene.Polylines[entry.Polyline].Color;
+                var rgb = new Vector3(color & 0xFF, (color >> 8) & 0xFF, (color >> 16) & 0xFF) / 255;
+                target = Quantize((rgb * stored) + (target * (1 - stored)));
+                for (var k = 0; k < entry.Segments.Count; k++)
+                {
+                    if (entry.Coverages[k] > 0 && entry.Coverages[k] >= threshold && entry.Depths[k] <= depthBuffer)
+                    {
+                        depthBuffer = entry.Depths[k];
+                        entry.WroteDepth = true;
+                    }
+                }
+
+                entry.DepthAfter = depthBuffer;
+            }
+
+            if (plane == PlaneOrder.After && covers && planeDepth < depthBuffer)
+            {
+                target = planeRgb;
+            }
+
+            pixel.Replayed = target * 255;
+            pixel.Polylines = [.. byPolyline.Values];
+            traced[i] = pixel;
+        }
+
+        return traced;
+
+        static Vector3 Quantize(Vector3 value) =>
+            new(MathF.Round(value.X * 255) / 255, MathF.Round(value.Y * 255) / 255, MathF.Round(value.Z * 255) / 255);
     }
 
     /// <summary>The pixel position and depth of a point, as Project in Depth3D.hlsl; false outside the frustum.</summary>

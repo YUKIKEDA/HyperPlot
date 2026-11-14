@@ -51,33 +51,270 @@
 #   uniform markers (about 10^8 fragments) several milliseconds; at 4 px about a quarter of that.
 # Determinism: every method repeats byte for byte on WARP and on the hardware (ordered blending and depth, InterlockedMin);
 # the two WARP runs give the same SHA-256.
+#
+# The steps before the design (Issue #513's decision 1). Each switch runs only its step (after the build, unless
+# -NoBuild); they can be combined and run in the order below. Every run has a deadline (-RunTimeoutSeconds) and its exit
+# code is checked; the script ends with 1 when a run failed or timed out, after the others.
+#   -Retime         postpass against none, held at P0: frames back to back with at most 2 queued (--back-to-back), so
+#                   that the GPU never idles between frames, after a warm-up run of about 10 s; 1,200 frames after 600 of
+#                   warm-up a run (about 10 s), knot and walk, in -RetimeRounds rounds of A, B, B, A (the side that runs
+#                   first alternates by round). The clock is logged (nvidia-smi, 200 ms) and each run's P0 share and
+#                   median clock are read inside its measured window. -LockClockMHz n also locks the graphics clock
+#                   (nvidia-smi -lgc n,n, administrator only; -rgc after). Output <Out>\retime: each run's .txt and
+#                   .csv, clocks.csv, retime-runs.csv, and the ratio postpass / none of the p50 in each round and scene.
+#                   About 10 minutes with 6 rounds (48 runs).
+#                   Expected, before measuring: every measured window at P0 (share 1.00); postpass about 1.3 to 2 times
+#                   none (one segment pass more a polyline over 3 passes), the ratio inside ±10 % across rounds.
+#   -Trace          the hardware compare of the three line scenes (knot, walk, knot with the surface after) at frames 0,
+#                   75, 150, 225, with --trace: each pixel of postpass with an error above 0.5 and each polyline there,
+#                   with postpass replayed on the CPU, and the reference, postpass, and its error map as BMPs (postpass
+#                   only). Output <Out>\trace: each run's .txt, trace-<scene>.csv, bmp\, compare-summary.csv.
+#                   About 2 minutes. Expected: the replay matches the GPU within 2 levels in nearly every traced pixel;
+#                   the pixels are where an earlier polyline in front covers less than the threshold (so it wrote no
+#                   depth) and later polylines behind paint over it, or several such edges compound (later_behind_painted).
+#   -WarpTolerance  compare --warp (the device of design §10's tests) for every scene of the compare step at frames 0, 75,
+#                   150, 225, the line scenes with --trace. Output <Out>\warp: each run's .txt, trace-<scene>.csv,
+#                   compare-summary.csv (a row a frame and method: mean, p99, max, over_0.1/0.25/0.5) from which the
+#                   tolerance is set. About 5 to 10 minutes.
 param(
     [Parameter(Mandatory = $true)] [string] $Out,
     [int] $Rounds = 3,
-    [switch] $SkipTiming
+    [switch] $SkipTiming,
+    [switch] $Retime,
+    [switch] $Trace,
+    [switch] $WarpTolerance,
+    [int] $RetimeRounds = 6,
+    [int] $LockClockMHz = 0,
+    [int] $RunTimeoutSeconds = 0,
+    [switch] $NoBuild
 )
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path (Join-Path $PSScriptRoot "../..")
 $env:PATH = "C:\Program Files (x86)\Microsoft Visual Studio\Installer;$env:PATH"
 New-Item -ItemType Directory -Force $Out | Out-Null
-$Out = Resolve-Path $Out
+$Out = (Resolve-Path $Out).Path
+$publish = Join-Path $Out "publish"
 
-Push-Location $root
-try {
-    dotnet run --project tools/ShaderGen -- depth3d
-    if ($LASTEXITCODE -ne 0) { throw "ShaderGen failed" }
-    $publish = Join-Path $Out "publish"
-    dotnet publish benchmarks/HyperPlot.Depth3D -c Release -r win-x64 -o $publish
-    if ($LASTEXITCODE -ne 0) { throw "publish failed" }
-}
-finally {
-    Pop-Location
+if (-not $NoBuild) {
+    Push-Location $root
+    try {
+        dotnet run --project tools/ShaderGen -- depth3d
+        if ($LASTEXITCODE -ne 0) { throw "ShaderGen failed" }
+        dotnet publish benchmarks/HyperPlot.Depth3D -c Release -r win-x64 -o $publish
+        if ($LASTEXITCODE -ne 0) { throw "publish failed" }
+    }
+    finally {
+        Pop-Location
+    }
 }
 
 $exe = Join-Path $publish "HyperPlot.Depth3D.exe"
+if (-not (Test-Path $exe)) { throw "not published: $exe" }
 $lineMethods = @("none", "test", "prepass", "postpass", "capsules", "uav", "uavfrag")
 $markerMethods = @("none", "quad", "touched", "half")
+
+# A run with a deadline: stdout to the log, stderr beside it; returns the exit code, or "timeout" after killing it.
+function Invoke-Timed([string] $log, [string[]] $arguments, [int] $seconds) {
+    $started = Get-Date
+    # Start-Process joins the arguments with spaces; a path with a space is quoted.
+    $quoted = $arguments | ForEach-Object { if ($_ -match "\s") { "`"$_`"" } else { $_ } }
+    $process = Start-Process -FilePath $exe -ArgumentList $quoted -NoNewWindow -PassThru `
+        -RedirectStandardOutput $log -RedirectStandardError ([IO.Path]::ChangeExtension($log, ".err.txt"))
+    $null = $process.Handle # keeps the handle, so that ExitCode is read after the wait
+    $code = if ($process.WaitForExit($seconds * 1000)) { $process.ExitCode } else {
+        $process.Kill($true)
+        $process.WaitForExit()
+        "timeout"
+    }
+    Add-Content $log "# exit=$code seconds=$([math]::Round(((Get-Date) - $started).TotalSeconds, 1)) args=$($arguments -join ' ')"
+    if ($code -ne 0) {
+        $script:failed++
+        Write-Warning "run failed ($code): $log"
+    }
+
+    return $code
+}
+
+# The rows "frame F method: mean=... over_0.5=... of N max_elsewhere=..." of compare logs, one object each.
+function Read-Compare([string] $scene, [string] $log) {
+    foreach ($line in Get-Content $log) {
+        if ($line -match "^frame (\d+) (\w+): mean=([\d.]+) p99=([\d.]+) max=([\d.]+) over_0.1=(\d+) over_0.25=(\d+) over_0.5=(\d+) of (\d+) max_elsewhere=([\d.]+)") {
+            [pscustomobject]@{
+                scene = $scene; frame = [int]$Matches[1]; method = $Matches[2]; mean = [double]$Matches[3]
+                p99 = [double]$Matches[4]; max = [double]$Matches[5]; over_01 = [int]$Matches[6]; over_025 = [int]$Matches[7]
+                over_05 = [int]$Matches[8]; touched = [int]$Matches[9]; max_elsewhere = [double]$Matches[10]
+            }
+        }
+    }
+}
+
+$failed = 0
+$compareScenes = @(
+    @{ Name = "lines-knot"; Lines = $true; Args = @("compare", "lines", "knot") },
+    @{ Name = "lines-walk"; Lines = $true; Args = @("compare", "lines", "walk") },
+    @{ Name = "lines-knot-after"; Lines = $true; Args = @("compare", "lines", "knot", "--plane", "after") },
+    @{ Name = "markers-uniform-4"; Lines = $false; Args = @("compare", "markers", "uniform", "--diameter", "4") },
+    @{ Name = "markers-uniform-10"; Lines = $false; Args = @("compare", "markers", "uniform", "--diameter", "10") },
+    @{ Name = "markers-knot-10"; Lines = $false; Args = @("compare", "markers", "knot", "--diameter", "10") },
+    @{ Name = "markers-uniform-10-after"; Lines = $false; Args = @("compare", "markers", "uniform", "--diameter", "10", "--plane", "after") }
+)
+
+if ($Retime -or $Trace -or $WarpTolerance) {
+    if ($Retime) {
+        $folder = Join-Path $Out "retime"
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        $timeout = if ($RunTimeoutSeconds -gt 0) { $RunTimeoutSeconds } else { 120 }
+        $clocks = Join-Path $folder "clocks.csv"
+        if ($LockClockMHz -gt 0) {
+            nvidia-smi -lgc "$LockClockMHz,$LockClockMHz"
+            if ($LASTEXITCODE -ne 0) { throw "nvidia-smi -lgc failed (administrator only)" }
+        }
+
+        $smi = Start-Process nvidia-smi -ArgumentList "--query-gpu=timestamp,clocks.gr,pstate --format=csv -lms 200" `
+            -RedirectStandardOutput $clocks -WindowStyle Hidden -PassThru
+        $runs = @()
+        try {
+            # A warm-up load, not measured: the GPU reaches its clock and temperature before the first run.
+            $null = Invoke-Timed (Join-Path $folder "warmup.txt") @("run", "lines", "postpass", "knot", "--back-to-back", "--frames", "2000", "--warmup", "0") $timeout
+            for ($round = 1; $round -le $RetimeRounds; $round++) {
+                $order = if ($round % 2 -eq 1) { @("none", "postpass", "postpass", "none") } else { @("postpass", "none", "none", "postpass") }
+                foreach ($scene in "knot", "walk") {
+                    for ($i = 0; $i -lt $order.Count; $i++) {
+                        $method = $order[$i]
+                        $name = "r$round-$scene-$method-$i"
+                        [string[]] $arguments = @(
+                            "run", "lines", $method, $scene, "--back-to-back", "--frames", "1200", "--warmup", "600",
+                            "--csv", (Join-Path $folder "$name.csv")
+                        )
+                        $code = Invoke-Timed (Join-Path $folder "$name.txt") $arguments $timeout
+                        $runs += [pscustomobject]@{ Round = $round; Scene = $scene; Method = $method; Slot = $i; Name = $name; Exit = "$code" }
+                    }
+                }
+            }
+        }
+        finally {
+            if ($smi) { Stop-Process -Id $smi.Id -ErrorAction SilentlyContinue }
+            if ($LockClockMHz -gt 0) { nvidia-smi -rgc }
+        }
+
+        # The clock samples: "2026/11/14 03:20:01.123, 1665 MHz, P0".
+        $samples = @(Get-Content $clocks | Where-Object { $_ -match "^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{3}," } | ForEach-Object {
+                $parts = $_ -split ","
+                if ($parts.Count -ge 3) {
+                    [pscustomobject]@{
+                        Time = [datetime]::ParseExact($parts[0].Trim(), "yyyy/MM/dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
+                        Mhz = [int](($parts[1].Trim() -split " ")[0])
+                        State = $parts[2].Trim()
+                    }
+                }
+            })
+        $rows = foreach ($run in $runs) {
+            $text = Get-Content (Join-Path $folder "$($run.Name).txt")
+            $window = $text | Where-Object { $_ -match "^measured frames ran (\S+ \S+) to (\S+ \S+)" } | Select-Object -First 1
+            $total = $text | Where-Object { $_ -match "^gpu_total: " } | Select-Object -First 1
+            $timed = $text | Where-Object { $_ -match "^gpu frames timed: " } | Select-Object -First 1
+            $row = [ordered]@{
+                round = $run.Round; scene = $run.Scene; method = $run.Method; slot = $run.Slot; exit = $run.Exit
+                p50 = $null; p95 = $null; p99 = $null; timed = $timed; clock_samples = 0; p0_share = $null; clock_median_mhz = $null
+            }
+            if ($total -match "p50=([\d.]+) p95=([\d.]+) p99=([\d.]+)") {
+                $row.p50 = [double]$Matches[1]
+                $row.p95 = [double]$Matches[2]
+                $row.p99 = [double]$Matches[3]
+            }
+
+            if ($window -match "^measured frames ran (\S+ \S+) to (\S+ \S+)") {
+                $from = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
+                $to = [datetime]::ParseExact($Matches[2], "yyyy-MM-dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
+                $inside = @($samples | Where-Object { $_.Time -ge $from -and $_.Time -le $to })
+                $row.clock_samples = $inside.Count
+                if ($inside.Count -gt 0) {
+                    $row.p0_share = [math]::Round(@($inside | Where-Object { $_.State -eq "P0" }).Count / $inside.Count, 3)
+                    $sorted = @($inside | ForEach-Object { $_.Mhz } | Sort-Object)
+                    $row.clock_median_mhz = $sorted[[int][math]::Floor($sorted.Count / 2)]
+                }
+            }
+
+            [pscustomobject]$row
+        }
+
+        $rows | Export-Csv -NoTypeInformation (Join-Path $folder "retime-runs.csv")
+        $rows | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+
+        # The ratio postpass / none of the mean p50 of the two runs a side, in each round and scene.
+        $ratios = foreach ($group in ($rows | Where-Object { $null -ne $_.p50 } | Group-Object round, scene)) {
+            $none = @($group.Group | Where-Object { $_.method -eq "none" } | ForEach-Object { $_.p50 })
+            $post = @($group.Group | Where-Object { $_.method -eq "postpass" } | ForEach-Object { $_.p50 })
+            $atP0 = @($group.Group | Where-Object { $_.p0_share -lt 1 }).Count -eq 0
+            if ($none.Count -gt 0 -and $post.Count -gt 0) {
+                [pscustomobject]@{
+                    round = $group.Group[0].round; scene = $group.Group[0].scene
+                    none_p50 = [math]::Round(($none | Measure-Object -Average).Average, 3)
+                    postpass_p50 = [math]::Round(($post | Measure-Object -Average).Average, 3)
+                    ratio = [math]::Round(($post | Measure-Object -Average).Average / ($none | Measure-Object -Average).Average, 3)
+                    all_runs_at_p0 = $atP0
+                }
+            }
+        }
+
+        $ratios | Export-Csv -NoTypeInformation (Join-Path $folder "retime-ratios.csv")
+        $ratios | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+    }
+
+    if ($Trace) {
+        $folder = Join-Path $Out "trace"
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        $timeout = if ($RunTimeoutSeconds -gt 0) { $RunTimeoutSeconds } else { 900 }
+        $rows = @()
+        foreach ($compare in $compareScenes | Where-Object { $_.Lines }) {
+            $log = Join-Path $folder "compare-$($compare.Name).txt"
+            [string[]] $arguments = $compare.Args + @(
+                "--at", "0,75,150,225", "--trace", (Join-Path $folder "trace-$($compare.Name).csv"),
+                "--dump", (Join-Path $folder "bmp"), "--dump-methods", "postpass"
+            )
+            $code = Invoke-Timed $log $arguments $timeout
+            if ($code -eq 0) { $rows += @(Read-Compare $compare.Name $log) }
+        }
+
+        $rows | Export-Csv -NoTypeInformation (Join-Path $folder "compare-summary.csv")
+    }
+
+    if ($WarpTolerance) {
+        $folder = Join-Path $Out "warp"
+        New-Item -ItemType Directory -Force $folder | Out-Null
+        $timeout = if ($RunTimeoutSeconds -gt 0) { $RunTimeoutSeconds } else { 1200 }
+        $rows = @()
+        foreach ($compare in $compareScenes) {
+            $log = Join-Path $folder "compare-$($compare.Name).txt"
+            [string[]] $arguments = $compare.Args + @("--warp", "--at", "0,75,150,225")
+            if ($compare.Lines) { $arguments += @("--trace", (Join-Path $folder "trace-$($compare.Name).csv")) }
+            $code = Invoke-Timed $log $arguments $timeout
+            if ($code -eq 0) { $rows += @(Read-Compare $compare.Name $log) }
+        }
+
+        $rows | Export-Csv -NoTypeInformation (Join-Path $folder "compare-summary.csv")
+
+        # The worst frame of each scene and method: the figures a tolerance is set from.
+        $rows | Group-Object scene, method | ForEach-Object {
+            [pscustomobject]@{
+                scene = $_.Group[0].scene; method = $_.Group[0].method
+                mean_max = ($_.Group | Measure-Object mean -Maximum).Maximum
+                p99_max = ($_.Group | Measure-Object p99 -Maximum).Maximum
+                max_max = ($_.Group | Measure-Object max -Maximum).Maximum
+                over_05_max = ($_.Group | Measure-Object over_05 -Maximum).Maximum
+                max_elsewhere_max = ($_.Group | Measure-Object max_elsewhere -Maximum).Maximum
+            }
+        } | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+    }
+
+    if ($failed -gt 0) {
+        Write-Warning "$failed run(s) failed or timed out"
+        exit 1
+    }
+
+    exit 0
+}
 
 function Invoke-Run([string] $log, [string[]] $arguments) {
     $started = Get-Date

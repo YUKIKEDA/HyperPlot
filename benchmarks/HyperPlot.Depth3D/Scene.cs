@@ -33,14 +33,29 @@ internal static partial class Scene
         // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
         _ = TimeBeginPeriod(1);
         var framesFrom = DateTime.Now;
+        var measuredFrom = framesFrom;
         var began = Stopwatch.GetTimestamp();
         try
         {
             for (var f = 0; f < total; f++)
             {
+                if (f == options.Warmup)
+                {
+                    measuredFrom = DateTime.Now;
+                }
+
                 var start = Stopwatch.GetTimestamp();
                 var settings = Settings(f, options);
                 Draw(gpu, lines, method, settings, f);
+                if (options.BackToBack)
+                {
+                    // Back to back, the GPU is kept busy (its clock at P0) with at most --in-flight frames queued: the
+                    // timestamps of 8 frames can be pending, and a frame recorded with all 8 pending is not timed.
+                    cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                    gpu.Poll(take, wait: true, keep: options.InFlight);
+                    continue;
+                }
+
                 gpu.Poll(take, wait: false);
                 cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
 
@@ -64,10 +79,15 @@ internal static partial class Scene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"{Describe(lines, method, scene, options)} device={(gpu.IsWarp ? "WARP" : "hardware")} paced={!options.BackToBack} pass_times={options.PassTimes} frames={options.Frames} (after {options.Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"{Describe(lines, method, scene, options)} device={(gpu.IsWarp ? "WARP" : "hardware")} paced={!options.BackToBack} in_flight={(options.BackToBack ? options.InFlight : 0)} pass_times={options.PassTimes} frames={options.Frames} (after {options.Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"frames ran {framesFrom:HH:mm:ss.fff} to {framesTo:HH:mm:ss.fff}"));
+
+        // The window of the frames after the warm-up, with the date, to read the clock log (nvidia-smi) inside it.
+        Console.WriteLine(
+            string.Create(CultureInfo.InvariantCulture, $"measured frames ran {measuredFrom:yyyy-MM-dd HH:mm:ss.fff} to {framesTo:yyyy-MM-dd HH:mm:ss.fff}")
+        );
         Print("cpu_frame", cpu.AsSpan(options.Warmup));
         for (var b = 0; b < _bucketNames.Length; b++)
         {
@@ -138,6 +158,12 @@ internal static partial class Scene
                 $"{Describe(lines, "all", scene, options)} device={(gpu.IsWarp ? "WARP" : "hardware")} samples={options.Samples}x{options.Samples}"
             )
         );
+        using var trace = lines && options.Trace is { } tracePath ? new StreamWriter(tracePath) : null;
+        trace?.WriteLine(
+            "frame,x,y,error,gpu_r,gpu_g,gpu_b,ref_r,ref_g,ref_b,replayed_r,replayed_g,replayed_b,replayed_vs_gpu,plane_covers,plane_depth,"
+                + "ref_plane_share,ref_background_share,front_polyline,later_behind_painted,polyline,segments,ref_share,ref_coverage,"
+                + "coverage_max,coverage_passed,depth_min,depth_before,depth_after,wrote_depth"
+        );
         foreach (var frame in options.At)
         {
             var settings = Settings(frame, options);
@@ -170,10 +196,15 @@ internal static partial class Scene
                         $"frame {frame} {methods[m]}: mean={error.Mean:F4} p99={error.P99:F3} max={error.Max:F3} over_0.1={error.Over[0]} over_0.25={error.Over[1]} over_0.5={error.Over[2]} of {touched} max_elsewhere={error.MaxElsewhere:F3}"
                     )
                 );
-                if (options.Dump is { } dump)
+                if (options.Dump is { } dump && (options.DumpMethods is null || Array.IndexOf(options.DumpMethods, methods[m]) >= 0))
                 {
                     WriteBmp(Path.Combine(dump, Name(scene, lines, options, frame, methods[m])), images[m]);
                     WriteBmp(Path.Combine(dump, Name(scene, lines, options, frame, methods[m] + "-error")), ErrorMap(images[m], reference));
+                }
+
+                if (trace is not null && methods[m] == "postpass")
+                {
+                    TracePostpass(trace, scene, settings, options, frame, images[m], reference);
                 }
             }
 
@@ -191,6 +222,108 @@ internal static partial class Scene
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// Writes a row for each polyline at each pixel of postpass whose error is above 0.5 (over the pixels near a shape, as
+    /// over_0.5 counts them), with the reference's shares and postpass replayed at the pixel (Reference.TracePostpass), and
+    /// prints how many pixels the replay matches within 2 levels of 255. front_polyline is the polyline that wins the most
+    /// of the reference's samples; later_behind_painted counts the polylines drawn after it, nearer to the back at the
+    /// pixel's center, whose coverage pass painted the pixel.
+    /// </summary>
+    private static void TracePostpass(
+        StreamWriter trace,
+        SceneData scene,
+        in DrawSettings settings,
+        Options options,
+        int frame,
+        byte[] image,
+        ReferenceImage reference
+    )
+    {
+        var pixels = new List<int>();
+        var errors = new Dictionary<int, double>();
+        for (var pixel = 0; pixel < Width * Height; pixel++)
+        {
+            var error = PixelError(image, reference.Rgb, pixel);
+            if (reference.Touched[pixel] && error > 0.5)
+            {
+                pixels.Add(pixel);
+                errors[pixel] = error;
+            }
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        var traced = Reference.TracePostpass(
+            scene,
+            settings.Transform,
+            Width,
+            Height,
+            settings.HalfWidth,
+            settings.Threshold,
+            options.Plane,
+            options.Samples,
+            pixels
+        );
+        var (matched, withPlane, overpainted) = (0, 0, 0);
+        foreach (var t in traced)
+        {
+            var p = t.Pixel;
+            var gpu = new System.Numerics.Vector3(image[(p * 4) + 2], image[(p * 4) + 1], image[p * 4]);
+            var replayed = t.Replayed;
+            var gap = MathF.Max(MathF.Abs(gpu.X - replayed.X), MathF.Max(MathF.Abs(gpu.Y - replayed.Y), MathF.Abs(gpu.Z - replayed.Z)));
+            matched += gap <= 2 ? 1 : 0;
+            withPlane += t.PlaneCovers ? 1 : 0;
+            TracedPolyline? front = null;
+            foreach (var polyline in t.Polylines)
+            {
+                if (front is null || polyline.ReferenceShare > front.ReferenceShare)
+                {
+                    front = polyline;
+                }
+            }
+
+            var later = 0;
+            foreach (var polyline in t.Polylines)
+            {
+                if (
+                    front is not null
+                    && polyline.Polyline > front.Polyline
+                    && polyline.CoveragePassed > 0
+                    && polyline.DepthMin > front.DepthMin
+                )
+                {
+                    later++;
+                }
+            }
+
+            overpainted += later > 0 ? 1 : 0;
+            var head = string.Create(
+                CultureInfo.InvariantCulture,
+                $"{frame},{p % Width},{p / Width},{errors[p]:F3},{gpu.X:F0},{gpu.Y:F0},{gpu.Z:F0},{reference.Rgb[p * 3]:F1},{reference.Rgb[(p * 3) + 1]:F1},{reference.Rgb[(p * 3) + 2]:F1},{replayed.X:F1},{replayed.Y:F1},{replayed.Z:F1},{gap:F1},{(t.PlaneCovers ? 1 : 0)},{t.PlaneDepth:G9},{t.ReferencePlaneShare:F4},{t.ReferenceBackgroundShare:F4},{front?.Polyline ?? -1},{later}"
+            );
+            if (t.Polylines.Length == 0)
+            {
+                trace.WriteLine(head + ",,,,,,,,,,");
+            }
+
+            foreach (var polyline in t.Polylines)
+            {
+                trace.WriteLine(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{head},{polyline.Polyline},{polyline.Segments.Count},{polyline.ReferenceShare:F4},{polyline.ReferenceCoverage:F4},{polyline.CoverageMax:F4},{polyline.CoveragePassed:F4},{polyline.DepthMin:G9},{polyline.DepthBefore:G9},{polyline.DepthAfter:G9},{(polyline.WroteDepth ? 1 : 0)}"
+                    )
+                );
+            }
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"frame {frame} trace postpass: pixels_over_0.5={pixels.Count} replay_within_2_of_255={matched} plane_covers={withPlane} later_behind_painted={overpainted} in {Stopwatch.GetElapsedTime(started).TotalSeconds:F1} s"
+            )
+        );
     }
 
     private static bool Kind(string name) =>
@@ -507,6 +640,15 @@ internal static partial class Scene
 
         public bool BackToBack { get; init; }
 
+        /// <summary>Back to back, the frames left queued on the GPU after each frame is recorded.</summary>
+        public int InFlight { get; init; } = 2;
+
+        /// <summary>compare: the CSV that traces each pixel of postpass with an error above 0.5.</summary>
+        public string? Trace { get; init; }
+
+        /// <summary>compare --dump: the methods whose image and error map are written; all when null.</summary>
+        public string[]? DumpMethods { get; init; }
+
         public bool Warp { get; init; }
 
         public bool Hardware { get; init; }
@@ -541,6 +683,9 @@ internal static partial class Scene
                     "--frames" => options with { Frames = int.Parse(args[++i], CultureInfo.InvariantCulture) },
                     "--warmup" => options with { Warmup = int.Parse(args[++i], CultureInfo.InvariantCulture) },
                     "--back-to-back" => options with { BackToBack = true },
+                    "--in-flight" => options with { InFlight = int.Parse(args[++i], CultureInfo.InvariantCulture) },
+                    "--trace" => options with { Trace = args[++i] },
+                    "--dump-methods" => options with { DumpMethods = args[++i].Split(',') },
                     "--warp" => options with { Warp = true },
                     "--hardware" => options with { Hardware = true },
                     "--pass-times" => options with { PassTimes = true },

@@ -237,13 +237,14 @@ internal sealed unsafe class Gpu : IDisposable
     }
 
     /// <summary>
-    /// Reads every timed frame that is done, oldest first, without waiting, or waiting for all when asked; calls back with
-    /// the frame and its buckets.
+    /// Reads every timed frame that is done, oldest first, without waiting, or, when asked to wait, waiting until no more
+    /// than keep frames are left pending (all of them for 0); calls back with the frame and its buckets.
     /// </summary>
-    public void Poll(TimedHandler timed, bool wait)
+    public void Poll(TimedHandler timed, bool wait, int keep = 0)
     {
         Span<double> buckets = stackalloc double[(int)Bucket.Total + 1];
         var stamps = stackalloc ulong[MaxStamps];
+        var pending = _pending.AsSpan().Count(true);
         for (var k = 0; k < Sets; k++)
         {
             var set = (_nextSet + k) % Sets;
@@ -256,7 +257,7 @@ internal sealed unsafe class Gpu : IDisposable
             var flags = (uint)D3D11_ASYNC_GETDATA_FLAG.D3D11_ASYNC_GETDATA_DONOTFLUSH;
             while (!Ready(set, &info, stamps, flags))
             {
-                if (!wait)
+                if (!wait || pending <= keep)
                 {
                     return;
                 }
@@ -265,6 +266,7 @@ internal sealed unsafe class Gpu : IDisposable
             }
 
             _pending[set] = false;
+            pending--;
             if (info.Disjoint || info.Frequency == 0)
             {
                 continue;
