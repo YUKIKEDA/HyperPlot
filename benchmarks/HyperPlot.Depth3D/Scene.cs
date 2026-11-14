@@ -13,7 +13,17 @@ internal static partial class Scene
 
     private static readonly string[] _lineMethods = ["none", "test", "prepass", "postpass", "capsules", "uav", "uavfrag"];
     private static readonly string[] _markerMethods = ["none", "quad", "touched", "half"];
-    private static readonly string[] _bucketNames = ["clear", "plane", "shapes", "segment_passes", "bounds_passes", "marker_passes", "total"];
+    private static readonly string[] _bucketNames =
+    [
+        "clear",
+        "plane",
+        "shapes",
+        "segment_passes",
+        "bounds_passes",
+        "marker_passes",
+        "depth_passes",
+        "total",
+    ];
     private static readonly double[] _errorLevels = [0.1, 0.25, 0.5];
 
     /// <summary>run lines|markers method scene [options]: the orbit with GPU timestamps; returns the exit code.</summary>
@@ -158,11 +168,15 @@ internal static partial class Scene
                 $"{Describe(lines, "all", scene, options)} device={(gpu.IsWarp ? "WARP" : "hardware")} samples={options.Samples}x{options.Samples}"
             )
         );
-        using var trace = lines && options.Trace is { } tracePath ? new StreamWriter(tracePath) : null;
+        using var trace = options.Trace is { } tracePath ? new StreamWriter(tracePath) : null;
         trace?.WriteLine(
-            "frame,x,y,error,gpu_r,gpu_g,gpu_b,ref_r,ref_g,ref_b,replayed_r,replayed_g,replayed_b,replayed_vs_gpu,plane_covers,plane_depth,"
-                + "ref_plane_share,ref_background_share,front_polyline,later_behind_painted,polyline,segments,ref_share,ref_coverage,"
-                + "coverage_max,coverage_passed,depth_min,depth_before,depth_after,wrote_depth"
+            lines
+                ? "frame,x,y,error,gpu_r,gpu_g,gpu_b,ref_r,ref_g,ref_b,replayed_r,replayed_g,replayed_b,replayed_vs_gpu,plane_covers,plane_depth,"
+                    + "ref_plane_share,ref_background_share,front_polyline,later_behind_painted,polyline,segments,ref_share,ref_coverage,"
+                    + "coverage_max,coverage_passed,depth_min,depth_before,depth_after,wrote_depth"
+                : "frame,method,x,y,touched,error,gpu_r,gpu_g,gpu_b,ref_r,ref_g,ref_b,plane_covers,plane_depth,plane_depth_min,plane_depth_max,"
+                    + "ref_plane_share,ref_background_share,markers_near,marker,visible,center_x,center_y,depth,distance,gpu_coverage,"
+                    + "ref_coverage,ref_share,in_front_of_plane_at_center"
         );
         foreach (var frame in options.At)
         {
@@ -193,7 +207,7 @@ internal static partial class Scene
                 Console.WriteLine(
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"frame {frame} {methods[m]}: mean={error.Mean:F4} p99={error.P99:F3} max={error.Max:F3} over_0.1={error.Over[0]} over_0.25={error.Over[1]} over_0.5={error.Over[2]} of {touched} max_elsewhere={error.MaxElsewhere:F3}"
+                        $"frame {frame} {methods[m]}: mean={error.Mean:F4} p99={error.P99:F3} max={error.Max:F3} over_0.1={error.Over[0]} over_0.25={error.Over[1]} over_0.5={error.Over[2]} of {touched} max_elsewhere={error.MaxElsewhere:F3} sha256={Convert.ToHexString(SHA256.HashData(images[m]))}"
                     )
                 );
                 if (options.Dump is { } dump && (options.DumpMethods is null || Array.IndexOf(options.DumpMethods, methods[m]) >= 0))
@@ -202,9 +216,14 @@ internal static partial class Scene
                     WriteBmp(Path.Combine(dump, Name(scene, lines, options, frame, methods[m] + "-error")), ErrorMap(images[m], reference));
                 }
 
-                if (trace is not null && methods[m] == "postpass")
+                if (trace is not null && lines && methods[m] == "postpass")
                 {
                     TracePostpass(trace, scene, settings, options, frame, images[m], reference);
+                }
+
+                if (trace is not null && !lines && methods[m] != "none")
+                {
+                    TraceMarkers(trace, scene, settings, options, frame, methods[m], images[m], reference);
                 }
             }
 
@@ -322,6 +341,110 @@ internal static partial class Scene
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"frame {frame} trace postpass: pixels_over_0.5={pixels.Count} replay_within_2_of_255={matched} plane_covers={withPlane} later_behind_painted={overpainted} in {Stopwatch.GetElapsedTime(started).TotalSeconds:F1} s"
+            )
+        );
+    }
+
+    /// <summary>
+    /// Writes a row for each marker near a traced pixel of a marker method (Issue #513, decision 4): the pixels away from
+    /// every shape (not counted by the error statistics) whose error is 0.05 or more, which max_elsewhere reports, and, for
+    /// half, the pixels near a shape whose error is above 0.5; the 200 worst of a method and frame. Each row gives the
+    /// marker's projected center and depth, its coverage on the GPU (DiscCoverage in Depth3D.hlsl) and in the reference,
+    /// the share of the reference's samples it wins, and whether it lies in front of the surface at the pixel's center (the
+    /// depth the GPU tests against). Prints how many pixels away from every shape the method gets wrong by more than 2/255,
+    /// 0.05, and 0.1.
+    /// </summary>
+    private static void TraceMarkers(
+        StreamWriter trace,
+        SceneData scene,
+        in DrawSettings settings,
+        Options options,
+        int frame,
+        string method,
+        byte[] image,
+        ReferenceImage reference
+    )
+    {
+        const int Cap = 200;
+        double[] levels = [2 / 255.0, 0.05, 0.1];
+        var elsewhere = new int[levels.Length];
+        var candidates = new List<TraceCandidate>();
+        for (var pixel = 0; pixel < Width * Height; pixel++)
+        {
+            var error = PixelError(image, reference.Rgb, pixel);
+            if (!reference.Touched[pixel])
+            {
+                for (var level = 0; level < levels.Length; level++)
+                {
+                    elsewhere[level] += error > levels[level] ? 1 : 0;
+                }
+
+                if (error >= 0.05)
+                {
+                    candidates.Add(new TraceCandidate(pixel, error, Touched: false));
+                }
+            }
+            else if (method == "half" && error > 0.5)
+            {
+                candidates.Add(new TraceCandidate(pixel, error, Touched: true));
+            }
+        }
+
+        candidates.Sort(static (a, b) => b.Error.CompareTo(a.Error));
+        if (candidates.Count > Cap)
+        {
+            candidates.RemoveRange(Cap, candidates.Count - Cap);
+        }
+
+        var started = Stopwatch.GetTimestamp();
+        var pixels = candidates.ConvertAll(static c => c.Pixel);
+        var traced = Reference.TraceMarkers(
+            scene,
+            settings.Transform,
+            Width,
+            Height,
+            settings.Radius,
+            options.Plane != PlaneOrder.None,
+            options.Samples,
+            pixels
+        );
+        var (noMarker, behindPlane) = (0, 0);
+        for (var i = 0; i < traced.Length; i++)
+        {
+            var t = traced[i];
+            var p = t.Pixel;
+            noMarker += t.Markers.Length == 0 ? 1 : 0;
+            var behind = false;
+            foreach (var marker in t.Markers)
+            {
+                behind |= marker.GpuCoverage > 0 && !marker.InFrontOfPlaneAtCenter;
+            }
+
+            behindPlane += behind ? 1 : 0;
+            var head = string.Create(
+                CultureInfo.InvariantCulture,
+                $"{frame},{method},{p % Width},{p / Width},{(candidates[i].Touched ? 1 : 0)},{candidates[i].Error:F3},{image[(p * 4) + 2]},{image[(p * 4) + 1]},{image[p * 4]},{reference.Rgb[p * 3]:F1},{reference.Rgb[(p * 3) + 1]:F1},{reference.Rgb[(p * 3) + 2]:F1},{(t.PlaneCovers ? 1 : 0)},{t.PlaneDepth:G9},{t.PlaneDepthMin:G9},{t.PlaneDepthMax:G9},{t.ReferencePlaneShare:F4},{t.ReferenceBackgroundShare:F4},{t.Markers.Length}"
+            );
+            if (t.Markers.Length == 0)
+            {
+                trace.WriteLine(head + ",,,,,,,,,,");
+            }
+
+            foreach (var marker in t.Markers)
+            {
+                trace.WriteLine(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{head},{marker.Index},{(marker.Visible ? 1 : 0)},{marker.X:F3},{marker.Y:F3},{marker.Depth:G9},{marker.Distance:F3},{marker.GpuCoverage:F4},{marker.ReferenceCoverage:F4},{marker.ReferenceShare:F4},{(marker.InFrontOfPlaneAtCenter ? 1 : 0)}"
+                    )
+                );
+            }
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"frame {frame} trace {method}: elsewhere_over_2/255={elsewhere[0]} elsewhere_over_0.05={elsewhere[1]} elsewhere_over_0.1={elsewhere[2]} traced={traced.Length} no_marker_near={noMarker} gpu_marker_behind_plane_at_center={behindPlane} in {Stopwatch.GetElapsedTime(started).TotalSeconds:F1} s"
             )
         );
     }
@@ -549,6 +672,9 @@ internal static partial class Scene
     [LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     private static partial uint TimeEndPeriod(uint period);
 
+    /// <summary>A pixel to trace: its index, its error, and whether it is near a shape.</summary>
+    private readonly record struct TraceCandidate(int Pixel, double Error, bool Touched);
+
     /// <summary>The error of a method against the reference over the pixels near a shape.</summary>
     private sealed class ErrorStats(double mean, double p99, double max, int[] over, double maxElsewhere)
     {
@@ -643,7 +769,10 @@ internal static partial class Scene
         /// <summary>Back to back, the frames left queued on the GPU after each frame is recorded.</summary>
         public int InFlight { get; init; } = 2;
 
-        /// <summary>compare: the CSV that traces each pixel of postpass with an error above 0.5.</summary>
+        /// <summary>
+        /// compare: the CSV that traces each pixel of postpass with an error above 0.5 (lines), or the pixels of the marker
+        /// methods away from every shape and those of half above 0.5 (markers).
+        /// </summary>
         public string? Trace { get; init; }
 
         /// <summary>compare --dump: the methods whose image and error map are written; all when null.</summary>

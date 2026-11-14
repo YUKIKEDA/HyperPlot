@@ -77,6 +77,66 @@ internal sealed class TracedPolyline
     public bool WroteDepth { get; set; }
 }
 
+/// <summary>One traced pixel of a marker method (Reference.TraceMarkers).</summary>
+internal sealed class TracedMarkerPixel
+{
+    /// <summary>The pixel's index, y × width + x.</summary>
+    public int Pixel { get; init; }
+
+    /// <summary>Whether the surface covers the pixel's center, as the GPU's rasterizer decides.</summary>
+    public bool PlaneCovers { get; init; }
+
+    /// <summary>The surface's depth at the pixel's center; NaN where it does not cover it.</summary>
+    public float PlaneDepth { get; init; }
+
+    /// <summary>The least and the largest of the surface's depth over the pixel's samples; NaN where it does not cover it.</summary>
+    public float PlaneDepthMin { get; set; }
+
+    public float PlaneDepthMax { get; set; }
+
+    /// <summary>The share of the reference's samples the surface wins.</summary>
+    public float ReferencePlaneShare { get; set; }
+
+    /// <summary>The share of the reference's samples nothing covers.</summary>
+    public float ReferenceBackgroundShare { get; set; }
+
+    /// <summary>The markers whose center is within the radius and 1 pixel of the pixel's center, in the order they are drawn.</summary>
+    public TracedMarker[] Markers { get; set; } = [];
+}
+
+/// <summary>One marker at a traced pixel.</summary>
+internal sealed class TracedMarker
+{
+    /// <summary>The marker's index in the data, the order it is drawn in.</summary>
+    public int Index { get; init; }
+
+    /// <summary>Whether it is inside the frustum (Project): a marker outside is drawn by neither side.</summary>
+    public bool Visible { get; init; }
+
+    /// <summary>Its projected center, in pixels.</summary>
+    public float X { get; init; }
+
+    public float Y { get; init; }
+
+    /// <summary>Its depth, the center's, for every pixel of the disc.</summary>
+    public float Depth { get; init; }
+
+    /// <summary>The distance from its center to the pixel's center, in pixels.</summary>
+    public float Distance { get; init; }
+
+    /// <summary>Its coverage on the GPU at the pixel (DiscCoverage in Depth3D.hlsl): radius + 0.5 − distance, in 0..1.</summary>
+    public float GpuCoverage { get; init; }
+
+    /// <summary>Whether its depth is less than the surface's at the pixel's center (true where the surface does not cover it).</summary>
+    public bool InFrontOfPlaneAtCenter { get; init; }
+
+    /// <summary>The share of the pixel's samples inside its disc, whatever is in front.</summary>
+    public float ReferenceCoverage { get; set; }
+
+    /// <summary>The share of the pixel's samples it wins in the reference's z-buffer.</summary>
+    public float ReferenceShare { get; set; }
+}
+
 /// <summary>
 /// SPIKE (row K1, Issue #509): the exact area with depth order, by supersampling. Each pixel holds samples × samples
 /// samples on a regular grid ((i + 0.5) / samples); each sample keeps the nearest shape that covers it (a z-buffer of
@@ -133,6 +193,173 @@ internal static class Reference
         }
 
         return Render(shapes, transform, width, height, plane, samples);
+    }
+
+    /// <summary>
+    /// Traces pixels of a marker method (Issue #513, decision 4): for each pixel, the markers whose center is within the
+    /// radius and 1 pixel of the pixel's center (every marker whose disc or GPU coverage reaches it), in the order they are
+    /// drawn, with the share of the pixel's samples each covers and wins in the reference's z-buffer (the surface first,
+    /// then the markers, the first of equal depths keeping a sample, as Render does), and the surface's depth at the
+    /// pixel's center and over its samples.
+    /// </summary>
+    public static TracedMarkerPixel[] TraceMarkers(
+        SceneData scene,
+        in Matrix4x4 transform,
+        int width,
+        int height,
+        float radius,
+        bool plane,
+        int samples,
+        IReadOnlyList<int> pixels
+    )
+    {
+        var surface = plane ? new Surface(transform, width, height) : null;
+
+        // The traced pixels by index: -1 elsewhere, so that the walk over every marker reads an array, not a dictionary.
+        var slot = new int[width * height];
+        Array.Fill(slot, -1);
+        for (var i = 0; i < pixels.Count; i++)
+        {
+            slot[pixels[i]] = i;
+        }
+
+        var hits = new List<TracedMarker>[pixels.Count];
+        var planeDepth = new float[pixels.Count];
+        for (var i = 0; i < hits.Length; i++)
+        {
+            hits[i] = [];
+            var (px, py) = (pixels[i] % width, pixels[i] / width);
+            planeDepth[i] = surface is not null && surface.Covers(px + 0.5f, py + 0.5f) ? surface.Depth(px + 0.5f, py + 0.5f) : float.NaN;
+        }
+
+        var reach = radius + 1;
+        var vertices = scene.Vertices;
+        for (var v = 0; v < vertices.Length; v++)
+        {
+            var visible = Project(vertices[v].Position, transform, width, height, out var x, out var y, out var z);
+            if (!float.IsFinite(x) || !float.IsFinite(y) || x + reach < 0 || y + reach < 0 || x - reach >= width || y - reach >= height)
+            {
+                continue;
+            }
+
+            var fromX = Math.Max(0, (int)MathF.Floor(x - reach));
+            var toX = Math.Min(width - 1, (int)MathF.Floor(x + reach));
+            var fromY = Math.Max(0, (int)MathF.Floor(y - reach));
+            var toY = Math.Min(height - 1, (int)MathF.Floor(y + reach));
+            for (var py = fromY; py <= toY; py++)
+            {
+                for (var px = fromX; px <= toX; px++)
+                {
+                    var i = slot[(py * width) + px];
+                    if (i < 0)
+                    {
+                        continue;
+                    }
+
+                    var (ex, ey) = (px + 0.5f - x, py + 0.5f - y);
+                    var distance = MathF.Sqrt((ex * ex) + (ey * ey));
+                    if (distance > reach)
+                    {
+                        continue;
+                    }
+
+                    hits[i].Add(
+                        new TracedMarker
+                        {
+                            Index = v,
+                            Visible = visible,
+                            X = x,
+                            Y = y,
+                            Depth = z,
+                            Distance = distance,
+                            GpuCoverage = Math.Clamp(radius + 0.5f - distance, 0, 1),
+                            InFrontOfPlaneAtCenter = float.IsNaN(planeDepth[i]) || z < planeDepth[i],
+                        }
+                    );
+                }
+            }
+        }
+
+        // The reference's z-buffer at each sample of each traced pixel, the markers that are not visible left out.
+        var traced = new TracedMarkerPixel[pixels.Count];
+        var perPixel = (float)(samples * samples);
+        for (var i = 0; i < pixels.Count; i++)
+        {
+            var (px, py) = (pixels[i] % width, pixels[i] / width);
+            var covers = !float.IsNaN(planeDepth[i]);
+            var markers = hits[i];
+            var inside = new int[markers.Count];
+            var won = new int[markers.Count];
+            var (planeWon, background) = (0, 0);
+            var (planeMin, planeMax) = (float.NaN, float.NaN);
+            for (var j = 0; j < samples; j++)
+            {
+                var sy = py + ((j + 0.5f) / samples);
+                for (var k = 0; k < samples; k++)
+                {
+                    var sx = px + ((k + 0.5f) / samples);
+                    var best = float.PositiveInfinity;
+                    var winner = -2;
+                    if (covers)
+                    {
+                        best = surface!.Depth(sx, sy);
+                        winner = -1;
+                        planeMin = float.IsNaN(planeMin) ? best : MathF.Min(planeMin, best);
+                        planeMax = float.IsNaN(planeMax) ? best : MathF.Max(planeMax, best);
+                    }
+
+                    for (var m = 0; m < markers.Count; m++)
+                    {
+                        var marker = markers[m];
+                        var (dx, dy) = (sx - marker.X, sy - marker.Y);
+                        if (!marker.Visible || (dx * dx) + (dy * dy) > radius * radius)
+                        {
+                            continue;
+                        }
+
+                        inside[m]++;
+                        if (marker.Depth < best)
+                        {
+                            best = marker.Depth;
+                            winner = m;
+                        }
+                    }
+
+                    if (winner >= 0)
+                    {
+                        won[winner]++;
+                    }
+                    else if (winner == -1)
+                    {
+                        planeWon++;
+                    }
+                    else
+                    {
+                        background++;
+                    }
+                }
+            }
+
+            for (var m = 0; m < markers.Count; m++)
+            {
+                markers[m].ReferenceCoverage = inside[m] / perPixel;
+                markers[m].ReferenceShare = won[m] / perPixel;
+            }
+
+            traced[i] = new TracedMarkerPixel
+            {
+                Pixel = pixels[i],
+                PlaneCovers = covers,
+                PlaneDepth = planeDepth[i],
+                PlaneDepthMin = planeMin,
+                PlaneDepthMax = planeMax,
+                ReferencePlaneShare = planeWon / perPixel,
+                ReferenceBackgroundShare = background / perPixel,
+                Markers = [.. markers],
+            };
+        }
+
+        return traced;
     }
 
     /// <summary>

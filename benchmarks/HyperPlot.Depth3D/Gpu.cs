@@ -34,7 +34,11 @@ internal enum PlaneOrder
     After,
 }
 
-/// <summary>The buckets of a frame's GPU time, in milliseconds.</summary>
+/// <summary>
+/// The buckets of a frame's GPU time, in milliseconds. With a timestamp after every pass, SegmentPasses holds the segment
+/// passes that write the coverage (or the capsules' color) and DepthPasses the segment passes that write only depth
+/// (prepass's first, postpass's last), so that postpass's two segment passes are told apart (Issue #513, decision 4).
+/// </summary>
 internal enum Bucket
 {
     Clear,
@@ -43,6 +47,7 @@ internal enum Bucket
     SegmentPasses,
     BoundsPasses,
     MarkerPasses,
+    DepthPasses,
     Total,
 }
 
@@ -96,6 +101,7 @@ internal sealed unsafe class Gpu : IDisposable
     private const int KindSegment = (int)Bucket.SegmentPasses;
     private const int KindBounds = (int)Bucket.BoundsPasses;
     private const int KindMarker = (int)Bucket.MarkerPasses;
+    private const int KindDepth = (int)Bucket.DepthPasses;
 
     private readonly int _width;
     private readonly int _height;
@@ -280,7 +286,7 @@ internal sealed unsafe class Gpu : IDisposable
                 var milliseconds = (stamps[s] - stamps[s - 1]) * 1000.0 / info.Frequency;
                 var kind = _stampKinds[(set * MaxStamps) + s];
                 buckets[kind] += milliseconds;
-                if (kind is KindSegment or KindBounds or KindMarker)
+                if (kind is KindSegment or KindBounds or KindMarker or KindDepth)
                 {
                     buckets[KindShapes] += milliseconds;
                     timedPasses = true;
@@ -292,6 +298,7 @@ internal sealed unsafe class Gpu : IDisposable
                 buckets[KindSegment] = double.NaN;
                 buckets[KindBounds] = double.NaN;
                 buckets[KindMarker] = double.NaN;
+                buckets[KindDepth] = double.NaN;
             }
 
             buckets[(int)Bucket.Total] = (stamps[count - 1] - stamps[0]) * 1000.0 / info.Frequency;
@@ -432,14 +439,14 @@ internal sealed unsafe class Gpu : IDisposable
                 ColorAndZero(settings);
                 break;
             case LineMethod.Prepass:
-                SegmentPass(_depthOnlyPS, null, null, _writeBlend, _writeLessEqual, segments, settings);
+                SegmentPass(_depthOnlyPS, null, null, _writeBlend, _writeLessEqual, segments, settings, KindDepth);
                 SegmentPass(_coverageDepthPS, _coverageTarget, null, _maxBlend, _testLessEqual, segments, settings);
                 ColorAndZero(settings);
                 break;
             case LineMethod.Postpass:
                 SegmentPass(_coverageDepthPS, _coverageTarget, null, _maxBlend, _testLessEqual, segments, settings);
                 ColorAndZero(settings);
-                SegmentPass(_depthOnlyPS, null, null, _writeBlend, _writeLessEqual, segments, settings);
+                SegmentPass(_depthOnlyPS, null, null, _writeBlend, _writeLessEqual, segments, settings, KindDepth);
                 break;
             case LineMethod.Uav:
                 SegmentPass(_uavCoveragePS, _coverageTarget, _lineDepthAccess, _maxBlend, _depthOff, segments, settings);
@@ -566,7 +573,8 @@ internal sealed unsafe class Gpu : IDisposable
         ID3D11BlendState* blend,
         ID3D11DepthStencilState* depth,
         uint segments,
-        in DrawSettings settings
+        in DrawSettings settings,
+        int kind = KindSegment
     )
     {
         var context = _context;
@@ -580,7 +588,7 @@ internal sealed unsafe class Gpu : IDisposable
         context->DrawInstanced(4, segments, 0, 0);
         if (settings.PassTimes)
         {
-            Stamp(KindSegment);
+            Stamp(kind);
         }
     }
 

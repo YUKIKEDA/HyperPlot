@@ -76,6 +76,33 @@
 #                   150, 225, the line scenes with --trace. Output <Out>\warp: each run's .txt, trace-<scene>.csv,
 #                   compare-summary.csv (a row a frame and method: mean, p99, max, over_0.1/0.25/0.5) from which the
 #                   tolerance is set. About 5 to 10 minutes.
+#   -Followup       the measurements before the design PR (Issue #513's decision 4), on the hardware, output <Out>\followup:
+#                   (b) markers knot 10 px at frame 0, compared twice (runs 1 and 2) and once on WARP, each with --dump (the
+#                       reference, every method, and its error map: markers\bmp-<run>\) and --trace (markers\trace-<run>.csv);
+#                       markers-repeat.csv gives each method's over_0.5 and SHA-256 in each run, and the pixels of half above
+#                       0.5 that the runs share. About 40 s.
+#                       Expected, before measuring: both hardware runs give the same SHA-256 for every method and the same
+#                       38 pixels of half above 0.5 (the determinism step repeated on the hardware); WARP differs in which
+#                       pixels, not in kind: in each traced pixel a marker drawn later lies behind the fringe (coverage < 0.5)
+#                       of an earlier one, or a marker's coverage is within a few hundredths of 0.5, where the two devices'
+#                       arithmetic splits core and fringe differently.
+#                   (c) markers uniform 4 px at frames 0 and 75 with --trace (markers\trace-uniform-4.csv): every pixel away
+#                       from every shape with an error of 0.05 or more, with the markers near it. About 15 s.
+#                       Expected: tens of pixels at frame 0, fewer at 75 (max_elsewhere 0.149, 0.055 on WARP), the same for
+#                       quad, touched, and half; each has a marker near whose GPU coverage is above 0 while the reference's
+#                       samples in the 3 × 3 neighborhood go to the surface: a marker whose depth is within the surface's depth
+#                       range over its disc, in front at the pixel's center on one side and behind on the other.
+#                   (a) postpass against none and test (the coverage pass of postpass alone), held at P0 as -Retime does,
+#                       each with --pass-times (segment_passes: the coverage passes; depth_passes: postpass's depth pass;
+#                       bounds_passes: the color and zero passes) and none and postpass also without, to see what the stamps
+#                       cost; knot and walk, -FollowupRounds rounds of a balanced order (A..E, E..A). Output passes\: each
+#                       run's .txt and .csv, clocks.csv, passes-runs.csv, passes-ratios.csv. About 4.5 minutes with 3 rounds.
+#                       Expected: postpass − none = (postpass's segment_passes − none's) + its depth_passes + (bounds
+#                       difference ≈ 0); depth_passes ≈ 0.9 to 1.1 × none's segment_passes (the same quads, no color);
+#                       postpass's segment_passes ≈ test's ≈ 1.0 to 1.3 × none's (the depth test and SV_DepthGreaterEqual);
+#                       the totals with and without stamps within 5 %. Worst case: the depth pass at 1.5 × none's segment
+#                       pass (discard and a depth output keep the hardware from rejecting early).
+#                   The whole step: about 6 minutes after the build (1 to 2 minutes).
 param(
     [Parameter(Mandatory = $true)] [string] $Out,
     [int] $Rounds = 3,
@@ -83,7 +110,9 @@ param(
     [switch] $Retime,
     [switch] $Trace,
     [switch] $WarpTolerance,
+    [switch] $Followup,
     [int] $RetimeRounds = 6,
+    [int] $FollowupRounds = 3,
     [int] $LockClockMHz = 0,
     [int] $RunTimeoutSeconds = 0,
     [switch] $NoBuild
@@ -139,14 +168,79 @@ function Invoke-Timed([string] $log, [string[]] $arguments, [int] $seconds) {
 # The rows "frame F method: mean=... over_0.5=... of N max_elsewhere=..." of compare logs, one object each.
 function Read-Compare([string] $scene, [string] $log) {
     foreach ($line in Get-Content $log) {
-        if ($line -match "^frame (\d+) (\w+): mean=([\d.]+) p99=([\d.]+) max=([\d.]+) over_0.1=(\d+) over_0.25=(\d+) over_0.5=(\d+) of (\d+) max_elsewhere=([\d.]+)") {
+        if ($line -match "^frame (\d+) (\w+): mean=([\d.]+) p99=([\d.]+) max=([\d.]+) over_0.1=(\d+) over_0.25=(\d+) over_0.5=(\d+) of (\d+) max_elsewhere=([\d.]+)(?: sha256=([0-9A-F]+))?") {
             [pscustomobject]@{
                 scene = $scene; frame = [int]$Matches[1]; method = $Matches[2]; mean = [double]$Matches[3]
                 p99 = [double]$Matches[4]; max = [double]$Matches[5]; over_01 = [int]$Matches[6]; over_025 = [int]$Matches[7]
-                over_05 = [int]$Matches[8]; touched = [int]$Matches[9]; max_elsewhere = [double]$Matches[10]
+                over_05 = [int]$Matches[8]; touched = [int]$Matches[9]; max_elsewhere = [double]$Matches[10]; sha256 = $Matches[11]
             }
         }
     }
+}
+
+# The samples of an nvidia-smi clock log: "2026/11/14 03:20:01.123, 1665 MHz, P0".
+function Read-Clocks([string] $clocks) {
+    @(Get-Content $clocks | Where-Object { $_ -match "^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{3}," } | ForEach-Object {
+            $parts = $_ -split ","
+            if ($parts.Count -ge 3) {
+                [pscustomobject]@{
+                    Time = [datetime]::ParseExact($parts[0].Trim(), "yyyy/MM/dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
+                    Mhz = [int](($parts[1].Trim() -split " ")[0])
+                    State = $parts[2].Trim()
+                }
+            }
+        })
+}
+
+# The figures of a timed run's log: the p50, p95, p99 of gpu_total, the p50 of each pass bucket (null when the run did not
+# time it), and the clock samples inside the run's measured window, their P0 share and median.
+function Read-TimedRun([string] $folder, $run, $samples) {
+    $text = @(Get-Content (Join-Path $folder "$($run.Name).txt"))
+    $window = $text | Where-Object { $_ -match "^measured frames ran (\S+ \S+) to (\S+ \S+)" } | Select-Object -First 1
+    $total = $text | Where-Object { $_ -match "^gpu_total: " } | Select-Object -First 1
+    $timed = $text | Where-Object { $_ -match "^gpu frames timed: " } | Select-Object -First 1
+    $row = [ordered]@{
+        round = $run.Round; scene = $run.Scene; method = $run.Method; pass_times = [bool]$run.PassTimes; slot = $run.Slot; exit = $run.Exit
+        p50 = $null; p95 = $null; p99 = $null
+        shapes_p50 = $null; segment_p50 = $null; bounds_p50 = $null; depth_p50 = $null
+        timed = $timed; clock_samples = 0; p0_share = $null; clock_median_mhz = $null
+    }
+    if ($total -match "p50=([\d.]+) p95=([\d.]+) p99=([\d.]+)") {
+        $row.p50 = [double]$Matches[1]
+        $row.p95 = [double]$Matches[2]
+        $row.p99 = [double]$Matches[3]
+    }
+
+    foreach ($bucket in @(@("shapes_p50", "gpu_shapes"), @("segment_p50", "gpu_segment_passes"), @("bounds_p50", "gpu_bounds_passes"), @("depth_p50", "gpu_depth_passes"))) {
+        $line = $text | Where-Object { $_ -match "^$($bucket[1]): " } | Select-Object -First 1
+        if ($line -match "p50=([\d.]+)") { $row[$bucket[0]] = [double]$Matches[1] }
+    }
+
+    if ($window -match "^measured frames ran (\S+ \S+) to (\S+ \S+)") {
+        $from = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
+        $to = [datetime]::ParseExact($Matches[2], "yyyy-MM-dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
+        $inside = @($samples | Where-Object { $_.Time -ge $from -and $_.Time -le $to })
+        $row.clock_samples = $inside.Count
+        if ($inside.Count -gt 0) {
+            $row.p0_share = [math]::Round(@($inside | Where-Object { $_.State -eq "P0" }).Count / $inside.Count, 3)
+            $sorted = @($inside | ForEach-Object { $_.Mhz } | Sort-Object)
+            $row.clock_median_mhz = $sorted[[int][math]::Floor($sorted.Count / 2)]
+        }
+    }
+
+    [pscustomobject]$row
+}
+
+# The mean of a field over the rows of a method, with or without --pass-times; null when there is none.
+function Get-Mean($rows, [string] $method, [bool] $passTimes, [string] $field) {
+    $values = @($rows | Where-Object { $_.method -eq $method -and $_.pass_times -eq $passTimes -and $null -ne $_.$field } | ForEach-Object { $_.$field })
+    if ($values.Count -eq 0) { return $null }
+    return [math]::Round(($values | Measure-Object -Average).Average, 4)
+}
+
+function Get-Ratio($numerator, $denominator) {
+    if ($null -eq $numerator -or $null -eq $denominator -or $denominator -eq 0) { return $null }
+    return [math]::Round($numerator / $denominator, 3)
 }
 
 $failed = 0
@@ -160,7 +254,7 @@ $compareScenes = @(
     @{ Name = "markers-uniform-10-after"; Lines = $false; Args = @("compare", "markers", "uniform", "--diameter", "10", "--plane", "after") }
 )
 
-if ($Retime -or $Trace -or $WarpTolerance) {
+if ($Retime -or $Trace -or $WarpTolerance -or $Followup) {
     if ($Retime) {
         $folder = Join-Path $Out "retime"
         New-Item -ItemType Directory -Force $folder | Out-Null
@@ -198,46 +292,8 @@ if ($Retime -or $Trace -or $WarpTolerance) {
             if ($LockClockMHz -gt 0) { nvidia-smi -rgc }
         }
 
-        # The clock samples: "2026/11/14 03:20:01.123, 1665 MHz, P0".
-        $samples = @(Get-Content $clocks | Where-Object { $_ -match "^\d{4}/\d\d/\d\d \d\d:\d\d:\d\d\.\d{3}," } | ForEach-Object {
-                $parts = $_ -split ","
-                if ($parts.Count -ge 3) {
-                    [pscustomobject]@{
-                        Time = [datetime]::ParseExact($parts[0].Trim(), "yyyy/MM/dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
-                        Mhz = [int](($parts[1].Trim() -split " ")[0])
-                        State = $parts[2].Trim()
-                    }
-                }
-            })
-        $rows = foreach ($run in $runs) {
-            $text = Get-Content (Join-Path $folder "$($run.Name).txt")
-            $window = $text | Where-Object { $_ -match "^measured frames ran (\S+ \S+) to (\S+ \S+)" } | Select-Object -First 1
-            $total = $text | Where-Object { $_ -match "^gpu_total: " } | Select-Object -First 1
-            $timed = $text | Where-Object { $_ -match "^gpu frames timed: " } | Select-Object -First 1
-            $row = [ordered]@{
-                round = $run.Round; scene = $run.Scene; method = $run.Method; slot = $run.Slot; exit = $run.Exit
-                p50 = $null; p95 = $null; p99 = $null; timed = $timed; clock_samples = 0; p0_share = $null; clock_median_mhz = $null
-            }
-            if ($total -match "p50=([\d.]+) p95=([\d.]+) p99=([\d.]+)") {
-                $row.p50 = [double]$Matches[1]
-                $row.p95 = [double]$Matches[2]
-                $row.p99 = [double]$Matches[3]
-            }
-
-            if ($window -match "^measured frames ran (\S+ \S+) to (\S+ \S+)") {
-                $from = [datetime]::ParseExact($Matches[1], "yyyy-MM-dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
-                $to = [datetime]::ParseExact($Matches[2], "yyyy-MM-dd HH:mm:ss.fff", [Globalization.CultureInfo]::InvariantCulture)
-                $inside = @($samples | Where-Object { $_.Time -ge $from -and $_.Time -le $to })
-                $row.clock_samples = $inside.Count
-                if ($inside.Count -gt 0) {
-                    $row.p0_share = [math]::Round(@($inside | Where-Object { $_.State -eq "P0" }).Count / $inside.Count, 3)
-                    $sorted = @($inside | ForEach-Object { $_.Mhz } | Sort-Object)
-                    $row.clock_median_mhz = $sorted[[int][math]::Floor($sorted.Count / 2)]
-                }
-            }
-
-            [pscustomobject]$row
-        }
+        $samples = Read-Clocks $clocks
+        $rows = foreach ($run in $runs) { Read-TimedRun $folder $run $samples }
 
         $rows | Export-Csv -NoTypeInformation (Join-Path $folder "retime-runs.csv")
         $rows | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
@@ -306,6 +362,126 @@ if ($Retime -or $Trace -or $WarpTolerance) {
                 max_elsewhere_max = ($_.Group | Measure-Object max_elsewhere -Maximum).Maximum
             }
         } | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+    }
+
+    if ($Followup) {
+        $folder = Join-Path $Out "followup"
+        $markers = Join-Path $folder "markers"
+        New-Item -ItemType Directory -Force $markers | Out-Null
+        $compareTimeout = if ($RunTimeoutSeconds -gt 0) { $RunTimeoutSeconds } else { 180 }
+
+        # (b) markers knot 10 px at frame 0: twice on the hardware, once on WARP, with every image and the trace.
+        $repeat = @()
+        $halfPixels = @{}
+        foreach ($run in @(@{ Name = "hw-1"; Warp = $false }, @{ Name = "hw-2"; Warp = $false }, @{ Name = "warp"; Warp = $true })) {
+            $log = Join-Path $markers "compare-knot-10-$($run.Name).txt"
+            $csv = Join-Path $markers "trace-knot-10-$($run.Name).csv"
+            [string[]] $arguments = @(
+                "compare", "markers", "knot", "--diameter", "10", "--at", "0",
+                "--dump", (Join-Path $markers "bmp-knot-10-$($run.Name)"), "--trace", $csv
+            )
+            if ($run.Warp) { $arguments += "--warp" }
+            $code = Invoke-Timed $log $arguments $compareTimeout
+            if ($code -ne 0) { continue }
+            $repeat += @(Read-Compare "markers-knot-10-$($run.Name)" $log | ForEach-Object { $_ | Add-Member -PassThru run $run.Name })
+            $halfPixels[$run.Name] = @(Import-Csv $csv | Where-Object { $_.method -eq "half" -and $_.touched -eq "1" } | ForEach-Object { "$($_.x),$($_.y)" } | Sort-Object -Unique)
+        }
+
+        $repeat | Export-Csv -NoTypeInformation (Join-Path $markers "markers-repeat.csv")
+        $repeat | Select-Object run, method, mean, p99, max, over_05, max_elsewhere, sha256 | Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+        foreach ($method in "none", "quad", "touched", "half") {
+            $hashes = @($repeat | Where-Object { $_.method -eq $method -and $_.run -like "hw-*" } | ForEach-Object { $_.sha256 } | Sort-Object -Unique)
+            Write-Host "knot 10 px frame 0 $method`: hardware images identical across runs = $($hashes.Count -eq 1)"
+        }
+
+        if ($halfPixels.ContainsKey("hw-1") -and $halfPixels.ContainsKey("hw-2")) {
+            $both = @($halfPixels["hw-1"] | Where-Object { $halfPixels["hw-2"] -contains $_ })
+            Write-Host "half over 0.5: hw-1 $($halfPixels['hw-1'].Count) pixels, hw-2 $($halfPixels['hw-2'].Count), in both $($both.Count)"
+            if ($halfPixels.ContainsKey("warp")) {
+                $shared = @($halfPixels["hw-1"] | Where-Object { $halfPixels["warp"] -contains $_ })
+                Write-Host "half over 0.5: warp $($halfPixels['warp'].Count) pixels, shared with hw-1 $($shared.Count)"
+            }
+        }
+
+        # (c) markers uniform 4 px at frames 0 and 75: the pixels away from every shape (max_elsewhere), traced.
+        $log = Join-Path $markers "compare-uniform-4.txt"
+        [string[]] $arguments = @(
+            "compare", "markers", "uniform", "--diameter", "4", "--at", "0,75",
+            "--trace", (Join-Path $markers "trace-uniform-4.csv"),
+            "--dump", (Join-Path $markers "bmp-uniform-4"), "--dump-methods", "half"
+        )
+        $null = Invoke-Timed $log $arguments $compareTimeout
+        Get-Content $log | Where-Object { $_ -match "^frame \d+ (trace |\w+: mean)" } | Write-Host
+
+        # (a) postpass, test, and none at P0, a timestamp after every pass; none and postpass also without them.
+        $passes = Join-Path $folder "passes"
+        New-Item -ItemType Directory -Force $passes | Out-Null
+        $timeout = if ($RunTimeoutSeconds -gt 0) { $RunTimeoutSeconds } else { 120 }
+        $clocks = Join-Path $passes "clocks.csv"
+        $smi = Start-Process nvidia-smi -ArgumentList "--query-gpu=timestamp,clocks.gr,pstate --format=csv -lms 200" `
+            -RedirectStandardOutput $clocks -WindowStyle Hidden -PassThru
+        $runs = @()
+        try {
+            # A warm-up load, not measured: the GPU reaches its clock and temperature before the first run.
+            $null = Invoke-Timed (Join-Path $passes "warmup.txt") @("run", "lines", "postpass", "knot", "--back-to-back", "--frames", "2000", "--warmup", "0") $timeout
+            $sides = @(
+                @{ Method = "none"; PassTimes = $true },
+                @{ Method = "test"; PassTimes = $true },
+                @{ Method = "postpass"; PassTimes = $true },
+                @{ Method = "none"; PassTimes = $false },
+                @{ Method = "postpass"; PassTimes = $false }
+            )
+            $reversed = $sides[($sides.Count - 1)..0]
+            for ($round = 1; $round -le $FollowupRounds; $round++) {
+                $order = if ($round % 2 -eq 1) { $sides + $reversed } else { $reversed + $sides }
+                foreach ($scene in "knot", "walk") {
+                    for ($i = 0; $i -lt $order.Count; $i++) {
+                        $side = $order[$i]
+                        $name = "r$round-$scene-$($side.Method)-$(if ($side.PassTimes) { 'passes' } else { 'plain' })-$i"
+                        [string[]] $arguments = @(
+                            "run", "lines", $side.Method, $scene, "--back-to-back", "--frames", "1200", "--warmup", "600",
+                            "--csv", (Join-Path $passes "$name.csv")
+                        )
+                        if ($side.PassTimes) { $arguments += "--pass-times" }
+                        $code = Invoke-Timed (Join-Path $passes "$name.txt") $arguments $timeout
+                        $runs += [pscustomobject]@{
+                            Round = $round; Scene = $scene; Method = $side.Method; PassTimes = $side.PassTimes; Slot = $i; Name = $name; Exit = "$code"
+                        }
+                    }
+                }
+            }
+        }
+        finally {
+            if ($smi) { Stop-Process -Id $smi.Id -ErrorAction SilentlyContinue }
+        }
+
+        $samples = Read-Clocks $clocks
+        $rows = foreach ($run in $runs) { Read-TimedRun $passes $run $samples }
+        $rows | Export-Csv -NoTypeInformation (Join-Path $passes "passes-runs.csv")
+        $rows | Select-Object round, scene, method, pass_times, slot, exit, p50, shapes_p50, segment_p50, bounds_p50, depth_p50, p0_share, clock_median_mhz |
+            Format-Table -AutoSize | Out-String -Width 300 | Write-Host
+
+        # In each round and scene, the mean p50 of the two runs of a side: the totals, their ratio to none, and each bucket.
+        $ratios = foreach ($group in ($rows | Group-Object round, scene)) {
+            $g = $group.Group
+            [pscustomobject]@{
+                round = $g[0].round; scene = $g[0].scene
+                none_plain = Get-Mean $g "none" $false "p50"; postpass_plain = Get-Mean $g "postpass" $false "p50"
+                ratio_plain = Get-Ratio (Get-Mean $g "postpass" $false "p50") (Get-Mean $g "none" $false "p50")
+                none_passes = Get-Mean $g "none" $true "p50"; test_passes = Get-Mean $g "test" $true "p50"; postpass_passes = Get-Mean $g "postpass" $true "p50"
+                ratio_passes = Get-Ratio (Get-Mean $g "postpass" $true "p50") (Get-Mean $g "none" $true "p50")
+                none_segment = Get-Mean $g "none" $true "segment_p50"; test_segment = Get-Mean $g "test" $true "segment_p50"
+                postpass_segment = Get-Mean $g "postpass" $true "segment_p50"; postpass_depth = Get-Mean $g "postpass" $true "depth_p50"
+                none_bounds = Get-Mean $g "none" $true "bounds_p50"; test_bounds = Get-Mean $g "test" $true "bounds_p50"
+                postpass_bounds = Get-Mean $g "postpass" $true "bounds_p50"
+                depth_over_none_segment = Get-Ratio (Get-Mean $g "postpass" $true "depth_p50") (Get-Mean $g "none" $true "segment_p50")
+                all_runs_at_p0 = @($g | Where-Object { $_.p0_share -lt 1 }).Count -eq 0
+                all_runs_ok = @($g | Where-Object { $_.exit -ne "0" }).Count -eq 0
+            }
+        }
+
+        $ratios | Export-Csv -NoTypeInformation (Join-Path $passes "passes-ratios.csv")
+        $ratios | Format-List | Out-String -Width 300 | Write-Host
     }
 
     if ($failed -gt 0) {
@@ -400,7 +576,7 @@ if (-not $SkipTiming) {
 $summary = Join-Path $Out "summary.txt"
 Get-ChildItem $Out -Filter *.txt | Where-Object { $_.Name -ne "summary.txt" } | Sort-Object Name | ForEach-Object {
     Add-Content $summary "== $($_.Name)"
-    Get-Content $_.FullName | Where-Object { $_ -match "^(kind=|frame |gpu_shapes|gpu_total|gpu_segment|gpu_bounds|gpu_marker|cpu_frame|gpu frames|# exit|[a-z]+: repeat)" } |
+    Get-Content $_.FullName | Where-Object { $_ -match "^(kind=|frame |gpu_shapes|gpu_total|gpu_segment|gpu_bounds|gpu_marker|gpu_depth|cpu_frame|gpu frames|# exit|[a-z]+: repeat)" } |
         ForEach-Object { Add-Content $summary $_ }
 }
 Write-Host "Done: $summary"

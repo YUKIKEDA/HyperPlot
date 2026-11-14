@@ -22,7 +22,10 @@ using HyperPlot.Depth3D;
 //     mean, p99, max, and the pixels above 0.1, 0.25, and 0.5. --dump writes the reference, each method's image (or those
 //     of --dump-methods), and a map of its error (white none, full red 0.5 or more). --trace (lines) writes, for each pixel
 //     of postpass with an error above 0.5, each polyline there: the reference's shares and postpass replayed on the CPU
-//     (Reference.TracePostpass), and prints how many pixels the replay matches.
+//     (Reference.TracePostpass), and prints how many pixels the replay matches. --trace (markers) writes, for each depth
+//     method, the pixels away from every shape with an error of 0.05 or more and, for half, those near a shape above 0.5,
+//     with each marker near (Reference.TraceMarkers). Each method's line ends with the SHA-256 of its image.
+//     --pass-times: the segment passes that write only depth (prepass, postpass) go to depth_passes, not segment_passes.
 //   run --back-to-back keeps the GPU busy with at most --in-flight 2 frames queued (its clock at P0); the run prints the
 //     window of the measured frames with the date, to read the clock log inside it.
 //   Options: --count 1e6 (segments, or markers) --polylines n (knot 8, walk 16) --width 2 (a line's, pixels) --diameter 4
