@@ -148,6 +148,7 @@ internal static partial class PointsScene
             engine.Views.SetView(panel, views[0]);
             engine.RenderFrame();
         }
+
         var (waited, firstRuns, pageFrames) = (0, -1.0, 0);
         while (engine.IsProvisional)
         {
