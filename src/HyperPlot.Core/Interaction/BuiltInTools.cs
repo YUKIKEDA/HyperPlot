@@ -359,6 +359,16 @@ public sealed class SelectionTool : IPlotTool
 
         Span<SeriesHit> hits = stackalloc SeriesHit[64];
         var found = Math.Min(context.HitTest(at, 8 * context.Scale, hits), hits.Length);
+
+        // A density's bin (a row of −1) is not a point to select (Issue #523 Decision 1); row R3c's selection (#525) makes it
+        // a rectangle of the bin's range (Issue #471 Decision 9). The bins come after the points, so the points are first.
+        var rows = 0;
+        while (rows < found && hits[rows].Row >= 0)
+        {
+            rows++;
+        }
+
+        found = rows;
         if (found == 0)
         {
             return ToolResult.Handled;

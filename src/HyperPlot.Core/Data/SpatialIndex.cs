@@ -89,6 +89,12 @@ internal abstract class SpatialIndex : IDisposable
     /// <summary>Gets the rows, the transforms, and the ranges that the index was made with.</summary>
     public SpatialIndexInput Input { get; }
 
+    /// <summary>
+    /// Gets the most points of a leaf that is neither coincident nor capped (design §3.4 "定数"): the points a hit test reads
+    /// of any leaf (design §3.4 "点の多い葉").
+    /// </summary>
+    internal int LeafCapacity => _tuning.LeafCapacity;
+
     /// <summary>Gets a number that grows by one each time the index replaces its snapshot.</summary>
     public long Version => Volatile.Read(ref _version);
 

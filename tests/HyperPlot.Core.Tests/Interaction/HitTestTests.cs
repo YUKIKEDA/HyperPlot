@@ -64,6 +64,7 @@ public sealed class HitTestTests
             {
                 var hit = hits[layer];
                 Assert.Equal((0, 0, layer, 0), (hit.Plot, hit.Panel, hit.Layer, hit.Series));
+                Assert.Equal(1, hit.Count);
                 Assert.False(double.IsNaN(hit.Y));
                 Assert.Equal(xOf[layer]((int)hit.Row), hit.X, 9);
                 Assert.Equal(ys[hit.Row], hit.Y);
@@ -438,6 +439,7 @@ public sealed class HitTestTests
                 var cy = origin == RasterOrigin.Upper ? h - 1 - r : r;
                 Assert.Equal(1, engine.HitTest(Pixel(engine, c, cy), 2, HitMode.XY, hits));
                 Assert.Equal(((((long)r * w) + c) * channels, (double)c, (double)cy), (hits[0].Row, hits[0].X, hits[0].Y));
+                Assert.Equal(1, hits[0].Count);
             }
 
             var edge = Pixel(engine, w - 0.5, 1);

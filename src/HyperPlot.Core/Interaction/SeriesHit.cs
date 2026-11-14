@@ -31,6 +31,11 @@ public enum HitMode
 /// <param name="Distance">The distance from the cursor to the point on the screen, in pixels.</param>
 /// <param name="Derived">Whether <paramref name="Row"/> is a row of a stat's derived table, which has no row of the plot's table.</param>
 /// <param name="Provisional">Whether the answer comes from indexes still being built (invariant 4): a later one may differ.</param>
+/// <param name="Count">
+/// The number of points the hit stands for (row R3c, Issue #471 Decision 2): 1 for a hit of a row; for a bin of a scatter
+/// drawn as a density, the points of the bin under the cursor as drawn, before their normalization by the bin's area, and
+/// then <paramref name="Row"/> is −1 and <paramref name="X"/> and <paramref name="Y"/> are the bin's center.
+/// </param>
 public readonly record struct SeriesHit(
     int Plot,
     int Panel,
@@ -41,5 +46,6 @@ public readonly record struct SeriesHit(
     double Y,
     float Distance,
     bool Derived,
-    bool Provisional
+    bool Provisional,
+    long Count
 );

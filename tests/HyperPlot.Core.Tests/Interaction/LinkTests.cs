@@ -691,10 +691,10 @@ public sealed class LinkTests
     /// - A figure of two plots of the fixture's line, linked with All; the shaping cache full.
     ///
     /// Steps:
-    /// - Rounds of 8 moves over plot 0 drawn after each; the pointer leaves; rounds of 20 wheel turns on plot 0 drawn after each
-    ///   (a zoom under a hover allocates on main too, Issue #378): 4 of each to
-    ///   warm the lists, the caches, and the plans of both plots (a wheel's round allocates in its first 3 as the member's ticks
-    ///   and extractions first meet each view), a garbage collection, then 2 more of each counted.
+    /// - Rounds of 8 moves over plot 0 drawn after each; then rounds of 20 wheel turns on plot 0 drawn after each, under the
+    ///   hover of the last move (Issue #378): 4 of each to warm the lists, the caches, and the plans of both plots (a wheel's
+    ///   round allocates in its first 3 as the member's ticks and extractions first meet each view), a garbage collection,
+    ///   then 2 more of each counted.
     ///
     /// Expected:
     /// - The counted rounds: 0 bytes.
@@ -741,9 +741,8 @@ public sealed class LinkTests
             return GC.GetAllocatedBytesForCurrentThread() - before;
         }
 
-        // The wheel's rounds after the pointer leaves: a zoom under a hover allocates on main too (Issue #378).
+        // The wheel's rounds under the hover of the last move (Issue #378).
         var moves = Warm(Moves);
-        _ = f.Engine.OnPointer(f.Pointer(PointerEventKind.Leave, new Vector2(left, top)));
         var wheels = Warm(Wheels);
         Assert.Equal((0L, 0L), (moves, wheels));
 
