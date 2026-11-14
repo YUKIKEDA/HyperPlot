@@ -37,11 +37,24 @@
 # - async, walk orbit: dfs/8 shows lines 2 to 3 frames old (its extraction is longer than a frame); time/8/12 1 frame old
 #   (the previous frame's view) at 1 to 3 px; the frame thread's own work under 50 µs; frames 0 to 1 ms late.
 # - allocation per run: 0 B on every member.
+#
+# The third, -Rerun (Issue #488's Decision of 2026-11-14, item 5): par and async again on an idle machine, 3 rounds, async
+# reporting the cadence only (Crew.AchievedPx no longer runs in the producer's cycle; par keeps the px figures), and the
+# zoom scenes with dfs/8. Skips everything above. Per round, for the walk then the helix, in an order that alternates
+# between rounds: par on the orbit (the 10 variants), async on the orbit (4 variants, 1 round a process), par on zoom-x,
+# zoom-z, zoom-xyz with dfs/8, async on the zooms with dfs/8. About 30 to 33 minutes with -RerunRounds 3. The CPU load of
+# the machine is sampled for 5 s before the first run and logged throughout (machine.log).
+# Expected: par as in the second measurement (walk orbit dfs/8 p50 about 19 ms); async dfs/8 on the walk orbit 2 to 3
+# frames old, its extraction within the spread of par's dfs/8, and the stopped variants' results closer to their limits
+# than in the second run; the zooms with dfs/8: walk zoom-x 4 to 8 times faster than the Result's pinned 1 px (268 to
+# 275 ms p95), helix zoom-xyz under 2 ms.
 param(
     [Parameter(Mandatory = $true)] [string] $Out,
     [int] $Rounds = 1,
     [switch] $NewOnly,
-    [int] $NewRounds = 2
+    [int] $NewRounds = 2,
+    [switch] $Rerun,
+    [int] $RerunRounds = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,6 +103,43 @@ function Invoke-Spike([string] $Name, [string[]] $Arguments, [int] $Minutes = 30
 }
 
 try {
+    if ($Rerun) {
+        # CIM, not Get-Counter: the counter paths are localized on this machine.
+        try {
+            $samples = foreach ($second in 1..5) {
+                (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
+                Start-Sleep -Seconds 1
+            }
+            $average = ($samples | Measure-Object -Average).Average
+            Write-Output ("$(Get-Date -Format HH:mm:ss) CPU load before the runs: {0:F1} % of all processors (5 samples)" -f $average)
+        }
+        catch {
+            Write-Warning "CPU load before the runs not read: $_"
+        }
+        $zooms = "zoom-x,zoom-z,zoom-xyz"
+        for ($round = 1; $round -le $RerunRounds; $round++) {
+            foreach ($data in "walk", "helix") {
+                $runs = @(
+                    { Invoke-Spike "rr$round-par-$data-orbit" @(
+                            "par", "--data", $data, "--count", "1e8", "--segment", "14", "--csv", (Join-Path $Out "rr$round-par-$data-orbit.csv")
+                        ) -Minutes 12 },
+                    { Invoke-Spike "rr$round-async-$data-orbit" @(
+                            "async", "--data", $data, "--count", "1e8", "--segment", "14", "--rounds", "1"
+                        ) -Minutes 6 },
+                    { Invoke-Spike "rr$round-par-$data-zoom" @(
+                            "par", "--data", $data, "--count", "1e8", "--segment", "14", "--scenes", $zooms, "--variants", "dfs/8",
+                            "--csv", (Join-Path $Out "rr$round-par-$data-zoom.csv")
+                        ) -Minutes 6 },
+                    { Invoke-Spike "rr$round-async-$data-zoom" @(
+                            "async", "--data", $data, "--count", "1e8", "--segment", "14", "--scenes", $zooms, "--variants", "dfs/8", "--rounds", "1"
+                        ) -Minutes 6 }
+                )
+                if ($round % 2 -eq 0) { [array]::Reverse($runs) }
+                foreach ($run in $runs) { & $run }
+            }
+        }
+    }
+    else {
     if (-not $NewOnly) {
         foreach ($data in "walk", "helix") {
             foreach ($segment in 14, 16, 18) {
@@ -155,6 +205,7 @@ try {
 
     foreach ($data in "walk", "helix") {
         Invoke-Spike "layout-$data-1e6" @("layout", "--data", $data, "--count", "1e6", "--segment", "14") -Minutes 5
+    }
     }
 }
 finally {

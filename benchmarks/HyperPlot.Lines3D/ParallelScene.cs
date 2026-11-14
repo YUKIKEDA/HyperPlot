@@ -429,7 +429,6 @@ internal static class ParallelScene
         Scene.Print($"{label} result extract_ms", [.. measured.Select(k => feed.ResultMs[k])]);
         Scene.Print($"{label} result latency_ms", [.. measured.Select(k => feed.ResultLatencyMs[k])]);
         Scene.Print($"{label} result vertices", [.. measured.Select(k => feed.ResultVertices[k])]);
-        Scene.Print($"{label} result achieved_px", [.. measured.Select(k => feed.ResultAchieved[k])]);
         var stopped = measured.Count(k => feed.ResultStopped[k]);
         var seconds = frames * options.PeriodMs / 1000;
         Scene.Line(
@@ -461,7 +460,8 @@ internal static class ParallelScene
                 var end = Stopwatch.GetTimestamp();
                 Volatile.Write(ref feed.Shown, f);
 
-                // The achieved tolerance is computed after the result is shown: it is the measurement's, not the producer's work.
+                // Only the cadence is recorded here. The achieved tolerance (Crew.AchievedPx) walks the frontier left and
+                // delayed the next extraction in the run of 2026-11-14; par measures it, outside its timing.
                 var stopped = result.Stopped + result.Capped > 0;
                 var k = feed.Results++;
                 feed.ResultFrame[k] = f;
@@ -469,7 +469,6 @@ internal static class ParallelScene
                 feed.ResultLatencyMs[k] = (end - feed.PostedAt[f]) * 1000.0 / Stopwatch.Frequency;
                 feed.ResultVertices[k] = result.Vertices;
                 feed.ResultStopped[k] = stopped;
-                feed.ResultAchieved[k] = variant.Levels && stopped ? crew.AchievedPx(variant.Threads) : Scene.Tolerance;
                 last = f;
             }
         }
@@ -547,7 +546,6 @@ internal static class ParallelScene
         public readonly double[] ResultMs;
         public readonly double[] ResultLatencyMs;
         public readonly double[] ResultVertices;
-        public readonly double[] ResultAchieved;
         public readonly bool[] ResultStopped;
         public int Posted = -1;
         public int Shown = -1;
@@ -562,7 +560,6 @@ internal static class ParallelScene
             ResultMs = new double[total];
             ResultLatencyMs = new double[total];
             ResultVertices = new double[total];
-            ResultAchieved = new double[total];
             ResultStopped = new bool[total];
         }
 
