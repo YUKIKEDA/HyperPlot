@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 using System.Runtime.ExceptionServices;
 using HyperPlot.Rendering;
 
@@ -153,7 +153,20 @@ internal sealed class IndexedPointPlan : LayerPlan
             : LayerReadiness.Ready;
     }
 
+    /// <summary>Gets the snapshot drawn. Spike R3b2 (Issue #472).</summary>
+    internal SpatialSnapshot? ProbeSnapshot => _snapshot;
+
     public override void Record(RecordContext context)
+    {
+        // Spike R3b2 (Issue #472, O4): the call's time and the cells it wrote.
+        var start = TimeProvider.System.GetTimestamp();
+        RecordCore(context);
+        SplitProbe.RecordTicks += TimeProvider.System.GetTimestamp() - start;
+        SplitProbe.RecordCalls++;
+        SplitProbe.RecordedCells += _snapshot?.ResidentCells.Length ?? 0;
+    }
+
+    private void RecordCore(RecordContext context)
     {
         _missing = false;
         if (_snapshot is not { } snapshot)

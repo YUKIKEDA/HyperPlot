@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace HyperPlot.Rendering;
 
@@ -124,7 +124,10 @@ internal sealed class PointPages
         }
 
         var ordered = _ordered.AsSpan(0, count);
+        var readStart = TimeProvider.System.GetTimestamp();
         snapshot.ReadBlock((long)page * PagePoints, ordered);
+        SplitProbe.PageReadTicks += TimeProvider.System.GetTimestamp() - readStart;
+        SplitProbe.PagesRead++;
         var staged = _staging.AsSpan(_staged, count);
 
         // Spike R3b2: the page in runs of the copy's order, each in steps alone: runs of SplitProbe.BlockPoints points when

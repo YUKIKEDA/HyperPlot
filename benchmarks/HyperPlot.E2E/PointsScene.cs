@@ -295,6 +295,8 @@ internal static partial class PointsScene
             $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} zoom={Zoom} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} drawn_points={HyperPlot.Rendering.SplitProbe.DrawnPoints / probeFrames:F0} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
         );
 
+        PrintMaxBin(engine, panel, views, Warmup, diameter);
+
         // Hit tests at seeded pixels of the whole view, each timed alone.
         engine.Views.SetView(panel, new PanelView2D(ViewRange.FromValues(0, 100), ViewRange.FromValues(0, 100)));
         engine.RenderFrame();
@@ -479,6 +481,56 @@ internal static partial class PointsScene
         );
     }
 
+    /// <summary>
+    /// Spike R3b2 (Issue #472, O1): over the measured views (every 30th), the largest bin of the density tiles in view, in
+    /// points per pixel, for each part and summed over the parts (an upper bound: the parts' densest bins may lie apart),
+    /// and that times the marker's area in pixels: the points that cover the densest pixel, the figure a switch on
+    /// "the largest bin × the marker's area" compares.
+    /// </summary>
+    internal static void PrintMaxBin(PlotEngine engine, PanelId panel, PanelView2D[] views, int from, float diameter)
+    {
+        var snapshots = engine
+            .Plan!.Layers.SelectMany(l => l is SplitPlan split ? split.ProbeParts : [l])
+            .OfType<IndexedPointPlan>()
+            .Select(p => p.ProbeSnapshot)
+            .Where(s => s is not null)
+            .ToArray();
+        var markerArea = Math.PI * Math.Pow(diameter * engine.Scale / 2, 2);
+        var (largest, smallest, largestPart, sampled) = (0.0, double.MaxValue, 0.0, 0);
+        var (count, level, tiles) = (0UL, -1, 0);
+        for (var f = from; f < views.Length; f += 30)
+        {
+            var view = views[f];
+            var (x0, x1) = (view.X.Origin + view.X.Lower, view.X.Origin + view.X.Upper);
+            var (y0, y1) = (view.Y.Origin + view.Y.Lower, view.Y.Origin + view.Y.Upper);
+            var low = engine.ViewToPixel(panel, ViewRange.FromValues(x0, x0), ViewRange.FromValues(y0, y0));
+            var high = engine.ViewToPixel(panel, ViewRange.FromValues(x1, x1), ViewRange.FromValues(y1, y1));
+            var (perX, perY) = (Math.Abs(high.X - low.X) / (x1 - x0), Math.Abs(high.Y - low.Y) / (y1 - y0));
+            var sum = 0.0;
+            foreach (var snapshot in snapshots)
+            {
+                var bin = snapshot!.ProbeMaxBin(x0, x1, y0, y1, perX, perY);
+                sum += double.IsNaN(bin.PerPixel) ? 0 : bin.PerPixel;
+                if (bin.PerPixel > largestPart)
+                {
+                    (largestPart, count, level) = (bin.PerPixel, bin.Count, bin.Level);
+                }
+
+                tiles += bin.Tiles;
+            }
+
+            (largest, smallest) = (Math.Max(largest, sum), Math.Min(smallest, sum));
+            sampled++;
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"max_bin: parts={snapshots.Length} views={sampled} sum_over_parts_points_per_px: max={largest:F2} min={smallest:F2}; largest_part_bin: points_per_px={largestPart:F2} count={count} tile_level={level}; tiles_read={tiles}; marker_area_px={markerArea:F2}; max_bin_x_marker_area={largest * markerArea:F1}"
+            )
+        );
+    }
+
     private static void ResetProbe()
     {
         HyperPlot.Rendering.SplitProbe.Groups = 0;
@@ -492,7 +544,20 @@ internal static partial class PointsScene
     }
 
     // The machine's idle, kernel, and user times, the wall clock, and this process's kernel plus user time, in 100 ns.
-    private static long[] MachineTimes()
+    // Spike R3b2: the line of the cores the other processes used between two readings of MachineTimes.
+    internal static string MachineLine(long[] start, long[] end)
+    {
+        var wall = (end[3] - start[3]) / 1e7;
+        var busy = ((end[1] - start[1]) + (end[2] - start[2]) - (end[0] - start[0])) / 1e7;
+        var own = (end[4] - start[4]) / 1e7;
+        using var current = Process.GetCurrentProcess();
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"machine: other_cores={(busy - own) / wall:F2} own_cores={own / wall:F2} busy_cores={busy / wall:F2} over {wall:F1} s; logical processors {Environment.ProcessorCount}; priority {current.PriorityClass}"
+        );
+    }
+
+    internal static long[] MachineTimes()
     {
         _ = GetSystemTimes(out var idle, out var kernel, out var user);
         _ = GetProcessTimes(GetCurrentProcess(), out _, out _, out var processKernel, out var processUser);
@@ -509,12 +574,12 @@ internal static partial class PointsScene
     private static partial nint GetCurrentProcess();
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
-    private static partial uint TimeBeginPeriod(uint period);
+    internal static partial uint TimeBeginPeriod(uint period);
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
-    private static partial uint TimeEndPeriod(uint period);
+    internal static partial uint TimeEndPeriod(uint period);
 
-    private static double Percentile(double[] values, double share)
+    internal static double Percentile(double[] values, double share)
     {
         var sorted = values.Order().ToArray();
         return sorted.Length == 0 ? double.NaN : sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * share))];

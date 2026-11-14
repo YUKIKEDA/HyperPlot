@@ -34,6 +34,21 @@ internal static class SplitProbe
     /// <summary>HP_PROBE_NO_RAW_LIMIT=1: a point layer of more than the raw limit draws its points. Read once: a read a frame allocates 24 B.</summary>
     internal static readonly bool NoRawLimit = Environment.GetEnvironmentVariable("HP_PROBE_NO_RAW_LIMIT") == "1";
 
+    /// <summary>Gets or sets the Stopwatch ticks spent in the index path's Record (Issue #472, O4).</summary>
+    internal static long RecordTicks { get; set; }
+
+    /// <summary>Gets or sets the calls of the index path's Record.</summary>
+    internal static long RecordCalls { get; set; }
+
+    /// <summary>Gets or sets the resident cells the calls of Record wrote a record for (24 B each).</summary>
+    internal static long RecordedCells { get; set; }
+
+    /// <summary>Gets or sets the Stopwatch ticks spent reading pages from the copy on the frame's thread (Issue #472, O3).</summary>
+    internal static long PageReadTicks { get; set; }
+
+    /// <summary>Gets or sets the pages read from the copy.</summary>
+    internal static long PagesRead { get; set; }
+
     /// <summary>Gets or sets the points the calls drew.</summary>
     internal static long DrawnPoints { get; set; }
 

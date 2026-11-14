@@ -1,4 +1,4 @@
-using System.IO.MemoryMappedFiles;
+﻿using System.IO.MemoryMappedFiles;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 
@@ -140,6 +140,46 @@ internal sealed unsafe partial class SpatialCopy : IDisposable
             throw;
         }
     }
+
+    /// <summary>
+    /// Spike R3b2 (Issue #472, O3): writes the view's dirty pages to the file and takes the process's pages out of its
+    /// working set, so that the copy's pages are on the standby list, where memory that another allocation takes reuses
+    /// them first. Returns false for a copy in native memory.
+    /// </summary>
+    internal bool ProbeFlushAndTrim()
+    {
+        if (_stream is null)
+        {
+            return false;
+        }
+
+        _ = FlushViewOfFile(_regions[0], 0);
+        _stream.Flush(flushToDisk: true);
+        _ = SetProcessWorkingSetSize(GetCurrentProcess(), -1, -1);
+        return true;
+    }
+
+    /// <summary>Spike R3b2 (Issue #472, O3): reads one byte of each 4 KiB page of the copy in order; returns their sum.</summary>
+    internal long ProbeTouch()
+    {
+        var first = (byte*)_regions[0];
+        long sum = 0;
+        for (long at = 0; at < ByteCount; at += 4096)
+        {
+            sum += first[at];
+        }
+
+        return sum;
+    }
+
+    [LibraryImport("kernel32.dll")]
+    private static partial int FlushViewOfFile(nint address, nuint bytes);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial int SetProcessWorkingSetSize(nint process, nint minimum, nint maximum);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial nint GetCurrentProcess();
 
     /// <summary>Gets the number of points the copy has room for: the number of rows the index reads.</summary>
     public long Capacity { get; }

@@ -50,6 +50,9 @@ internal sealed unsafe class DensityTiles : IDisposable
     /// <summary>Gets the number of tiles.</summary>
     public int TileCount => _entries.Length;
 
+    /// <summary>Gets the directory. Spike R3b2 (Issue #472, O1).</summary>
+    internal ReadOnlySpan<Entry> ProbeEntries => _entries;
+
     /// <summary>Gets the bytes of the tiles and of their directory.</summary>
     public long ByteCount { get; }
 

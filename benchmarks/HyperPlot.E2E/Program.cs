@@ -26,6 +26,12 @@ if (args.Length > 0 && args[0] == "points")
     return HyperPlot.E2E.PointsScene.Run(args.AsSpan(1));
 }
 
+// Spike R3b2 (Issue #472, O3 and O4): points-file <prefix> <o3|o4> [diameter], over the files of generate-points.
+if (args.Length > 0 && args[0] == "points-file")
+{
+    return HyperPlot.E2E.PointsFileScene.Run(args.AsSpan(1));
+}
+
 if (args.Length > 0 && args[0] == "annotations")
 {
     using var own = Process.GetCurrentProcess();

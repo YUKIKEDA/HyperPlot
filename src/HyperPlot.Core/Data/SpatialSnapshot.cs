@@ -416,6 +416,66 @@ internal abstract unsafe class SpatialSnapshot
     /// <param name="tiles">The tiles.</param>
     internal void AttachTiles(DensityTiles tiles) => Volatile.Write(ref _tiles, tiles);
 
+    /// <summary>Gets the copy. Spike R3b2 (Issue #472, O3): the scene flushes it and pushes it out of the page cache.</summary>
+    internal SpatialCopy? ProbeCopy => _copy;
+
+    /// <summary>
+    /// Spike R3b2 (Issue #472, O1): the largest bin of the density tiles in a view, normalized by the bin's area in pixels.
+    /// Only the tiles whose bins cover a pixel or more count (smaller bins are finer than the screen and would read the
+    /// count of a few points as a high density); within such a tile, only the bins that meet the view.
+    /// </summary>
+    /// <param name="x0">The view's least x, in data units.</param>
+    /// <param name="x1">The view's greatest x.</param>
+    /// <param name="y0">The view's least y.</param>
+    /// <param name="y1">The view's greatest y.</param>
+    /// <param name="pixelsPerX">The pixels of one data unit along x.</param>
+    /// <param name="pixelsPerY">The pixels of one data unit along y.</param>
+    /// <returns>The points per pixel of the densest bin (NaN without tiles), its count, its tile's level, and the tiles read.</returns>
+    internal (double PerPixel, ulong Count, int Level, int Tiles) ProbeMaxBin(double x0, double x1, double y0, double y1, double pixelsPerX, double pixelsPerY)
+    {
+        if (Tiles is not { } tiles)
+        {
+            return (double.NaN, 0, -1, 0);
+        }
+
+        var (best, count, level, read) = (0.0, 0UL, -1, 0);
+        var (originX, originY) = ((double)_xAxis.Origin, (double)_yAxis.Origin);
+        foreach (ref readonly var entry in tiles.ProbeEntries)
+        {
+            var (binX, binY) = (_xAxis.ExtentAt(entry.Level + DensityTiles.BinLevels), _yAxis.ExtentAt(entry.Level + DensityTiles.BinLevels));
+            var area = binX * pixelsPerX * binY * pixelsPerY;
+            if (area < 1)
+            {
+                continue;
+            }
+
+            var shift = DeepestLevel - entry.Level;
+            var left = originX + _xAxis.DifferenceOf((ulong)SpatialCode.Axis2(entry.Code, 0) << shift);
+            var bottom = originY + _yAxis.DifferenceOf((ulong)SpatialCode.Axis2(entry.Code, 1) << shift);
+            var (fromX, toX) = (Math.Max(0, (int)Math.Floor((x0 - left) / binX)), Math.Min(DensityTiles.Side - 1, (int)Math.Floor((x1 - left) / binX)));
+            var (fromY, toY) = (Math.Max(0, (int)Math.Floor((y0 - bottom) / binY)), Math.Min(DensityTiles.Side - 1, (int)Math.Floor((y1 - bottom) / binY)));
+            if (fromX > toX || fromY > toY || !tiles.TryGetTile(entry.Code, entry.Level, out var tile))
+            {
+                continue;
+            }
+
+            read++;
+            for (var by = fromY; by <= toY; by++)
+            {
+                for (var bx = fromX; bx <= toX; bx++)
+                {
+                    var n = tile[bx, by];
+                    if (n / area > best)
+                    {
+                        (best, count, level) = (n / area, n, entry.Level);
+                    }
+                }
+            }
+        }
+
+        return (best, count, level, read);
+    }
+
     /// <summary>Makes the codes of points of the copy again from their stored values (design §3.4 "ビンの値").</summary>
     /// <param name="first">The position of the first point: the points to read are in the copy.</param>
     /// <param name="codes">Where the codes go: one for each point to read.</param>

@@ -307,6 +307,10 @@ internal abstract class GatherChannel : IDisposable
 internal sealed class SplitPlan : LayerPlan, ISourceRows
 {
     private readonly List<Part> _parts = [];
+
+    /// <summary>Gets the parts' plans. Spike R3b2 (Issue #472, O1).</summary>
+    internal IEnumerable<LayerPlan> ProbeParts => _parts.Select(p => p.Plan);
+
     private readonly GatherChannel[] _gathers = [];
     private readonly Column[] _sources = [];
     private readonly long[] _gatheredVersions = [];
