@@ -27,6 +27,8 @@ A fix that a review proposes is checked against the case the finding describes b
 
 Read the pull request's comments again just before posting a reply to a review: a re-review can land while the reply waits for the checks, and a reply posted without reading it answers a review that is no longer the latest.
 
+A point that the summary of the answers to a review leaves as "the owner's decision is needed" is answered on the pull request in the turn the owner decides it; a record on an Issue alone leaves the pull request looking unanswered. The summary is posted after the gate, and the NativeAOT publish when the change needs it, have run on the head that holds the fixes. Otherwise the summary says that they have not run and when they will, and their result is posted on the pull request when they end. PR #549's summary said that the owner's decision was needed; the answers were recorded on Issues only, and neither the gate nor the NativeAOT publish had run on the fix head. The owner had to ask, because the pull request looked as if it still waited for an answer.
+
 ```text
 # BAD
 The chunk-boundary check is missing. A later pull request sits on this head, so merge.
