@@ -103,6 +103,8 @@ public sealed class TextEngine
             return entry.Shaped;
         }
 
+        // Spike R3b2: the bytes of each step of a miss, counted on this thread (Issue #472, the 568 B of frame 150).
+        var b0 = GC.GetAllocatedBytesForCurrentThread();
         if (_cache.Count == CacheCapacity)
         {
             // The entry of the text used longest ago carries the new one.
@@ -115,11 +117,24 @@ public sealed class TextEngine
             entry = new CacheEntry();
         }
 
+        var b1 = GC.GetAllocatedBytesForCurrentThread();
+
         // Out of the cache until the backend has shaped it: an exception leaves no entry with the old text's glyphs.
         entry.Set(text, style);
+        var b2 = GC.GetAllocatedBytesForCurrentThread();
         Backend.Shape(text, style.FontFamily, style.Size, style.Weight, style.Locale, entry.Shaped);
+        var b3 = GC.GetAllocatedBytesForCurrentThread();
         _ = _cache.Add(entry);
+        var b4 = GC.GetAllocatedBytesForCurrentThread();
         _order.AddFirst(entry.Node);
+        var b5 = GC.GetAllocatedBytesForCurrentThread();
+        SplitProbe.ShapeMisses++;
+        SplitProbe.ShapeEntryBytes += b1 - b0;
+        SplitProbe.ShapeSetBytes += b2 - b1;
+        SplitProbe.ShapeBackendBytes += b3 - b2;
+        SplitProbe.ShapeAddBytes += b4 - b3;
+        SplitProbe.ShapeOrderBytes += b5 - b4;
+        SplitProbe.ShapeCacheCount = _cache.Count;
         return entry.Shaped;
     }
 

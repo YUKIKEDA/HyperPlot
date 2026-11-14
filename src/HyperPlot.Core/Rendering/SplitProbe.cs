@@ -58,6 +58,27 @@ internal static class SplitProbe
     /// <summary>Gets or sets the changes of the color between two consecutive calls.</summary>
     internal static long ColorChanges { get; set; }
 
+    /// <summary>Gets or sets the texts the shaping cache lacked (each a miss of <see cref="TextEngine"/>'s Shape).</summary>
+    internal static long ShapeMisses { get; set; }
+
+    /// <summary>Gets or sets the bytes of a miss's entry (a new one, or the oldest taken out).</summary>
+    internal static long ShapeEntryBytes { get; set; }
+
+    /// <summary>Gets or sets the bytes of a miss's copy of the characters and style into the entry.</summary>
+    internal static long ShapeSetBytes { get; set; }
+
+    /// <summary>Gets or sets the bytes of a miss's call to the text backend.</summary>
+    internal static long ShapeBackendBytes { get; set; }
+
+    /// <summary>Gets or sets the bytes of a miss's add to the cache's set.</summary>
+    internal static long ShapeAddBytes { get; set; }
+
+    /// <summary>Gets or sets the bytes of a miss's add to the cache's order.</summary>
+    internal static long ShapeOrderBytes { get; set; }
+
+    /// <summary>Gets or sets the cache's count after the last miss.</summary>
+    internal static long ShapeCacheCount { get; set; }
+
     /// <summary>Gets the switches as one line.</summary>
     internal static string Describe() =>
         string.Create(

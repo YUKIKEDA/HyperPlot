@@ -105,6 +105,15 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     /// <summary>Gets the GPU time of the newest timed frame's point pass. Spike R3b2.</summary>
     public GpuFrameTime? LastPassTime => _timer.LastPass;
 
+    /// <summary>Notes which pending query sets read as ready now (<see cref="TimerProbe.ReadyQpc"/>). Spike R3b2.</summary>
+    public void ProbeTimerReady()
+    {
+        if (_state == State.Ready)
+        {
+            _timer.ProbeReady();
+        }
+    }
+
     /// <inheritdoc />
     public long DeviceGeneration { get; private set; }
 
@@ -220,6 +229,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
         own.ThrowIfDisposed();
         using var frame = BeginFrame();
+        _timer.DrainSource = own.Texture;
 
         // Shaping and the atlas come first, so that a text that fails draws nothing of the list (design §5.6).
         var width = own.Description.Width;

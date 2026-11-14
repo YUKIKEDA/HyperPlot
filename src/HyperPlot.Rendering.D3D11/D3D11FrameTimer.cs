@@ -15,6 +15,11 @@ internal sealed unsafe class D3D11FrameTimer
     private readonly QuerySet[] _sets = new QuerySet[Sets];
     private int _next;
     private int _current = -1;
+    private long _probeFrame = -1;
+    private ID3D11Texture2D* _drain;
+
+    /// <summary>Gets or sets the target of the frame's last draw, for <see cref="TimerProbe.Drain"/>. Spike R3b2.</summary>
+    internal ID3D11Texture2D* DrainSource { get; set; }
 
     internal D3D11FrameTimer(D3D11Backend backend) => _backend = backend;
 
@@ -99,12 +104,22 @@ internal sealed unsafe class D3D11FrameTimer
             set.Pending = false;
         }
 
+        if (_drain != null)
+        {
+            _ = _drain->Release();
+            _drain = null;
+        }
+
+        DrainSource = null;
         _current = -1;
     }
 
     /// <summary>Starts timing an outermost frame, if a set is free; a frame that finds every set pending is not timed.</summary>
     internal void Begin(long frame)
     {
+        // Spike R3b2: the probe's record of this frame.
+        TimerProbe.Clear(frame);
+        _probeFrame = frame;
         ref var set = ref _sets[_next];
         if (set.Pending || set.Disjoint == null)
         {
@@ -112,6 +127,7 @@ internal sealed unsafe class D3D11FrameTimer
             return;
         }
 
+        TimerProbe.Timed[frame % TimerProbe.Capacity] = 1;
         _current = _next;
         _next = (_next + 1) % Sets;
         set.Frame = frame;
@@ -131,6 +147,42 @@ internal sealed unsafe class D3D11FrameTimer
         if (_current >= 0)
         {
             ref var set = ref _sets[_current];
+
+            // Spike R3b2 (Issue #472): HP_PROBE_DRAIN=1 copies one pixel of the frame's target right before the end
+            // timestamp, so that the timestamp follows the frame's pixel writes.
+            if (TimerProbe.Drain && DrainSource != null)
+            {
+                if (_drain == null)
+                {
+                    var description = new D3D11_TEXTURE2D_DESC
+                    {
+                        Width = 1,
+                        Height = 1,
+                        MipLevels = 1,
+                        ArraySize = 1,
+                        Format = DXGI_FORMAT.DXGI_FORMAT_B8G8R8A8_UNORM,
+                        SampleDesc = new DXGI_SAMPLE_DESC(1, 0),
+                        Usage = D3D11_USAGE.D3D11_USAGE_DEFAULT,
+                    };
+                    ID3D11Texture2D* drain;
+                    _drain = _backend.Device->CreateTexture2D(&description, null, &drain).SUCCEEDED ? drain : null;
+                }
+
+                if (_drain != null)
+                {
+                    var box = new D3D11_BOX
+                    {
+                        left = 0,
+                        top = 0,
+                        front = 0,
+                        right = 1,
+                        bottom = 1,
+                        back = 1,
+                    };
+                    context->CopySubresourceRegion((ID3D11Resource*)_drain, 0, 0, 0, 0, (ID3D11Resource*)DrainSource, 0, &box);
+                }
+            }
+
             context->End((ID3D11Asynchronous*)set.End);
             context->End((ID3D11Asynchronous*)set.Disjoint);
             set.Pending = true;
@@ -138,7 +190,51 @@ internal sealed unsafe class D3D11FrameTimer
         }
 
         context->Flush();
+        if (_probeFrame >= 0)
+        {
+            TimerProbe.SubmitQpc[_probeFrame % TimerProbe.Capacity] = TimeProvider.System.GetTimestamp();
+        }
+
         Poll();
+
+        // Spike R3b2: the sets still pending after the closing's read.
+        var pending = 0;
+        for (var i = 0; i < Sets; i++)
+        {
+            pending += _sets[i].Pending ? 1 : 0;
+        }
+
+        if (_probeFrame >= 0)
+        {
+            TimerProbe.PendingAfterEnd[_probeFrame % TimerProbe.Capacity] = (byte)pending;
+            TimerProbe.Closing = _probeFrame;
+        }
+    }
+
+    /// <summary>
+    /// Spike R3b2: notes the CPU time at which each pending set's end timestamp and disjoint query first read as ready,
+    /// without reading or freeing the set. Called by a scene between frames.
+    /// </summary>
+    internal void ProbeReady()
+    {
+        var context = _backend.Context;
+
+        // HP_PROBE_READY_FLUSH=1: the probe's reads may flush (GetData with no flag), which sends the commands not yet sent.
+        var flags = TimerProbe.ReadyFlush ? 0u : (uint)D3D11_ASYNC_GETDATA_FLAG.D3D11_ASYNC_GETDATA_DONOTFLUSH;
+        for (var i = 0; i < Sets; i++)
+        {
+            ref var set = ref _sets[i];
+            var at = (int)(set.Frame % TimerProbe.Capacity);
+            if (
+                set.Pending
+                && TimerProbe.ReadyQpc[at] == 0
+                && context->GetData((ID3D11Asynchronous*)set.End, null, 0, flags) == S.S_OK
+                && context->GetData((ID3D11Asynchronous*)set.Disjoint, null, 0, flags) == S.S_OK
+            )
+            {
+                TimerProbe.ReadyQpc[at] = TimeProvider.System.GetTimestamp();
+            }
+        }
     }
 
     private static ID3D11Query* MakeQuery(ID3D11Device* device, D3D11_QUERY kind)
@@ -186,10 +282,26 @@ internal sealed unsafe class D3D11FrameTimer
             )
             {
                 // Not ready yet: the newer sets wait for it, so that times arrive in the order of the frames.
+                if (_probeFrame >= 0)
+                {
+                    TimerProbe.StoppedAt[_probeFrame % TimerProbe.Capacity] = set.Frame;
+                }
+
                 return;
             }
 
             set.Pending = false;
+
+            // Spike R3b2: which closing read this set, and how many the closing read.
+            if (_probeFrame >= 0)
+            {
+                TimerProbe.ReadAtEnd[_probeFrame % TimerProbe.Capacity]++;
+                TimerProbe.ReadBy[set.Frame % TimerProbe.Capacity] = _probeFrame;
+                TimerProbe.GpuStart[set.Frame % TimerProbe.Capacity] = start;
+                TimerProbe.GpuEnd[set.Frame % TimerProbe.Capacity] = end;
+                TimerProbe.Frequency = info.Frequency;
+            }
+
             if (!info.Disjoint && !TestDisjoint && info.Frequency > 0 && end >= start)
             {
                 // The ticks of the GPU clock over its frequency in Hz (design §5.3).

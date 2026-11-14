@@ -24,6 +24,9 @@ internal static partial class PointsScene
             ? z
             : 1;
 
+    // Spike R3b2 (Issue #472): HP_PROBE_READY_POLL=1, see the frame loop.
+    private static readonly bool ReadyPoll = Environment.GetEnvironmentVariable("HP_PROBE_READY_POLL") == "1";
+
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
     /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), and the layer's shape.</param>
     public static int Run(ReadOnlySpan<string> args)
@@ -180,11 +183,25 @@ internal static partial class PointsScene
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var lookup = seen.GetAlternateLookup<ReadOnlySpan<char>>();
         long[] machineAtStart = [];
+
+        // Spike R3b2 (Issue #472): per frame, the shaping cache's misses and the bytes of each step of them, the engine's
+        // frame number, and the engine frame whose GPU time the scene took (-1: none).
+        var shapeMisses = new long[total];
+        var shapeBytes = new long[total, 5];
+        var engineFrame = new long[total];
+        var took = new long[total];
         var gpu = new List<double>(frames);
         var pass = new List<double>(frames);
         long lastTimed = -1;
         long lastPass = -1;
-        var period = TimeSpan.FromMilliseconds(1000.0 / 60);
+
+        // Spike R3b2 (Issue #472): HP_PROBE_PERIOD_MS sets the frame period (16.7 ms by default).
+        var period = TimeSpan.FromMilliseconds(
+            double.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_PERIOD_MS"), NumberStyles.Float, CultureInfo.InvariantCulture, out var ms)
+            && ms > 0
+                ? ms
+                : 1000.0 / 60
+        );
 
         // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
         _ = TimeBeginPeriod(1);
@@ -196,6 +213,14 @@ internal static partial class PointsScene
                 machineAtStart = MachineTimes();
             }
 
+            var (m0, e0, s0, k0, a0, o0) = (
+                HyperPlot.Rendering.SplitProbe.ShapeMisses,
+                HyperPlot.Rendering.SplitProbe.ShapeEntryBytes,
+                HyperPlot.Rendering.SplitProbe.ShapeSetBytes,
+                HyperPlot.Rendering.SplitProbe.ShapeBackendBytes,
+                HyperPlot.Rendering.SplitProbe.ShapeAddBytes,
+                HyperPlot.Rendering.SplitProbe.ShapeOrderBytes
+            );
             var methods = System.Runtime.JitInfo.GetCompiledMethodCount(currentThread: true);
             var bytes = GC.GetAllocatedBytesForCurrentThread();
             var start = Stopwatch.GetTimestamp();
@@ -204,6 +229,14 @@ internal static partial class PointsScene
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
             compiled[f] = System.Runtime.JitInfo.GetCompiledMethodCount(currentThread: true) - methods;
+            shapeMisses[f] = HyperPlot.Rendering.SplitProbe.ShapeMisses - m0;
+            shapeBytes[f, 0] = HyperPlot.Rendering.SplitProbe.ShapeEntryBytes - e0;
+            shapeBytes[f, 1] = HyperPlot.Rendering.SplitProbe.ShapeSetBytes - s0;
+            shapeBytes[f, 2] = HyperPlot.Rendering.SplitProbe.ShapeBackendBytes - k0;
+            shapeBytes[f, 3] = HyperPlot.Rendering.SplitProbe.ShapeAddBytes - a0;
+            shapeBytes[f, 4] = HyperPlot.Rendering.SplitProbe.ShapeOrderBytes - o0;
+            engineFrame[f] = TimerProbe.Closing;
+            took[f] = -1;
             foreach (ref readonly var text in engine.Plan!.List.Texts)
             {
                 if (!lookup.Contains(text.Chars.Span))
@@ -218,6 +251,7 @@ internal static partial class PointsScene
             if (f >= Warmup && backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
                 lastTimed = time.Frame;
+                took[f] = time.Frame;
                 gpu.Add(time.Duration.TotalMilliseconds);
             }
 
@@ -234,8 +268,19 @@ internal static partial class PointsScene
             }
 
             // A frame a period at the fastest: back to back, the GPU's clock rises and its time reads low (.cursor/rules/bench.mdc).
+            // Spike R3b2 (Issue #472): HP_PROBE_READY_POLL=1 sleeps in steps of 1 ms and notes when each pending query set
+            // reads as ready.
             var left = period - Stopwatch.GetElapsedTime(start);
-            if (left > TimeSpan.Zero)
+            if (ReadyPoll)
+            {
+                backend.ProbeTimerReady();
+                while ((left = period - Stopwatch.GetElapsedTime(start)) > TimeSpan.Zero)
+                {
+                    Thread.Sleep(1);
+                    backend.ProbeTimerReady();
+                }
+            }
+            else if (left > TimeSpan.Zero)
             {
                 Thread.Sleep(left);
             }
@@ -328,7 +373,7 @@ internal static partial class PointsScene
                 Console.WriteLine(
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"alloc_frame: frame={f} bytes={allocated[f]} jit_methods={compiled[f]} new_labels={newLabels[f]} [{texts}]"
+                        $"alloc_frame: frame={f} bytes={allocated[f]} jit_methods={compiled[f]} new_labels={newLabels[f]} [{texts}] shape_misses={shapeMisses[f]} shape_bytes: entry={shapeBytes[f, 0]} set={shapeBytes[f, 1]} backend={shapeBytes[f, 2]} cache_add={shapeBytes[f, 3]} order_add={shapeBytes[f, 4]} sum={shapeBytes[f, 0] + shapeBytes[f, 1] + shapeBytes[f, 2] + shapeBytes[f, 3] + shapeBytes[f, 4]} cache_count={HyperPlot.Rendering.SplitProbe.ShapeCacheCount}"
                     )
                 );
             }
@@ -340,6 +385,15 @@ internal static partial class PointsScene
                 $"labels: measured frames with a new label: {newAfterWarmup}; of them allocated: {Enumerable.Range(Warmup, frames).Count(f => newLabels[f] > 0 && allocated[f] > 0)}; allocated with no new label: {Enumerable.Range(Warmup, frames).Count(f => newLabels[f] == 0 && allocated[f] > 0)}; jit methods after warm-up: {compiled.Skip(Warmup).Sum()}"
             )
         );
+
+        // Spike R3b2 (Issue #472): the measured frames' misses of the shaping cache, and the timer's record per frame.
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"shape_misses after warm-up: {shapeMisses.Skip(Warmup).Sum()} in {shapeMisses.Skip(Warmup).Count(m => m > 0)} frames"
+            )
+        );
+        WriteTimerLog(Warmup, total, engineFrame, took, cpu);
 
         // Spike R3b2 (.cursor/rules/bench.mdc, PR #541): the cores the other processes used over the measured frames: the
         // machine's busy time (GetSystemTimes: kernel, which holds the idle time, plus user, less idle) less this process's.
@@ -360,6 +414,69 @@ internal static partial class PointsScene
             )
         );
         return 0;
+    }
+
+    // Spike R3b2 (Issue #472): HP_PROBE_TIMER_LOG=<file> writes a line per measured frame: what the timer did in the frame,
+    // and whether the scene took a time; then a summary of the frames whose time no read gave the scene.
+    private static void WriteTimerLog(int warmup, int total, long[] engineFrame, long[] took, double[] cpu)
+    {
+        var path = Environment.GetEnvironmentVariable("HP_PROBE_TIMER_LOG");
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        static int At(long frame) => (int)(frame % TimerProbe.Capacity);
+        static double Since(long later, long earlier) => later > 0 && earlier > 0 ? (later - earlier) * 1e3 / Stopwatch.Frequency : double.NaN;
+        var frequency = (double)TimerProbe.Frequency;
+        var lines = new List<string>
+        {
+            "f engine timed read_at_end pending_after stopped_at read_by took gpu_ms gpu_start_gap_ms cpu_ms ready_after_submit_ms read_after_submit_ms gpu_start_ticks gpu_end_ticks submit_qpc ready_qpc",
+        };
+        var (ringFull, readButDropped, unread, takenCount) = (0, 0, 0, 0);
+        var readCounts = new int[5];
+        ulong previousStart = 0;
+        for (var f = warmup; f < total; f++)
+        {
+            var e = engineFrame[f];
+            var i = At(e);
+            var timed = TimerProbe.Timed[i] == 1;
+            var start = TimerProbe.GpuStart[i];
+            var gpuMs = start > 0 ? (TimerProbe.GpuEnd[i] - start) / frequency * 1e3 : double.NaN;
+            var gap = start > 0 && previousStart > 0 ? (start - previousStart) / frequency * 1e3 : double.NaN;
+            previousStart = start > 0 ? start : previousStart;
+            readCounts[Math.Min(4, (int)TimerProbe.ReadAtEnd[i])]++;
+            var taken = Array.IndexOf(took, e, warmup) >= 0;
+            takenCount += taken ? 1 : 0;
+            if (!timed)
+            {
+                ringFull++;
+            }
+            else if (TimerProbe.ReadBy[i] < 0)
+            {
+                unread++;
+            }
+            else if (!taken)
+            {
+                readButDropped++;
+            }
+
+            lines.Add(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{f} {e} {(timed ? 1 : 0)} {TimerProbe.ReadAtEnd[i]} {TimerProbe.PendingAfterEnd[i]} {TimerProbe.StoppedAt[i]} {TimerProbe.ReadBy[i]} {(taken ? 1 : 0)} {gpuMs:F3} {gap:F3} {cpu[f]:F3} {Since(TimerProbe.ReadyQpc[i], TimerProbe.SubmitQpc[i]):F3} {(TimerProbe.ReadBy[i] >= 0 ? Since(TimerProbe.SubmitQpc[At(TimerProbe.ReadBy[i])], TimerProbe.SubmitQpc[i]) : double.NaN):F3} {start} {TimerProbe.GpuEnd[i]} {TimerProbe.SubmitQpc[i]} {TimerProbe.ReadyQpc[i]}"
+                )
+            );
+        }
+
+        lines.Add(string.Create(CultureInfo.InvariantCulture, $"# gpu_frequency={TimerProbe.Frequency} qpc_frequency={Stopwatch.Frequency}"));
+        File.WriteAllLines(path, lines);
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"timer: frames={total - warmup} taken={takenCount} ring_full={ringFull} read_but_not_taken={readButDropped} timed_unread_at_end={unread}; closings that read 0/1/2/3/4 sets: {readCounts[0]}/{readCounts[1]}/{readCounts[2]}/{readCounts[3]}/{readCounts[4]}"
+            )
+        );
     }
 
     private static void ResetProbe()
