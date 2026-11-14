@@ -52,9 +52,10 @@ internal static partial class Scene
 
         var tree = BuildTree(count, args[1], options);
         var uploaded = Stopwatch.StartNew();
-        using var gpu = new Gpu(options.Warp, Width, Height, GpuPoints(tree, tree.Order, options.Workers));
-        gpu.SetNodes(tree.Nodes);
+        using var gpu = new Gpu(options.Warp, Width, Height, []);
+        gpu.SetNodes(tree.Nodes, GpuPoints(tree, tree.Order, options.Workers));
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"gpu_upload_ms={uploaded.Elapsed.TotalMilliseconds:F0}"));
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"gpu_pages={gpu.Pages}"));
         var priority = false;
         int[]? priorityRows = null;
         foreach (var variant in variants)
@@ -62,8 +63,7 @@ internal static partial class Scene
             if (variant.Priority != priority)
             {
                 priorityRows ??= PriorityRows(tree, options);
-                gpu.ReplacePoints(GpuPoints(tree, variant.Priority ? priorityRows : tree.Order, options.Workers));
-                gpu.SetNodes(tree.Nodes);
+                gpu.SetNodes(tree.Nodes, GpuPoints(tree, variant.Priority ? priorityRows : tree.Order, options.Workers));
                 priority = variant.Priority;
             }
 

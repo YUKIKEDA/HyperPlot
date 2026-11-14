@@ -44,6 +44,14 @@ internal sealed unsafe class Gpu : IDisposable
     private const int Sets = 8;
     private const uint Empty = 0xFFFFFFFF;
 
+    /// <summary>
+    /// The most points of a page of the octree scene: one buffer for a run of whole nodes. The 1e7 runs made one buffer of
+    /// 1e7 points and a view a node over it; at 1e8 a node's view into one buffer of 1e8 points (1.6 GB) failed with
+    /// E_INVALIDARG, while the view of the whole buffer did not. A page keeps each buffer and each view's first element
+    /// within what the 1e7 runs made. A node of more points than this gets a page of its own.
+    /// </summary>
+    private const int PagePoints = 10_000_000;
+
     private readonly int _width;
     private readonly int _height;
     private readonly int _count;
@@ -54,7 +62,9 @@ internal sealed unsafe class Gpu : IDisposable
     private readonly bool[] _pending = new bool[Sets];
     private int _nextSet;
 
-    // The octree scene's views: one over each node's points of the buffer, by node (SPIKE, hypotheses 2 to 4).
+    // The octree scene's pages (buffers of whole nodes) and views: one over each node's points of its page, by node (SPIKE,
+    // hypotheses 2 to 4).
+    private readonly List<nint> _pages = [];
     private nint[] _nodeViews = [];
 
     private ID3D11Device* _device;
@@ -84,6 +94,10 @@ internal sealed unsafe class Gpu : IDisposable
     private ID3D11DepthStencilState* _depthLess;
     private ID3D11DepthStencilState* _depthAlways;
 
+    /// <summary>
+    /// Makes the device, the targets, the shaders, and the timer, and the one buffer of <paramref name="points"/> that
+    /// <see cref="Draw"/> reads. The octree scene passes no points: its points go to <see cref="SetNodes"/>.
+    /// </summary>
     public Gpu(bool warp, int width, int height, ReadOnlySpan<Point3> points)
     {
         (_width, _height, _count) = (width, height, points.Length);
@@ -106,6 +120,9 @@ internal sealed unsafe class Gpu : IDisposable
 
     public bool IsWarp { get; }
 
+    /// <summary>The octree scene's pages: the buffers <see cref="SetNodes"/> made.</summary>
+    public int Pages => _pages.Count;
+
     /// <summary>The number of thread groups along x of B's dispatch, and along y.</summary>
     public (uint X, uint Y) Groups
     {
@@ -123,6 +140,11 @@ internal sealed unsafe class Gpu : IDisposable
     /// </summary>
     public void Draw(Method method, in FrameConstants constants, long frame)
     {
+        if (_points == null)
+        {
+            throw new InvalidOperationException("Draw reads the one buffer of points; this device was made without points.");
+        }
+
         var set = BeginTimer(frame);
         var context = _context;
         D3D11_MAPPED_SUBRESOURCE mapped;
@@ -220,41 +242,59 @@ internal sealed unsafe class Gpu : IDisposable
     }
 
     /// <summary>
-    /// Makes a view over each node's points of the buffer, so that A's marker shader reads a node's points from index 0:
-    /// SV_InstanceID does not count the start instance of a draw. Replaces the views made before.
+    /// Puts the octree's points on the GPU in pages, each a buffer of a run of whole nodes of at most
+    /// <see cref="PagePoints"/> points, and makes a view over each node's points of its page, so that A's marker shader reads
+    /// a node's points from index 0: SV_InstanceID does not count the start instance of a draw. Replaces the pages and the
+    /// views made before. The nodes are in the order of their points, which follow each other from the first point.
     /// </summary>
-    public void SetNodes(ReadOnlySpan<OctreeNode> nodes)
+    public void SetNodes(ReadOnlySpan<OctreeNode> nodes, ReadOnlySpan<Point3> points)
     {
-        ReleaseNodeViews();
+        ReleaseNodes();
         _nodeViews = new nint[nodes.Length];
-        for (var i = 0; i < nodes.Length; i++)
+        long next = 0;
+        var start = 0;
+        while (start < nodes.Length)
         {
-            var description = new D3D11_SHADER_RESOURCE_VIEW_DESC
+            var first = nodes[start].First;
+            var end = start;
+            while (end < nodes.Length && (end == start || nodes[end].First + nodes[end].Count - first <= PagePoints))
             {
-                Format = DXGI_FORMAT.DXGI_FORMAT_UNKNOWN,
-                ViewDimension = D3D_SRV_DIMENSION.D3D11_SRV_DIMENSION_BUFFER,
-            };
-            description.Buffer.FirstElement = (uint)nodes[i].First;
-            description.Buffer.NumElements = (uint)nodes[i].Count;
-            ID3D11ShaderResourceView* view;
-            Check(_device->CreateShaderResourceView((ID3D11Resource*)_points, &description, &view), "CreateShaderResourceView");
-            _nodeViews[i] = (nint)view;
-        }
-    }
+                if (nodes[end].First != next)
+                {
+                    throw new ArgumentException($"Node {end} starts at point {nodes[end].First}, not at {next} after the node before.");
+                }
 
-    /// <summary>Replaces the points with as many others (the same points in another order); the node views go with them.</summary>
-    public void ReplacePoints(ReadOnlySpan<Point3> points)
-    {
-        if (points.Length != _count)
+                next += nodes[end].Count;
+                end++;
+            }
+
+            var length = (int)(next - first);
+            var page = MakeStructuredBuffer(points.Slice((int)first, length));
+            _pages.Add((nint)page);
+            for (var i = start; i < end; i++)
+            {
+                var description = new D3D11_SHADER_RESOURCE_VIEW_DESC
+                {
+                    Format = DXGI_FORMAT.DXGI_FORMAT_UNKNOWN,
+                    ViewDimension = D3D_SRV_DIMENSION.D3D11_SRV_DIMENSION_BUFFER,
+                };
+                description.Buffer.FirstElement = (uint)(nodes[i].First - first);
+                description.Buffer.NumElements = (uint)nodes[i].Count;
+                ID3D11ShaderResourceView* view;
+                Check(
+                    _device->CreateShaderResourceView((ID3D11Resource*)page, &description, &view),
+                    $"CreateShaderResourceView of node {i} (points {nodes[i].First} to {nodes[i].First + nodes[i].Count}, page {_pages.Count - 1} of {length} points from {first})"
+                );
+                _nodeViews[i] = (nint)view;
+            }
+
+            start = end;
+        }
+
+        if (next != points.Length)
         {
-            throw new ArgumentException("The points that replace the buffer's are as many as before.");
+            throw new ArgumentException($"The nodes hold {next} points, the buffer {points.Length}.");
         }
-
-        ReleaseNodeViews();
-        _nodeViews = [];
-        Release(ref _pointView);
-        Release(ref _points);
-        MakePointBuffer(points);
     }
 
     /// <summary>
@@ -404,7 +444,7 @@ internal sealed unsafe class Gpu : IDisposable
         Release(ref _nearestView);
         Release(ref _nearestAccess);
         Release(ref _nearest);
-        ReleaseNodeViews();
+        ReleaseNodes();
         Release(ref _depthKeysView);
         Release(ref _depthKeysAccess);
         Release(ref _depthKeys);
@@ -549,21 +589,35 @@ internal sealed unsafe class Gpu : IDisposable
         view = madeView;
     }
 
-    private void ReleaseNodeViews()
+    private void ReleaseNodes()
     {
         for (var i = 0; i < _nodeViews.Length; i++)
         {
             ReleaseNint(ref _nodeViews[i]);
         }
+
+        _nodeViews = [];
+        for (var i = 0; i < _pages.Count; i++)
+        {
+            var page = _pages[i];
+            ReleaseNint(ref page);
+        }
+
+        _pages.Clear();
     }
 
     private void MakePoints(ReadOnlySpan<Point3> points)
     {
-        MakePointBuffer(points);
+        if (!points.IsEmpty)
+        {
+            MakePointBuffer(points);
+        }
+
         MakeConstants();
     }
 
-    private void MakePointBuffer(ReadOnlySpan<Point3> points)
+    // An immutable structured buffer of the points, which a shader reads.
+    private ID3D11Buffer* MakeStructuredBuffer(ReadOnlySpan<Point3> points)
     {
         var description = new D3D11_BUFFER_DESC
         {
@@ -583,7 +637,12 @@ internal sealed unsafe class Gpu : IDisposable
             Check(_device->CreateBuffer(&description, &initial, &buffer), "CreateBuffer");
         }
 
-        _points = buffer;
+        return buffer;
+    }
+
+    private void MakePointBuffer(ReadOnlySpan<Point3> points)
+    {
+        _points = MakeStructuredBuffer(points);
         var view = new D3D11_SHADER_RESOURCE_VIEW_DESC
         {
             Format = DXGI_FORMAT.DXGI_FORMAT_UNKNOWN,

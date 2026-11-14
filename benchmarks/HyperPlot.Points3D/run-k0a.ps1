@@ -1,7 +1,8 @@
 # SPIKE (row K0a, Issue #477): the measurements of the 3D points prototype.
 # Usage (PowerShell 7):
 #   ./benchmarks/HyperPlot.Points3D/run-k0a.ps1 -Out <folder outside the repository> [-Rounds 3] [-OctreeOnly]
-#     [-Sizes 1e7,1e8] [-Grids 128,64,32] [-TimeoutMinutes 20]
+#     [-OrbitOnly] [-Sizes 1e7,1e8] [-Grids 128,64,32] [-TimeoutMinutes 20]
+# -OrbitOnly runs step 1c alone (no 1a, 1b, or 2), for example the 1e8 orbits again with -Sizes 1e8.
 # Publishes the NativeAOT Release build (adds the Visual Studio Installer folder to PATH for vswhere when missing), then,
 # with the GPU's clock (clocks.csv) and the machine's state (machine.log) logged beside them:
 #   1. The octree (hypotheses 2 to 4, drawing method A by the owner's decision of 2026-11-14), the figures a decision waits
@@ -22,6 +23,7 @@ param(
     [Parameter(Mandatory = $true)] [string] $Out,
     [int] $Rounds = 3,
     [switch] $OctreeOnly,
+    [switch] $OrbitOnly,
     [string[]] $Sizes = @('1e7', '1e8'),
     [int[]] $Grids = @(128, 64, 32),
     [int] $TimeoutMinutes = 20
@@ -102,7 +104,7 @@ $smi = Start-Process nvidia-smi -ArgumentList "--query-gpu=timestamp,clocks.gr,p
 $watch = Start-Process pwsh -ArgumentList $watchArguments -WindowStyle Hidden -PassThru
 try {
     # 1a. The build does not depend on the workers.
-    foreach ($dist in 'uniform', 'cluster') {
+    foreach ($dist in @('uniform', 'cluster') | Where-Object { -not $OrbitOnly }) {
         foreach ($grid in $Grids) {
             $hashes = @()
             foreach ($workers in 8, 1) {
@@ -129,7 +131,7 @@ try {
     }
 
     # 1b. The build, the nodes, the memory, and the hit tests.
-    for ($round = 1; $round -le $Rounds; $round++) {
+    for ($round = 1; $round -le $Rounds -and -not $OrbitOnly; $round++) {
         foreach ($size in $Sizes) {
             foreach ($dist in 'uniform', 'cluster') {
                 foreach ($grid in (Get-RoundOrder $Grids $round)) {
@@ -157,7 +159,7 @@ try {
     }
 
     # 2. The two drawing methods, as the Result of Issue #477 measured them.
-    if (-not $OctreeOnly) {
+    if (-not ($OctreeOnly -or $OrbitOnly)) {
         for ($round = 1; $round -le $Rounds; $round++) {
             foreach ($count in '1e7', '1e6') {
                 foreach ($dist in 'uniform', 'cluster') {
