@@ -186,7 +186,8 @@ public sealed class WheelZoomTool : IPlotTool
 
 /// <summary>
 /// Selects (design §6.4, row I3a, Issue #364): a drag makes a rectangle, an x range (on an x axis), or a lasso; a click adds
-/// the points the hit test finds within 8 DIPs. While a drag goes on, the tool draws its frame or its line over the plot.
+/// the points the hit test finds within 8 DIPs, or, over a density where it finds none, selects the range of the bin drawn
+/// under it as a rectangle (row R3c). While a drag goes on, the tool draws its frame or its line over the plot.
 /// </summary>
 public sealed class SelectionTool : IPlotTool
 {
@@ -360,21 +361,27 @@ public sealed class SelectionTool : IPlotTool
         Span<SeriesHit> hits = stackalloc SeriesHit[64];
         var found = Math.Min(context.HitTest(at, 8 * context.Scale, hits), hits.Length);
 
-        // A density's bin (a row of −1) is not a point to select (Issue #523 Decision 1); row R3c's selection (#525) makes it
-        // a rectangle of the bin's range (Issue #471 Decision 9). The bins come after the points, so the points are first.
+        // A density's bin (a row of −1) is no point to select: a click that hits no point selects the range of the bin drawn
+        // under it as a rectangle, a large bin of an ancestor's tile or a leaf's fill whole (design §6.4 "密度のクリック",
+        // Issue #471 Decisions 9 and 17). The bins come after the points, so the points are first.
         var rows = 0;
         while (rows < found && hits[rows].Row >= 0)
         {
             rows++;
         }
 
-        found = rows;
-        if (found == 0)
+        var panel = context.Hit.Panel;
+        if (rows == 0)
         {
+            if (found > 0 && context.BinRange(hits[0], out var x, out var y))
+            {
+                context.Select(Selection2D.Rectangle(panel, x, y));
+            }
+
             return ToolResult.Handled;
         }
 
-        var panel = context.Hit.Panel;
+        found = rows;
         var points = new List<SeriesHit>();
         if (context.Selection(panel.Plot) is { Kind: SelectionKind.Points } before && before.Panel == panel)
         {

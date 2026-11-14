@@ -1092,6 +1092,22 @@ internal abstract class LayerPlan
         return false;
     }
 
+    /// <summary>
+    /// Returns the range of the scale space of the density's bin a hit stands for (row R3c, Issue #471 Decisions 9 and 17):
+    /// what a click of the selection of points selects as a rectangle; <see langword="false"/> for a hit of a row.
+    /// </summary>
+    internal virtual bool HitBinRange(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out Interaction.ViewRange rangeX,
+        out Interaction.ViewRange rangeY
+    )
+    {
+        (rangeX, rangeY) = (default, default);
+        return false;
+    }
+
     /// <summary>Returns the middle of a category's band along, in its dodged place (row I2c): the hit's x is the category's number.</summary>
     protected double BandAlong(in GeomFrame.Axis x, int category)
     {

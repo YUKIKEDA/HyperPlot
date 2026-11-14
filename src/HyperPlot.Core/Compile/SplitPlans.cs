@@ -665,6 +665,26 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         return false;
     }
 
+    internal override bool HitBinRange(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out Interaction.ViewRange rangeX,
+        out Interaction.ViewRange rangeY
+    )
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Category >= 0 && part.Category == hit.Series / part.Plan.HitWidth)
+            {
+                return part.Plan.HitBinRange(x, y, hit, out rangeX, out rangeY);
+            }
+        }
+
+        (rangeX, rangeY) = (default, default);
+        return false;
+    }
+
     /// <summary>
     /// Answers with the layer's rows its categories' parts hold (row I3a): a gathered part's rows taken back to the rows they
     /// were gathered from (Issue #337 Decision 3).

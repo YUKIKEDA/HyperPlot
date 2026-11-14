@@ -91,6 +91,26 @@ internal sealed partial class PlotPlan
     }
 
     /// <summary>
+    /// Returns the range of the scale space of a density's bin a hit stands for (design §6.4 "密度のクリック", row R3c, Issue
+    /// #471 Decisions 9 and 17): the bin, the ancestor's bin, or the leaf's fill drawn under it, which a click of the selection
+    /// of points selects as a rectangle. False for a hit of a row, and when the hit's panel or layer is not drawn any more.
+    /// </summary>
+    internal bool HitBinRange(in SeriesHit hit, out ViewRange x, out ViewRange y)
+    {
+        (x, y) = (default, default);
+        if (_spec is not { } spec || hit.Row >= 0 || hit.Panel >= _panels.Length || hit.Layer >= spec.Layers.Count)
+        {
+            return false;
+        }
+
+        var plans = _panels[hit.Panel].Layers;
+        var frames = _panels[hit.Panel].Frames;
+        var layer = spec.Layers[hit.Layer];
+        return hit.Layer < plans.Length
+            && plans[hit.Layer].HitBinRange(layer.SecondaryX ? frames.X2 : frames.X, layer.SecondaryY ? frames.Y2 : frames.Y, hit, out x, out y);
+    }
+
+    /// <summary>
     /// Returns the rows of a layer a selection holds (design §6.4 "行の集合", row I3a): the rows of its points for points, else
     /// the layer's answer on its pair of axes; a facet's gathered panel's rows taken back to the plot's table.
     /// </summary>

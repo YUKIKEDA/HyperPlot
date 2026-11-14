@@ -375,16 +375,7 @@ internal sealed class IndexedPointPlan : LayerPlan
     internal override bool HitBin(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit, out PixelBox box)
     {
         box = default;
-        var snapshot = _snapshot ?? _coarse;
-        if (hit.Row >= 0 || !_drawsDensity || snapshot is null)
-        {
-            return false;
-        }
-
-        var transform = CartesianTransform.Create(x, y);
-        var mapX = new AxisMap(x, transform, ofX: true, snapshot.XRange.Origin);
-        var mapY = new AxisMap(y, transform, ofX: false, snapshot.YRange.Origin);
-        if (!TryBin(snapshot, mapX.DifferenceOfValue(hit.X), mapY.DifferenceOfValue(hit.Y), out var bin))
+        if (!TryHitBin(x, y, hit, out var mapX, out var mapY, out var bin))
         {
             return false;
         }
@@ -393,6 +384,54 @@ internal sealed class IndexedPointPlan : LayerPlan
         var (c0, c1) = (mapY.Pixel(bin.CornerY), mapY.Pixel(bin.CornerY + bin.ExtentY));
         box = new PixelBox(Math.Min(a0, a1), Math.Max(a0, a1), Math.Min(c0, c1), Math.Max(c0, c1));
         return true;
+    }
+
+    /// <summary>
+    /// Returns the range of the scale space of the density's bin a hit of this part stands for, from the bin at its center
+    /// (design §6.4 "密度のクリック", Issue #471 Decisions 9 and 17): the bin drawn there, an ancestor's bin or a leaf's fill
+    /// whole, as the snapshot's origin and differences from it.
+    /// </summary>
+    internal override bool HitBinRange(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out Interaction.ViewRange rangeX,
+        out Interaction.ViewRange rangeY
+    )
+    {
+        (rangeX, rangeY) = (default, default);
+        if (!TryHitBin(x, y, hit, out _, out _, out var bin))
+        {
+            return false;
+        }
+
+        var snapshot = (_snapshot ?? _coarse)!;
+        rangeX = new Interaction.ViewRange(snapshot.XRange.Origin, bin.CornerX, bin.CornerX + bin.ExtentX);
+        rangeY = new Interaction.ViewRange(snapshot.YRange.Origin, bin.CornerY, bin.CornerY + bin.ExtentY);
+        return true;
+    }
+
+    /// <summary>Finds the bin a density's hit of this part stands for, from its center, and the axes' maps of the snapshot it was drawn from.</summary>
+    private bool TryHitBin(
+        in GeomFrame.Axis x,
+        in GeomFrame.Axis y,
+        in Interaction.SeriesHit hit,
+        out AxisMap mapX,
+        out AxisMap mapY,
+        out DensityBin bin
+    )
+    {
+        (mapX, mapY, bin) = (default, default, default);
+        var snapshot = _snapshot ?? _coarse;
+        if (hit.Row >= 0 || !_drawsDensity || snapshot is null)
+        {
+            return false;
+        }
+
+        var transform = CartesianTransform.Create(x, y);
+        mapX = new AxisMap(x, transform, ofX: true, snapshot.XRange.Origin);
+        mapY = new AxisMap(y, transform, ofX: false, snapshot.YRange.Origin);
+        return TryBin(snapshot, mapX.DifferenceOfValue(hit.X), mapY.DifferenceOfValue(hit.Y), out bin);
     }
 
     /// <summary>

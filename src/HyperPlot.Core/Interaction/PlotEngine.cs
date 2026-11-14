@@ -442,6 +442,16 @@ public sealed partial class PlotEngine : IDisposable
         return area.Kind == HitAreaKind.Panel ? PlanOf(area.Panel.Plot).HitTest(area.Panel.Plot, area.Panel.Panel, pixel, radius, mode, results) : 0;
     }
 
+    /// <summary>
+    /// Returns the range of the scale space of the density's bin a hit stands for (design §6.4 "密度のクリック", row R3c): false
+    /// for a hit of a row, and when its plot, panel, or layer is not drawn any more.
+    /// </summary>
+    internal bool BinRange(in SeriesHit hit, out ViewRange x, out ViewRange y)
+    {
+        (x, y) = (default, default);
+        return hit.Plot >= 0 && hit.Plot < PlotCount && PlanOf(hit.Plot).HitBinRange(hit, out x, out y);
+    }
+
     /// <summary>Returns a plot's selection (design §6.4, row I3a), or null when it has none.</summary>
     /// <param name="plot">The plot: 0 for a plot alone, its number in a figure.</param>
     /// <returns>The selection.</returns>
