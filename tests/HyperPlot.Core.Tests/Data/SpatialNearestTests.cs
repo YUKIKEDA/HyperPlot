@@ -258,6 +258,38 @@ public sealed class SpatialNearestTests
     }
 
     /// <summary>
+    /// A leaf is read up to the index's leaf capacity, not up to the scratch's (design §3.4 "点の多い葉", PR #537's review): a
+    /// capped leaf of every point reads its first 16 points through a scratch made for 4,096.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 50,000 evenly spread points with leaves of 16 points and a table capped at 1 row: the root is a capped leaf of every
+    ///   point. The whole range at 1,920 × 1,080 pixels; the default scratch, of 4,096 points a leaf.
+    ///
+    /// Steps:
+    /// - Call Nearest in XY at the middle of the view with a radius of 2,000 pixels.
+    ///
+    /// Expected:
+    /// - A point is found, and 16 points are read.
+    /// </remarks>
+    [Fact]
+    public void Nearest_CappedLeaf_ReadsNoMoreThanTheIndexsLeafCapacity()
+    {
+        var (xs, ys) = Make(Shape.Uniform, seed: 78);
+        var tuning = new SpatialIndexTuning(LeafCapacity: 16, RowsPerUnit: 1 << 12, TableShare: 1e-12, WideRows: 1L << 32);
+        using var built = SpatialBuilt.Of(xs, ys, tuning: tuning);
+        var snapshot = built.Snapshot;
+        var root = Assert.Single(SpatialReference.Cells(snapshot, SpatialReference.Everything, 32));
+        Assert.Equal((SpatialCellKind.CappedLeaf, (long)Points), (root.Kind, root.Count));
+        var screen = WholeView(snapshot);
+
+        var found = snapshot.Nearest(ref screen, 960.5, 540.5, 2000, 0, HitMode.XY, new SpatialNearestScratch());
+
+        Assert.True(found.Found);
+        Assert.Equal(tuning.LeafCapacity, found.PointsRead);
+    }
+
+    /// <summary>
     /// A queue that is full leaves the cells it cannot hold unread and answers the best point found so far as provisional
     /// (Issue #471 Decision 20); the default queue does not overflow on the same query.
     /// </summary>

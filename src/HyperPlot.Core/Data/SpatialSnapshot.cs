@@ -365,8 +365,9 @@ internal abstract unsafe class SpatialSnapshot
     /// Decisions 1, 19, 20, and 21). The cells are taken best first, in the order of the distance in pixels from the cursor
     /// to the box their points are drawn in; a cell no nearer than the best point found less half a pixel is not taken. A
     /// cell whose box is at most half a pixel across (along x alone in <see cref="HitMode.X"/>) answers by its first point,
-    /// and a leaf reads at most its first <see cref="SpatialNearestScratch.LeafCapacity"/> points. Only the row of the point
-    /// that wins is read. Allocates nothing.
+    /// and a leaf reads at most its first points, as many as the index's leaf capacity and the scratch hold. Only the row of
+    /// the point that wins is read. Allocates nothing. At the reach's edge the tolerance is the same half pixel: a cell
+    /// answered by its first point may answer, or not, when its points lie within half a pixel of the reach.
     /// </summary>
     /// <remarks>
     /// The answer is a point within half a pixel of the nearest distance, decided by the snapshot and the cursor alone: the
@@ -473,7 +474,7 @@ internal abstract unsafe class SpatialSnapshot
 
             // A leaf: its first points, as design §3.4 "点の多い葉" reads a coincident or a capped leaf. A leaf lies in one
             // resident cell, whose record places all its points.
-            var count = (int)Math.Min(row.Count, scratch.LeafCapacity);
+            var count = (int)Math.Min(row.Count, Math.Min(scratch.LeafCapacity, _owner.LeafCapacity));
             var resident = ResidentCells[ResidentCellAt(row.First)];
             screen.Enter(resident);
             ReadValues(copy, row.First, xs.AsSpan(0, count), ys.AsSpan(0, count));
