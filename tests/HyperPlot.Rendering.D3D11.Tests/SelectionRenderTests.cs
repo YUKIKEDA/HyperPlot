@@ -166,8 +166,9 @@ public sealed class SelectionRenderTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 200,000 seeded points in two clusters, of deviation 9 at (32, 62) and of deviation 7 at (68, 35), a cluster's point
-    ///   outside [0, 100]² taken evenly instead; Draw is Density; domains [0, 100]; the fake text backend; Theme.Light;
+    /// - 300,000 seeded points in two clusters, of deviation 9 at (32, 62) and of deviation 7 at (68, 35), a cluster's point
+    ///   outside [0, 100]² taken evenly instead: past the density split of 262,144, so that the root has a tile (Issue #525
+    ///   Decision 6); Draw is Density; domains [0, 100]; the fake text backend; Theme.Light;
     ///   640 × 360 on WARP; an engine that waits for its indexes.
     ///
     /// Steps:
@@ -180,7 +181,7 @@ public sealed class SelectionRenderTests
     [Fact]
     public void DensitySelection_MatchesBaseline()
     {
-        const int Count = 200_000;
+        const int Count = 300_000;
         var random = new Random(43);
         var points = Enumerable.Range(0, Count).Select(i => Cluster(random, i % 2 == 0)).ToArray();
         using var x = Column.Wrap(points.Select(p => p.X).ToArray());
