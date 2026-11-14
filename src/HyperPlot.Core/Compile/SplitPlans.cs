@@ -730,11 +730,17 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     }
 
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
-    long ISourceRows.SourceRow(int key, long gathered) => SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
+    long ISourceRows.SourceRow(int key, long gathered)
+    {
+        return SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
+    }
 
-    /// <summary>Writes the rows of the layer's rows a category's gathered rows came from (row R3c).</summary>
-    void ISourceRows.SourceRows(int key, ReadOnlySpan<long> gathered, Span<long> sources) =>
-        SourceRows(_keys!, _runs!, _starts, Rows, key, gathered, sources);
+    /// <summary>Gets the number of the layer's rows: a set of them has a bit a row.</summary>
+    long ISourceRows.SourceCount => _keys!.Column.Length;
+
+    /// <summary>Sets the bits of the layer's rows a category's gathered rows came from (row R3c).</summary>
+    void ISourceRows.MarkSourceRows(int key, IEnumerable<(long Start, long End)> gathered, ulong[] bits) =>
+        MarkSourceRows(_keys!, _runs!, _starts, Rows, key, gathered, bits);
 
     /// <summary>
     /// Returns the row a key's gathered row came from, or −1 (row I2a): the chunk where the key's gathered position lies, then
@@ -742,40 +748,83 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
     /// </summary>
     internal static long SourceRow(RowKeys keys, CategoryRuns runs, long[] starts, RowRange rows, int key, long gathered)
     {
-        Span<long> source = stackalloc long[1];
-        SourceRows(keys, runs, starts, rows, key, [gathered], source);
-        return source[0];
+        var categories = keys.Column;
+        var n = keys.Count;
+        var (firstChunk, endChunk) = StatWork.ChunksOf(categories, rows);
+        for (var chunk = firstChunk; chunk < endChunk; chunk++)
+        {
+            var (start, count) = (starts[(chunk * n) + key], runs.ChunkCounts[(chunk * n) + key]);
+            if (gathered >= start + count)
+            {
+                continue;
+            }
+
+            var (lo, hi) = StatWork.PartOf(categories, chunk, rows);
+            var scratch = keys.Scratch();
+            try
+            {
+                var codes = keys.Codes(chunk, scratch)[lo..hi];
+                var left = gathered - start;
+                for (var i = 0; i < codes.Length; i++)
+                {
+                    if (codes[i] == key && left-- == 0)
+                    {
+                        return ((long)chunk << Column.ChunkShift) + lo + i;
+                    }
+                }
+            }
+            finally
+            {
+                keys.Return(scratch);
+            }
+
+            return -1;
+        }
+
+        return -1;
     }
 
     /// <summary>
-    /// Writes the rows a key's gathered rows came from, or −1, the gathered rows in increasing order (rows I2a and R3c): the
-    /// chunks where their gathered positions lie, each chunk's codes of the key counted once for all of its rows.
+    /// Sets, in a set of a bit a source row, the rows a key's gathered rows came from (row R3c, PR #549's review): the gathered
+    /// rows come as runs in increasing order and are never listed one by one, and each chunk that holds some has its key's
+    /// codes counted once. The memory is the bits' alone, whatever the number of rows; one row at a time through
+    /// <see cref="SourceRow"/> would read a chunk's keys a row.
     /// </summary>
-    internal static void SourceRows(
+    internal static void MarkSourceRows(
         RowKeys keys,
         CategoryRuns runs,
         long[] starts,
         RowRange rows,
         int key,
-        ReadOnlySpan<long> gathered,
-        Span<long> sources
+        IEnumerable<(long Start, long End)> gathered,
+        ulong[] bits
     )
     {
-        sources.Fill(-1);
+        using var ranges = gathered.GetEnumerator();
+        if (!ranges.MoveNext())
+        {
+            return;
+        }
+
+        var (from, to) = ranges.Current;
         var categories = keys.Column;
         var n = keys.Count;
         var (firstChunk, endChunk) = StatWork.ChunksOf(categories, rows);
-        var at = 0;
-        for (var chunk = firstChunk; chunk < endChunk && at < gathered.Length; chunk++)
+        for (var chunk = firstChunk; chunk < endChunk; chunk++)
         {
-            // The key's gathered positions run on from chunk to chunk: one before the chunk's start was not found before it.
+            // The key's gathered positions run on from chunk to chunk: a run that ends before the chunk's start is done.
             var (start, count) = (starts[(chunk * n) + key], runs.ChunkCounts[(chunk * n) + key]);
-            while (at < gathered.Length && gathered[at] < start)
+            while (to <= start)
             {
-                at++;
+                if (!ranges.MoveNext())
+                {
+                    return;
+                }
+
+                (from, to) = ranges.Current;
             }
 
-            if (at == gathered.Length || gathered[at] >= start + count)
+            if (from >= start + count)
             {
                 continue;
             }
@@ -786,16 +835,27 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
             {
                 var codes = keys.Codes(chunk, scratch)[lo..hi];
                 var position = start;
-                for (var i = 0; i < codes.Length && at < gathered.Length && gathered[at] < start + count; i++)
+                for (var i = 0; i < codes.Length && from < start + count; i++)
                 {
                     if (codes[i] != key)
                     {
                         continue;
                     }
 
-                    if (position == gathered[at])
+                    while (position >= to)
                     {
-                        sources[at++] = ((long)chunk << Column.ChunkShift) + lo + i;
+                        if (!ranges.MoveNext())
+                        {
+                            return;
+                        }
+
+                        (from, to) = ranges.Current;
+                    }
+
+                    if (position >= from)
+                    {
+                        var source = ((long)chunk << Column.ChunkShift) + lo + i;
+                        bits[source >> 6] |= 1UL << (int)(source & 63);
                     }
 
                     position++;

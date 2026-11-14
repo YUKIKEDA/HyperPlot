@@ -197,10 +197,14 @@ internal static class SpatialSelection
                 xRange ? y.Upper : selection.Y.Upper - shiftY
             );
             Rect = rect;
-            (_openLowX, _openHighX) = (rect.XMin < x.Lower, rect.XMax > x.Upper);
+
+            // An end past the snapshot's range bounds nothing only on an axis whose range the index found itself, where no
+            // point lies outside it (design §3.4 "範囲で切る"): the snapshot's own flags say so, as its queries read them. On an
+            // axis whose range was given, the end cells hold the points outside it, and their cells are checked point by point.
+            (_openLowX, _openHighX) = (snapshot.FoundXRange && rect.XMin < x.Lower, snapshot.FoundXRange && rect.XMax > x.Upper);
             (_openLowY, _openHighY) = (
-                selection.Kind == SelectionKind.XRange || rect.YMin < y.Lower,
-                selection.Kind == SelectionKind.XRange || rect.YMax > y.Upper
+                xRange || (snapshot.FoundYRange && rect.YMin < y.Lower),
+                xRange || (snapshot.FoundYRange && rect.YMax > y.Upper)
             );
             (_lowX, _lowY) = snapshot.GridAt(Math.Clamp(rect.XMin, x.Lower, x.Upper), Math.Clamp(rect.YMin, y.Lower, y.Upper));
             (_highX, _highY) = snapshot.GridAt(Math.Clamp(rect.XMax, x.Lower, x.Upper), Math.Clamp(rect.YMax, y.Lower, y.Upper));

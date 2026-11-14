@@ -102,38 +102,40 @@ internal sealed class SelectionQuery(Selection2D selection, GeomFrame.Axis x, Ge
     public bool HoldsData(double dataX, double dataY) => selection.Holds(OfX(dataX), OfY(dataY));
 
     /// <summary>
-    /// Returns the union of the rows several parts answered, each part's rows taken back through a gather (a split's or a
-    /// facet's part's rows to the layer's, all of them in one pass, row R3c), or as they are when it has none (row I3a): a
-    /// facet's panels a link stands a selection on too (row I3b). Derived when the argument says so or a part is.
+    /// Returns the union of the rows several parts answered, as a bit a row: each part's rows taken back through a gather (a
+    /// split's or a facet's part's rows to the layer's, in one pass, row R3c), or as they are when it has none (row I3a): a
+    /// facet's panels a link stands a selection on too (row I3b). No row is listed one by one, so the memory is the bits',
+    /// an eighth of a byte a row of the layer whatever the selection holds (PR #549's review). Derived when the argument says
+    /// so or a part is.
     /// </summary>
     public static async ValueTask<RowSelection> Union(List<(Task<RowSelection> Rows, (ISourceRows Gather, int Key)? Map)> parts, bool derived)
     {
-        var rows = new List<long>();
-        foreach (var (pending, map) in parts)
+        // The rows the bits run over: a gather's source rows, or the end of a part's own rows.
+        var answers = new RowSelection[parts.Count];
+        var length = 0L;
+        for (var i = 0; i < answers.Length; i++)
         {
-            var part = await pending.ConfigureAwait(false);
-            derived |= part.Derived;
-            var first = rows.Count;
-            foreach (var (start, end) in part.Ranges())
-            {
-                for (var row = start; row < end; row++)
-                {
-                    rows.Add(row);
-                }
-            }
+            answers[i] = await parts[i].Rows.ConfigureAwait(false);
+            derived |= answers[i].Derived;
+            length = Math.Max(length, parts[i].Map is { } map ? map.Gather.SourceCount : answers[i].End);
+        }
 
-            if (map is not { } gather)
+        var bits = new ulong[(length + 63) / 64];
+        for (var i = 0; i < answers.Length; i++)
+        {
+            if (parts[i].Map is { } map)
             {
+                map.Gather.MarkSourceRows(map.Key, answers[i].Ranges(), bits);
                 continue;
             }
 
-            // The part's rows in increasing order, as the ranges give them, each replaced by its source; −1 is none.
-            var mapped = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows)[first..];
-            gather.Gather.SourceRows(gather.Key, mapped.ToArray(), mapped);
-            rows.RemoveAll(row => row < 0);
+            foreach (var (start, end) in answers[i].Ranges())
+            {
+                RowSelection.SetRun(bits, start, end);
+            }
         }
 
-        return RowSelection.OfRows(System.Runtime.InteropServices.CollectionsMarshal.AsSpan(rows), derived);
+        return RowSelection.OfBits(bits, length, derived);
     }
 
     /// <summary>Returns whether one element lies in the selection.</summary>

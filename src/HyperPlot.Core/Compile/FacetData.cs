@@ -377,8 +377,11 @@ internal sealed class FacetData : IDisposable, ISourceRows
     long ISourceRows.SourceRow(int key, long gathered) => SplitPlan.SourceRow(_keys!, _runs!, _starts, RowRange.All, key, gathered);
 
     /// <inheritdoc />
-    void ISourceRows.SourceRows(int key, ReadOnlySpan<long> gathered, Span<long> sources) =>
-        SplitPlan.SourceRows(_keys!, _runs!, _starts, RowRange.All, key, gathered, sources);
+    long ISourceRows.SourceCount => _keys!.Column.Length;
+
+    /// <inheritdoc />
+    void ISourceRows.MarkSourceRows(int key, IEnumerable<(long Start, long End)> gathered, ulong[] bits) =>
+        SplitPlan.MarkSourceRows(_keys!, _runs!, _starts, RowRange.All, key, gathered, bits);
 
     public void GatherMarked(PlotWorkerPool pool) => SplitPlan.GatherRows(pool, _keys!, _runs!, _gathers, ref _starts, RowRange.All);
 

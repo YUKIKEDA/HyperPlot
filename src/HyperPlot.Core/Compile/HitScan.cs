@@ -886,6 +886,9 @@ internal readonly record struct Bar(Column X, Column? Low, Column High, double B
 /// <summary>A gather of rows by key (row I2a): a split's categories, a facet's panels; it takes a gathered row back.</summary>
 internal interface ISourceRows
 {
+    /// <summary>Gets the number of rows the gather read from: a set of source rows has a bit for each.</summary>
+    long SourceCount { get; }
+
     /// <summary>Returns the row a key's gathered row was gathered from.</summary>
     /// <param name="key">The key: a category, a panel's.</param>
     /// <param name="gathered">The row among the key's gathered rows.</param>
@@ -893,11 +896,12 @@ internal interface ISourceRows
     long SourceRow(int key, long gathered);
 
     /// <summary>
-    /// Writes the rows many of a key's gathered rows were gathered from, in one pass over the chunks that hold them (row R3c):
-    /// a selection's rows of a split or a facet's part, which one by one would read a chunk's keys a row.
+    /// Sets the bits of the rows many of a key's gathered rows were gathered from, in one pass over the chunks that hold them
+    /// (row R3c): a selection's rows of a split's or a facet's part. The gathered rows are never listed one by one, so the
+    /// memory is the bits' alone (PR #549's review).
     /// </summary>
     /// <param name="key">The key: a category, a panel's.</param>
-    /// <param name="gathered">The rows among the key's gathered rows, in increasing order.</param>
-    /// <param name="sources">Where each one's row goes: −1 past the key's rows.</param>
-    void SourceRows(int key, ReadOnlySpan<long> gathered, Span<long> sources);
+    /// <param name="gathered">The runs of the key's gathered rows, each [start, end), in increasing order and apart.</param>
+    /// <param name="bits">A bit a source row, over <see cref="SourceCount"/> rows: the rows found are set.</param>
+    void MarkSourceRows(int key, IEnumerable<(long Start, long End)> gathered, ulong[] bits);
 }

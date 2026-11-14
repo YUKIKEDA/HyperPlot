@@ -172,6 +172,12 @@ internal abstract unsafe class SpatialSnapshot
     /// </summary>
     public ReadOnlySpan<ResidentCell> ResidentCells => _cells;
 
+    /// <summary>Gets a value indicating whether the index found the range of x itself: no point of the copy lies outside it (design §3.4 "範囲で切る").</summary>
+    internal bool FoundXRange => _clipsX;
+
+    /// <summary>Gets a value indicating whether the index found the range of y itself: no point of the copy lies outside it.</summary>
+    internal bool FoundYRange => _clipsY;
+
     /// <summary>Gets a value indicating whether the versions the build recorded are the columns' versions now.</summary>
     internal bool MatchesColumns => _xVersion == _owner.X.Version && _yVersion == _owner.Y.Version;
 
