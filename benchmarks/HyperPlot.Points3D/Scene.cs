@@ -166,29 +166,13 @@ internal static partial class Scene
             _ => throw new ArgumentException($"Unknown distribution {name}: uniform or cluster."),
         };
 
-    /// <summary>
-    /// The constants of a frame of the orbit: the camera turns about the box's vertical axis (z), 360° every 600 frames, 30°
-    /// above the horizon, at the distance where the box's bounding sphere (radius √3) fits the vertical field of view of
-    /// 45° (design §13.8, decision 16). The near and far planes hold the sphere.
-    /// </summary>
+    /// <summary>The constants of a frame of the orbit (<see cref="OrbitCamera"/>).</summary>
     private static FrameConstants Constants(int frame, int count, Options options, uint groupsX)
     {
-        const float FieldOfView = MathF.PI / 4;
-        const float Elevation = MathF.PI / 6;
-        var angle = 2 * MathF.PI * (frame % Turn) / Turn;
-        var radius = MathF.Sqrt(3);
-        var distance = radius / MathF.Sin(FieldOfView / 2);
-        var eye = new Vector3(MathF.Cos(Elevation) * MathF.Cos(angle), MathF.Cos(Elevation) * MathF.Sin(angle), MathF.Sin(Elevation)) * distance;
-        var view = Matrix4x4.CreateLookAt(eye, Vector3.Zero, Vector3.UnitZ);
-        var projection = Matrix4x4.CreatePerspectiveFieldOfView(
-            FieldOfView,
-            Width / (float)Height,
-            distance - radius - 0.1f,
-            distance + radius + 0.1f
-        );
+        var camera = new OrbitCamera(frame);
         return new FrameConstants
         {
-            Transform = view * projection,
+            Transform = camera.Transform,
             Size = new Vector2(Width, Height),
             InverseSize = new Vector2(1f / Width, 1f / Height),
             Diameter = options.Diameter,

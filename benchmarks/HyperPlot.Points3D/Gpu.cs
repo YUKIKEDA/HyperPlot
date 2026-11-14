@@ -54,6 +54,9 @@ internal sealed unsafe class Gpu : IDisposable
     private readonly bool[] _pending = new bool[Sets];
     private int _nextSet;
 
+    // The octree scene's views: one over each node's points of the buffer, by node (SPIKE, hypotheses 2 to 4).
+    private nint[] _nodeViews = [];
+
     private ID3D11Device* _device;
     private ID3D11DeviceContext* _context;
     private ID3D11Buffer* _points;
@@ -217,6 +220,97 @@ internal sealed unsafe class Gpu : IDisposable
     }
 
     /// <summary>
+    /// Makes a view over each node's points of the buffer, so that A's marker shader reads a node's points from index 0:
+    /// SV_InstanceID does not count the start instance of a draw. Replaces the views made before.
+    /// </summary>
+    public void SetNodes(ReadOnlySpan<OctreeNode> nodes)
+    {
+        ReleaseNodeViews();
+        _nodeViews = new nint[nodes.Length];
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            var description = new D3D11_SHADER_RESOURCE_VIEW_DESC
+            {
+                Format = DXGI_FORMAT.DXGI_FORMAT_UNKNOWN,
+                ViewDimension = D3D_SRV_DIMENSION.D3D11_SRV_DIMENSION_BUFFER,
+            };
+            description.Buffer.FirstElement = (uint)nodes[i].First;
+            description.Buffer.NumElements = (uint)nodes[i].Count;
+            ID3D11ShaderResourceView* view;
+            Check(_device->CreateShaderResourceView((ID3D11Resource*)_points, &description, &view), "CreateShaderResourceView");
+            _nodeViews[i] = (nint)view;
+        }
+    }
+
+    /// <summary>Replaces the points with as many others (the same points in another order); the node views go with them.</summary>
+    public void ReplacePoints(ReadOnlySpan<Point3> points)
+    {
+        if (points.Length != _count)
+        {
+            throw new ArgumentException("The points that replace the buffer's are as many as before.");
+        }
+
+        ReleaseNodeViews();
+        _nodeViews = [];
+        Release(ref _pointView);
+        Release(ref _points);
+        MakePointBuffer(points);
+    }
+
+    /// <summary>
+    /// Records one frame of the octree scene: the clears, then A's markers for each node chosen, one draw a node over the
+    /// node's view, with a timestamp after the clears and after the draws, and sends the commands. Nothing waits for the GPU.
+    /// </summary>
+    public void DrawNodes(in FrameConstants constants, ReadOnlySpan<int> selected, ReadOnlySpan<OctreeNode> nodes, long frame)
+    {
+        var set = BeginTimer(frame);
+        var context = _context;
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        Check(context->Map((ID3D11Resource*)_constants, 0, D3D11_MAP.D3D11_MAP_WRITE_DISCARD, 0, &mapped), "Map");
+        *(FrameConstants*)mapped.pData = constants;
+        context->Unmap((ID3D11Resource*)_constants, 0);
+
+        var white = stackalloc float[] { 1, 1, 1, 1 };
+        context->ClearRenderTargetView(_targetView, white);
+        context->ClearDepthStencilView(_depthView, (uint)D3D11_CLEAR_FLAG.D3D11_CLEAR_DEPTH, 1, 0);
+        Stamp(set, 1);
+
+        var buffer = _constants;
+        var viewport = new D3D11_VIEWPORT
+        {
+            Width = _width,
+            Height = _height,
+            MaxDepth = 1,
+        };
+        var targetView = _targetView;
+        context->RSSetViewports(1, &viewport);
+        context->RSSetState(_rasterizer);
+        context->IASetInputLayout(null);
+        context->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY.D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+        context->VSSetConstantBuffers(0, 1, &buffer);
+        context->PSSetConstantBuffers(0, 1, &buffer);
+        context->VSSetShader(_markerVS, null, 0);
+        context->PSSetShader(constants.Footprint != 0 ? _squarePS : _discPS, null, 0);
+        context->OMSetBlendState(null, null, 0xFFFFFFFF);
+        context->OMSetDepthStencilState(_depthLess, 0);
+        context->OMSetRenderTargets(1, &targetView, _depthView);
+        for (var i = 0; i < selected.Length; i++)
+        {
+            var node = selected[i];
+            var view = (ID3D11ShaderResourceView*)_nodeViews[node];
+            context->VSSetShaderResources(0, 1, &view);
+            context->DrawInstanced(4, (uint)nodes[node].Count, 0, 0);
+        }
+
+        ID3D11ShaderResourceView* none = null;
+        context->VSSetShaderResources(0, 1, &none);
+        Stamp(set, 2);
+        EndTimer(set, 3);
+        context->OMSetRenderTargets(0, null, null);
+        context->Flush();
+    }
+
+    /// <summary>
     /// Reads every timed frame that is done, oldest first, without waiting, or waiting for all when asked; calls back with
     /// the frame and the times in milliseconds from the first stamp to each later one.
     /// </summary>
@@ -310,6 +404,7 @@ internal sealed unsafe class Gpu : IDisposable
         Release(ref _nearestView);
         Release(ref _nearestAccess);
         Release(ref _nearest);
+        ReleaseNodeViews();
         Release(ref _depthKeysView);
         Release(ref _depthKeysAccess);
         Release(ref _depthKeys);
@@ -454,11 +549,26 @@ internal sealed unsafe class Gpu : IDisposable
         view = madeView;
     }
 
+    private void ReleaseNodeViews()
+    {
+        for (var i = 0; i < _nodeViews.Length; i++)
+        {
+            ReleaseNint(ref _nodeViews[i]);
+        }
+    }
+
     private void MakePoints(ReadOnlySpan<Point3> points)
+    {
+        MakePointBuffer(points);
+        MakeConstants();
+    }
+
+    private void MakePointBuffer(ReadOnlySpan<Point3> points)
     {
         var description = new D3D11_BUFFER_DESC
         {
-            ByteWidth = (uint)(points.Length * sizeof(Point3)),
+            // In long: 1e8 points of 16 bytes pass int.MaxValue at 134,217,728 points.
+            ByteWidth = (uint)((long)points.Length * sizeof(Point3)),
             Usage = D3D11_USAGE.D3D11_USAGE_IMMUTABLE,
             BindFlags = (uint)D3D11_BIND_FLAG.D3D11_BIND_SHADER_RESOURCE,
             MiscFlags = (uint)D3D11_RESOURCE_MISC_FLAG.D3D11_RESOURCE_MISC_BUFFER_STRUCTURED,
@@ -484,7 +594,11 @@ internal sealed unsafe class Gpu : IDisposable
         ID3D11ShaderResourceView* resourceView;
         Check(_device->CreateShaderResourceView((ID3D11Resource*)_points, &view, &resourceView), "CreateShaderResourceView");
         _pointView = resourceView;
+    }
 
+    private void MakeConstants()
+    {
+        ID3D11Buffer* buffer;
         var constants = new D3D11_BUFFER_DESC
         {
             ByteWidth = (uint)sizeof(FrameConstants),

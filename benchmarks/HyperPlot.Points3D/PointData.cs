@@ -11,9 +11,21 @@ internal struct Point3
     public uint Color;
 }
 
+/// <summary>Three columns of positions in the box's coordinates, one value a row.</summary>
+internal sealed class PointColumns
+{
+    public required float[] X { get; init; }
+
+    public required float[] Y { get; init; }
+
+    public required float[] Z { get; init; }
+}
+
 /// <summary>The seeded points of the scene (SPIKE, row K0a).</summary>
 internal static class PointData
 {
+    private const int ColumnBlock = 1 << 20;
+
     // matplotlib's tab10, RGBA8 with R in the low byte: neighbors of different index differ in color, so that a tie broken
     // differently by A and B shows in the pixels.
     private static readonly uint[] _palette =
@@ -47,7 +59,7 @@ internal static class PointData
                 : new Vector3(Uniform(random), Uniform(random), Uniform(random));
 
             // The color comes from a hash of the index, so that the same point keeps its color in every order.
-            points[i] = new Point3 { Position = position, Color = _palette[(int)(((uint)i * 2654435761u) >> 16) % _palette.Length] };
+            points[i] = new Point3 { Position = position, Color = ColorOf(i) };
         }
 
         if (cells)
@@ -62,6 +74,47 @@ internal static class PointData
         }
 
         return points;
+    }
+
+    /// <summary>The color of a row: a hash of its index into the palette.</summary>
+    public static uint ColorOf(int row) => _palette[(int)(((uint)row * 2654435761u) >> 16) % _palette.Length];
+
+    /// <summary>
+    /// Makes count points from a seed as three columns, the octree's source (SPIKE, row K0a, hypotheses 2 to 4): uniform in
+    /// the box [-1, 1]³, or the normal blob of <see cref="Make"/>. Blocks of 2^20 rows each take a generator seeded from the
+    /// seed and the block, so the points do not depend on the workers; they are not the points <see cref="Make"/> makes.
+    /// </summary>
+    public static PointColumns MakeColumns(int count, bool cluster, int seed, int workers)
+    {
+        var x = new float[count];
+        var y = new float[count];
+        var z = new float[count];
+        var blocks = (int)(((long)count + ColumnBlock - 1) / ColumnBlock);
+        var parallel = new ParallelOptions { MaxDegreeOfParallelism = workers };
+        Parallel.For(0, blocks, parallel, block => FillBlock(block, cluster, seed, x, y, z));
+        return new PointColumns { X = x, Y = y, Z = z };
+    }
+
+    private static void FillBlock(int block, bool cluster, int seed, float[] x, float[] y, float[] z)
+    {
+        var random = new Random(unchecked((seed * 1_000_003) + block));
+        var from = block * ColumnBlock;
+        var to = Math.Min(x.Length, from + ColumnBlock);
+        for (var i = from; i < to; i++)
+        {
+            if (cluster)
+            {
+                x[i] = Math.Clamp(Normal(random) * 0.2f, -1f, 1f);
+                y[i] = Math.Clamp(Normal(random) * 0.2f, -1f, 1f);
+                z[i] = Math.Clamp(Normal(random) * 0.2f, -1f, 1f);
+            }
+            else
+            {
+                x[i] = Uniform(random);
+                y[i] = Uniform(random);
+                z[i] = Uniform(random);
+            }
+        }
     }
 
     private static float Uniform(Random random) => (float)((random.NextDouble() * 2) - 1);

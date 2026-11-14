@@ -17,12 +17,40 @@ using HyperPlot.Points3D;
 //     Draws one frame of the orbit, another frame, and the first again, with each method on WARP (or the hardware), and
 //     compares the two images of the same frame byte for byte. Prints a SHA-256 of each image, to compare between runs.
 //     Also compares the markers' k × k squares with compute's, pixel by pixel. Exits with 1 when a repeat differs.
-if (args.Length < 3 || args[0] is not ("run" or "determinism") || (args[0] == "run" && args.Length < 4))
+//   The octree (hypotheses 2 to 4 of Issue #477, drawn with A by the owner's decision of 2026-11-14):
+//   <dir>/HyperPlot.Points3D.exe octree-build <count> <uniform|cluster> [--grid 128] [--leaf 10000] [--workers 8]
+//     [--seed 1] [--hash] [--hits 50] [--hit-frames 20] [--hit-radius 4] [--hit-budget 1e7] [--hit-check 10] [--pin]
+//     Makes the columns, builds the octree (Octree.cs) and prints the time of each stage, the nodes by level and by size,
+//     and the memory of the copy and the table; then the hit tests at hits × hit-frames cursors over the orbit, all points
+//     and the nodes the budget draws, and checks the octree's answer against every point. Exits with 1 when one differs.
+//   <dir>/HyperPlot.Points3D.exe octree-orbit <count> <uniform|cluster> [--grid 128] [--leaf 10000] [--workers 8]
+//     [--variants budget:diameter:morton|priority,...] [--reverse] [--frames 600] [--warmup 120] [--back-to-back] [--warp]
+//     Builds the octree, then runs the orbit for each variant: each frame chooses the nodes under the budget and draws
+//     A's discs of the diameter, one draw a node, in the points' Morton order inside each node or their seeded priority's.
+var valid = args.Length switch
 {
-    Console.Error.WriteLine("run <markers|compute> <count> <uniform|cluster> [options] | determinism <count> <uniform|cluster> [options]");
+    < 3 => false,
+    _ => args[0] switch
+    {
+        "run" => args.Length >= 4,
+        "determinism" or "octree-build" or "octree-orbit" => true,
+        _ => false,
+    },
+};
+if (!valid)
+{
+    Console.Error.WriteLine(
+        "run <markers|compute> <count> <uniform|cluster> [options] | determinism|octree-build|octree-orbit <count> <uniform|cluster> [options]"
+    );
     return 2;
 }
 
 using var process = Process.GetCurrentProcess();
 process.PriorityClass = ProcessPriorityClass.High;
-return args[0] == "run" ? Scene.Run(args.AsSpan(1)) : Scene.Determinism(args.AsSpan(1));
+return args[0] switch
+{
+    "run" => Scene.Run(args.AsSpan(1)),
+    "determinism" => Scene.Determinism(args.AsSpan(1)),
+    "octree-build" => Scene.OctreeBuild(args.AsSpan(1)),
+    _ => Scene.OctreeOrbit(args.AsSpan(1)),
+};
