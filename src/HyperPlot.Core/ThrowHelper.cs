@@ -82,6 +82,11 @@ internal static class ThrowHelper
 
     [DoesNotReturn]
     [StackTraceHidden]
+    internal static void ThrowNearestRadiusOutOfRange(string name, double radius) =>
+        throw new ArgumentOutOfRangeException(name, radius, "The radius is 0 or more pixels.");
+
+    [DoesNotReturn]
+    [StackTraceHidden]
     internal static void ThrowSpatialSpansDiffer(int x, int y, int rows) =>
         throw new ArgumentException($"The spans to read points into are {x}, {y}, and {rows} elements long, and must be of one length.");
 

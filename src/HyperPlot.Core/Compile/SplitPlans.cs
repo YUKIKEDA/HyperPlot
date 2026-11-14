@@ -638,6 +638,33 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         return HitScan.PixelOfValue(x, hit.X);
     }
 
+    internal override (double Along, double Across) HitPlace(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit)
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Category >= 0 && part.Category == hit.Series / part.Plan.HitWidth)
+            {
+                return part.Plan.HitPlace(x, y, hit);
+            }
+        }
+
+        return base.HitPlace(x, y, hit);
+    }
+
+    internal override bool HitBin(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit, out PixelBox box)
+    {
+        foreach (var part in _parts)
+        {
+            if (part.Category >= 0 && part.Category == hit.Series / part.Plan.HitWidth)
+            {
+                return part.Plan.HitBin(x, y, hit, out box);
+            }
+        }
+
+        box = default;
+        return false;
+    }
+
     /// <summary>
     /// Answers with the layer's rows its categories' parts hold (row I3a): a gathered part's rows taken back to the rows they
     /// were gathered from (Issue #337 Decision 3).
