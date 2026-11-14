@@ -88,6 +88,15 @@ internal ref struct HitScan
     public bool Derived { get; set; }
 
     /// <summary>
+    /// Gets or sets the buffers of the search over a spatial index (design §6.3 "探し方", row R3c): the plot's plan lends
+    /// its own, and the first layer on the index path that a hit test reaches makes it when the plan has none yet.
+    /// </summary>
+    public SpatialNearestScratch? Scratch { get; set; }
+
+    /// <summary>Gets a value indicating whether the scan sums statistics (row I4b) in place of finding hits.</summary>
+    public readonly bool Summing => _summing;
+
+    /// <summary>
     /// Adds a series' summary over the rows of [start, end) whose x lies in the scan's range (row I4b): the rows found by two
     /// searches of x, the y's count, mean, least, and greatest from its pyramid. Counted whether the span has room or not.
     /// </summary>
@@ -132,8 +141,11 @@ internal ref struct HitScan
         }
     }
 
-    /// <summary>Writes a hit when the buffer has room, and counts it either way.</summary>
-    public void Add(int series, long row, double x, double y, double distance, bool derived, bool provisional)
+    /// <summary>
+    /// Writes a hit when the buffer has room, and counts it either way. A hit of a row stands for one point; a bin of a
+    /// density for its points (row R3c).
+    /// </summary>
+    public void Add(int series, long row, double x, double y, double distance, bool derived, bool provisional, long count = 1)
     {
         if (Found < _results.Length)
         {
@@ -147,7 +159,8 @@ internal ref struct HitScan
                 y,
                 (float)distance,
                 derived || Derived,
-                provisional || LayerProvisional
+                provisional || LayerProvisional,
+                count
             );
         }
 
@@ -156,13 +169,14 @@ internal ref struct HitScan
 
     /// <summary>
     /// Takes the rows of the hits written from <paramref name="from"/> back through a gather (row I2a, Issue #337 Decision 3):
-    /// a split's or a facet's gathered rows to the rows they were gathered from. A derived row stays.
+    /// a split's or a facet's gathered rows to the rows they were gathered from. A derived row stays, and so does a density's
+    /// bin, which has no row (−1, row R3c).
     /// </summary>
     public readonly void Remap(int from, ISourceRows rows, int key)
     {
         for (var i = from; i < Math.Min(Found, _results.Length); i++)
         {
-            if (!_results[i].Derived)
+            if (!_results[i].Derived && _results[i].Row >= 0)
             {
                 _results[i] = _results[i] with { Row = rows.SourceRow(key, _results[i].Row) };
             }
@@ -487,9 +501,10 @@ internal ref struct HitScan
 
     /// <summary>
     /// Answers for a layer of points from the pixels its last recording mapped (design §6.3, row R3a):
-    /// <see cref="HitMode.X"/> takes, of the points within the radius along, the nearest along, and of those as near the
-    /// nearest across; <see cref="HitMode.XY"/> the point whose center is nearest among those within the radius and the
-    /// marker's own. Of equal distances the later row stays: it is drawn over. The x and y are the point's, in data units.
+    /// <see cref="HitMode.X"/> measures a point's distance along alone, within the radius; <see cref="HitMode.XY"/> measures
+    /// it in both directions, within the radius and the marker's own. The least distance d is found first, and of the points
+    /// within d + 0.5 pixels the least row answers (row R3c, Issue #471 Decision 16), so that the answer does not depend on
+    /// the order the points are compared in. The x and y are the point's, in data units.
     /// </summary>
     /// <param name="xs">The points' pixels along: index 0 is row <paramref name="first"/>.</param>
     /// <param name="ys">The points' pixels across, as <paramref name="xs"/>.</param>
@@ -514,54 +529,56 @@ internal ref struct HitScan
         }
 
         // Plain comparisons: 131,072 points a call (design §9, P-5). A point that does not map (NaN) fails each test.
-        var (along, across, xMode) = (Along, Across, Mode == HitMode.X);
-        var reach = xMode ? (double)Radius : Radius + markerRadius;
-        var (bestAlong, bestAcross, bestRow) = (double.PositiveInfinity, double.PositiveInfinity, -1L);
-        var best = reach * reach;
+        var (along, across, xMode, radius) = (Along, Across, Mode == HitMode.X, (double)Radius);
+        var reach = xMode ? radius : radius + markerRadius;
         var last = Math.Min(xs.Length, ys.Length);
+        var least = double.PositiveInfinity;
         for (var i = 0; i < last; i++)
         {
-            var dx = Math.Abs(xs[i] - along);
+            least = Math.Min(least, PointDistance(xs[i], ys[i], i, radii));
+        }
+
+        if (!(least <= reach))
+        {
+            return;
+        }
+
+        // The first point within half a pixel of the least distance has the least row.
+        for (var i = 0; i < last; i++)
+        {
+            if (PointDistance(xs[i], ys[i], i, radii) <= least + Tolerance)
+            {
+                var row = first + i;
+                var (dx, dy) = (xs[i] - along, ys[i] - across);
+                Add(0, row, ValueOf(X, x, row), y.DifferenceAt(row, 0), Math.Sqrt((dx * dx) + (dy * dy)), derived: false, provisional: false);
+                return;
+            }
+        }
+
+        // A point's distance as the mode measures it, or ∞ when it lies outside the reach or does not map.
+        double PointDistance(double pointAlong, double pointAcross, int i, ReadOnlySpan<float> own)
+        {
+            var dx = Math.Abs(pointAlong - along);
             if (!(dx <= reach))
             {
-                continue;
+                return double.PositiveInfinity;
             }
 
-            var dy = Math.Abs(ys[i] - across);
+            var dy = Math.Abs(pointAcross - across);
             if (!(dy >= 0))
             {
-                continue;
+                return double.PositiveInfinity;
             }
 
             if (xMode)
             {
-                if (dx < bestAlong || (dx == bestAlong && dy <= bestAcross))
-                {
-                    (bestAlong, bestAcross, bestRow) = (dx, dy, i);
-                }
+                return dx;
             }
-            else
-            {
-                var squared = (dx * dx) + (dy * dy);
 
-                // A point with a radius of its own (row R3f) is within reach by that radius, not by the largest.
-                if (!radii.IsEmpty && squared > ((double)Radius + radii[i]) * ((double)Radius + radii[i]))
-                {
-                    continue;
-                }
-
-                if (squared <= best)
-                {
-                    (best, bestAlong, bestAcross, bestRow) = (squared, dx, dy, i);
-                }
-            }
-        }
-
-        if (bestRow >= 0)
-        {
-            bestRow += first;
-            var distance = Math.Sqrt((bestAlong * bestAlong) + (bestAcross * bestAcross));
-            Add(0, bestRow, ValueOf(X, x, bestRow), y.DifferenceAt(bestRow, 0), distance, derived: false, provisional: false);
+            // A point with a radius of its own (row R3f) is within reach by that radius, not by the largest.
+            var within = own.IsEmpty ? reach : radius + own[i];
+            var squared = (dx * dx) + (dy * dy);
+            return squared <= within * within ? Math.Sqrt(squared) : double.PositiveInfinity;
         }
     }
 

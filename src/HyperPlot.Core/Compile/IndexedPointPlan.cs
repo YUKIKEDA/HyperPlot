@@ -103,6 +103,14 @@ internal sealed class IndexedPointPlan : LayerPlan
     private ColorMap? _ramp;
     private Color _rampColor;
 
+    // The markers' radius in physical pixels of the last recording, and the values and the position in the copy of the last
+    // point a hit test answered, which a hover marks where it is drawn (row R3c). The values, not the row, tell the hit
+    // again: a split's or a facet's gathered row is taken back to the table's after this part answered.
+    private double _markerRadius;
+    private double _lastX = double.NaN;
+    private double _lastY = double.NaN;
+    private long _lastPosition = -1;
+
     public IndexedPointPlan(PointLayerSpec spec, PlanBuild build, RowRange rows)
         : base(spec, rows)
     {
@@ -216,6 +224,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         _missing = false;
         var point = (PointLayerSpec)Spec;
         _cache = context.Images;
+        _markerRadius = point.Size * context.Scale / 2;
 
         // The layer's drawing, chosen once a frame for all its parts; a part on its coarse snapshot draws a density anyway.
         _ = _switch.Prepare(context, point);
@@ -283,6 +292,202 @@ internal sealed class IndexedPointPlan : LayerPlan
             }
         }
     }
+
+    /// <summary>
+    /// Answers a hit test with what the part draws (design §6.3 "散布の索引の道", row R3c, Issue #471): its raw points by the
+    /// search over its index, measured where the vertex shader draws them, or the density's bin under the cursor. The
+    /// drawing is the one the last recording chose, the switch's band included (Decision 11). A part on its coarse snapshot
+    /// answers with the coarse density's bin (Decision 5); a part that draws its last full snapshot while a new one is
+    /// built answers from it, provisionally, as the readiness says (Decision 5). Allocates nothing once the plot's plan holds
+    /// the search's buffers.
+    /// </summary>
+    internal override void Hit(ref HitScan scan)
+    {
+        if (scan.Summing)
+        {
+            return;
+        }
+
+        if (_drawsDensity)
+        {
+            HitDensity(ref scan);
+            return;
+        }
+
+        if (_snapshot is not { } snapshot || snapshot.ResidentCells.IsEmpty)
+        {
+            return;
+        }
+
+        var transform = CartesianTransform.Create(scan.X, scan.Y);
+        var x = new AxisMap(scan.X, transform, ofX: true, snapshot.XRange.Origin);
+        var y = new AxisMap(scan.Y, transform, ofX: false, snapshot.YRange.Origin);
+        var screen = new DrawnScreen(x, y);
+        var scratch = scan.Scratch ??= new SpatialNearestScratch();
+        var found = snapshot.Nearest(ref screen, scan.Along, scan.Across, scan.Radius, _markerRadius, scan.Mode, scratch);
+        if (!found.Found)
+        {
+            return;
+        }
+
+        // The x and y are the point's values in the copy, as differences from the snapshot's origins, taken back to data
+        // units (invariant 6); the distance is the drawn one in both directions, as the CPU path's. A page not yet on the GPU leaves the frame provisional, and the answer with it
+        // (Decision 14); so does a queue that overflowed (Decision 20).
+        var (valueX, valueY) = (x.ValueOf(found.X), y.ValueOf(found.Y));
+        (_lastX, _lastY, _lastPosition) = (valueX, valueY, found.Position);
+        scan.Add(
+            0,
+            found.Row,
+            valueX,
+            valueY,
+            scan.Distance(found.Along, found.Across),
+            derived: false,
+            provisional: found.Overflowed || _missing || snapshot.IsProvisional
+        );
+    }
+
+    /// <summary>
+    /// Returns where the vertex shader draws the point of the last answer (design §6.3 "描いた位置で測る"): its unit of its
+    /// resident cell, placed from the cell's record of this view. Another hit (an older selection's point) is marked at its
+    /// value. The point is known by its values, which a gathered part's remap of the row leaves as they are.
+    /// </summary>
+    internal override (double Along, double Across) HitPlace(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit)
+    {
+        if (hit.Row < 0 || hit.X != _lastX || hit.Y != _lastY || _snapshot is not { } snapshot || _lastPosition >= snapshot.PointCount)
+        {
+            return base.HitPlace(x, y, hit);
+        }
+
+        Span<ResidentPoint> one = stackalloc ResidentPoint[1];
+        snapshot.ReadBlock(_lastPosition, one);
+        var screen = Screen(x, y, snapshot);
+        screen.Enter(snapshot.ResidentCells[(int)one[0].Cell]);
+        return screen.Place(one[0].X, one[0].Y);
+    }
+
+    /// <summary>Returns the box of the density's bin a hit of this part stands for, from the bin at its center (row R3c).</summary>
+    internal override bool HitBin(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit, out PixelBox box)
+    {
+        box = default;
+        var snapshot = _snapshot ?? _coarse;
+        if (hit.Row >= 0 || !_drawsDensity || snapshot is null)
+        {
+            return false;
+        }
+
+        var transform = CartesianTransform.Create(x, y);
+        var mapX = new AxisMap(x, transform, ofX: true, snapshot.XRange.Origin);
+        var mapY = new AxisMap(y, transform, ofX: false, snapshot.YRange.Origin);
+        if (!TryBin(snapshot, mapX.DifferenceOfValue(hit.X), mapY.DifferenceOfValue(hit.Y), out var bin))
+        {
+            return false;
+        }
+
+        var (a0, a1) = (mapX.Pixel(bin.CornerX), mapX.Pixel(bin.CornerX + bin.ExtentX));
+        var (c0, c1) = (mapY.Pixel(bin.CornerY), mapY.Pixel(bin.CornerY + bin.ExtentY));
+        box = new PixelBox(Math.Min(a0, a1), Math.Max(a0, a1), Math.Min(c0, c1), Math.Max(c0, c1));
+        return true;
+    }
+
+    /// <summary>
+    /// Answers with the bin of the density drawn under the cursor (design §6.3 "密度で描いている層", Issue #471 Decisions 2
+    /// and 10): a row of −1, the bin's center in data units, its points before their normalization, at a distance of 0,
+    /// whatever the mode and the radius. A bin of no point, and a cursor outside the ranges, answer nothing.
+    /// </summary>
+    private void HitDensity(ref HitScan scan)
+    {
+        var snapshot = _snapshot ?? _coarse;
+        if (snapshot is null)
+        {
+            return;
+        }
+
+        var transform = CartesianTransform.Create(scan.X, scan.Y);
+        var x = new AxisMap(scan.X, transform, ofX: true, snapshot.XRange.Origin);
+        var y = new AxisMap(scan.Y, transform, ofX: false, snapshot.YRange.Origin);
+        if (!TryBin(snapshot, x.DifferenceAt(scan.Along), y.DifferenceAt(scan.Across), out var bin))
+        {
+            return;
+        }
+
+        scan.Add(
+            0,
+            -1,
+            x.ValueOf(bin.CornerX + (bin.ExtentX / 2)),
+            y.ValueOf(bin.CornerY + (bin.ExtentY / 2)),
+            0,
+            derived: false,
+            provisional: _missing || snapshot.IsProvisional,
+            count: bin.Count
+        );
+    }
+
+    /// <summary>
+    /// Finds the bin the last recording drew at a point given as differences from the snapshot's origins (design §5.5.2
+    /// "水準の選び方", row R3c): on a coarse snapshot, the level-8 cell of the coarse density; on a full one, the cell of the
+    /// chosen level (or the leaf above it) that holds the point, read from its own tile or its deepest ancestor's as the
+    /// recording reads it, or the cell as one fill. False outside the ranges and for a bin of no point.
+    /// </summary>
+    private bool TryBin(SpatialSnapshot snapshot, double dx, double dy, out DensityBin bin)
+    {
+        bin = default;
+        if (!(dx >= snapshot.XRange.Lower && dx <= snapshot.XRange.Upper && dy >= snapshot.YRange.Lower && dy <= snapshot.YRange.Upper))
+        {
+            return false;
+        }
+
+        var (gx, gy) = snapshot.GridAt(dx, dy);
+        const int Bins = DensityTiles.BinLevels;
+        if (snapshot.Stage != SpatialStage.Full)
+        {
+            // The coarse grid: the cells of level 8, the grid's upper 8 bits on each axis.
+            var (cx, cy) = (gx >> (32 - Bins), gy >> (32 - Bins));
+            var count = snapshot.CoarseDensity[(int)((cy << Bins) + cx)];
+            return count > 0 && Make(snapshot, SpatialCode.Interleave(cx, cy), Bins, count, out bin);
+        }
+
+        Span<SpatialCell> one = stackalloc SpatialCell[1];
+        if (snapshot.GetCells(new SpatialRect(dx, dx, dy, dy), _tileLevel, one) == 0)
+        {
+            return false;
+        }
+
+        // The same walk as the recording's pieces (PlanDensity): the cell's own tile, or its deepest ancestor's.
+        var cell = one[0];
+        var tiles = snapshot.Tiles;
+        for (var at = Math.Min(cell.Level, DensityMath.DeepestLevel); at >= 0 && tiles is not null; at--)
+        {
+            if (tiles.TryGetTile(cell.Code >> (2 * (cell.Level - at)), at, out var tile))
+            {
+                // A bin of a tile of level `at` is a cell of level at + 8: the grid's upper at + 8 bits.
+                var shift = 32 - (at + Bins);
+                var (bx, by) = (gx >> shift, gy >> shift);
+                var count = tile[(int)(bx & (DensityTiles.Side - 1)), (int)(by & (DensityTiles.Side - 1))];
+                return count > 0 && Make(snapshot, SpatialCode.Interleave(bx, by), at + Bins, (long)count, out bin);
+            }
+        }
+
+        return Make(snapshot, cell.Code, cell.Level, cell.Count, out bin);
+
+        static bool Make(SpatialSnapshot snapshot, ulong code, int level, long count, out DensityBin made)
+        {
+            var (cornerX, cornerY, extentX, extentY) = snapshot.CellBox(code, level);
+            made = new DensityBin(cornerX, cornerY, extentX, extentY, count);
+            return true;
+        }
+    }
+
+    // The screen of a hit test: the record's map of each axis, as the recording makes it for the same frame.
+    private static DrawnScreen Screen(in GeomFrame.Axis x, in GeomFrame.Axis y, SpatialSnapshot snapshot)
+    {
+        var transform = CartesianTransform.Create(x, y);
+        return new DrawnScreen(
+            new AxisMap(x, transform, ofX: true, snapshot.XRange.Origin),
+            new AxisMap(y, transform, ofX: false, snapshot.YRange.Origin)
+        );
+    }
+
+    internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
 
     /// <summary>Gives back the snapshot, lets its pages go, and disposes the index.</summary>
     public override void Release()
@@ -515,7 +720,42 @@ internal sealed class IndexedPointPlan : LayerPlan
             _cache?.ForgetDensity(snapshot);
             snapshot.Release();
             _snapshot = null;
+            (_lastX, _lastY, _lastPosition) = (double.NaN, double.NaN, -1);
         }
+    }
+
+    /// <summary>A bin of a density a hit stands for: its box as differences from the snapshot's origins, and its points.</summary>
+    private readonly record struct DensityBin(double CornerX, double CornerY, double ExtentX, double ExtentY, long Count);
+
+    /// <summary>
+    /// Where the frame draws the part's points (design §6.3 "描いた位置で測る"): each axis's map of the recording, and a
+    /// resident point placed from its cell's record as the vertex shader places it, in floats, then held where the axis
+    /// clamps (Markers.hlsl, ResidentMarkerVS).
+    /// </summary>
+    private struct DrawnScreen(AxisMap x, AxisMap y) : ISpatialScreen
+    {
+        private uint _baseX;
+        private uint _baseY;
+        private float _pixelX;
+        private float _pixelY;
+        private float _scaleX;
+        private float _scaleY;
+
+        public readonly double Along(double difference) => x.Held(x.Pixel(difference));
+
+        public readonly double Across(double difference) => y.Held(y.Pixel(difference));
+
+        public void Enter(in ResidentCell cell)
+        {
+            (_baseX, _pixelX, _scaleX) = x.Place(cell.CornerX, cell.ExtentX);
+            (_baseY, _pixelY, _scaleY) = y.Place(cell.CornerY, cell.ExtentY);
+        }
+
+        public readonly (double Along, double Across) Place(uint unitX, uint unitY) =>
+            (x.Held(_pixelX + (UnitsFrom(unitX, _baseX) * _scaleX)), y.Held(_pixelY + (UnitsFrom(unitY, _baseY) * _scaleY)));
+
+        // The shader's UnitsFrom: the difference of two units taken in integers before it becomes a float.
+        private static float UnitsFrom(uint position, uint origin) => position >= origin ? (float)(position - origin) : -(float)(origin - position);
     }
 
     /// <summary>
@@ -531,6 +771,9 @@ internal sealed class IndexedPointPlan : LayerPlan
         private readonly double _low;
         private readonly double _high;
         private readonly double _perUnit;
+        private readonly double _atLow;
+        private readonly long _origin;
+        private readonly IScale? _scale;
 
         /// <summary>Gets the view's lower end as a difference from the snapshot's origin.</summary>
         public double Low => _low;
@@ -546,13 +789,14 @@ internal sealed class IndexedPointPlan : LayerPlan
 
         public AxisMap(in GeomFrame.Axis axis, CartesianTransform transform, bool ofX, long snapshotOrigin)
         {
-            (_transform, _ofX, _clamps) = (transform, ofX, axis.Clamp);
+            (_transform, _ofX, _clamps, _origin, _scale) = (transform, ofX, axis.Clamp, snapshotOrigin, axis.Transform);
 
             // The copy's values are differences from the snapshot's origin; the transform takes differences from the domain's.
             _shift = (double)(snapshotOrigin - axis.Domain.Origin);
             var (lower, upper) = (Math.Min(axis.Domain.Lower, axis.Domain.Upper), Math.Max(axis.Domain.Lower, axis.Domain.Upper));
             (_low, _high) = (lower - _shift, upper - _shift);
             var (atLower, atUpper) = (Map(lower), Map(upper));
+            _atLow = atLower;
 
             // The pixels of one unit of the scale space: the map is a line, taken over the whole view for its precision.
             _perUnit = upper > lower ? (atUpper - atLower) / (upper - lower) : 0;
@@ -564,6 +808,38 @@ internal sealed class IndexedPointPlan : LayerPlan
         public float ClampLow { get; }
 
         public float ClampHigh { get; }
+
+        /// <summary>Returns a pixel held where the axis clamps, as the vertex shader holds a center (row R3c).</summary>
+        public double Held(double pixel) => Math.Clamp(pixel, ClampLow, ClampHigh);
+
+        /// <summary>Returns the difference from the snapshot's origin at a pixel along this axis: the inverse of <see cref="Pixel"/> (row R3c).</summary>
+        public double DifferenceAt(double pixel) => _low + ((pixel - _atLow) / _perUnit);
+
+        /// <summary>Returns the difference from the snapshot's origin of a value in data units: through the scale's transform, if any.</summary>
+        public double DifferenceOfValue(double value)
+        {
+            if (_scale is null)
+            {
+                return value - _origin;
+            }
+
+            Span<double> one = [value];
+            _scale.Forward(one, one);
+            return one[0] - _origin;
+        }
+
+        /// <summary>Returns the value in data units of a difference from the snapshot's origin: through the inverse of the scale's transform, if any.</summary>
+        public double ValueOf(double difference)
+        {
+            if (_scale is null)
+            {
+                return _origin + difference;
+            }
+
+            Span<double> one = [_origin + difference];
+            _scale.Inverse(one, one);
+            return one[0];
+        }
 
         /// <summary>
         /// Returns whether a cell's points are drawn on this axis: the cell reaches into the view, or the axis clamps, so

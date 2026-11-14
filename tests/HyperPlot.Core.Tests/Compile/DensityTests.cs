@@ -151,6 +151,58 @@ public sealed class DensityTests
     }
 
     /// <summary>
+    /// A view beside the data counts no point, so that Auto draws raw points there (design §5.5.2 "画面内の点の数", §3.4
+    /// "範囲で切る", row R3c): the count no longer takes the end cells of the ranges.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 131,073 seeded points over [0, 100]² in an engine that waits for its indexes; Auto with a threshold of 10,000.
+    ///
+    /// Steps:
+    /// - Draw the whole view, then the views [200, 300]² (beyond both ranges), [200, 300] × [0, 100] (beyond x alone),
+    ///   and [0, 100] × [−300, −200] (below y alone).
+    ///
+    /// Expected:
+    /// - The whole view draws a density.
+    /// - Each view beside the data counts 0 points and draws raw points.
+    /// </remarks>
+    [Fact]
+    public void Auto_ViewBesideTheData_CountsNothingAndDrawsRawPoints()
+    {
+        var random = new Random(4);
+        using var xs = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Over).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        var spec = Plot.Create(table)
+            .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Density(threshold: 10_000))
+            .ScaleX(Scale.Linear().WithDomain(0, 100))
+            .ScaleY(Scale.Linear().WithDomain(0, 100))
+            .Build();
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(spec);
+        engine.RenderFrame();
+        IndexedPointPlan Plan() => (IndexedPointPlan)engine.Plan!.Layers[0];
+        bool Density(double x0, double x1, double y0, double y1)
+        {
+            engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(x0, x1), ViewRange.FromValues(y0, y1)));
+            backend.Images.Sent();
+            engine.RenderFrame();
+            return Plan().DrewDensity;
+        }
+
+        Assert.True(Density(0, 100, 0, 100));
+        Assert.False(Density(200, 300, 200, 300));
+        Assert.Equal(0, Plan().Switch.LastCount);
+        Assert.True(Density(0, 100, 0, 100));
+        Assert.False(Density(200, 300, 0, 100));
+        Assert.Equal(0, Plan().Switch.LastCount);
+        Assert.True(Density(0, 100, 0, 100));
+        Assert.False(Density(0, 100, -300, -200));
+        Assert.Equal(0, Plan().Switch.LastCount);
+    }
+
+    /// <summary>
     /// A density records image instances, from the drawn tiles of the view, with a top that is the largest normalized bin
     /// and no resident run (design §5.5.2 "描き方").
     /// </summary>
@@ -515,6 +567,8 @@ public sealed class DensityTests
     /// - The coarse frame: the index's snapshot is Coarse; the frame is provisional; one piece, the root cell read from
     ///   the coarse grid (0, 0, 0, 0, 0); one image that reads the grid from its corner, 2^-L of a texel a texel for the
     ///   chosen level L; no resident run.
+    /// - A hit test at (50, 50) in the coarse frame: one hit of row −1 at a distance of 0, provisional, whose count is the
+    ///   coarse grid's cell of level 8 that holds (50, 50) (row R3c).
     /// - The full frame, Points and Auto: raw points, no image, and no face in the cache (the coarse face let go of).
     ///   Density: more than one piece, each a cell of the chosen level that reads the root's tile; an image each; one face
     ///   in the cache, the root tile's.
@@ -584,6 +638,22 @@ public sealed class DensityTests
             var image = Assert.Single(list.Images.ToArray());
             Assert.Equal(Vector2.Zero, image.SampleOrigin);
             Assert.Equal(Math.Pow(2, -plan.TileLevel), image.SampleScale, 9);
+
+            // A hit test answers with the coarse bin under the cursor, provisionally (row R3c, Issue #471 Decision 5).
+            var coarse = index.Acquire();
+            try
+            {
+                var (gx, gy) = coarse.GridAt(50 - coarse.XRange.Origin, 50 - coarse.YRange.Origin);
+                var expected = coarse.CoarseDensity[(int)(((gy >> 24) << 8) + (gx >> 24))];
+                var hits = new SeriesHit[2];
+                var at = engine.ViewToPixel(Panel, ViewRange.FromValues(50.0, 50.0), ViewRange.FromValues(50.0, 50.0));
+                var hit = Assert.Single(hits[..engine.HitTest(at, 8, HitMode.XY, hits)]);
+                Assert.Equal((-1L, 0f, true, expected), (hit.Row, hit.Distance, hit.Provisional, hit.Count));
+            }
+            finally
+            {
+                coarse.Release();
+            }
         }
         finally
         {
