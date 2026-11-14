@@ -605,11 +605,23 @@ internal sealed class Octree
 /// (the least depth, then the least index in the copy) whose center lies within a radius in pixels of the cursor. A cube
 /// is visited only when the sphere around it can reach the cursor on the screen; inside a node, the points are in key
 /// order, so a node's cube is split into its octants by binary search, down to 32 points, which are projected one by one.
+/// <see cref="Nearest"/> visits the cubes nearest first and stops at the first cube that cannot hold a nearer point.
 /// </summary>
 internal sealed class HitTester(Octree tree, int width, int height)
 {
     private const int ScanBelow = 32;
     private const float Sqrt3 = 1.7320508f;
+
+    /// <summary>
+    /// The nearest-first search stops at a cube whose nearest distance along the view passes the best point's by more than
+    /// this factor. A point's depth (clip z over w) grows with that distance w as a constant less n f / ((f - n) w); in the
+    /// orbit's frustum (n 2.69, f 6.36) the margin, 1e-4 of w, is 7e-5 of depth or more, against float errors of the order
+    /// of 1e-6. It keeps a point whose float depth ties or rounds below the best's from being
+    /// skipped, so that the answer is the scan's, ties to the least index included.
+    /// </summary>
+    private const float NearMargin = 1.0001f;
+
+    private readonly PriorityQueue<Pending, float> _pending = new();
 
     private Matrix4x4 _transform;
     private Matrix4x4 _view;
@@ -621,6 +633,9 @@ internal sealed class HitTester(Octree tree, int width, int height)
     public int Best { get; private set; } = -1;
 
     public float BestDepth { get; private set; } = float.MaxValue;
+
+    /// <summary>The distance along the view (clip w) of the point found, or <see cref="float.MaxValue"/>.</summary>
+    public float BestDistance { get; private set; } = float.MaxValue;
 
     /// <summary>The points projected by the query.</summary>
     public long Tested { get; private set; }
@@ -634,6 +649,7 @@ internal sealed class HitTester(Octree tree, int width, int height)
         _radius = radius;
         Best = -1;
         BestDepth = float.MaxValue;
+        BestDistance = float.MaxValue;
         Tested = 0;
     }
 
@@ -667,6 +683,69 @@ internal sealed class HitTester(Octree tree, int width, int height)
             if (CubeHit(node.Code, node.Level))
             {
                 Range((int)node.First, (int)node.First + node.Count, node.Code, node.Level);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Every point, nearest first (K-7's ray, Issue #477): the cubes that can reach the cursor wait in a queue by the nearest
+    /// distance along the view of the sphere around them; a node gives its own points' cube and its children's, and a cube
+    /// of more than 32 points its octants. The search ends at the first cube that cannot hold a point nearer than the best
+    /// found (<see cref="NearMargin"/>), so its answer is <see cref="Full"/>'s.
+    /// </summary>
+    public void Nearest()
+    {
+        var nodes = tree.Nodes;
+        _pending.Clear();
+        if (CubeReach(nodes[0].Code, nodes[0].Level, out var rootNear))
+        {
+            _pending.Enqueue(new Pending(0, 0, 0, nodes[0].Code, nodes[0].Level), rootNear);
+        }
+
+        while (_pending.TryDequeue(out var item, out var near))
+        {
+            if (Best >= 0 && near > BestDistance * NearMargin)
+            {
+                break;
+            }
+
+            if (item.Node >= 0)
+            {
+                // The node's own points share its cube, which reached the cursor; its children wait as cubes of their own.
+                var node = nodes[item.Node];
+                var from = (int)node.First;
+                _pending.Enqueue(new Pending(-1, from, from + node.Count, node.Code, node.Level), near);
+                for (var child = item.Node + 1; child < node.SubtreeEnd; child = nodes[child].SubtreeEnd)
+                {
+                    if (CubeReach(nodes[child].Code, nodes[child].Level, out var childNear))
+                    {
+                        _pending.Enqueue(new Pending(child, 0, 0, nodes[child].Code, nodes[child].Level), childNear);
+                    }
+                }
+            }
+            else if (item.To - item.From <= ScanBelow || item.Level >= Octree.Bits)
+            {
+                for (var i = item.From; i < item.To; i++)
+                {
+                    Scan(i);
+                }
+            }
+            else
+            {
+                var keys = tree.Keys;
+                var shift = 3 * (Octree.Bits - (item.Level + 1));
+                var at = item.From;
+                for (var digit = 0UL; digit < 8; digit++)
+                {
+                    var prefix = (item.Code << 3) | digit;
+                    var end = Octree.LowerBound(keys, at, item.To, shift, prefix + 1);
+                    if (end > at && CubeReach(prefix, item.Level + 1, out var octantNear))
+                    {
+                        _pending.Enqueue(new Pending(-1, at, end, prefix, item.Level + 1), octantNear);
+                    }
+
+                    at = end;
+                }
             }
         }
     }
@@ -711,12 +790,17 @@ internal sealed class HitTester(Octree tree, int width, int height)
     // Whether a point of the sphere around the cube can project within the radius of the cursor. For a point q of a sphere
     // of radius R around c, in view space with w the distance along the view: |q.xy / q.w - c.xy / c.w| ≤ R (1 + |c.xy| /
     // c.w) / (c.w - R), times the focal length in pixels.
-    private bool CubeHit(ulong code, int level)
+    private bool CubeHit(ulong code, int level) => CubeReach(code, level, out _);
+
+    // CubeHit, and the nearest distance along the view of the sphere around the cube (at most each point's clip w). A
+    // child's sphere lies inside its parent's (the centers are half a parent's radius apart), so a child is never nearer.
+    private bool CubeReach(ulong code, int level, out float near)
     {
         Octree.Cube(code, level, out var center, out var half);
         var radius = half * Sqrt3;
         var inView = Vector3.Transform(center, _view);
         var w = -inView.Z;
+        near = w - radius;
         if (w <= radius)
         {
             return true;
@@ -752,6 +836,15 @@ internal sealed class HitTester(Octree tree, int width, int height)
         {
             Best = i;
             BestDepth = depth;
+            BestDistance = clip.W;
         }
     }
+
+    /// <summary>A cube waiting in the nearest-first search: a node (and its children), or a range of the copy.</summary>
+    /// <param name="Node">The node, or -1 for the range of points from <paramref name="From"/> to <paramref name="To"/>.</param>
+    /// <param name="From">The range's first point in the copy.</param>
+    /// <param name="To">The point after the range's last.</param>
+    /// <param name="Code">The cube's Morton code at its level.</param>
+    /// <param name="Level">The cube's level.</param>
+    private readonly record struct Pending(int Node, int From, int To, ulong Code, int Level);
 }

@@ -22,6 +22,19 @@ internal static partial class Scene
     /// <summary>The affinity of the hit tests with --pin: logical processor 2, a performance core (.cursor/rules/bench.mdc).</summary>
     private const uint PinnedMask = 1u << 2;
 
+    /// <summary>Which points a hit test searches, and how.</summary>
+    private enum HitSearch
+    {
+        /// <summary>Every point: the octree from the root, a subtree skipped when its cube cannot reach the cursor.</summary>
+        Full,
+
+        /// <summary>The points of the nodes the budget draws.</summary>
+        Drawn,
+
+        /// <summary>Every point, nearest first, until no cube can hold a nearer point (K-7, Issue #477).</summary>
+        Nearest,
+    }
+
     /// <summary>Builds the octree and prints its figures, then runs the hit tests; returns the exit code.</summary>
     public static int OctreeBuild(ReadOnlySpan<string> args)
     {
@@ -154,8 +167,9 @@ internal static partial class Scene
     /// <summary>
     /// Runs the hit tests at cursors over the orbit: at each of the hit frames, half the cursors anywhere over the box on the
     /// screen and half on the projection of a point of the data, where the points are dense. "full" finds the nearest point
-    /// among all points, "drawn" among the nodes the budget draws. Each mode runs over every cursor once to warm, then once
-    /// timed. Then the octree's "full" answer is checked against every point projected one by one. Returns 1 when one differs.
+    /// among all points, "drawn" among the nodes the budget draws, and "nearest" among all points, nearest first with an
+    /// early exit. Each mode runs over every cursor once to warm, then once timed. Then "nearest" is checked against "full"
+    /// at every query, and both against every point projected one by one at a few. Returns 1 when one differs.
     /// </summary>
     private static int HitTests(Octree tree, OctreeOptions options)
     {
@@ -215,9 +229,11 @@ internal static partial class Scene
         bool agree;
         try
         {
-            RunHits("hit_full", tester, frames, cursors, selections, options, drawn: false);
-            RunHits("hit_drawn", tester, frames, cursors, selections, options, drawn: true);
-            agree = CheckHits(tester, frames, cursors, options);
+            RunHits("hit_full", tester, frames, cursors, selections, options, HitSearch.Full);
+            RunHits("hit_drawn", tester, frames, cursors, selections, options, HitSearch.Drawn);
+            RunHits("hit_nearest", tester, frames, cursors, selections, options, HitSearch.Nearest);
+            agree = CompareNearest(tester, frames, cursors, options);
+            agree &= CheckHits(tester, frames, cursors, options);
         }
         finally
         {
@@ -230,7 +246,15 @@ internal static partial class Scene
         return agree ? 0 : 1;
     }
 
-    private static void RunHits(string name, HitTester tester, int[] frames, Vector2[] cursors, List<int>[] selections, OctreeOptions options, bool drawn)
+    private static void RunHits(
+        string name,
+        HitTester tester,
+        int[] frames,
+        Vector2[] cursors,
+        List<int>[] selections,
+        OctreeOptions options,
+        HitSearch search
+    )
     {
         var times = new double[frames.Length];
         var tested = new double[frames.Length];
@@ -242,13 +266,17 @@ internal static partial class Scene
                 var camera = new OrbitCamera(frames[q]);
                 var start = Stopwatch.GetTimestamp();
                 tester.Begin(camera.Transform, camera.View, camera.Focal, cursors[q], options.HitRadius);
-                if (drawn)
+                switch (search)
                 {
-                    tester.Drawn(CollectionsMarshal.AsSpan(selections[q / options.Hits]));
-                }
-                else
-                {
-                    tester.Full();
+                    case HitSearch.Drawn:
+                        tester.Drawn(CollectionsMarshal.AsSpan(selections[q / options.Hits]));
+                        break;
+                    case HitSearch.Nearest:
+                        tester.Nearest();
+                        break;
+                    default:
+                        tester.Full();
+                        break;
                 }
 
                 times[q] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
@@ -262,10 +290,45 @@ internal static partial class Scene
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{name}: found={found} of {frames.Length}"));
     }
 
+    /// <summary>
+    /// Checks the nearest-first search against the full one at every query: the same point, or none for both. Prints the
+    /// first queries that differ and the count; returns whether all agree.
+    /// </summary>
+    private static bool CompareNearest(HitTester tester, int[] frames, Vector2[] cursors, OctreeOptions options)
+    {
+        var agree = 0;
+        for (var q = 0; q < frames.Length; q++)
+        {
+            var camera = new OrbitCamera(frames[q]);
+            tester.Begin(camera.Transform, camera.View, camera.Focal, cursors[q], options.HitRadius);
+            tester.Full();
+            var full = tester.Best;
+            tester.Begin(camera.Transform, camera.View, camera.Focal, cursors[q], options.HitRadius);
+            tester.Nearest();
+            var nearest = tester.Best;
+            if (full == nearest)
+            {
+                agree++;
+            }
+            else if (q - agree < 10)
+            {
+                Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"hit_nearest_vs_full: query {q} full={full} nearest={nearest}"));
+            }
+        }
+
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"hit_nearest_vs_full: agree={agree} of {frames.Length}"));
+        return agree == frames.Length;
+    }
+
+    /// <summary>
+    /// Checks the full and the nearest-first answers against every point projected one by one, at evenly spaced queries.
+    /// Prints a line for each search; returns whether both agree at every check.
+    /// </summary>
     private static bool CheckHits(HitTester tester, int[] frames, Vector2[] cursors, OctreeOptions options)
     {
         var checks = Math.Min(options.HitCheck, frames.Length);
         var agree = 0;
+        var nearestAgree = 0;
         for (var c = 0; c < checks; c++)
         {
             var q = (int)((long)c * frames.Length / checks);
@@ -274,20 +337,24 @@ internal static partial class Scene
             tester.Full();
             var octree = tester.Best;
             tester.Begin(camera.Transform, camera.View, camera.Focal, cursors[q], options.HitRadius);
+            tester.Nearest();
+            var nearest = tester.Best;
+            tester.Begin(camera.Transform, camera.View, camera.Focal, cursors[q], options.HitRadius);
             tester.All();
             var every = tester.Best;
-            if (octree == every)
+            agree += octree == every ? 1 : 0;
+            nearestAgree += nearest == every ? 1 : 0;
+            if (octree != every || nearest != every)
             {
-                agree++;
-            }
-            else
-            {
-                Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"hit_check: query {q} octree={octree} every_point={every}"));
+                Console.WriteLine(
+                    string.Create(CultureInfo.InvariantCulture, $"hit_check: query {q} octree={octree} nearest={nearest} every_point={every}")
+                );
             }
         }
 
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"hit_check: agree={agree} of {checks}"));
-        return agree == checks;
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"hit_check_nearest: agree={nearestAgree} of {checks}"));
+        return agree == checks && nearestAgree == checks;
     }
 
     private static Vector2 ToPixel(Matrix4x4 transform, Vector3 position)
