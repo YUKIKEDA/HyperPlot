@@ -277,7 +277,7 @@ public sealed class SpatialIndexStateTests
     /// - Compute by a loop over every row the ranges, the number of points and of excluded rows, the 256 × 256 counts
     ///   of the cells of level 8, and, for each rectangle and each maxLevel of 0 to 8, 9, 20, and 32, the points of the
     ///   cells of level min(maxLevel, 8) that lie wholly among the grid cells of the rectangle and the points of the
-    ///   other cells that share a grid cell with it.
+    ///   other cells that share a grid cell with it; none for a rectangle that misses a range, which the index found.
     /// - Call Count for each rectangle and level, GetCells into a buffer of marked cells, and ReadPoints of 1 point.
     /// - Let the worker go, wait for Completion, and acquire the full snapshot.
     ///
@@ -351,13 +351,16 @@ public sealed class SpatialIndexStateTests
             foreach (var rect in Rectangles(xRange, yRange, seed: 53))
             {
                 var grid = SpatialReference.Grid(coarse, rect);
+
+                // A rectangle that misses a range the index found counts nothing (design §3.4 "範囲で切る").
+                var misses = rect.XMax < xRange.Lower || rect.XMin > xRange.Upper || rect.YMax < yRange.Lower || rect.YMin > yRange.Upper;
                 foreach (var level in (int[])[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20, 32])
                 {
                     var shift = 32 - Math.Min(level, 8);
                     var width = (1UL << shift) - 1;
                     long inside = 0;
                     long touching = 0;
-                    for (var i = 0; i < gx.Count; i++)
+                    for (var i = 0; i < gx.Count && !misses; i++)
                     {
                         var x0 = ((ulong)gx[i] >> shift) << shift;
                         var y0 = ((ulong)gy[i] >> shift) << shift;

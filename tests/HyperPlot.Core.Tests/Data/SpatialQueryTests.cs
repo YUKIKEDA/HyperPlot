@@ -25,6 +25,7 @@ public sealed class SpatialQueryTests
     ///   wholly among the grid cells of the rectangle, and the points of the other cells that share a grid cell with it.
     ///
     /// Expected:
+    /// - A rectangle that misses a range holds no point by its values, and Count answers 0 and 0 at every level.
     /// - Inside ≤ the points by their grid cells ≤ Inside + Touching.
     /// - The points by their values ≤ Inside + Touching.
     /// - Inside and Touching are the two sums.
@@ -49,6 +50,18 @@ public sealed class SpatialQueryTests
                 {
                     byValues++;
                 }
+            }
+
+            // A rectangle that misses a range the index found holds no point and counts none (design §3.4 "範囲で切る").
+            if (Misses(snapshot, rect))
+            {
+                Assert.Equal(0, byValues);
+                foreach (var level in Levels)
+                {
+                    Assert.Equal(default, snapshot.Count(rect, level));
+                }
+
+                continue;
             }
 
             foreach (var level in Levels)
@@ -142,7 +155,7 @@ public sealed class SpatialQueryTests
     ///
     /// Steps:
     /// - For each rectangle and each maxLevel of 0, 1, 2, 5, 8, 13, 21, and 32, take from the cells of every value at
-    ///   that level the ones that share a grid cell with the rectangle, by a loop.
+    ///   that level the ones that share a grid cell with the rectangle, by a loop; none for a rectangle that misses a range.
     /// - Call GetCells with an empty destination, with a destination of the count it returned, and with one of 3 cells
     ///   filled with a marker.
     ///
@@ -167,12 +180,15 @@ public sealed class SpatialQueryTests
         foreach (var rect in Rectangles(snapshot, px, py, seed: 41))
         {
             var grid = SpatialReference.Grid(snapshot, rect);
+            var misses = Misses(snapshot, rect);
             foreach (var level in Levels)
             {
-                var expected = SpatialReference
-                    .Cells(snapshot, SpatialReference.Everything, level)
-                    .Where(cell => SpatialReference.Touches(cell, grid))
-                    .ToArray();
+                var expected = misses
+                    ? []
+                    : SpatialReference
+                        .Cells(snapshot, SpatialReference.Everything, level)
+                        .Where(cell => SpatialReference.Touches(cell, grid))
+                        .ToArray();
                 var cells = SpatialReference.Cells(snapshot, rect, level);
                 Assert.True(expected.AsSpan().SequenceEqual(cells), $"The cells of {rect} at level {level} differ from the loop.");
                 Assert.DoesNotContain(cells, cell => cell.Level > level || (level == 32 && cell.Kind == SpatialCellKind.Inner));
@@ -285,6 +301,13 @@ public sealed class SpatialQueryTests
             snapshot.Release();
         }
     }
+
+    // Whether a rectangle misses the x or the y range of a snapshot whose ranges the index found.
+    private static bool Misses(SpatialSnapshot snapshot, in SpatialRect rect) =>
+        rect.XMax < snapshot.XRange.Lower
+        || rect.XMin > snapshot.XRange.Upper
+        || rect.YMax < snapshot.YRange.Lower
+        || rect.YMin > snapshot.YRange.Upper;
 
     // 60 rectangles in the differences from the origins: wide ones that reach outside the ranges, narrow ones, and
     // ones that are a single point of the copy.

@@ -635,6 +635,9 @@ public sealed class SpatialCopyTests
         var snapshot = index.Acquire();
         Assert.Equal(SpatialStage.None, snapshot.Stage);
         Assert.Equal(new SpatialCount(0, Short), snapshot.Count(SpatialReference.Everything, 32));
+
+        // A snapshot that holds nothing has no range to clip to (design §3.4 "範囲で切る"): any rectangle touches every row.
+        Assert.Equal(new SpatialCount(0, Short), snapshot.Count(new SpatialRect(1e30, 2e30, 1e30, 2e30), 32));
         snapshot.Release();
         return fault;
     }
