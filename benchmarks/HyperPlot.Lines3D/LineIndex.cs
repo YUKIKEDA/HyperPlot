@@ -29,6 +29,77 @@ internal struct Segment
     public Vector3 Hi;
 }
 
+/// <summary>Which arrays hold the nodes: the errors and the offsets apart (10 B a vertex), packed (8 B), or both.</summary>
+internal enum NodeLayout
+{
+    /// <summary><see cref="Half3"/> errors and <see cref="uint"/> offsets in two arrays, 10 B a vertex.</summary>
+    Split,
+
+    /// <summary>One <see cref="PackedNode"/> a vertex, 8 B: the error and a 2-byte offset read together (Issue #488, decision 3).</summary>
+    Packed,
+
+    /// <summary>Both, to compare them in one process.</summary>
+    Both,
+}
+
+/// <summary>A node packed in 8 B: its error as three halves and its split vertex as m - v0 (segments up to 2^16).</summary>
+[StructLayout(LayoutKind.Sequential, Pack = 2)]
+internal struct PackedNode
+{
+    public Half X;
+    public Half Y;
+    public Half Z;
+    public ushort Offset;
+}
+
+/// <summary>Reads a node's error (relative to its segment's extent) and its split offset; a struct, so that each walk is specialized.</summary>
+internal interface INodes
+{
+    Vector3 Error(int slot);
+
+    int Offset(int slot);
+}
+
+/// <summary>The nodes of <see cref="NodeLayout.Split"/>.</summary>
+internal readonly struct SplitNodes : INodes
+{
+    private readonly Half3[] _errors;
+    private readonly uint[] _offsets;
+
+    public SplitNodes(Half3[] errors, uint[] offsets)
+    {
+        _errors = errors;
+        _offsets = offsets;
+    }
+
+    public Vector3 Error(int slot)
+    {
+        var e = _errors[slot];
+        return new Vector3((float)e.X, (float)e.Y, (float)e.Z);
+    }
+
+    public int Offset(int slot) => (int)_offsets[slot];
+}
+
+/// <summary>The nodes of <see cref="NodeLayout.Packed"/>.</summary>
+internal readonly struct PackedNodes : INodes
+{
+    private readonly PackedNode[] _nodes;
+
+    public PackedNodes(PackedNode[] nodes)
+    {
+        _nodes = nodes;
+    }
+
+    public Vector3 Error(int slot)
+    {
+        ref readonly var node = ref _nodes[slot];
+        return new Vector3((float)node.X, (float)node.Y, (float)node.Z);
+    }
+
+    public int Offset(int slot) => _nodes[slot].Offset;
+}
+
 /// <summary>
 /// The index of a line (SPIKE, row K0b): fixed segments of 2^n vertices, each with its own Douglas–Peucker tree whose nodes
 /// are its interior vertices, stored in preorder (BLG tree, Issue #481 decision 2).
@@ -50,18 +121,35 @@ internal struct Segment
 /// </remarks>
 internal sealed class LineIndex
 {
-    public LineIndex(LineData data, int segmentLog2, SplitDistance split)
+    public LineIndex(LineData data, int segmentLog2, SplitDistance split, NodeLayout layout)
     {
+        if (layout != NodeLayout.Split && segmentLog2 > 16)
+        {
+            throw new ArgumentException("The packed layout keeps m - v0 in 2 bytes: segments of 2^16 vertices at most.");
+        }
+
         Data = data;
+        SegmentLog2 = segmentLog2;
         SegmentSize = 1 << segmentLog2;
         Split = split;
         SegmentCount = Math.Max(1, (data.Count - 1 + SegmentSize - 1) / SegmentSize);
-        Errors = new Half3[data.Count];
-        Offsets = new uint[data.Count];
+        if (layout != NodeLayout.Packed)
+        {
+            Errors = new Half3[data.Count];
+            Offsets = new uint[data.Count];
+        }
+
+        if (layout != NodeLayout.Split)
+        {
+            Packed = new PackedNode[data.Count];
+        }
+
         Segments = new Segment[SegmentCount];
     }
 
     public LineData Data { get; }
+
+    public int SegmentLog2 { get; }
 
     public int SegmentSize { get; }
 
@@ -69,11 +157,26 @@ internal sealed class LineIndex
 
     public SplitDistance Split { get; }
 
-    public Half3[] Errors { get; }
+    /// <summary>Gets the errors of <see cref="NodeLayout.Split"/>, or null when the index holds only the packed nodes.</summary>
+    public Half3[]? Errors { get; }
 
-    public uint[] Offsets { get; }
+    /// <summary>Gets the offsets of <see cref="NodeLayout.Split"/>, or null when the index holds only the packed nodes.</summary>
+    public uint[]? Offsets { get; }
+
+    /// <summary>Gets the nodes of <see cref="NodeLayout.Packed"/>, or null when the index holds only the split arrays.</summary>
+    public PackedNode[]? Packed { get; }
 
     public Segment[] Segments { get; }
+
+    /// <summary>Gets the reader of the split arrays.</summary>
+    public SplitNodes SplitReader() =>
+        new(Errors ?? throw new InvalidOperationException("The index has no split arrays."), Offsets!);
+
+    /// <summary>Gets the reader of the packed nodes.</summary>
+    public PackedNodes PackedReader() => new(Packed ?? throw new InvalidOperationException("The index has no packed nodes."));
+
+    /// <summary>Gets a node's error relative to its segment's extent, from whichever layout the index holds (not on a timed path).</summary>
+    public Vector3 RelativeError(int slot) => Packed is not null ? PackedReader().Error(slot) : SplitReader().Error(slot);
 
     /// <summary>Gets the largest depth of a node of any segment's tree, after <see cref="Build"/>.</summary>
     public int MaxDepth { get; private set; }
@@ -194,8 +297,23 @@ internal sealed class LineIndex
 
             scratch.E[pos] = error;
             var slot = v0 + 1 + pos;
-            Errors[slot] = new Half3 { X = Up(error.X, extent.X), Y = Up(error.Y, extent.Y), Z = Up(error.Z, extent.Z) };
-            Offsets[slot] = (uint)(m - v0);
+            var half = new Half3 { X = Up(error.X, extent.X), Y = Up(error.Y, extent.Y), Z = Up(error.Z, extent.Z) };
+            if (Errors is { } errors)
+            {
+                errors[slot] = half;
+                Offsets![slot] = (uint)(m - v0);
+            }
+
+            if (Packed is { } packed)
+            {
+                packed[slot] = new PackedNode
+                {
+                    X = half.X,
+                    Y = half.Y,
+                    Z = half.Z,
+                    Offset = (ushort)(m - v0),
+                };
+            }
         }
     }
 

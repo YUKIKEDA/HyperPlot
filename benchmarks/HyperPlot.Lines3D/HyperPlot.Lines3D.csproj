@@ -5,5 +5,7 @@
     <RootNamespace>HyperPlot.Lines3D</RootNamespace>
     <!-- Figures are taken from the NativeAOT Release build (.cursor/rules/bench.mdc). -->
     <PublishAot>true</PublishAot>
+    <!-- LibraryImport of timeBeginPeriod for the frame loop of the async scene (.cursor/rules/bench.mdc). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 </Project>

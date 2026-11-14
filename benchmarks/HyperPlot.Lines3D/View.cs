@@ -115,6 +115,39 @@ internal readonly struct View
         return scaled.LengthSquared() * gain * gain * (1 + (ux * ux) + (uy * uy)) < tolerance2;
     }
 
+    /// <summary>
+    /// The square of the bound <see cref="Prune"/> compares with the tolerance, in pixels: 0 when the node is culled,
+    /// infinity when its clamped box reaches the near plane. For a stopped extraction's achieved tolerance; not timed.
+    /// </summary>
+    public float Bound2(Vector3 a, Vector3 b, Vector3 error)
+    {
+        var lo = (Vector3.Min(a, b) - error - Center) * Scale;
+        var hi = (Vector3.Max(a, b) + error - Center) * Scale;
+        if (OutsideBox(lo, hi))
+        {
+            return 0;
+        }
+
+        var scaled = error * Scale;
+        var bound = Vector3.One + scaled;
+        lo = Vector3.Max(lo, -bound);
+        hi = Vector3.Min(hi, bound);
+        var middle = ((lo + hi) * 0.5f) - Eye;
+        var half = (hi - lo) * 0.5f;
+        var depth = Vector3.Dot(middle, Forward) - Vector3.Dot(half, _absForward);
+        if (depth <= Near)
+        {
+            return float.PositiveInfinity;
+        }
+
+        var x = MathF.Abs(Vector3.Dot(middle, Right)) + Vector3.Dot(half, _absRight);
+        var y = MathF.Abs(Vector3.Dot(middle, Up)) + Vector3.Dot(half, _absUp);
+        var ux = x / depth;
+        var uy = y / depth;
+        var gain = Focal / depth;
+        return scaled.LengthSquared() * gain * gain * (1 + (ux * ux) + (uy * uy));
+    }
+
     private static bool OutsideBox(Vector3 lo, Vector3 hi) =>
         hi.X < -1 || hi.Y < -1 || hi.Z < -1 || lo.X > 1 || lo.Y > 1 || lo.Z > 1;
 }

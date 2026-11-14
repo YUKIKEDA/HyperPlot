@@ -9,7 +9,7 @@ namespace HyperPlot.Lines3D;
 internal static class Scene
 {
     /// <summary>The screen error allowed, in pixels (requirement K-3).</summary>
-    private const float Tolerance = 1;
+    internal const float Tolerance = 1;
 
     /// <summary>The passes of a budgeted extraction before it gives up (it is then counted as incomplete).</summary>
     private const int MaxPasses = 12;
@@ -147,7 +147,7 @@ internal static class Scene
                 }
 
                 var result = extractor.Extract(view, Tolerance, n + 1, buffer);
-                var check = Check(view, buffer.AsSpan(0, result.Length), camera, inside);
+                var check = Check(view, buffer.AsSpan(0, result.Length), camera, inside, Tolerance);
                 var screenDp = ScreenDp(index, view, camera, inside, stack);
                 maxError = Math.Max(maxError, check.MaxError);
                 violations += check.Violations;
@@ -176,7 +176,7 @@ internal static class Scene
     }
 
     /// <summary>The scene's view at a frame.</summary>
-    private static View SceneView(string scene, int frame, int frames, Vector3 middle)
+    internal static View SceneView(string scene, int frame, int frames, Vector3 middle)
     {
         var zoom = (float)Math.Pow(MaxZoom, frames > 1 ? (double)frame / (frames - 1) : 0);
         var full = new Vector3(2);
@@ -231,11 +231,12 @@ internal static class Scene
     /// The largest distance on the screen of a vertex inside the axis box from the drawn chord that skips it, the vertices
     /// past the tolerance, and the vertices inside the box that no chord covers (in a culled gap).
     /// </summary>
-    private static (double MaxError, long Violations, long Uncovered) Check(
+    internal static (double MaxError, long Violations, long Uncovered) Check(
         in View view,
         ReadOnlySpan<int> output,
         Vector3[] camera,
-        bool[] inside
+        bool[] inside,
+        float tolerance
     )
     {
         var max = 0.0;
@@ -259,7 +260,7 @@ internal static class Scene
                     {
                         var d = Distance(view.Screen(camera[i]), sa, sb);
                         max = Math.Max(max, d);
-                        violations += d > Tolerance * (1 + 1e-3) ? 1 : 0;
+                        violations += d > tolerance * (1 + 1e-3) ? 1 : 0;
                     }
                 }
             }
@@ -381,16 +382,16 @@ internal static class Scene
     }
 
     /// <summary>Generates the line and builds the index, and prints the build's time, CPU, and memory.</summary>
-    private static (LineData Data, LineIndex Index) Prepare(Options options)
+    internal static (LineData Data, LineIndex Index) Prepare(Options options)
     {
         var start = Stopwatch.GetTimestamp();
         var data = LineData.Make(options.Data, options.Count, options.Seed, options.Noise, options.Turns);
         var generate = Stopwatch.GetElapsedTime(start).TotalSeconds;
         Line(
-            $"data={options.Data} count={data.Count} seed={options.Seed} noise={options.Noise} turns={options.Turns} generate_s={generate:F2}"
+            $"command={options.Command} data={options.Data} count={data.Count} seed={options.Seed} noise={options.Noise} turns={options.Turns} layout={options.LayoutName} generate_s={generate:F2}"
         );
 
-        var index = new LineIndex(data, options.SegmentLog2, options.Split);
+        var index = new LineIndex(data, options.SegmentLog2, options.Split, options.Layout);
         using var process = Process.GetCurrentProcess();
         var cpuBefore = process.TotalProcessorTime;
         start = Stopwatch.GetTimestamp();
@@ -407,21 +408,52 @@ internal static class Scene
         var errorBytes = n * Unsafe.SizeOf<Half3>();
         var offsetBytes = n * sizeof(uint);
         var segmentBytes = (long)index.SegmentCount * Unsafe.SizeOf<Segment>();
-        var total = errorBytes + offsetBytes + segmentBytes;
-        var packedOffset = options.SegmentLog2 <= 16 ? 2 : 3;
-        var packed = errorBytes + (n * packedOffset) + segmentBytes;
-        Line(
-            $"memory errors_bytes={errorBytes} offsets_bytes={offsetBytes} segments_bytes={segmentBytes} total_bytes={total} bytes_per_vertex={(double)total / n:F3} percent_of_f32_xyz={100.0 * total / (12 * n):F1} percent_of_f64_xyz={100.0 * total / (24 * n):F1}"
-        );
-        Line(
-            $"memory_packed offset_bytes_each={packedOffset} total_bytes={packed} bytes_per_vertex={(double)packed / n:F3} percent_of_f32_xyz={100.0 * packed / (12 * n):F1} percent_of_f64_xyz={100.0 * packed / (24 * n):F1}"
-        );
+        if (index.Errors is not null)
+        {
+            var total = errorBytes + offsetBytes + segmentBytes;
+            var packedOffset = options.SegmentLog2 <= 16 ? 2 : 3;
+            var packed = errorBytes + (n * packedOffset) + segmentBytes;
+            Line(
+                $"memory errors_bytes={errorBytes} offsets_bytes={offsetBytes} segments_bytes={segmentBytes} total_bytes={total} bytes_per_vertex={(double)total / n:F3} percent_of_f32_xyz={100.0 * total / (12 * n):F1} percent_of_f64_xyz={100.0 * total / (24 * n):F1}"
+            );
+            Line(
+                $"memory_packed offset_bytes_each={packedOffset} total_bytes={packed} bytes_per_vertex={(double)packed / n:F3} percent_of_f32_xyz={100.0 * packed / (12 * n):F1} percent_of_f64_xyz={100.0 * packed / (24 * n):F1}"
+            );
+        }
+
+        if (index.Packed is not null)
+        {
+            // Measured from the type that is stored, not computed: PackedNode must be 8 B.
+            var nodeBytes = Unsafe.SizeOf<PackedNode>();
+            var stored = (n * nodeBytes) + segmentBytes;
+            Line(
+                $"memory_packed_stored node_bytes={nodeBytes} segments_bytes={segmentBytes} total_bytes={stored} bytes_per_vertex={(double)stored / n:F3} percent_of_f32_xyz={100.0 * stored / (12 * n):F1} percent_of_f64_xyz={100.0 * stored / (24 * n):F1}"
+            );
+        }
+
         Line($"process peak_working_set_mb={process.PeakWorkingSet64 / (1024.0 * 1024):F0}");
         return (data, index);
     }
 
+    /// <summary>
+    /// Raises the process to high priority and leaves the threads' placement to the OS, as an app's worker pool does
+    /// (.cursor/rules/bench.mdc): the par and async commands run several threads, which one pinned core cannot hold.
+    /// </summary>
+    internal static void Raise()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Line($"pinned=false priority=Normal (not Windows) processors={Environment.ProcessorCount}");
+            return;
+        }
+
+        using var process = Process.GetCurrentProcess();
+        process.PriorityClass = ProcessPriorityClass.High;
+        Line($"pinned=false priority=High processors={Environment.ProcessorCount}");
+    }
+
     /// <summary>Pins the process to logical processor 2, a performance core, at high priority (.cursor/rules/bench.mdc).</summary>
-    private static void Pin(Options options)
+    internal static void Pin(Options options)
     {
         if (!options.Pin)
         {
@@ -441,13 +473,13 @@ internal static class Scene
         Line($"pinned=true affinity=0x4 priority=High");
     }
 
-    private static string Label(Options options, int count, string scene) =>
+    internal static string Label(Options options, int count, string scene) =>
         string.Create(
             CultureInfo.InvariantCulture,
             $"scene={scene} data={options.Data} count={count} segment=2^{options.SegmentLog2} split={options.SplitName}"
         );
 
-    private static double[][] NewTable(int rows, int columns)
+    internal static double[][] NewTable(int rows, int columns)
     {
         var table = new double[rows][];
         for (var r = 0; r < rows; r++)
@@ -458,7 +490,7 @@ internal static class Scene
         return table;
     }
 
-    private static void Print(string label, double[] values)
+    internal static void Print(string label, double[] values)
     {
         if (values.Length == 0)
         {
@@ -476,5 +508,5 @@ internal static class Scene
     private static double Percentile(double[] sorted, double p) =>
         sorted[Math.Clamp((int)Math.Ceiling(p * sorted.Length) - 1, 0, sorted.Length - 1)];
 
-    private static void Line(FormattableString text) => Console.WriteLine(FormattableString.Invariant(text));
+    internal static void Line(FormattableString text) => Console.WriteLine(FormattableString.Invariant(text));
 }
