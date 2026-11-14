@@ -61,7 +61,9 @@ finally {
 
 foreach ($mesh in "blob", "surface") {
     foreach ($weight in "eq7", "eq10", "none") {
-        $extra = if ($weight -eq "eq7") { @("--dump", (Join-Path $Out "images")) } else { @() }
+        # @(...) around the if: an if statement unrolls a one-element array to its string, and splatting a string
+        # passes its characters one by one.
+        $extra = @(if ($weight -eq "eq7") { "--dump"; Join-Path $Out "images" })
         $log = Join-Path $Out "error-$mesh-$weight.txt"
         & $exe error $mesh --weight $weight @extra *> $log
         if ($LASTEXITCODE -ne 0) { Write-Warning "error run failed: $log" }

@@ -542,6 +542,7 @@ internal static partial class Scene
             [],
             [],
         ];
+
         private readonly List<float>[] _overlap =
         [
             [],
@@ -549,6 +550,7 @@ internal static partial class Scene
             [],
             [],
         ];
+
         private readonly List<float>[] _covered76 =
         [
             [],
@@ -556,6 +558,7 @@ internal static partial class Scene
             [],
             [],
         ];
+
         private readonly List<int> _layers = [];
 
         /// <summary>Pixels the WBOIT frame drew where the capture found no fragment: expected 0.</summary>
