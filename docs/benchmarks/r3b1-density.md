@@ -14,7 +14,7 @@
 | ワーカー | エンジンの既定のプール。1 つの索引を同時に進めるワーカーは 8 本まで（§3.4） |
 | フレームの間隔 | 16.7 ms 以上空ける（`timeBeginPeriod(1)` の後の `Thread.Sleep`）。実際は 16.41〜16.98 ms |
 | 回 | 1e9 点は、`first`（その場で書いたファイル）と `zoom` の `Draw = Density`（同じファイル）を、分布を交互に 3 回ずつ。続けて `zoom` の `Draw = Auto` を分布ごとに 1 回。1e8 点は `switch` と `categories` を分布を交互に 2 回ずつ。どの回も終了コード 0 |
-| 時間 | 2026-11-14 01:36:52〜02:09:41（`run-485.ps1`、出力は `.dev/out/dens485.txt`） |
+| 時間 | 2026-11-14 01:36:52〜02:09:41（`run-r3b1-density.ps1`、出力は `.dev/out/dens485.txt`） |
 
 ### 機械の状態
 
@@ -28,10 +28,10 @@
 ## 再現
 
 ```powershell
-pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-485.ps1 D:\...\dens485.txt
+pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b1-density.ps1 D:\...\dens485.txt
 ```
 
-`run-485.ps1` は、NativeAOT で発行し（`C:\Program Files (x86)\Microsoft Visual Studio\Installer` を `PATH` に足す）、上の順に場面を流す。機械の記録と GPU のクロックは、出力のファイルの横に `<出力>.machine.log` と `<出力>.clocks.csv` で書く。1e9 点の `first` の前にファイルを消すので、場面が種からバッファを通さずに書き直す（ページキャッシュに載っていない）。1e9 点は分布ごとに 8 GB、索引の写し（12 GB）は一時ファイルで、索引を捨てるときに消える。最後にデータと発行したファイルを消す。場面を 1 つ流すときは次のとおり。
+`run-r3b1-density.ps1` は、NativeAOT で発行し（`C:\Program Files (x86)\Microsoft Visual Studio\Installer` を `PATH` に足す）、上の順に場面を流す。機械の記録と GPU のクロックは、出力のファイルの横に `<出力>.machine.log` と `<出力>.clocks.csv` で書く。1e9 点の `first` の前にファイルを消すので、場面が種からバッファを通さずに書き直す（ページキャッシュに載っていない）。1e9 点は分布ごとに 8 GB、索引の写し（12 GB）は一時ファイルで、索引を捨てるときに消える。最後にデータと発行したファイルを消す。場面を 1 つ流すときは次のとおり。
 
 ```powershell
 .dev/r3b1-pub485/HyperPlot.E2E.exe density D:\...\.dev\r3b1-data9 1e9 uniform zoom 600 density

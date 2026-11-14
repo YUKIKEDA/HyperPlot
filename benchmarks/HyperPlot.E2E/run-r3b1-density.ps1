@@ -2,7 +2,7 @@
 # a NativeAOT build. The figures the requirements wait for come first: P-15 (the first display on files just written
 # unbuffered, three rounds) and P-3 (the zoom script drawn as density, three rounds), the distributions alternated; then the
 # zoom with Draw=Auto at 1e9 (the switch), the switch at 1e8, and the 8 categories at 1e8 (docs/benchmarks/r3b1-density.md).
-# Usage, from PowerShell 7 when the machine is free: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-485.ps1 <output file>
+# Usage, from PowerShell 7 when the machine is free: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b1-density.ps1 <output file>
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv). The data
 # (8 GB a distribution at 1e9) goes under .dev/ and is deleted at the end with the published build.
 param(
