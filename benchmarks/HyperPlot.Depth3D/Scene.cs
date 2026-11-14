@@ -24,6 +24,7 @@ internal static partial class Scene
         "depth_passes",
         "total",
     ];
+
     private static readonly double[] _errorLevels = [0.1, 0.25, 0.5];
 
     /// <summary>run lines|markers method scene [options]: the orbit with GPU timestamps; returns the exit code.</summary>
