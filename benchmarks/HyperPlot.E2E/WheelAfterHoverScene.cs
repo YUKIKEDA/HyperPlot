@@ -63,7 +63,7 @@ internal static partial class WheelAfterHoverScene
 
         // The cache full of short texts before the plot's first frame, as the tests of Issue #378 fill it: under PR #511's
         // first fix the plot's long texts then held the only grown entries, the case where a hover made a whole frame shape
-        // them all again; run-511.ps1 runs that fix's tree beside main and the head.
+        // them all again. PR #511's body has the command that ran that fix's tree beside main and the head.
         var filler = new TextStyle(new Color(0, 0, 0, 255), 9);
         for (var i = 0; i < TextEngine.CacheCapacity; i++)
         {
