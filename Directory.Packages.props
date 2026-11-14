@@ -15,7 +15,7 @@
   <ItemGroup Label="Tests">
     <PackageVersion Include="xunit.v3" Version="4.0.3" />
     <!-- The version of Microsoft.Testing.Platform that xunit.v3 brings. -->
-    <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.5.1" />
+    <PackageVersion Include="Microsoft.Testing.Extensions.HangDump" Version="2.5.2" />
   </ItemGroup>
   <ItemGroup Label="Benchmarks">
     <PackageVersion Include="BenchmarkDotNet" Version="0.15.8" />
