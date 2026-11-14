@@ -93,6 +93,15 @@ case "$MODE" in
       done
     done
     ;;
+  o1b)
+    # The clump and uniform as one part at four blocks, and the clump as 6 colors of circles (Issue #472, O1's second sweep).
+    for dist in cluster uniform; do
+      for blk in 4096 8192 16384 32768; do
+        SCENES+=("$dist-p1-b$blk|HP_PROBE_BLOCK_POINTS=$blk $D2|180|points 10000000 6 0.6 $dist 600 0 whole")
+      done
+    done
+    SCENES+=("cluster-color6-b8192|HP_PROBE_BLOCK_POINTS=8192 $D2|180|points 10000000 6 0.6 cluster 600 6 whole")
+    ;;
   o3)
     data u1e9 uniform
     for r in 1 2 3; do
