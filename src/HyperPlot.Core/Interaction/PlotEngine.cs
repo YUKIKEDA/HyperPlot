@@ -1730,6 +1730,17 @@ public sealed partial class PlotEngine : IDisposable
             ReadOnlySpan<SectorTrapezoid> inner = [new SectorTrapezoid(0, MathF.Tau, radius, radius, 0, 0)];
             for (var i = 0; i < hits.Length; i++)
             {
+                // A density's bin is marked by its frame, not a disc: no point lies at its center (row R3c, Issue #471 Decision 10).
+                if (plan.HitBin(hits[i], out var bin))
+                {
+                    var color = plan.HitColor(hits[i]) with { A = 255 };
+                    list.DrawRect(bin.Left, bin.Top, bin.Width, line, color);
+                    list.DrawRect(bin.Left, bin.Top + bin.Height - line, bin.Width, line, color);
+                    list.DrawRect(bin.Left, bin.Top, line, bin.Height, color);
+                    list.DrawRect(bin.Left + bin.Width - line, bin.Top, line, bin.Height, color);
+                    continue;
+                }
+
                 if (plan.HitPixel(hits[i], out var at) && at.X >= left && at.X <= left + width && at.Y >= top && at.Y <= top + height)
                 {
                     list.DrawSectors(outer, at, theme.PanelBackground);

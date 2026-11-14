@@ -1069,6 +1069,23 @@ internal abstract class LayerPlan
     /// </summary>
     internal virtual double HitAlong(in GeomFrame.Axis x, in Interaction.SeriesHit hit) => HitScan.PixelOfValue(x, hit.X);
 
+    /// <summary>
+    /// Returns the pixels along and across a hit is drawn at (row R3c): where a hover marks it. <see cref="HitAlong"/> and
+    /// the y's pixel by default; a point on the index path where the vertex shader put it (design §6.3 "描いた位置で測る").
+    /// </summary>
+    internal virtual (double Along, double Across) HitPlace(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit) =>
+        (HitAlong(x, hit), HitScan.PixelOfValue(y, hit.Y));
+
+    /// <summary>
+    /// Returns the pixels of the box of a density's bin a hit stands for (row R3c, Issue #471 Decision 10), where a hover
+    /// draws its frame; <see langword="false"/> for a hit of a row, which a hover marks with a disc.
+    /// </summary>
+    internal virtual bool HitBin(in GeomFrame.Axis x, in GeomFrame.Axis y, in Interaction.SeriesHit hit, out PixelBox box)
+    {
+        box = default;
+        return false;
+    }
+
     /// <summary>Returns the middle of a category's band along, in its dodged place (row I2c): the hit's x is the category's number.</summary>
     protected double BandAlong(in GeomFrame.Axis x, int category)
     {
@@ -2281,3 +2298,10 @@ internal enum PositionKind
     /// <summary>The groups side by side.</summary>
     Dodge,
 }
+
+/// <summary>A box in the target's physical pixels, by its ends along a layer's x and across it (row R3c).</summary>
+/// <param name="AlongLow">The lesser pixel along.</param>
+/// <param name="AlongHigh">The greater pixel along.</param>
+/// <param name="AcrossLow">The lesser pixel across.</param>
+/// <param name="AcrossHigh">The greater pixel across.</param>
+internal readonly record struct PixelBox(double AlongLow, double AlongHigh, double AcrossLow, double AcrossHigh);

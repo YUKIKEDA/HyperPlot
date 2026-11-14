@@ -49,12 +49,45 @@ internal sealed partial class PlotPlan
         var layer = spec.Layers[hit.Layer];
         var plans = _panels[hit.Panel].Layers;
         var x = layer.SecondaryX ? frames.X2 : frames.X;
+        var y = layer.SecondaryY ? frames.Y2 : frames.Y;
 
-        // A layer places its own: a dodged bar in its place, a category's in its band (row I2c).
-        var along = hit.Layer < plans.Length ? plans[hit.Layer].HitAlong(x, hit) : HitScan.PixelOfValue(x, hit.X);
-        var across = HitScan.PixelOfValue(layer.SecondaryY ? frames.Y2 : frames.Y, hit.Y);
+        // A layer places its own: a dodged bar in its place, a category's in its band (row I2c), a point of the index path
+        // where it is drawn (row R3c).
+        var (along, across) =
+            hit.Layer < plans.Length ? plans[hit.Layer].HitPlace(x, y, hit) : (HitScan.PixelOfValue(x, hit.X), HitScan.PixelOfValue(y, hit.Y));
         pixel = _guides.Flipped ? new Vector2((float)across, (float)along) : new Vector2((float)along, (float)across);
         return float.IsFinite(pixel.X) && float.IsFinite(pixel.Y);
+    }
+
+    /// <summary>
+    /// Returns the rectangle of the target's physical pixels of a density's bin a hit stands for (row R3c, Issue #471
+    /// Decision 10): where a hover draws its frame. False for a hit of a row, and when the hit's panel or layer is not drawn
+    /// any more.
+    /// </summary>
+    internal bool HitBin(in SeriesHit hit, out (float Left, float Top, float Width, float Height) rect)
+    {
+        rect = default;
+        if (_spec is not { } spec || hit.Row >= 0 || hit.Panel >= _panels.Length || hit.Layer >= spec.Layers.Count)
+        {
+            return false;
+        }
+
+        var plans = _panels[hit.Panel].Layers;
+        var frames = _panels[hit.Panel].Frames;
+        var layer = spec.Layers[hit.Layer];
+        if (
+            hit.Layer >= plans.Length
+            || !plans[hit.Layer].HitBin(layer.SecondaryX ? frames.X2 : frames.X, layer.SecondaryY ? frames.Y2 : frames.Y, hit, out var box)
+        )
+        {
+            return false;
+        }
+
+        var (left, top, right, bottom) = _guides.Flipped
+            ? (box.AcrossLow, box.AlongLow, box.AcrossHigh, box.AlongHigh)
+            : (box.AlongLow, box.AcrossLow, box.AlongHigh, box.AcrossHigh);
+        rect = ((float)left, (float)top, (float)(right - left), (float)(bottom - top));
+        return float.IsFinite(rect.Left) && float.IsFinite(rect.Top) && float.IsFinite(rect.Width) && float.IsFinite(rect.Height);
     }
 
     /// <summary>
@@ -296,6 +329,15 @@ internal sealed partial class PlotPlan
             written += (layer.SecondaryX ? guide.X2 : guide.X).WriteValue(hit.X, destination[written..]);
             written += Append(", ", destination[written..]);
             written += (layer.SecondaryY ? guide.Y2 : guide.Y).WriteValue(hit.Y, destination[written..]);
+
+            // A density's bin (row R3c, Issue #471 Decision 10): its center, then its points as a whole number.
+            if (hit.Row < 0)
+            {
+                written += Append(", n = ", destination[written..]);
+                written += hit.Count.TryFormat(destination[written..], out var digits, provider: System.Globalization.CultureInfo.InvariantCulture)
+                    ? digits
+                    : 0;
+            }
         }
 
         return written;
