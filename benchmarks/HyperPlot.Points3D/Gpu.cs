@@ -61,12 +61,12 @@ internal sealed unsafe class Gpu : IDisposable
     private readonly long[] _setFrame = new long[Sets];
     private readonly int[] _setStamps = new int[Sets];
     private readonly bool[] _pending = new bool[Sets];
-    private int _nextSet;
 
     // The octree scene's pages (buffers of whole nodes) and views: one over each node's points of its page, by node (SPIKE,
     // hypotheses 2 to 4).
     private readonly List<nint> _pages = [];
     private nint[] _nodeViews = [];
+    private int _nextSet;
 
     private ID3D11Device* _device;
     private ID3D11DeviceContext* _context;
