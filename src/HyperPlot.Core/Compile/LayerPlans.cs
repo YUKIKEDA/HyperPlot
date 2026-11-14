@@ -1407,7 +1407,7 @@ internal abstract class LayerPlan
         }
 
         // Spike only: the zoom-4 scenes of the R3b2 sweep draw 160,000,000 raw points to time the split.
-        if (rows > RawThreshold && Environment.GetEnvironmentVariable("HP_PROBE_NO_RAW_LIMIT") != "1")
+        if (rows > RawThreshold && !HyperPlot.Rendering.SplitProbe.NoRawLimit)
         {
             throw new InvalidOperationException(
                 $"Layer {index} has {rows} points; a point layer draws at most {RawThreshold} (design §5.5.2). Row R3b draws more as a density."

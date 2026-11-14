@@ -1269,6 +1269,7 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// <param name="ClampLow">The least pixel a center takes on each of the data's axes: an axis that holds values to its domain.</param>
 /// <param name="ClampHigh">The greatest pixel a center takes on each of the data's axes.</param>
 /// <param name="Clip">The clip when the run was recorded.</param>
+/// <param name="First">Spike R3b2: the run's first point in the page (blocks in view, <see cref="SplitProbe.VisibleBlocks"/>); 0 on main.</param>
 internal readonly record struct ResidentMarkerRun(
     int Slot,
     int Count,
@@ -1279,7 +1280,8 @@ internal readonly record struct ResidentMarkerRun(
     bool Swap,
     Vector2 ClampLow,
     Vector2 ClampHigh,
-    ClipRect Clip
+    ClipRect Clip,
+    int First = 0
 );
 
 /// <summary>One call of markers: a range of <see cref="RenderList.Markers"/> and the clip when it was recorded.</summary>

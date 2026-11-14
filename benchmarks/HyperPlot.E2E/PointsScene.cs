@@ -171,6 +171,15 @@ internal static partial class PointsScene
 
         var cpu = new double[total];
         var allocated = new long[total];
+
+        // Spike R3b2: per frame, the methods the JIT compiled on this thread inside the counted window, and the labels the
+        // frame recorded that no earlier frame had (a new label's shaping allocates once, .cursor/rules/bench.mdc).
+        var compiled = new long[total];
+        var newLabels = new int[total];
+        var labels = new List<(int Frame, string Text)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var lookup = seen.GetAlternateLookup<ReadOnlySpan<char>>();
+        long[] machineAtStart = [];
         var gpu = new List<double>(frames);
         var pass = new List<double>(frames);
         long lastTimed = -1;
@@ -182,12 +191,30 @@ internal static partial class PointsScene
         var began = Stopwatch.GetTimestamp();
         for (var f = 0; f < total; f++)
         {
+            if (f == Warmup)
+            {
+                machineAtStart = MachineTimes();
+            }
+
+            var methods = System.Runtime.JitInfo.GetCompiledMethodCount(currentThread: true);
             var bytes = GC.GetAllocatedBytesForCurrentThread();
             var start = Stopwatch.GetTimestamp();
             engine.Views.SetView(panel, views[f]);
             engine.RenderFrame();
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
+            compiled[f] = System.Runtime.JitInfo.GetCompiledMethodCount(currentThread: true) - methods;
+            foreach (ref readonly var text in engine.Plan!.List.Texts)
+            {
+                if (!lookup.Contains(text.Chars.Span))
+                {
+                    var label = text.Chars.ToString();
+                    _ = seen.Add(label);
+                    labels.Add((f, label));
+                    newLabels[f]++;
+                }
+            }
+
             if (f >= Warmup && backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
                 lastTimed = time.Frame;
@@ -215,11 +242,12 @@ internal static partial class PointsScene
         }
 
         var seconds = Stopwatch.GetElapsedTime(began).TotalSeconds;
+        var machineAtEnd = MachineTimes();
         _ = TimeEndPeriod(1);
         var probeFrames = (double)frames;
         var probe = string.Create(
             CultureInfo.InvariantCulture,
-            $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} zoom={Zoom} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
+            $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} zoom={Zoom} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} drawn_points={HyperPlot.Rendering.SplitProbe.DrawnPoints / probeFrames:F0} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
         );
 
         // Hit tests at seeded pixels of the whole view, each timed alone.
@@ -288,6 +316,43 @@ internal static partial class PointsScene
                 $"allocated in the last 300 frames: {allocated.TakeLast(300).Sum()} bytes; frames that allocated: {allocated.Skip(Warmup).Count(b => b > 0)}, the last at frame {Array.FindLastIndex(allocated, b => b > 0)}"
             )
         );
+
+        // Spike R3b2: each measured frame that allocated, with the JIT's methods and the new labels of that frame.
+        var newAfterWarmup = 0;
+        for (var f = Warmup; f < total; f++)
+        {
+            newAfterWarmup += newLabels[f] > 0 ? 1 : 0;
+            if (allocated[f] > 0)
+            {
+                var texts = string.Join(" | ", labels.Where(l => l.Frame == f).Select(l => l.Text));
+                Console.WriteLine(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"alloc_frame: frame={f} bytes={allocated[f]} jit_methods={compiled[f]} new_labels={newLabels[f]} [{texts}]"
+                    )
+                );
+            }
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"labels: measured frames with a new label: {newAfterWarmup}; of them allocated: {Enumerable.Range(Warmup, frames).Count(f => newLabels[f] > 0 && allocated[f] > 0)}; allocated with no new label: {Enumerable.Range(Warmup, frames).Count(f => newLabels[f] == 0 && allocated[f] > 0)}; jit methods after warm-up: {compiled.Skip(Warmup).Sum()}"
+            )
+        );
+
+        // Spike R3b2 (.cursor/rules/bench.mdc, PR #541): the cores the other processes used over the measured frames: the
+        // machine's busy time (GetSystemTimes: kernel, which holds the idle time, plus user, less idle) less this process's.
+        var wall = (machineAtEnd[3] - machineAtStart[3]) / 1e7;
+        var busy = ((machineAtEnd[1] - machineAtStart[1]) + (machineAtEnd[2] - machineAtStart[2]) - (machineAtEnd[0] - machineAtStart[0])) / 1e7;
+        var own = (machineAtEnd[4] - machineAtStart[4]) / 1e7;
+        using var current = Process.GetCurrentProcess();
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"machine: other_cores={(busy - own) / wall:F2} own_cores={own / wall:F2} busy_cores={busy / wall:F2} over {wall:F1} s of measured frames; logical processors {Environment.ProcessorCount}; priority {current.PriorityClass}"
+            )
+        );
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
@@ -300,6 +365,7 @@ internal static partial class PointsScene
     private static void ResetProbe()
     {
         HyperPlot.Rendering.SplitProbe.Groups = 0;
+        HyperPlot.Rendering.SplitProbe.DrawnPoints = 0;
         HyperPlot.Rendering.SplitProbe.Parts = 0;
         HyperPlot.Rendering.SplitProbe.PipelineBinds = 0;
         HyperPlot.Rendering.SplitProbe.Draws = 0;
@@ -307,6 +373,23 @@ internal static partial class PointsScene
         HyperPlot.Rendering.SplitProbe.ConstantWrites = 0;
         HyperPlot.Rendering.SplitProbe.ColorChanges = 0;
     }
+
+    // The machine's idle, kernel, and user times, the wall clock, and this process's kernel plus user time, in 100 ns.
+    private static long[] MachineTimes()
+    {
+        _ = GetSystemTimes(out var idle, out var kernel, out var user);
+        _ = GetProcessTimes(GetCurrentProcess(), out _, out _, out var processKernel, out var processUser);
+        return [idle, kernel, user, DateTime.UtcNow.Ticks, processKernel + processUser];
+    }
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial int GetSystemTimes(out long idle, out long kernel, out long user);
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial int GetProcessTimes(nint process, out long creation, out long exit, out long kernel, out long user);
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll")]
+    private static partial nint GetCurrentProcess();
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
     private static partial uint TimeBeginPeriod(uint period);

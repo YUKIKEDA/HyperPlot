@@ -24,6 +24,19 @@ internal static class SplitProbe
     /// <summary>HP_PROBE_CB=changed: the run's constants are written only when they differ from the last written.</summary>
     internal static readonly bool ConstantsWhenChanged = Environment.GetEnvironmentVariable("HP_PROBE_CB") == "changed";
 
+    /// <summary>
+    /// HP_PROBE_VISIBLE_BLOCKS=1 (with <see cref="BlockPoints"/> set): a page draws only the blocks that hold points of the
+    /// cells in view, consecutive blocks as one call, instead of the page whole. The cells (at most 32,768 points) decide
+    /// what is in view; their ranges are widened to the blocks' ends.
+    /// </summary>
+    internal static readonly bool VisibleBlocks = Environment.GetEnvironmentVariable("HP_PROBE_VISIBLE_BLOCKS") == "1" && BlockPoints > 0;
+
+    /// <summary>HP_PROBE_NO_RAW_LIMIT=1: a point layer of more than the raw limit draws its points. Read once: a read a frame allocates 24 B.</summary>
+    internal static readonly bool NoRawLimit = Environment.GetEnvironmentVariable("HP_PROBE_NO_RAW_LIMIT") == "1";
+
+    /// <summary>Gets or sets the points the calls drew.</summary>
+    internal static long DrawnPoints { get; set; }
+
     /// <summary>Gets or sets the frame's counts, added by the backend and read and cleared by the scene.</summary>
     internal static long Draws { get; set; }
 
@@ -49,7 +62,7 @@ internal static class SplitProbe
     internal static string Describe() =>
         string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")}"
+            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")} draw={(VisibleBlocks ? "visible_blocks" : "pages")} no_raw_limit={NoRawLimit}"
         );
 
     private static int Read(string name, int fallback) =>

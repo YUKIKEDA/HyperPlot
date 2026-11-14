@@ -188,6 +188,11 @@ internal sealed class IndexedPointPlan : LayerPlan
         );
         var pages = context.Images.Points;
         var drawn = -1L;
+
+        // Spike R3b2 (HP_PROBE_VISIBLE_BLOCKS): the run being made of consecutive blocks in view of one page, drawn when
+        // the next range does not touch it.
+        var block = SplitProbe.VisibleBlocks ? SplitProbe.BlockPoints : 0;
+        var (runPage, runSlot, runFrom, runTo) = (-1L, -1, 0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
@@ -202,6 +207,38 @@ internal sealed class IndexedPointPlan : LayerPlan
             // The cell's points lie in one or more pages, and each page is drawn whole, once: the cells come in the
             // copy's order, so a page seen before is the last one drawn.
             var end = cell.First + cell.Count;
+            if (block > 0)
+            {
+                // Spike R3b2: the cell's points in each page, widened to the blocks' ends; the cells come in the copy's
+                // order, so a range starts at or after the run's start.
+                for (var page = cell.First / PointPages.PagePoints; page * PointPages.PagePoints < end; page++)
+                {
+                    var pageStart = page * PointPages.PagePoints;
+                    var from = (int)(Math.Max(cell.First, pageStart) - pageStart) / block * block;
+                    var to = (int)
+                        Math.Min(
+                            PointPages.PointsOf(snapshot, (int)page),
+                            ((Math.Min(end, pageStart + PointPages.PagePoints) - pageStart + block - 1) / block) * block
+                        );
+                    if (page == runPage && from <= runTo)
+                    {
+                        runTo = Math.Max(runTo, to);
+                        continue;
+                    }
+
+                    DrawRun(list, style, runSlot, runFrom, runTo);
+                    if (page != runPage)
+                    {
+                        runSlot = pages.Request(snapshot, (int)page);
+                        _missing |= runSlot < 0;
+                    }
+
+                    (runPage, runFrom, runTo) = (page, from, to);
+                }
+
+                continue;
+            }
+
             for (var page = Math.Max(cell.First / PointPages.PagePoints, drawn + 1); page * PointPages.PagePoints < end; page++)
             {
                 drawn = page;
@@ -214,6 +251,17 @@ internal sealed class IndexedPointPlan : LayerPlan
 
                 list.DrawResidentMarkers(style with { Slot = slot, Count = PointPages.PointsOf(snapshot, (int)page) });
             }
+        }
+
+        DrawRun(list, style, runSlot, runFrom, runTo);
+    }
+
+    // Spike R3b2: draws a run of consecutive blocks of a page in one call; nothing when its page is not there.
+    private static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
+    {
+        if (slot >= 0 && to > from)
+        {
+            list.DrawResidentMarkers(style with { Slot = slot, Count = to - from, First = from });
         }
     }
 

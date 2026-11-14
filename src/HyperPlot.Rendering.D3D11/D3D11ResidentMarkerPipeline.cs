@@ -350,6 +350,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         }
 
         SplitProbe.Draws++;
+        SplitProbe.DrawnPoints += run.Count;
         SplitProbe.PageBinds++;
         if (run.Color != _lastColor)
         {
@@ -373,7 +374,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         {
             InverseSize = new Vector2(1f / width, 1f / height),
             Cells = (uint)run.Cells,
-            First = (uint)start,
+            First = (uint)(run.First + start),
             Size = run.Size,
             Kind = run.Kind,
             Swap = run.Swap ? 1u : 0u,
