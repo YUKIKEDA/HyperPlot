@@ -40,7 +40,11 @@ build() {
   stamp=$(mktemp)
   sleep 1
   if ! dotnet build "$P/benchmarks/$project" -c Release >> "$OUT" 2>&1; then echo "build of $project failed" | tee -a "$OUT" >&2; rm -f "$stamp"; echo DONE >> "$OUT"; exit 1; fi
-  if [ ! "$exe" -nt "$stamp" ]; then echo "$exe is not newer than the build step" | tee -a "$OUT" >&2; rm -f "$stamp"; echo DONE >> "$OUT"; exit 1; fi
+  # A build that was up to date leaves the executable older than the stamp, so the check is against the sources: no source
+  # file may be newer than the executable.
+  local stale
+  stale=$(find "$P/src" "$P/benchmarks" \( -name '*.cs' -o -name '*.hlsl' -o -name '*.csproj' \) -not -path '*/obj/*' -not -path '*/bin/*' -newer "$exe" | head -3)
+  if [ ! -f "$exe" ] || [ -n "$stale" ]; then echo "$exe is older than: $stale" | tee -a "$OUT" >&2; rm -f "$stamp"; echo DONE >> "$OUT"; exit 1; fi
   rm -f "$stamp"
 }
 build HyperPlot.E2E "$E"
