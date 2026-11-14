@@ -127,7 +127,8 @@ public sealed class TextEngine
     /// Turns a list's commands into steps for a backend's <c>Draw</c> (design §5.6): a polyline is a step of its own, and the
     /// glyphs of the texts that follow one another go into one step until the page or the clip changes, and so do the
     /// rectangles that follow one another until the clip changes. Shapes what the
-    /// cache lacks, places in the atlas what it lacks, and starts a new <c>Draw</c> of the atlas.
+    /// cache lacks (a text its owner shaped, <see cref="OwnedText"/>, takes nothing from the cache), places in the atlas what
+    /// it lacks, and starts a new <c>Draw</c> of the atlas.
     /// </summary>
     /// <param name="list">The commands.</param>
     /// <param name="width">The target's width in pixels.</param>
@@ -239,7 +240,7 @@ public sealed class TextEngine
     private bool TryPlace(in TextRecord record, int width, int height)
     {
         var style = record.Style;
-        var shaped = Shape(record.Chars.Span, style);
+        var shaped = record.Shaped ?? Shape(record.Chars.Span, style);
         var metrics = shaped.Metrics;
         var glyphs = shaped.Glyphs;
         var top = AlignY(style.Vertical, metrics);
@@ -385,7 +386,7 @@ public sealed class TextEngine
             }
 
             ref readonly var record = ref list.Texts[commands[i].Index];
-            var shaped = Shape(record.Chars.Span, record.Style);
+            var shaped = record.Shaped ?? Shape(record.Chars.Span, record.Style);
             foreach (ref readonly var glyph in shaped.Glyphs)
             {
                 var phase = (int)(RoundPixel(4 * glyph.Position.X) & 3);

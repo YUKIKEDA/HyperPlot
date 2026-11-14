@@ -364,7 +364,22 @@ public sealed class RenderList
     /// The position is not finite, the size is not finite or outside (0, 512], or the weight, an alignment, or the rotation
     /// is not a named value.
     /// </exception>
-    public void DrawText(ReadOnlySpan<char> text, Vector2 position, in TextStyle style)
+    public void DrawText(ReadOnlySpan<char> text, Vector2 position, in TextStyle style) => AddText(text, position, style, null);
+
+    /// <summary>
+    /// Records a text already shaped outside the shaping cache (design §5.6, Issue #378), as
+    /// <see cref="DrawText(ReadOnlySpan{char}, Vector2, in TextStyle)"/> records one: the backend draws
+    /// <paramref name="shaped"/> and takes nothing from the cache for it. The list keeps a reference to the shaped text, so
+    /// its owner shapes no other text into it until the list is drawn.
+    /// </summary>
+    /// <param name="text">The characters <paramref name="shaped"/> holds, copied for the tests and the equality of records.</param>
+    /// <param name="position">The point that the style's alignment and rotation place the text's block at.</param>
+    /// <param name="style">The color, font, alignment, and rotation; the font, size, weight, and locale are those of <paramref name="shaped"/>.</param>
+    /// <param name="shaped">The shaped text, from <see cref="OwnedText.Shape"/>.</param>
+    internal void DrawText(ReadOnlySpan<char> text, Vector2 position, in TextStyle style, ShapedText shaped) =>
+        AddText(text, position, style, shaped);
+
+    private void AddText(ReadOnlySpan<char> text, Vector2 position, in TextStyle style, ShapedText? shaped)
     {
         ValidateStyle(style);
         if (!float.IsFinite(position.X) || !float.IsFinite(position.Y))
@@ -394,7 +409,7 @@ public sealed class RenderList
         var copy = new ReadOnlyMemory<char>(_chars, _charCount, text.Length);
         _charCount += text.Length;
         AddCommand(new RenderCommand(RenderCommandKind.Text, _textCount));
-        _texts[_textCount++] = new TextRecord(copy, position, style, _clip);
+        _texts[_textCount++] = new TextRecord(copy, position, style, _clip, shaped);
     }
 
     /// <summary>
@@ -1295,10 +1310,11 @@ internal readonly record struct MarkerCall(int Start, int Count, ClipRect Clip);
 internal readonly record struct RenderCommand(RenderCommandKind Kind, int Index);
 
 /// <summary>
-/// One recorded text: its characters in the list's buffer (row I1c), the position, the style, and the clip when it was
-/// recorded. Two records are equal when their characters are, wherever they lie.
+/// One recorded text: its characters in the list's buffer (row I1c), the position, the style, the clip when it was
+/// recorded, and the shape its owner made outside the shaping cache, if any (Issue #378). Two records are equal when their
+/// characters are, wherever they lie, whoever shaped them.
 /// </summary>
-internal readonly record struct TextRecord(ReadOnlyMemory<char> Chars, Vector2 Position, TextStyle Style, ClipRect Clip)
+internal readonly record struct TextRecord(ReadOnlyMemory<char> Chars, Vector2 Position, TextStyle Style, ClipRect Clip, ShapedText? Shaped = null)
 {
     /// <summary>Gets the characters as a string. Allocates; tests only.</summary>
     public string Text => Chars.ToString();

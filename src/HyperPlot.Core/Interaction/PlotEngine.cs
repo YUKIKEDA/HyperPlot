@@ -35,6 +35,9 @@ public sealed partial class PlotEngine : IDisposable
     private readonly ViewProposal _proposal = new();
     private readonly RenderList _overlay = new();
     private readonly char[] _tooltip = new char[HoverTool.TooltipLength];
+
+    // The tooltip shaped outside the shaping cache: it is new in most frames of a hover (Issue #378).
+    private readonly OwnedText _tooltipShaped = new();
     private readonly List<(float X, float Y, float Width, float Height)> _lassoFill = [];
     private readonly List<(PanelId Panel, Selection2D Selection, int Start, int Count)> _lassoKeys = [];
     private PlotState[] _states = [];
@@ -1693,7 +1696,7 @@ public sealed partial class PlotEngine : IDisposable
     /// <summary>
     /// Records the hover over the plot (design §6.5, row I2b): the crosshair through the pointer, a disc at each hit in its
     /// series' color, and the tooltip at the pointer's lower right, on the other side where it would leave the panel.
-    /// Allocates nothing once the list's buffers and the shaping cache hold the frame's.
+    /// Allocates nothing once the list's buffers and the tooltip's shaped text have held the longest tooltip.
     /// </summary>
     private void DrawHover(RenderList list)
     {
@@ -1924,16 +1927,19 @@ public sealed partial class PlotEngine : IDisposable
             return;
         }
 
-        DrawBox(list, _tooltip.AsSpan(0, length), _hoverPixel, theme, panel, line);
+        DrawBox(list, _tooltip.AsSpan(0, length), _tooltipShaped, _hoverPixel, theme, panel, line);
     }
 
     /// <summary>
     /// Records a box of text at an anchor (rows I2b and I4b): at its lower right, on the other side where it would leave the
-    /// panel; the theme's background with a border of 25 % of the foreground.
+    /// panel; the theme's background with a border of 25 % of the foreground. The text is shaped into <paramref name="owned"/>,
+    /// not into the shaping cache (Issue #378): a box's text is new in most frames, and in the cache each would put out a text
+    /// the plot draws.
     /// </summary>
     private void DrawBox(
         RenderList list,
         ReadOnlySpan<char> text,
+        OwnedText owned,
         Vector2 anchor,
         Theme theme,
         (int Left, int Top, int Width, int Height) panel,
@@ -1941,7 +1947,8 @@ public sealed partial class PlotEngine : IDisposable
     )
     {
         var style = new TextStyle(theme.Foreground, theme.TickLabelSize * Scale, theme.FontFamily, Vertical: TextBaseline.Top, Locale: theme.Locale);
-        var size = _renderer.Text.Measure(text, style);
+        var shaped = owned.Shape(_renderer.Text, text, style);
+        var size = shaped.Metrics;
         var (pad, offset) = (MathF.Round(4 * Scale), MathF.Round(12 * Scale));
         var (w, h) = (MathF.Ceiling(size.Width) + (2 * pad), MathF.Ceiling(size.Height) + (2 * pad));
 
@@ -1955,7 +1962,7 @@ public sealed partial class PlotEngine : IDisposable
         list.DrawRect(bx, by + h - line, w, line, border);
         list.DrawRect(bx, by, line, h, border);
         list.DrawRect(bx + w - line, by, line, h, border);
-        list.DrawText(text, new Vector2(bx + pad, by + pad), style);
+        list.DrawText(text, new Vector2(bx + pad, by + pad), style, shaped);
     }
 
     /// <summary>Returns whether a hover tool is still bound to a move.</summary>

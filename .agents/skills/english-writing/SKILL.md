@@ -92,6 +92,7 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | 描く順によらない半透明の合成 | order-independent transparency (OIT) |
 | 不変条件 | invariant |
 | 定常状態 | steady state |
+| 整形のキャッシュに入れない文字列 | owned text (`OwnedText`) |
 | ホットパス、フレームの経路 | frame path |
 | データの経路（ワーカーの処理） | data path (worker pass) |
 

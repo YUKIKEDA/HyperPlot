@@ -134,7 +134,7 @@ internal static class HoverScene
     }
 
     /// <summary>Returns the panel's rectangle: the hit area of the target's middle row, searched from the left.</summary>
-    private static (int Left, int Top, int Width, int Height) Panel(PlotEngine engine)
+    internal static (int Left, int Top, int Width, int Height) Panel(PlotEngine engine)
     {
         var (left, right, top, bottom) = (-1, -1, -1, -1);
         for (var x = 0; x < engine.Width; x++)
