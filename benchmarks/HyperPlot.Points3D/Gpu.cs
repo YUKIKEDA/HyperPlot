@@ -47,7 +47,8 @@ internal sealed unsafe class Gpu : IDisposable
     /// <summary>
     /// The most points of a page of the octree scene: one buffer for a run of whole nodes. The 1e7 runs made one buffer of
     /// 1e7 points and a view a node over it; at 1e8 a node's view into one buffer of 1e8 points (1.6 GB) failed with
-    /// E_INVALIDARG, while the view of the whole buffer did not. A page keeps each buffer and each view's first element
+    /// E_INVALIDARG, while the view of the whole buffer did not. Which bound the runtime checked was not found: the debug
+    /// layer was off and the message named no node (Issue #477). A page keeps each buffer and each view's first element
     /// within what the 1e7 runs made. A node of more points than this gets a page of its own.
     /// </summary>
     private const int PagePoints = 10_000_000;
