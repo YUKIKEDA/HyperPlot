@@ -215,11 +215,8 @@ internal sealed class IndexedPointPlan : LayerPlan
                 {
                     var pageStart = page * PointPages.PagePoints;
                     var from = (int)(Math.Max(cell.First, pageStart) - pageStart) / block * block;
-                    var to = (int)
-                        Math.Min(
-                            PointPages.PointsOf(snapshot, (int)page),
-                            ((Math.Min(end, pageStart + PointPages.PagePoints) - pageStart + block - 1) / block) * block
-                        );
+                    var rounded = ((Math.Min(end, pageStart + PointPages.PagePoints) - pageStart + block - 1) / block) * block;
+                    var to = (int)Math.Min(PointPages.PointsOf(snapshot, (int)page), rounded);
                     if (page == runPage && from <= runTo)
                     {
                         runTo = Math.Max(runTo, to);
