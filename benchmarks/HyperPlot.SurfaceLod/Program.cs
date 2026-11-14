@@ -18,14 +18,22 @@ using HyperPlot.SurfaceLod;
 //     after the warm-up.
 //   <dir>/HyperPlot.SurfaceLod.exe image <64|128|256> <smooth|noisy|spikes> <uniform|nonuniform> [--frame 150]
 //     [--out <file.bmp>] [--no-stitch] [--hardware] [options of run]
-//     Draws one frame of the orbit on WARP (or the hardware), counts the background pixels enclosed by the surface (a
-//     crack), and writes the image. Exits with 1 when an index list fails its check.
-if (args.Length < 4 || args[0] is not ("run" or "image"))
+//     Draws one frame of the orbit on WARP (or the hardware), counts the background pixels whose 8 neighbors are all
+//     surface (a crack, Issue #489 decision 4), and writes the image. Exits with 1 when an index list fails its check.
+//   <dir>/HyperPlot.SurfaceLod.exe cracks <64|128|256> <smooth|noisy|spikes> <uniform|nonuniform>
+//     [--at 0,50,...,550] [--csv <file>] [--pixels <file>] [--dump <folder>] [--hardware] [options of run]
+//     The same count at each frame of --at, stitched and not stitched, on WARP (or the hardware), with the totals.
+if (args.Length < 4 || args[0] is not ("run" or "image" or "cracks"))
 {
-    Console.Error.WriteLine("run|image <64|128|256> <smooth|noisy|spikes> <uniform|nonuniform> [options]");
+    Console.Error.WriteLine("run|image|cracks <64|128|256> <smooth|noisy|spikes> <uniform|nonuniform> [options]");
     return 2;
 }
 
 using var process = Process.GetCurrentProcess();
 process.PriorityClass = ProcessPriorityClass.High;
-return args[0] == "run" ? Scene.Run(args.AsSpan(1)) : Scene.Image(args.AsSpan(1));
+return args[0] switch
+{
+    "run" => Scene.Run(args.AsSpan(1)),
+    "image" => Scene.Image(args.AsSpan(1)),
+    _ => Scene.Cracks(args.AsSpan(1)),
+};

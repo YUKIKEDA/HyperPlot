@@ -103,9 +103,9 @@ internal static partial class Scene
     }
 
     /// <summary>
-    /// Draws one frame of the orbit and writes it as a BMP; counts the magenta pixels (the clear color) that have surface
-    /// pixels on both sides along a row or a column, which is how a crack between two tiles shows. Returns 1 when the
-    /// stitch check fails.
+    /// Draws one frame of the orbit and writes it as a BMP; counts the magenta pixels (the clear color) whose 8 neighbors
+    /// are all surface, which is how a crack between two tiles shows (Issue #489, decision 4). Returns 1 when the stitch
+    /// check fails.
     /// </summary>
     public static int Image(ReadOnlySpan<string> args)
     {
@@ -128,7 +128,7 @@ internal static partial class Scene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"frame={options.Frame} stitch={!options.NoStitch} tiles={selector.Count} missing={residency.Missing} restriction_violations={selector.Violations()} enclosed_background_pixels={Enclosed(image)}"
+                $"frame={options.Frame} stitch={!options.NoStitch} tiles={selector.Count} missing={residency.Missing} restriction_violations={selector.Violations()} surrounded_background_pixels={Surrounded(image, null)}"
             )
         );
         if (options.Out is { } path)
@@ -137,6 +137,105 @@ internal static partial class Scene
         }
 
         return gpu.StitchProblem is null ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The crack count over an orbit (Issue #489, decision 4): at each frame of --at, the tiles are chosen once and drawn
+    /// stitched and not stitched, on WARP (or the hardware), and the magenta pixels whose 8 neighbors are all surface are
+    /// counted in each image. Prints a line a frame and the totals; --csv writes a row a frame and stitching, --pixels the
+    /// positions of the counted pixels of the stitched images (which the stitching should have left none of), and --dump
+    /// the stitched images that count any and the image not stitched of the first frame. Returns 1 when the stitch check
+    /// fails.
+    /// </summary>
+    public static int Cracks(ReadOnlySpan<string> args)
+    {
+        var (tile, shape, uniform) = Positional(args);
+        var options = Options.Parse(args[3..]);
+        var data = new SurfaceData(shape, uniform, tile, options.Noise, options.Spikes, options.Seed);
+        var (faces, budget) = Pool(data, options);
+        using var gpu = new Gpu(!options.Hardware, Width, Height, options.Face, faces, data.NodeCount, data);
+        var selector = new Selector(data);
+        var residency = new Residency(data, gpu, options.Face, faces);
+        PrintSetup(args, data, gpu, residency, options, faces, budget);
+        if (gpu.StitchProblem is { } problem)
+        {
+            Console.Error.WriteLine($"stitch check failed: {problem}");
+            return 1;
+        }
+
+        var (zScale, _) = Selector.ZToBox(data);
+        var factor = Pixels() * zScale / options.Error;
+        using var csv = options.Csv is { } csvPath ? new StreamWriter(csvPath) : null;
+        csv?.WriteLine("tile,data,grid,face,frame,stitch,tiles,missing,restriction_violations,surrounded_background_pixels");
+        using var pixels = options.Pixels is { } pixelsPath ? new StreamWriter(pixelsPath) : null;
+        pixels?.WriteLine("frame,x,y");
+        if (options.Dump is { } dumpFolder)
+        {
+            _ = Directory.CreateDirectory(dumpFolder);
+        }
+
+        var positions = new List<int>();
+        var (stitchedTotal, plainTotal, stitchedFrames, plainFrames, missingFrames) = (0L, 0L, 0, 0, 0);
+        var tick = 0L;
+        foreach (var frame in options.At)
+        {
+            var constants = Constants(frame, data);
+            var counts = new int[2];
+            for (var pass = 0; pass < 2; pass++)
+            {
+                var stitch = pass == 0;
+                selector.Select(constants.Eye, constants.Transform, factor, budget, stitch);
+                var set = gpu.Begin(tick);
+                residency.Prepare(selector, tick);
+                tick++;
+                gpu.Draw(set, constants, residency.Instances.AsSpan(0, residency.Written), residency.Starts, residency.Counts);
+                gpu.Poll(static (_, _) => { }, wait: true);
+                var image = gpu.Read();
+                positions.Clear();
+                counts[pass] = Surrounded(image, positions);
+                missingFrames += residency.Missing > 0 ? 1 : 0;
+                csv?.WriteLine(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{data.Tile},{args[1]},{args[2]},{options.Face},{frame},{(stitch ? 1 : 0)},{selector.Count},{residency.Missing},{selector.Violations()},{counts[pass]}"
+                    )
+                );
+                if (stitch)
+                {
+                    foreach (var at in positions)
+                    {
+                        pixels?.WriteLine(string.Create(CultureInfo.InvariantCulture, $"{frame},{at % Width},{at / Width}"));
+                    }
+                }
+
+                if (options.Dump is { } dump && ((stitch && counts[pass] > 0) || (!stitch && frame == options.At[0])))
+                {
+                    var name = string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"cracks-{data.Tile}-{args[1]}-{args[2]}-f{frame}-{(stitch ? "stitch" : "nostitch")}.bmp"
+                    );
+                    WriteBmp(Path.Combine(dump, name), image);
+                }
+            }
+
+            (stitchedTotal, plainTotal) = (stitchedTotal + counts[0], plainTotal + counts[1]);
+            stitchedFrames += counts[0] > 0 ? 1 : 0;
+            plainFrames += counts[1] > 0 ? 1 : 0;
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"frame={frame} tiles={selector.Count} missing={residency.Missing} surrounded_stitch={counts[0]} surrounded_nostitch={counts[1]}"
+                )
+            );
+        }
+
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"cracks frames={options.At.Length} stitch_total={stitchedTotal} stitch_frames_with_any={stitchedFrames} nostitch_total={plainTotal} nostitch_frames_with_any={plainFrames} images_with_missing_tiles={missingFrames}"
+            )
+        );
+        return 0;
     }
 
     private static (int Tile, Shape Shape, bool Uniform) Positional(ReadOnlySpan<string> args)
@@ -279,42 +378,42 @@ internal static partial class Scene
     private static double Percentile(double[] sorted, double share) =>
         sorted.Length == 0 ? double.NaN : sorted[Math.Min(sorted.Length - 1, (int)(sorted.Length * share))];
 
-    // Magenta pixels with a surface pixel on both sides, left and right or above and below, within 3 pixels: a crack.
-    // The background around the surface has surface on one side only.
-    private static int Enclosed(byte[] image)
+    // Magenta pixels (the clear color) whose 8 neighbors are all surface: a crack one pixel wide between two tiles (Issue
+    // #489, decision 4). The background around the surface, and a gap between two folds of it, touches more background.
+    // Adds the index of each counted pixel to positions when given.
+    private static int Surrounded(byte[] image, List<int>? positions)
     {
         const uint Magenta = 0xFFFF00FF;
         var pixels = MemoryMarshal.Cast<byte, uint>(image);
-        var enclosed = 0;
-        for (var y = 3; y < Height - 3; y++)
+        var surrounded = 0;
+        for (var y = 1; y < Height - 1; y++)
         {
-            for (var x = 3; x < Width - 3; x++)
+            for (var x = 1; x < Width - 1; x++)
             {
-                if (pixels[(y * Width) + x] != Magenta)
+                var at = (y * Width) + x;
+                if (pixels[at] != Magenta)
                 {
                     continue;
                 }
 
-                var row = Surface(pixels, x, y, 1, 0) && Surface(pixels, x, y, -1, 0);
-                var column = Surface(pixels, x, y, 0, 1) && Surface(pixels, x, y, 0, -1);
-                enclosed += row || column ? 1 : 0;
-            }
-        }
-
-        return enclosed;
-
-        static bool Surface(ReadOnlySpan<uint> pixels, int x, int y, int dx, int dy)
-        {
-            for (var s = 1; s <= 3; s++)
-            {
-                if (pixels[((y + (s * dy)) * Width) + x + (s * dx)] != Magenta)
+                var all = true;
+                for (var dy = -1; dy <= 1 && all; dy++)
                 {
-                    return true;
+                    for (var dx = -1; dx <= 1 && all; dx++)
+                    {
+                        all = (dx == 0 && dy == 0) || pixels[at + (dy * Width) + dx] != Magenta;
+                    }
+                }
+
+                if (all)
+                {
+                    surrounded++;
+                    positions?.Add(at);
                 }
             }
-
-            return false;
         }
+
+        return surrounded;
     }
 
     // A 32-bit BMP, top-down: the BGRA bytes as they are.
@@ -573,6 +672,15 @@ internal static partial class Scene
 
         public int Frame { get; init; } = 150;
 
+        /// <summary>The frames of the crack count: every 50th of the turn's 600.</summary>
+        public int[] At { get; init; } = [0, 50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 550];
+
+        /// <summary>The folder of the crack count's images.</summary>
+        public string? Dump { get; init; }
+
+        /// <summary>The CSV of the counted pixels of the crack count's stitched images.</summary>
+        public string? Pixels { get; init; }
+
         public int Seed { get; init; } = 1;
 
         public static Options Parse(ReadOnlySpan<string> args)
@@ -597,6 +705,9 @@ internal static partial class Scene
                     "--csv" => options with { Csv = args[++i] },
                     "--out" => options with { Out = args[++i] },
                     "--frame" => options with { Frame = int.Parse(args[++i], CultureInfo.InvariantCulture) },
+                    "--at" => options with { At = [.. args[++i].Split(',').Select(a => int.Parse(a, CultureInfo.InvariantCulture))] },
+                    "--dump" => options with { Dump = args[++i] },
+                    "--pixels" => options with { Pixels = args[++i] },
                     "--seed" => options with { Seed = int.Parse(args[++i], CultureInfo.InvariantCulture) },
                     _ => throw new ArgumentException($"Unknown option {args[i]}."),
                 };
