@@ -222,6 +222,12 @@ internal sealed unsafe class D3D11ImagePipeline
         context->PSSetShaderResources(0, 1, &instanceView);
         var tableView = _tableView;
         context->PSSetShaderResources(3, 1, &tableView);
+
+        // The regions of the list's selections, which a density's highlight cuts its tiles by (row R3c).
+        var regions = _backend.Highlights.Regions;
+        context->PSSetShaderResources(4, 1, &regions);
+        var masks = _backend.Highlights.Masks;
+        context->PSSetShaderResources(5, 1, &masks);
         context->VSSetShader(_vertexShader, null, 0);
         context->PSSetShader(_pixelShader, null, 0);
         context->OMSetBlendState(_overBlend, null, 0xFFFFFFFF);
@@ -266,7 +272,7 @@ internal sealed unsafe class D3D11ImagePipeline
         var context = _backend.Context;
         ID3D11ShaderResourceView* noView = null;
         context->VSSetShaderResources(0, 1, &noView);
-        for (var slot = 0u; slot < 4; slot++)
+        for (var slot = 0u; slot < 6; slot++)
         {
             context->PSSetShaderResources(slot, 1, &noView);
         }

@@ -473,6 +473,7 @@ public sealed partial class PlotEngine
             if (to.Plot == plot || to.Plot == last)
             {
                 _applied[to.Plot][to.Panel] = true;
+                _selectionVersions[to.Plot]++;
                 RequestFrame();
                 continue;
             }

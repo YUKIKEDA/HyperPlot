@@ -29,6 +29,10 @@ public sealed class RenderList
     private MarkerCall[] _markerCalls = new MarkerCall[4];
     private ResidentMarkerRun[] _residentRuns = new ResidentMarkerRun[4];
     private ResidentCellRecord[] _residentCells = new ResidentCellRecord[64];
+    private HighlightRegion[] _highlights = new HighlightRegion[2];
+    private uint[] _highlightMasks = [];
+    private int _highlightCount;
+    private int _highlightMaskCount;
     private int _polylineCount;
     private int _segmentCount;
     private int _pieceCount;
@@ -96,6 +100,12 @@ public sealed class RenderList
     /// <summary>Gets every recorded command in order: each names a polyline, a text, a rectangle, a column trapezoid, a sector call, an image tile, or a call of markers.</summary>
     internal ReadOnlySpan<RenderCommand> Commands => _commands.AsSpan(0, _commandCount);
 
+    /// <summary>Gets the regions of the selections the frame's highlights keep (row R3c): a run or a tile names one by its number, its index plus 1.</summary>
+    internal ReadOnlySpan<HighlightRegion> Highlights => _highlights.AsSpan(0, _highlightCount);
+
+    /// <summary>Gets the words of the lassos' masks of <see cref="Highlights"/>: bit i of a word is the pixel of its column i to the right.</summary>
+    internal ReadOnlySpan<uint> HighlightMasks => _highlightMasks.AsSpan(0, _highlightMaskCount);
+
     /// <summary>Removes every command and resets the clip to the whole target. Keeps the buffers.</summary>
     public void Clear()
     {
@@ -113,8 +123,85 @@ public sealed class RenderList
         _markerCallCount = 0;
         _residentRunCount = 0;
         _residentCellCount = 0;
+        _highlightCount = 0;
+        _highlightMaskCount = 0;
         _commandCount = 0;
         _clip = ClipRect.All;
+    }
+
+    /// <summary>
+    /// Adds the region of a rectangle or an x range that a highlight keeps (design §6.4 "生の点の強調", row R3c): a box of the
+    /// target's physical pixels, its ends included.
+    /// </summary>
+    /// <param name="left">The left end.</param>
+    /// <param name="top">The top end.</param>
+    /// <param name="right">The right end.</param>
+    /// <param name="bottom">The bottom end.</param>
+    /// <returns>The region's number: its index plus 1.</returns>
+    internal int AddHighlight(float left, float top, float right, float bottom) =>
+        AddHighlight(new HighlightRegion(new Vector4(left, top, right, bottom), 0, 0, 0, 0));
+
+    /// <summary>
+    /// Adds the region of a lasso that a highlight keeps (design §6.4 "生の点の強調", row R3c): a mask of a bit a pixel over a
+    /// rectangle of whole pixels, every bit clear, for the caller to set the pixels whose centers the polygon holds. The mask
+    /// has a column and a row more than the rectangle, clear, so that a point on its right or bottom end reads a clear bit.
+    /// </summary>
+    /// <param name="left">The rectangle's left pixel.</param>
+    /// <param name="top">The rectangle's top pixel.</param>
+    /// <param name="width">The rectangle's width, 0 or more.</param>
+    /// <param name="height">The rectangle's height, 0 or more.</param>
+    /// <param name="mask">The mask's words, a row of <c>width / 32 + 1</c> after another.</param>
+    /// <returns>The region's number: its index plus 1.</returns>
+    internal int AddHighlight(int left, int top, int width, int height, out Span<uint> mask)
+    {
+        var stride = (width / 32) + 1;
+        var words = stride * (height + 1);
+        if (_highlightMaskCount + words > _highlightMasks.Length)
+        {
+            Array.Resize(ref _highlightMasks, Math.Max(_highlightMaskCount + words, _highlightMasks.Length * 2));
+        }
+
+        var first = _highlightMaskCount;
+        _highlightMaskCount += words;
+        mask = _highlightMasks.AsSpan(first, words);
+        mask.Clear();
+        return AddHighlight(new HighlightRegion(new Vector4(left, top, left + width, top + height), left, top, (uint)first, (uint)stride));
+    }
+
+    /// <summary>
+    /// Returns whether a point of the target lies in a region (row R3c), as the shaders judge it: in the box, its ends included,
+    /// and for a mask, on a pixel whose bit is set.
+    /// </summary>
+    /// <param name="highlight">The region's number.</param>
+    /// <param name="point">The point, in physical pixels.</param>
+    internal bool Holds(int highlight, Vector2 point)
+    {
+        ref readonly var region = ref _highlights[highlight - 1];
+        var box = region.Box;
+        if (!(point.X >= box.X && point.X <= box.Z && point.Y >= box.Y && point.Y <= box.W))
+        {
+            return false;
+        }
+
+        if (region.MaskStride == 0)
+        {
+            return true;
+        }
+
+        var (column, row) = ((int)MathF.Floor(point.X) - region.MaskLeft, (int)MathF.Floor(point.Y) - region.MaskTop);
+        var word = _highlightMasks[region.MaskFirst + ((uint)row * region.MaskStride) + ((uint)column >> 5)];
+        return ((word >> (column & 31)) & 1) != 0;
+    }
+
+    private int AddHighlight(in HighlightRegion region)
+    {
+        if (_highlightCount == _highlights.Length)
+        {
+            Array.Resize(ref _highlights, _highlights.Length * 2);
+        }
+
+        _highlights[_highlightCount++] = region;
+        return _highlightCount;
     }
 
     /// <summary>
@@ -1238,8 +1325,14 @@ internal struct ImageInstance
     /// <summary>The alpha the image is drawn with.</summary>
     public float Opacity;
 
+    /// <summary>
+    /// The number of the list's <see cref="HighlightRegion"/> whose outside the tile fades, judged at each pixel's center (a
+    /// density's highlight, row R3c); 0 for none.
+    /// </summary>
+    public uint Highlight;
+
     /// <summary>Pads the record to 96 bytes.</summary>
-    public Vector3 Padding;
+    public Vector2 Padding;
 }
 
 /// <summary>The look of the markers of one <see cref="RenderList.DrawMarkers(ReadOnlySpan{Vector2}, in MarkerStyle)"/> call (design §5.1, row R3a).</summary>
@@ -1290,6 +1383,10 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// <param name="ClampLow">The least pixel a center takes on each of the data's axes: an axis that holds values to its domain.</param>
 /// <param name="ClampHigh">The greatest pixel a center takes on each of the data's axes.</param>
 /// <param name="Clip">The clip when the run was recorded.</param>
+/// <param name="Highlight">
+/// The number of the list's <see cref="HighlightRegion"/> whose outside the run fades, judged at each marker's center (row
+/// R3c); 0 for none.
+/// </param>
 internal readonly record struct ResidentMarkerRun(
     int Slot,
     int Count,
@@ -1300,8 +1397,28 @@ internal readonly record struct ResidentMarkerRun(
     bool Swap,
     Vector2 ClampLow,
     Vector2 ClampHigh,
-    ClipRect Clip
+    ClipRect Clip,
+    int Highlight = 0
 );
+
+/// <summary>
+/// The region of a selection that a highlight keeps (design §6.4 "生の点の強調", "密度の強調", row R3c, Issue #471 Decisions 6, 7,
+/// and 12): what a run of resident markers or a density's tile draws outside it is faded to <see cref="Faded"/> of its
+/// opacity. A point lies in it when it lies in the box, of the target's physical pixels with its ends; and for a lasso, when
+/// the mask's bit of the pixel under it is set, a bit a pixel whose center the polygon holds. 32 bytes, laid out as the HLSL
+/// structures of Markers.hlsl and Image.hlsl.
+/// </summary>
+/// <param name="Box">The left, top, right, and bottom ends: a rectangle's or an x range's, or the mask's pixels.</param>
+/// <param name="MaskLeft">The pixel of the mask's first column.</param>
+/// <param name="MaskTop">The pixel of the mask's first row.</param>
+/// <param name="MaskFirst">Where the mask's words begin in <see cref="RenderList.HighlightMasks"/>.</param>
+/// <param name="MaskStride">The words of a row of the mask; 0 for a region of no mask.</param>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+internal readonly record struct HighlightRegion(Vector4 Box, int MaskLeft, int MaskTop, uint MaskFirst, uint MaskStride)
+{
+    /// <summary>The share of its opacity what lies outside the region keeps (Issue #471 Decision 12).</summary>
+    internal const float Faded = 0.2f;
+}
 
 /// <summary>One call of markers: a range of <see cref="RenderList.Markers"/> and the clip when it was recorded.</summary>
 internal readonly record struct MarkerCall(int Start, int Count, ClipRect Clip);

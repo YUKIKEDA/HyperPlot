@@ -72,11 +72,17 @@ public sealed partial class PlotEngine : IDisposable
     // The selections (design §6.4, row I3a): one a plot, and each lasso's fill as rects of the last layout, a panel's run.
     private Selection2D?[] _selections = [];
 
-    // The kept layer (design §5.4, row I2b): what the plot drew last, kept by the renderer, and what it was drawn from.
+    // A number a plot that grows each time its selection changes, or a link stands it on more of its panels (row R3c).
+    private long[] _selectionVersions = [];
+
+    // The kept layer (design §5.4, row I2b): what the plot drew last, kept by the renderer, and what it was drawn from. The
+    // selections' versions count only for the plots whose point layers highlight a selection in it (row R3c).
     private bool _kept;
     private object? _keptSpec;
     private float _keptScale;
     private long _keptVersions;
+    private long _keptSelections;
+    private long _drawnSelections;
     private PanelDomains[][] _keptViews = [];
 
     /// <summary>Initializes a new instance of the <see cref="PlotEngine"/> class with a target of its own.</summary>
@@ -1372,6 +1378,16 @@ public sealed partial class PlotEngine : IDisposable
         KeepAnnotationShifts();
         _kept = false;
         ClearLassos();
+
+        // The selections the plots' point layers highlight as they record (row R3c).
+        for (var k = 0; k < PlotCount && k < _selections.Length; k++)
+        {
+            PlanOf(k).SetSelection(_selections[k], k < _applied.Length ? _applied[k] : []);
+        }
+
+        // The versions the recording draws: a selection the frame drops after it (a new mapping) is not in the kept layer.
+        _drawnSelections = SelectionVersions();
+
         if (_plot is not null)
         {
             _renderer.Render(_plot, _states[0].Shown, null);
@@ -1501,7 +1517,25 @@ public sealed partial class PlotEngine : IDisposable
             versions += PlanOf(k).ColumnVersions();
         }
 
-        return versions == _keptVersions;
+        return versions == _keptVersions && SelectionVersions() == _keptSelections;
+    }
+
+    /// <summary>
+    /// Returns the sum of the selections' versions of the plots whose point layers highlight a selection in the kept layer
+    /// (design §5.4, row R3c, Issue #471 Decision 6): a new selection draws such a plot again. Allocates nothing.
+    /// </summary>
+    private long SelectionVersions()
+    {
+        var sum = 0L;
+        for (var k = 0; k < PlotCount && k < _selectionVersions.Length; k++)
+        {
+            if (PlanOf(k).HighlightsSelection)
+            {
+                sum += _selectionVersions[k];
+            }
+        }
+
+        return sum;
     }
 
     /// <summary>Keeps what the kept plot was drawn from. Allocates only for a new number of plots or panels.</summary>
@@ -1527,6 +1561,7 @@ public sealed partial class PlotEngine : IDisposable
         }
 
         (_kept, _keptSpec, _keptScale, _keptVersions) = (true, (object?)_plot ?? _figure, Scale, versions);
+        _keptSelections = _drawnSelections;
     }
 
     /// <summary>
@@ -1541,6 +1576,7 @@ public sealed partial class PlotEngine : IDisposable
         }
 
         _selections[plot] = selection;
+        _selectionVersions[plot]++;
         ClearApplied(plot);
         ClearLassos();
         RequestFrame();
@@ -2491,6 +2527,7 @@ public sealed partial class PlotEngine : IDisposable
         // Another number of plots: the selections of the plots before go (row I3a), and the links' slots are built again.
         _ = ClearSelections();
         _selections = new Selection2D?[count];
+        _selectionVersions = new long[count];
         _applied = [];
         _linksDirty = true;
 

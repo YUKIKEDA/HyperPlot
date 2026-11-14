@@ -1,10 +1,13 @@
 using System.Numerics;
 using HyperPlot.Interaction;
+using HyperPlot.Rendering;
+using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
 /// <summary>
-/// The selection of point layers (design §6.4 "散布の選択", §10 R3c row, Issue #471): their rows on both paths.
+/// The selection of point layers (design §6.4 "散布の選択", §10 R3c row, Issue #471): their rows on both paths, and the
+/// highlight their data layer draws, of raw points and of a density.
 /// </summary>
 [Collection("Large data")]
 public sealed class PointSelectionTests
@@ -226,6 +229,302 @@ public sealed class PointSelectionTests
         }
     }
 
+    /// <summary>
+    /// A new selection draws the data layer of a plot with a point layer again, and a frame of the mouse alone copies it; a
+    /// plot without one copies its data layer for a new selection too (design §5.4 "残し方と見分け方", Issue #471 Decision 6).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]² (the index path) at the view [0, 100]²; and the engine fixture's line.
+    ///
+    /// Steps:
+    /// - Over the points: move the pointer twice and draw after each; select a rectangle and draw; move and draw; select
+    ///   another and draw.
+    /// - Over the line: select a rectangle and draw.
+    ///
+    /// Expected:
+    /// - Over the points: a frame of a new selection draws the plot's list and the overlay (2 lists); a frame of a move draws
+    ///   the overlay over the copy (1 list, 1 copy).
+    /// - Over the line: the frame of the new selection draws the overlay over the copy.
+    /// </remarks>
+    [Fact]
+    public void NewSelection_DrawsAPointPlotAgain_TheMouseAloneCopiesIt()
+    {
+        var backend = new NullBackend();
+        var (_, _, table) = Uniform(Dense, seed: 34);
+        using var engine = Drawn(backend, Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points)));
+        Move(engine, Pixel(engine, 50, 50));
+        Move(engine, Pixel(engine, 51, 50));
+        Assert.Equal((1, 1), (backend.DrawsInFrame, backend.CopiesInFrame));
+
+        engine.Select(Selection2D.Rectangle(Panel, ViewRange.FromValues(20.0, 60.0), ViewRange.FromValues(30.0, 70.0)));
+        engine.RenderFrame();
+        Assert.Equal(2, backend.DrawsInFrame);
+
+        Move(engine, Pixel(engine, 52, 50));
+        Assert.Equal((1, 1), (backend.DrawsInFrame, backend.CopiesInFrame));
+
+        engine.Select(Selection2D.Rectangle(Panel, ViewRange.FromValues(10.0, 60.0), ViewRange.FromValues(30.0, 70.0)));
+        engine.RenderFrame();
+        Assert.Equal(2, backend.DrawsInFrame);
+
+        using var f = new EngineFixture();
+        f.Engine.OnPointer(f.Pointer(PointerEventKind.Move, f.Middle));
+        f.Engine.RenderFrame();
+        f.Engine.Select(Selection2D.Rectangle(Panel, ViewRange.FromValues(200.0, 600.0), ViewRange.FromValues(-5.0, 5.0)));
+        f.Engine.RenderFrame();
+        Assert.Equal((1, 1), (f.Backend.DrawsInFrame, f.Backend.CopiesInFrame));
+    }
+
+    /// <summary>
+    /// The resident markers' runs name the region of the selection, whole under the panel's clip: a rectangle's and an x
+    /// range's box of the pixels its ends map to, and a lasso's mask over the panel's pixels, set where the polygon holds the
+    /// pixel's center by the even-odd rule (design §6.4 "生の点の強調", Issue #471 Decision 6).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]², raw points at the view [0, 100]², 640 × 360.
+    ///
+    /// Steps:
+    /// - Select the rectangle [20, 60] × [30, 70], draw, and read the plan's list; the same for the x range [20, 60] and the
+    ///   notched lasso over [20, 80] × [15, 85].
+    ///
+    /// Expected:
+    /// - Every run names region 1, the list's only region, and is clipped to the panel.
+    /// - The rectangle: a box from the pixels of (20, 70) to (60, 30), no mask. The x range: from x 20's pixel to x 60's,
+    ///   across the whole target's height; within a thousandth of a pixel, the engine's map of the ends. The lasso: a mask
+    ///   from the panel's corner whose every pixel of the panel holds its center as the even-odd rule over the polygon's
+    ///   pixels does, but a center within a thousandth of a pixel of an edge.
+    /// </remarks>
+    [Fact]
+    public void Runs_NameTheRegionOfTheSelection_UnderThePanelsClip()
+    {
+        var (_, _, table) = Uniform(Dense, seed: 35);
+        using var engine = Drawn(
+            new NullBackend(),
+            Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
+        );
+        var g = engine.Plan!.Guides;
+        var clip = new ClipRect(g.Left, g.Top, g.Left + g.Width, g.Top + g.Height);
+
+        var list = Highlighted(Selection2D.Rectangle(Panel, ViewRange.FromValues(20.0, 60.0), ViewRange.FromValues(30.0, 70.0)));
+        var (low, high) = (Pixel(engine, 20, 70), Pixel(engine, 60, 30));
+        var region = Assert.Single(list.Highlights.ToArray());
+        Near(new Vector4(low.X, low.Y, high.X, high.Y), region.Box);
+        Assert.Equal(0u, region.MaskStride);
+
+        list = Highlighted(Selection2D.XRange(Panel, ViewRange.FromValues(20.0, 60.0)));
+        region = Assert.Single(list.Highlights.ToArray());
+        Near(new Vector4(low.X, float.MinValue, high.X, float.MaxValue), region.Box);
+
+        list = Highlighted(Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched));
+        region = Assert.Single(list.Highlights.ToArray());
+        Assert.Equal((g.Left, g.Top), (region.MaskLeft, region.MaskTop));
+        var polygon = Notched.Select(s => Pixel(engine, 20 + (s.X * 60.0), 15 + (s.Y * 70.0))).ToArray();
+        for (var py = g.Top; py < g.Top + g.Height; py++)
+        {
+            for (var px = g.Left; px < g.Left + g.Width; px++)
+            {
+                var center = new Vector2(px + 0.5f, py + 0.5f);
+                var (inside, edge) = EvenOdd(polygon, center);
+                Assert.True(edge || inside == list.Holds(1, center), $"The pixel ({px}, {py}).");
+            }
+        }
+
+        // The engine maps the ends for the overlay apart from the plan, in other floats: a thousandth of a pixel.
+        static void Near(Vector4 expected, Vector4 actual) =>
+            Assert.True(Vector4.Distance(expected, actual) < 1e-3, $"The box {actual}, not {expected}.");
+
+        RenderList Highlighted(Selection2D selection)
+        {
+            engine.Select(selection);
+            engine.RenderFrame();
+            var list = engine.Plan!.List;
+            var runs = list.ResidentRuns.ToArray();
+            Assert.NotEmpty(runs);
+            Assert.All(runs, run => Assert.Equal((1, clip), (run.Highlight, run.Clip)));
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// A point layer on the CPU path fades its points outside the selection's region to 0.2 of its opacity, judged at each
+    /// center, and keeps the others (design §6.4 "見た目", Issue #471 Decision 12).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 2,000 seeded points over [0, 100]², raw points of opacity 0.6 in black, at the view [0, 100]².
+    ///
+    /// Steps:
+    /// - Select the notched lasso over [20, 80] × [15, 85], draw, and read the plan's markers.
+    ///
+    /// Expected:
+    /// - A marker whose center the region holds has alpha 0.6 · 255 rounded, the others 0.12 · 255 rounded; both are met.
+    /// </remarks>
+    [Fact]
+    public void CpuPath_FadesThePointsOutsideTheRegion()
+    {
+        var (_, _, table) = Uniform(2_000, seed: 36);
+        using var engine = Drawn(
+            new NullBackend(),
+            Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Opacity(0.6).Color(new Color(0, 0, 0, 255)))
+        );
+        engine.Select(Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched));
+        engine.RenderFrame();
+        var list = engine.Plan!.List;
+        var (kept, faded) = (Math.Round(0.6 * 255) / 255, Math.Round(0.12 * 255) / 255);
+        var (some, others) = (false, false);
+        foreach (var marker in list.Markers)
+        {
+            var inside = list.Holds(1, marker.Center);
+            Assert.Equal(inside ? kept : faded, marker.Color.W, 5);
+            (some, others) = (some || inside, others || !inside);
+        }
+
+        Assert.True(some && others);
+    }
+
+    /// <summary>
+    /// A density's highlight cuts its pieces by the selection's region: each tile names the region, each fill is cut at it,
+    /// faded outside; the index makes nothing for it (design §6.4 "密度の強調", Issue #471 Decision 7).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Seeded points over [0, 100]² drawn as a density at the view [0, 100]², 640 × 360: 400,000 (the root's tile) and
+    ///   131,073 (no tile: fills).
+    ///
+    /// Steps:
+    /// - Read the index's version, the snapshot's tiles, and the plan's rectangles. Select the notched lasso over [20, 80] × [15, 85], draw, and read
+    ///   the plan's list; read the version and the tiles again.
+    ///
+    /// Expected:
+    /// - The tiles: every image names region 1. The fills: of the rectangles not recorded before the selection, one whose
+    ///   middle the region holds has the alpha of a fill before, one outside a fifth of such an alpha, rounded; both are met.
+    /// - The version and the tiles are the same: no work was made.
+    /// </remarks>
+    [Theory]
+    [InlineData(Dense)]
+    [InlineData(Cpu + 1)]
+    public void Density_IsCutByTheRegion_WithoutWork(int points)
+    {
+        var (_, _, table) = Uniform(points, seed: 37);
+        using var engine = Drawn(
+            new NullBackend(),
+            Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Density))
+        );
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        var index = plan.SpatialIndex!;
+        var (version, tiles) = (index.Version, Tiles(index));
+        var before = engine.Plan.List.Rects.ToArray();
+
+        engine.Select(Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched));
+        engine.RenderFrame();
+        var list = engine.Plan!.List;
+        Assert.True(plan.DrewDensity);
+        if (points == Dense)
+        {
+            Assert.NotEmpty(list.Images.ToArray());
+            Assert.All(list.Images.ToArray(), image => Assert.Equal(1u, image.Highlight));
+        }
+        else
+        {
+            // The rectangles the selection made: the guides' and the fills inside the region whole are as before. A piece
+            // inside keeps an alpha of the fills before; one outside takes a fifth of one, rounded.
+            var alphas = before.Select(r => (int)Math.Round(r.Color.W * 255)).ToHashSet();
+            var (some, others) = (false, false);
+            foreach (var piece in list.Rects.ToArray().Except(before))
+            {
+                var inside = list.Holds(1, new Vector2(piece.X + (piece.Width / 2), piece.Y + (piece.Height / 2)));
+                (some, others) = (some || inside, others || !inside);
+                var alpha = (int)Math.Round(piece.Color.W * 255);
+                Assert.True(
+                    inside ? alphas.Contains(alpha) : alphas.Any(a => (int)Math.Round(a * 0.2) == alpha),
+                    $"The rectangle at ({piece.X}, {piece.Y}), inside {inside}, of alpha {alpha}."
+                );
+            }
+
+            Assert.True(some && others);
+        }
+
+        Assert.Equal((version, tiles), (index.Version, Tiles(index)));
+
+        static DensityTiles? Tiles(SpatialIndex index)
+        {
+            var snapshot = index.Acquire();
+            try
+            {
+                return snapshot.Tiles;
+            }
+            finally
+            {
+                snapshot.Release();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The frames of the mouse alone over a plot whose points are highlighted allocate nothing: they copy the kept layer and
+    /// draw the hover over it (invariant 3, design §6.4 "生の点の強調").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]² (the index path) at the view [0, 100]², the notched lasso selected, a frame
+    ///   drawn.
+    ///
+    /// Steps:
+    /// - Move the pointer over 8 places and draw after each, 5 times round to warm; count the thread's allocations over 5
+    ///   more rounds.
+    ///
+    /// Expected:
+    /// - Each frame of the rounds copies the kept layer; 0 bytes.
+    /// </remarks>
+    [Fact]
+    public void HighlightedFramesOfTheMouse_AllocateNothing()
+    {
+        var backend = new NullBackend();
+        var (_, _, table) = Uniform(Dense, seed: 38);
+        using var engine = Drawn(backend, Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points)));
+        engine.Select(Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched));
+        engine.RenderFrame();
+        var copies = 0;
+        void Round()
+        {
+            for (var i = 0; i < 8; i++)
+            {
+                Move(engine, Pixel(engine, 30 + (5 * i), 50));
+                copies += backend.CopiesInFrame;
+            }
+        }
+
+        PerformanceAssert.DoesNotAllocate(() =>
+        {
+            for (var k = 0; k < 5; k++)
+            {
+                Round();
+            }
+        });
+        Assert.True(copies >= 40, $"{copies} frames of 40 or more copied the kept layer.");
+    }
+
+    // Whether a polygon holds a point by the even-odd rule, as the engine fills a lasso, and whether an edge it crosses passes
+    // within a thousandth of a pixel of it.
+    private static (bool Inside, bool Edge) EvenOdd(Vector2[] polygon, Vector2 point)
+    {
+        var (inside, edge) = (false, false);
+        for (int i = 0, j = polygon.Length - 1; i < polygon.Length; j = i++)
+        {
+            var (a, b) = (polygon[i], polygon[j]);
+            if ((a.Y > point.Y) != (b.Y > point.Y))
+            {
+                var crossing = a.X + ((point.Y - a.Y) * (b.X - a.X) / (b.Y - a.Y));
+                edge |= Math.Abs(point.X - crossing) < 1e-3;
+                inside ^= point.X < crossing;
+            }
+        }
+
+        return (inside, edge);
+    }
+
     private static RowSelection Rows(PlotEngine engine) => Done(engine.SelectedRowsAsync(0, 0).AsTask());
 
     // The rows once their task ends, waited for with a watchdog.
@@ -233,6 +532,14 @@ public sealed class PointSelectionTests
     {
         Eventually.Completes(task);
         return task.Result;
+    }
+
+    private static void Move(PlotEngine engine, Vector2 at)
+    {
+        engine.OnPointer(
+            new PointerEvent(PointerEventKind.Move, at, PointerButtons.None, PointerButtons.None, ModifierKeys.None, PointerKind.Mouse, 0)
+        );
+        engine.RenderFrame();
     }
 
     private static void Settle(PlotEngine engine, NullBackend backend)
@@ -270,4 +577,7 @@ public sealed class PointSelectionTests
 
         return engine;
     }
+
+    private static Vector2 Pixel(PlotEngine engine, double x, double y) =>
+        engine.ViewToPixel(Panel, ViewRange.FromValues(x, x), ViewRange.FromValues(y, y));
 }

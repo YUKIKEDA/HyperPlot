@@ -693,6 +693,22 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         }
     }
 
+    internal override bool HighlightsSelection
+    {
+        get
+        {
+            foreach (var part in _parts)
+            {
+                if (part.Plan.HighlightsSelection)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
     /// <summary>Returns the row of the layer's rows a category's gathered row came from (row I2a).</summary>
     long ISourceRows.SourceRow(int key, long gathered) => SourceRow(_keys!, _runs!, _starts, Rows, key, gathered);
 

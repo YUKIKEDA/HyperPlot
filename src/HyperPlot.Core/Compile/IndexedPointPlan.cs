@@ -265,7 +265,8 @@ internal sealed class IndexedPointPlan : LayerPlan
             Swap: context.Flipped,
             ClampLow: new Vector2(x.ClampLow, y.ClampLow),
             ClampHigh: new Vector2(x.ClampHigh, y.ClampHigh),
-            Clip: default
+            Clip: default,
+            Highlight: context.Highlight
         );
         var pages = context.Images.Points;
         var drawn = -1L;
@@ -494,6 +495,12 @@ internal sealed class IndexedPointPlan : LayerPlan
 
     internal override Color HitColor(int series) => (((PointLayerSpec)Spec).Color ?? SeriesColor) with { A = 255 };
 
+    /// <summary>
+    /// Gets a value indicating whether the part highlights a selection, which it does (design §6.4 "生の点の強調", "密度の強調",
+    /// row R3c): its runs and its density's tiles name the region of the panel's selection, whose outside the shaders fade.
+    /// </summary>
+    internal override bool HighlightsSelection => true;
+
     /// <summary>Gives back the snapshot, lets its pages go, and disposes the index.</summary>
     public override void Release()
     {
@@ -716,7 +723,7 @@ internal sealed class IndexedPointPlan : LayerPlan
                 fill = fill with { A = (byte)Math.Round(fill.A * point.Opacity) };
                 if (fill.A > 0)
                 {
-                    context.DrawRect(x.Pixel(cornerX), x.Pixel(cornerX + extentX), y.Pixel(cornerY), y.Pixel(cornerY + extentY), fill);
+                    context.DrawHighlighted(x.Pixel(cornerX), x.Pixel(cornerX + extentX), y.Pixel(cornerY), y.Pixel(cornerY + extentY), fill);
                 }
 
                 continue;
@@ -766,6 +773,7 @@ internal sealed class IndexedPointPlan : LayerPlan
                 Low = 0,
                 High = high,
                 Opacity = (float)point.Opacity,
+                Highlight = (uint)context.Highlight,
             };
             context.List.DrawImage(record, ImagePlan.PageOf(rgba: false, slot));
         }

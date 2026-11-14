@@ -1050,6 +1050,12 @@ internal abstract class LayerPlan
         }
     }
 
+    /// <summary>
+    /// Gets a value indicating whether the layer highlights a selection where it draws (design §6.4 "散布の選択", row R3c): a
+    /// point layer fades its points outside the selection's region in the data layer, which a new selection then draws again.
+    /// </summary>
+    internal virtual bool HighlightsSelection => false;
+
     /// <summary>Gets the layer's elements as a selection reads them (row I3a), or null for a layer that answers none.</summary>
     internal virtual SelectionShape? Shape => null;
 
@@ -1755,6 +1761,91 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
 
     /// <summary>Gets the polar transform, when <see cref="Polar"/>.</summary>
     public PolarTransform PolarMap { get; private set; }
+
+    /// <summary>
+    /// Gets or sets the number of the list's region of the plot's selection on the panel, which the point layers highlight
+    /// (design §6.4 "散布の選択", row R3c); 0 when no selection stands there.
+    /// </summary>
+    public int Highlight { get; set; }
+
+    /// <summary>
+    /// Returns whether a point along × across lies in the region of the panel's selection, as the shaders judge a resident
+    /// marker's center (design §6.4 "見た目", row R3c): true when no selection stands there.
+    /// </summary>
+    public bool Holds(float along, float across) =>
+        Highlight == 0 || list.Holds(Highlight, Flipped ? new Vector2(across, along) : new Vector2(along, across));
+
+    /// <summary>
+    /// Records a rectangle between two x pixels and two y pixels as <see cref="DrawRect"/> does, its part outside the region of
+    /// the panel's selection faded to <see cref="HighlightRegion.Faded"/> of its alpha (design §6.4 "密度の強調", row R3c): a
+    /// rectangle's or an x range's region cuts it in five at most, a lasso's mask in runs of a pixel row, a pixel by its center.
+    /// </summary>
+    public void DrawHighlighted(double x0, double x1, double y0, double y1, Color fill)
+    {
+        if (Highlight == 0)
+        {
+            DrawRect(x0, x1, y0, y1, fill);
+            return;
+        }
+
+        if (!double.IsFinite(x0) || !double.IsFinite(x1) || !double.IsFinite(y0) || !double.IsFinite(y1))
+        {
+            return;
+        }
+
+        var faded = fill with { A = (byte)Math.Round(fill.A * HighlightRegion.Faded) };
+        var (a0, a1, c0, c1) = ((float)Math.Min(x0, x1), (float)Math.Max(x0, x1), (float)Math.Min(y0, y1), (float)Math.Max(y0, y1));
+        var (left, top, right, bottom) = Flipped ? (c0, a0, c1, a1) : (a0, c0, a1, c1);
+        var region = list.Highlights[Highlight - 1];
+        if (region.MaskStride == 0)
+        {
+            var box = region.Box;
+            var (inLeft, inTop, inRight, inBottom) = (
+                MathF.Max(left, box.X),
+                MathF.Max(top, box.Y),
+                MathF.Min(right, box.Z),
+                MathF.Min(bottom, box.W)
+            );
+            if (!(inLeft < inRight && inTop < inBottom))
+            {
+                Fill(left, top, right, bottom, faded);
+                return;
+            }
+
+            Fill(left, top, right, inTop, faded);
+            Fill(left, inBottom, right, bottom, faded);
+            Fill(left, inTop, inLeft, inBottom, faded);
+            Fill(inRight, inTop, right, inBottom, faded);
+            Fill(inLeft, inTop, inRight, inBottom, fill);
+            return;
+        }
+
+        for (var row = MathF.Floor(top); row < bottom; row++)
+        {
+            var (from, to) = (MathF.Max(top, row), MathF.Min(bottom, row + 1));
+            var start = left;
+            var inside = list.Holds(Highlight, new Vector2(MathF.Floor(left) + 0.5f, row + 0.5f));
+            for (var column = MathF.Floor(left) + 1; column < right; column++)
+            {
+                var now = list.Holds(Highlight, new Vector2(column + 0.5f, row + 0.5f));
+                if (now != inside)
+                {
+                    Fill(start, from, column, to, inside ? fill : faded);
+                    (start, inside) = (column, now);
+                }
+            }
+
+            Fill(start, from, right, to, inside ? fill : faded);
+        }
+
+        void Fill(float x, float y, float xEnd, float yEnd, Color color)
+        {
+            if (xEnd > x && yEnd > y)
+            {
+                list.DrawRect(x, y, xEnd - x, yEnd - y, color);
+            }
+        }
+    }
 
     public void Begin(
         in GeomFrame.Axis x,

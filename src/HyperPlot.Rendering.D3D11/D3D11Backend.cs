@@ -33,6 +33,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
     private readonly D3D11ResidentMarkerPipeline _residentMarkers;
     private readonly D3D11SectorPipeline _sectors;
     private readonly D3D11ImagePipeline _images;
+    private readonly D3D11Highlights _highlights;
     private readonly DWriteTextBackend? _directWrite;
     private readonly D3D11FrameTimer _timer;
     private long[] _open = new long[8];
@@ -56,6 +57,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _residentMarkers = new D3D11ResidentMarkerPipeline(this);
         _sectors = new D3D11SectorPipeline(this);
         _images = new D3D11ImagePipeline(this);
+        _highlights = new D3D11Highlights(this);
         _timer = new D3D11FrameTimer(this);
         if (text is null)
         {
@@ -138,6 +140,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
     /// <summary>Gets the pipeline of the resident markers, for the tests of its pages.</summary>
     internal D3D11ResidentMarkerPipeline ResidentMarkers => _residentMarkers;
+
+    /// <summary>Gets the regions of the selections of the list being drawn (row R3c): the resident markers and the images read them.</summary>
+    internal D3D11Highlights Highlights => _highlights;
 
     /// <summary>Gets the polar trapezoids' pipeline, for the tests of its buffer.</summary>
     internal D3D11SectorPipeline Sectors => _sectors;
@@ -239,6 +244,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _columns.Upload(list.Columns);
         _markers.Upload(list.Markers);
         _residentMarkers.Upload(list.ResidentCells);
+        _highlights.Upload(list.Highlights, list.HighlightMasks);
         var residentRuns = list.ResidentRuns;
         _sectors.Upload(list.Sectors);
         var polylines = list.Polylines;
@@ -647,6 +653,7 @@ public sealed unsafe class D3D11Backend : IGpuBackend
         _columns.Release();
         _markers.Release();
         _residentMarkers.Release();
+        _highlights.Release();
         _rects.Release();
         _glyphs.Release();
         _lines.Release();
