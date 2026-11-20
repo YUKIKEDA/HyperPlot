@@ -15,7 +15,7 @@ namespace HyperPlot.E2E;
 /// layer is drawn again); and frames that each change the view by half a data unit, under the lasso, under the rectangle,
 /// and with no selection (the layer drawn again, cut by the region that stands). Each frame's CPU time (the input and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and
 /// its allocations. "points" draws the raw points; "density" draws the density, whose cells without a tile are fills that
-/// the CPU cuts by the selection's region (a lasso's mask read a pixel at a time).
+/// the CPU cuts by the selection's region (a lasso's mask read a word at a time, Issue #576).
 /// </summary>
 internal static class SelectionScene
 {
@@ -109,24 +109,6 @@ internal static class SelectionScene
                 new(ViewRange.FromValues(-1.0, 101.0), ViewRange.FromValues(-1.0, 101.0)),
                 new(ViewRange.FromValues(-1.5, 100.5), ViewRange.FromValues(-1.0, 101.0)),
             ];
-
-            // What sorting a row's crossings allocates, as the lasso's mask and its fill sort them: two floats, once a pixel
-            // row of the panel. Under NativeAOT a sort of a span allocates; under the JIT it does not.
-            Span<float> crossings = [2, 1];
-            crossings.Sort();
-            var sorted = GC.GetAllocatedBytesForCurrentThread();
-            for (var row = 0; row < guide.Height; row++)
-            {
-                (crossings[0], crossings[1]) = (2, 1);
-                crossings.Sort();
-            }
-
-            Console.WriteLine(
-                string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"{guide.Height} sorts of a span of 2 floats allocated {GC.GetAllocatedBytesForCurrentThread() - sorted} B"
-                )
-            );
 
             void Move(int f)
             {

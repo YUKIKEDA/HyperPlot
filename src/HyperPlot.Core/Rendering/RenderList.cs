@@ -193,6 +193,66 @@ public sealed class RenderList
         return ((word >> (column & 31)) & 1) != 0;
     }
 
+    /// <summary>
+    /// Records a rectangle cut by a lasso's region (design §6.4 "密度の強調", row R3c, Issue #576): a rectangle for each run
+    /// of a pixel row's pixels that <see cref="Holds"/> judges alike at their centers, in one color inside the region and in
+    /// another outside it. The runs are read from the mask's words, so the work follows the mask's rows and words, not the
+    /// rectangle's pixels. The rectangle's part outside the mask's box is not recorded: the mask covers the panel, and the
+    /// panel's clip takes what a layer draws past it.
+    /// </summary>
+    /// <param name="highlight">The number of a region with a mask.</param>
+    /// <param name="left">The rectangle's left edge, in physical pixels.</param>
+    /// <param name="top">The top edge.</param>
+    /// <param name="right">The right edge.</param>
+    /// <param name="bottom">The bottom edge.</param>
+    /// <param name="inside">The color of the pixels in the region.</param>
+    /// <param name="outside">The color of the others.</param>
+    internal void DrawRectCutByMask(int highlight, float left, float top, float right, float bottom, Color inside, Color outside)
+    {
+        var region = _highlights[highlight - 1];
+        var box = region.Box;
+        (left, top, right, bottom) = (MathF.Max(left, box.X), MathF.Max(top, box.Y), MathF.Min(right, box.Z), MathF.Min(bottom, box.W));
+        if (!(left < right && top < bottom))
+        {
+            return;
+        }
+
+        // The row's first pixel and the end of its pixels left of the right edge, as bits of a row of the mask.
+        var stride = (int)region.MaskStride;
+        var (first, end) = ((int)MathF.Floor(left) - region.MaskLeft, (int)MathF.Ceiling(right) - region.MaskLeft);
+        for (var row = MathF.Floor(top); row < bottom; row++)
+        {
+            var (from, to) = (MathF.Max(top, row), MathF.Min(bottom, row + 1));
+            var words = _highlightMasks.AsSpan((int)region.MaskFirst + (((int)row - region.MaskTop) * stride), stride);
+            var held = ((words[first >> 5] >> (first & 31)) & 1) != 0;
+            var start = left;
+            var bit = first + 1;
+            while (bit < end)
+            {
+                // The lowest bit of this word, from this bit on, that is unlike the run's.
+                var unlike = (held ? ~words[bit >> 5] : words[bit >> 5]) >> (bit & 31);
+                if (unlike == 0)
+                {
+                    bit = (bit | 31) + 1;
+                    continue;
+                }
+
+                bit += BitOperations.TrailingZeroCount(unlike);
+                if (bit >= end)
+                {
+                    break;
+                }
+
+                var column = (float)(bit + region.MaskLeft);
+                DrawRect(start, from, column - start, to - from, held ? inside : outside);
+                (start, held) = (column, !held);
+                bit++;
+            }
+
+            DrawRect(start, from, right - start, to - from, held ? inside : outside);
+        }
+    }
+
     private int AddHighlight(in HighlightRegion region)
     {
         if (_highlightCount == _highlights.Length)

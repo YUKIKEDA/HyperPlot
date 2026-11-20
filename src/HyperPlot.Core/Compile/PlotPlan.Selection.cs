@@ -123,7 +123,7 @@ internal sealed partial class PlotPlan
                 }
             }
 
-            crossings[..n].Sort();
+            SpanSort.Ascending(crossings[..n]);
             var words = mask.Slice(row * stride, stride);
             for (var c = 0; c + 1 < n; c += 2)
             {
