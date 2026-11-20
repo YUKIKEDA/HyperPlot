@@ -12,8 +12,8 @@ namespace HyperPlot.E2E;
 /// 1,920 × 1,080 on the hardware, a frame every 16.7 ms or more. Each round runs, in turn: the mouse alone moved by the
 /// hover's script with no selection, and with a rectangle that holds every point; frames that each set another rectangle
 /// that holds every point, and frames that each set another lasso of 256 vertices that holds every point (the retained
-/// layer is drawn again); and frames that each change the view by half a data unit with no selection (the layer drawn
-/// again without a region). Each frame's CPU time (the input and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and
+/// layer is drawn again); and frames that each change the view by half a data unit, under the lasso, under the rectangle,
+/// and with no selection (the layer drawn again, cut by the region that stands). Each frame's CPU time (the input and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and
 /// its allocations. "points" draws the raw points; "density" draws the density, whose cells without a tile are fills that
 /// the CPU cuts by the selection's region (a lasso's mask read a pixel at a time).
 /// </summary>
@@ -159,6 +159,10 @@ internal static class SelectionScene
                 run.Sequence("hover-selected", round, frames, frames, Move);
                 run.Sequence("change-rectangle", round, 30, frames, f => engine.Select(rectangles[f % 2]));
                 run.Sequence("change-lasso", round, 30, frames, f => engine.Select(lassos[f % 2]));
+                engine.Select(lassos[0]);
+                run.Sequence("view-under-lasso", round, 30, frames, f => engine.Views.SetView(Panel, views[f % 2]));
+                engine.Select(rectangles[0]);
+                run.Sequence("view-under-rectangle", round, 30, frames, f => engine.Views.SetView(Panel, views[f % 2]));
                 engine.ClearSelection();
                 run.Sequence("change-view", round, 30, frames, f => engine.Views.SetView(Panel, views[f % 2]));
             }
