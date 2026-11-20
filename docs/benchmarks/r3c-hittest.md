@@ -368,7 +368,7 @@ GPU は P8（210〜240 MHz）のままだった（3 周目の最後の 2 つは�
 | 場所 | 呼び方 | いつ走るか | したこと |
 | --- | --- | --- | --- |
 | `Compile/PolarTransform.cs` の `Columns`・`Part`・`Clipped`（3 か所） | `Span<double>.Sort()` | 極座標の層の記録（フレームの経路。area・band・bar の台形ごと） | `SpanSort.Ascending` に替えた |
-| `Compile/SeriesStack.cs` の `Crossings` | `List<double>.Sort()` | 積み上げの構築（ワーカーの走査。フレームの経路ではない）。隣り合う x の間で 2 つ以上のグループが 0 をまたいだときだけ並べ替える | 変えていない |
+| `Compile/SeriesStack.cs` の `Crossings` | `List<double>.Sort()` | 積み上げの構築（ワーカーの走査。フレームの経路ではない）。隣り合う x の間で、0 をまたいだグループの x を並べ替える（0 個や 1 個のときの確保は測っていない） | 変えていない |
 | `Compile/ImagePlan.cs` のタイルの並べ替え | `Span<T>.Sort(Comparison<T>)` | image の層の記録（フレームの経路） | 確保しない呼び方なので、変えていない |
 | `Rendering/GlyphAtlas.cs` の `CountPages` | `List<T>.Sort(Comparison<T>)` | 文字がアトラスに入りきらず、例外を投げる前だけ | 確保しない呼び方なので、変えていない |
 
