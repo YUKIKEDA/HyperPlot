@@ -1374,7 +1374,7 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// (design §5.1 "常駐の点"). A run is whole blocks of the page (row R3b2, design §5.5.2 "見えるブロックだけを描く"): a block's
 /// points are not in the copy's order (<see cref="PointPages.Stride"/>), so a run is not cut inside one.
 /// </summary>
-/// <param name="Slot">The page's slot in <see cref="PointPages"/>.</param>
+/// <param name="Slot">The page's slot in <see cref="PointPages"/>; −1 for a page that is not on the GPU yet, which draws nothing.</param>
 /// <param name="First">The run's first point in the page.</param>
 /// <param name="Count">The number of points of the run.</param>
 /// <param name="Cells">Where the part's cells begin in <see cref="RenderList.ResidentCells"/>: a point's cell number is added to it.</param>

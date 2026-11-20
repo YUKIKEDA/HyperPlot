@@ -318,10 +318,12 @@ internal sealed class IndexedPointPlan : LayerPlan
 
         DrawRun(list, style, runSlot, runFrom, runTo);
 
-        // A run of blocks that follow one another in a page, in one call; nothing when its page is not there.
+        // A run of blocks that follow one another in a page, in one call. A page that is not on the GPU yet is recorded
+        // too, with a slot of −1, which the backend draws nothing for: the list's arrays reach the view's size in the
+        // first frame that asks for the view, not in the frame its last page arrives (Issue #528).
         static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
         {
-            if (slot >= 0 && to > from)
+            if (to > from)
             {
                 list.DrawResidentMarkers(style with { Slot = slot, First = from, Count = to - from });
             }
