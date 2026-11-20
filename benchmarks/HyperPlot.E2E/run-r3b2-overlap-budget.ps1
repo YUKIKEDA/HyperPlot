@@ -1,6 +1,6 @@
 # Row R3b2's measurements of the blocks and the blocks in view (Issue #577, design §9 "重なりと予算（行 R3b2、Issue #472）"):
 # the points scene of this project on a NativeAOT build, each run at High priority (the scene sets it), with the cores the
-# other processes used and the GPU's clock over its frames written beside it (docs/benchmarks/r3b2-overlap-budget.md).
+# other processes used written beside it and the GPU's clock over its frames at the end (docs/benchmarks/r3b2-overlap-budget.md).
 # The sets, in the order a decision waits for them:
 #   path    1e7 points in 8 parts, the whole view: whole pages against the blocks in view, alternated (A, B, B, A, A, B)
 #   zoom64  1e7 points in 64 parts (blocks of 512), the zoom script: the same two forms, alternated
@@ -25,13 +25,15 @@ $machineLog = "$Out.machine.log"
 $clockLog = "$Out.clocks.csv"
 $exe = Join-Path $publish 'HyperPlot.E2E.exe'
 $failed = 0
+$ran = [System.Collections.Generic.List[object]]::new()
 
 function Write-Out([string] $text) {
     $text | Out-File -FilePath $Out -Append -Encoding utf8
 }
 
 # The GPU's clock over a run's frames: the samples of the clock log between the two times of day the scene printed.
-function Write-Clocks([string[]] $lines) {
+# Written after the last run: nvidia-smi writes its log some seconds late.
+function Write-Clocks([string] $name, [string[]] $lines) {
     $ran = $lines | Where-Object { $_ -match 'ran (\d\d:\d\d:\d\d\.\d+) to (\d\d:\d\d:\d\d\.\d+)' } | Select-Object -First 1
     if (-not $ran -or -not (Test-Path $clockLog)) {
         return
@@ -60,7 +62,7 @@ function Write-Clocks([string[]] $lines) {
     if ($clocks.Count -gt 0) {
         $sorted = $clocks | Sort-Object
         $shares = ($states.Keys | Sort-Object | ForEach-Object { "$_=$($states[$_])" }) -join ' '
-        Write-Out "gpu_clock: samples=$($clocks.Count) min=$($sorted[0]) p50=$($sorted[[int][math]::Floor($sorted.Count / 2)]) max=$($sorted[-1]) MHz; $shares"
+        Write-Out "gpu_clock $($name): samples=$($clocks.Count) min=$($sorted[0]) p50=$($sorted[[int][math]::Floor($sorted.Count / 2)]) max=$($sorted[-1]) MHz; $shares"
     }
 }
 
@@ -83,7 +85,7 @@ function Invoke-Scene([string] $name, [string[]] $arguments) {
 
     $lines = @([IO.File]::ReadAllLines($stdout)) + @([IO.File]::ReadAllLines("$Out.run.err.txt"))
     $lines | Out-File -FilePath $Out -Append -Encoding utf8
-    Write-Clocks $lines
+    $script:ran.Add(@($name, $lines))
     Remove-Item -LiteralPath $stdout, "$Out.run.err.txt" -Force
     Write-Out "=== $name ended $((Get-Date).ToString('HH:mm:ss')) after $([math]::Round(((Get-Date) - $began).TotalSeconds, 1)) s, exit $code"
     if ("$code" -ne '0') {
@@ -173,6 +175,12 @@ finally {
 
     if ($null -ne $clocks -and -not $clocks.HasExited) {
         Stop-Process -Id $clocks.Id -Force
+        $clocks.WaitForExit(10000) | Out-Null
+    }
+
+    Write-Out '## GPU clock over the frames of each run'
+    foreach ($run in $ran) {
+        Write-Clocks $run[0] $run[1]
     }
 
     if (Test-Path $publish) {
