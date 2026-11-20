@@ -476,6 +476,91 @@ internal abstract unsafe class SpatialSnapshot
         return (best, count, level, read);
     }
 
+    /// <summary>
+    /// Spike R3b2 (Issue #552): the overlap's largest bin as the product defines it (design §5.5.2 "最大のビンの数え方",
+    /// the walk of main's <c>IndexedPointPlan.PlanDensity</c>): the level whose bins are at least a physical pixel wide on
+    /// both axes, the deepest such; for each cell of that level (or leaf above it) that touches the view, the largest bin
+    /// of its own tile or of its deepest ancestor's, the whole tile's, over the bin's area in pixels; a cell with no tile
+    /// above it counts its points over its own area. This branch's tiles do not keep their largest bin, so the tile is scanned.
+    /// </summary>
+    /// <param name="x0">The view's least x, in data units.</param>
+    /// <param name="x1">The view's greatest x.</param>
+    /// <param name="y0">The view's least y.</param>
+    /// <param name="y1">The view's greatest y.</param>
+    /// <param name="pixelsPerX">The pixels of one data unit along x.</param>
+    /// <param name="pixelsPerY">The pixels of one data unit along y.</param>
+    /// <returns>The points per pixel of the densest tile's largest bin (NaN without tiles), that bin's count and area in pixels, the level chosen, the level of the tile it came from (-1: a cell's fill), the tiles read, and the cells counted as a fill.</returns>
+    internal (double PerPixel, ulong Count, double BinArea, int Level, int TileLevel, int Tiles, int Fills) ProbeOverlap(
+        double x0,
+        double x1,
+        double y0,
+        double y1,
+        double pixelsPerX,
+        double pixelsPerY
+    )
+    {
+        if (Stage != SpatialStage.Full || Tiles is not { } tiles)
+        {
+            return (double.NaN, 0, 0, -1, -1, 0, 0);
+        }
+
+        // DensityMath.TileLevel of main.
+        var pixels = Math.Min(Math.Abs(_xAxis.ExtentAt(0) * pixelsPerX), Math.Abs(_yAxis.ExtentAt(0) * pixelsPerY));
+        var level = !(pixels >= DensityTiles.Side) ? 0 : Math.Clamp((int)Math.Floor(Math.Log2(pixels)) - DensityTiles.BinLevels, 0, DensityTiles.DeepestTileLevel);
+        var (originX, originY) = ((double)_xAxis.Origin, (double)_yAxis.Origin);
+        var rect = new SpatialRect(x0 - originX, x1 - originX, y0 - originY, y1 - originY);
+        var cells = new SpatialCell[GetCells(rect, level, [])];
+        _ = GetCells(rect, level, cells);
+        var seen = new Dictionary<(ulong Code, int Level), ulong>();
+        var (best, count, binArea, from, fills) = (0.0, 0UL, 0.0, -1, 0);
+        foreach (ref readonly var cell in cells.AsSpan())
+        {
+            var drawn = false;
+            for (var at = Math.Min(cell.Level, DensityTiles.DeepestTileLevel); at >= 0; at--)
+            {
+                var code = cell.Code >> (2 * (cell.Level - at));
+                if (!seen.TryGetValue((code, at), out var largest))
+                {
+                    if (!tiles.TryGetTile(code, at, out var tile))
+                    {
+                        continue;
+                    }
+
+                    for (var by = 0; by < DensityTiles.Side; by++)
+                    {
+                        for (var bx = 0; bx < DensityTiles.Side; bx++)
+                        {
+                            largest = Math.Max(largest, tile[bx, by]);
+                        }
+                    }
+
+                    seen.Add((code, at), largest);
+                }
+
+                var area = Math.Abs(_xAxis.ExtentAt(at) * pixelsPerX * _yAxis.ExtentAt(at) * pixelsPerY) / ((double)DensityTiles.Side * DensityTiles.Side);
+                if (area > 0 && largest / area > best)
+                {
+                    (best, count, binArea, from) = (largest / area, largest, area, at);
+                }
+
+                drawn = true;
+                break;
+            }
+
+            if (!drawn)
+            {
+                fills++;
+                var area = Math.Abs(_xAxis.ExtentAt(cell.Level) * pixelsPerX * _yAxis.ExtentAt(cell.Level) * pixelsPerY);
+                if (area > 0 && cell.Count / area > best)
+                {
+                    (best, count, binArea, from) = (cell.Count / area, (ulong)cell.Count, area, -1);
+                }
+            }
+        }
+
+        return (best, count, binArea, level, from, seen.Count, fills);
+    }
+
     /// <summary>Makes the codes of points of the copy again from their stored values (design §3.4 "ビンの値").</summary>
     /// <param name="first">The position of the first point: the points to read are in the copy.</param>
     /// <param name="codes">Where the codes go: one for each point to read.</param>

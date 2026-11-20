@@ -31,6 +31,15 @@ internal static class SplitProbe
     /// </summary>
     internal static readonly bool VisibleBlocks = Environment.GetEnvironmentVariable("HP_PROBE_VISIBLE_BLOCKS") == "1" && BlockPoints > 0;
 
+    /// <summary>HP_PROBE_FRACTION=f (0 &lt; f &lt;= 1, with <see cref="VisibleBlocks"/>): each block in view is drawn in a call of its own, over the first f of its points. 0 (unset): off.</summary>
+    internal static readonly double Fraction =
+        VisibleBlocks
+        && double.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_FRACTION"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f)
+        && f > 0
+        && f <= 1
+            ? f
+            : 0;
+
     /// <summary>HP_PROBE_NO_RAW_LIMIT=1: a point layer of more than the raw limit draws its points. Read once: a read a frame allocates 24 B.</summary>
     internal static readonly bool NoRawLimit = Environment.GetEnvironmentVariable("HP_PROBE_NO_RAW_LIMIT") == "1";
 
@@ -98,7 +107,7 @@ internal static class SplitProbe
     internal static string Describe() =>
         string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")} draw={(VisibleBlocks ? "visible_blocks" : "pages")} no_raw_limit={NoRawLimit}"
+            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")} draw={(VisibleBlocks ? "visible_blocks" : "pages")} no_raw_limit={NoRawLimit} fraction={Fraction}"
         );
 
     private static int Read(string name, int fallback) =>

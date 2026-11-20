@@ -8,6 +8,17 @@
 #       (PointsFileScene). 3 runs. About 15 to 25 minutes, with the data's generation.
 #   o4: 1e9 uniform and clustered points: resident cells, Record's time, and the cells' bytes per frame (PointsFileScene).
 #       3 rounds, uniform and clustered alternated (round 2 clustered first). About 20 to 30 minutes, with the data.
+#   Issue #552 (the overlap threshold), all at 1,920 x 1,080, opacity 0.6, "whole", 600 frames after 120, D2:
+#   ref: the three reference scenes of o1b (uniform and the clump as one part at 32,768, the clump as 6 colors at 8,192),
+#       one round: the overlap line gives the product's definition beside max_bin.
+#   thr: one part at block 32,768 over the scenes of THR_SCENES ("name:points:diameter:sigma" separated by spaces; sigma
+#       0 is uniform): the clump's spread, the diameter, and the count varied. 3 rounds, round 2 reversed.
+#   facet: uniform points wrapped into 6 panels, one part a panel, at 32,768 (panels not counted) and 8,192 (counted),
+#       beside one panel at 32,768. 3 rounds.
+#   frac: uniform, one part, 32,768: each block in view in a call of its own over its first f points (f = 1, 0.5, 0.25),
+#       beside the merged runs. 3 rounds.
+#   stage: the three reference scenes at 6 DIP and at 1 DIP (a marker of about a pixel: the points pass without the
+#       markers' pixels). One round.
 #   clean: deletes the generated data.
 # The data (8 GB a distribution: generate-points, seed 1, unbuffered) lives in $P/.dev/data; run "clean" after o3 and o4.
 # The index's copy (about 13 GB at 1e9) is a temporary file the process deletes on close.
@@ -48,7 +59,7 @@ build() {
   rm -f "$stamp"
 }
 build HyperPlot.E2E "$E"
-[ "$MODE" != o1 ] && build HyperPlot.DataPath "$G"
+case "$MODE" in o3 | o4 | o1b) build HyperPlot.DataPath "$G" ;; esac
 echo "built $(git -C "$P" rev-parse --short HEAD) $(date +%H:%M:%S)" >> "$OUT"
 
 nvidia-smi --query-gpu=timestamp,clocks.gr,pstate --format=csv -lms 1000 > "$CLOCKS" &
@@ -101,6 +112,39 @@ case "$MODE" in
       done
     done
     SCENES+=("cluster-color6-b8192|HP_PROBE_BLOCK_POINTS=8192 $D2|180|points 10000000 6 0.6 cluster 600 6 whole")
+    ;;
+  ref)
+    SCENES+=("uniform-p1-b32768|HP_PROBE_BLOCK_POINTS=32768 $D2|180|points 10000000 6 0.6 uniform 600 0 whole")
+    SCENES+=("cluster-p1-b32768|HP_PROBE_BLOCK_POINTS=32768 $D2|180|points 10000000 6 0.6 cluster 600 0 whole")
+    SCENES+=("cluster-color6-b8192|HP_PROBE_BLOCK_POINTS=8192 $D2|180|points 10000000 6 0.6 cluster 600 6 whole")
+    ROUNDS=1
+    ;;
+  thr)
+    for t in ${THR_SCENES:?name:points:diameter:sigma ...}; do
+      IFS=: read -r name points diameter sigma <<< "$t"
+      dist=cluster
+      [ "$sigma" = 0 ] && dist=uniform && sigma=10
+      SCENES+=("$name|HP_PROBE_BLOCK_POINTS=32768 $D2 HP_PROBE_NO_RAW_LIMIT=1 HP_PROBE_CLUSTER_SIGMA=$sigma|240|points $points $diameter 0.6 $dist 600 0 whole")
+    done
+    ;;
+  facet)
+    SCENES+=("uniform-p1-b32768|HP_PROBE_BLOCK_POINTS=32768 $D2|180|points 10000000 6 0.6 uniform 600 0 whole")
+    SCENES+=("uniform-facet6-b32768|HP_PROBE_BLOCK_POINTS=32768 $D2 HP_PROBE_FACET=6|240|points 10000000 6 0.6 uniform 600 0 whole")
+    SCENES+=("uniform-facet6-b8192|HP_PROBE_BLOCK_POINTS=8192 $D2 HP_PROBE_FACET=6|240|points 10000000 6 0.6 uniform 600 0 whole")
+    ;;
+  frac)
+    SCENES+=("uniform-p1-merged|HP_PROBE_BLOCK_POINTS=32768 $D2|180|points 10000000 6 0.6 uniform 600 0 whole")
+    for f in 1 0.5 0.25; do
+      SCENES+=("uniform-p1-f$f|HP_PROBE_BLOCK_POINTS=32768 $D2 HP_PROBE_FRACTION=$f|180|points 10000000 6 0.6 uniform 600 0 whole")
+    done
+    ;;
+  stage)
+    for d in 6 1; do
+      SCENES+=("uniform-p1-b32768-d$d|HP_PROBE_BLOCK_POINTS=32768 $D2|180|points 10000000 $d 0.6 uniform 600 0 whole")
+      SCENES+=("cluster-p1-b32768-d$d|HP_PROBE_BLOCK_POINTS=32768 $D2|180|points 10000000 $d 0.6 cluster 600 0 whole")
+      SCENES+=("cluster-color6-b8192-d$d|HP_PROBE_BLOCK_POINTS=8192 $D2|180|points 10000000 $d 0.6 cluster 600 6 whole")
+    done
+    ROUNDS=1
     ;;
   o3)
     data u1e9 uniform

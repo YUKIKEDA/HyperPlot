@@ -269,10 +269,25 @@ internal sealed class IndexedPointPlan : LayerPlan
     // Spike R3b2: draws a run of consecutive blocks of a page in one call; nothing when its page is not there.
     private static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
     {
-        if (slot >= 0 && to > from)
+        if (slot < 0 || to <= from)
         {
-            list.DrawResidentMarkers(style with { Slot = slot, Count = to - from, First = from });
+            return;
         }
+
+        // Spike R3b2 (Issue #552, HP_PROBE_FRACTION): each block of the run in a call of its own, over the first share of
+        // its points; the page holds every point, so this times the drawing alone, not a page of the blocks' heads.
+        if (SplitProbe.Fraction > 0)
+        {
+            for (var at = from; at < to; at += SplitProbe.BlockPoints)
+            {
+                var points = (int)Math.Ceiling(Math.Min(SplitProbe.BlockPoints, to - at) * SplitProbe.Fraction);
+                list.DrawResidentMarkers(style with { Slot = slot, Count = points, First = at });
+            }
+
+            return;
+        }
+
+        list.DrawResidentMarkers(style with { Slot = slot, Count = to - from, First = from });
     }
 
     /// <summary>Gives back the snapshot, lets its pages go, and disposes the index.</summary>

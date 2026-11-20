@@ -24,6 +24,16 @@ internal static partial class PointsScene
             ? z
             : 1;
 
+    // Spike R3b2 (Issue #552): HP_PROBE_CLUSTER_SIGMA sets the clump's spread (10 by default, a tenth of the side), and
+    // HP_PROBE_FACET=n wraps the layer into n panels (row i goes to panel i mod n; the panels share their scales).
+    private static readonly double Sigma =
+        double.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_CLUSTER_SIGMA"), NumberStyles.Float, CultureInfo.InvariantCulture, out var sigma)
+        && sigma > 0
+            ? sigma
+            : 10;
+
+    private static readonly int FacetPanels = int.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_FACET"), out var panels) ? panels : 0;
+
     // Spike R3b2 (Issue #472): HP_PROBE_READY_POLL=1, see the frame loop.
     private static readonly bool ReadyPoll = Environment.GetEnvironmentVariable("HP_PROBE_READY_POLL") == "1";
 
@@ -64,7 +74,7 @@ internal static partial class PointsScene
         {
             if (cluster)
             {
-                var r = 10 * Math.Sqrt(-2 * Math.Log(1 - random.NextDouble()));
+                var r = Sigma * Math.Sqrt(-2 * Math.Log(1 - random.NextDouble()));
                 var a = 2 * Math.PI * random.NextDouble();
                 (xs[i], ys[i]) = (50 + (r * Math.Cos(a)), 50 + (r * Math.Sin(a)));
             }
@@ -100,8 +110,14 @@ internal static partial class PointsScene
             );
         }
 
+        if (FacetPanels > 0)
+        {
+            var panelNames = Enumerable.Range(0, FacetPanels).Select(i => $"f{i:D2}").ToArray();
+            builder = builder.Add("f", Column.Categorical(Enumerable.Range(0, count).Select(i => (string?)panelNames[i % FacetPanels]).ToArray()));
+        }
+
         var table = builder.Build();
-        var plot = Plot.Create(table)
+        var plotBuilder = Plot.Create(table)
             .Point(
                 table.Col<double>("x"),
                 table.Col<double>("y"),
@@ -114,8 +130,8 @@ internal static partial class PointsScene
                 }
             )
             .ScaleX(Scale.Linear().WithDomain(0, 100))
-            .ScaleY(Scale.Linear().WithDomain(0, 100))
-            .Build();
+            .ScaleY(Scale.Linear().WithDomain(0, 100));
+        var plot = (FacetPanels > 0 ? plotBuilder.FacetWrap(table.Cat("f")) : plotBuilder).Build();
         using var backend = D3D11Backend.Create();
         using var engine = new PlotEngine(backend, 1920, 1080);
 
@@ -329,7 +345,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} sigma={Sigma} facet={FacetPanels} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(
@@ -489,44 +505,68 @@ internal static partial class PointsScene
     /// </summary>
     internal static void PrintMaxBin(PlotEngine engine, PanelId panel, PanelView2D[] views, int from, float diameter)
     {
-        var snapshots = engine
-            .Plan!.Layers.SelectMany(l => l is SplitPlan split ? split.ProbeParts : [l])
-            .OfType<IndexedPointPlan>()
-            .Select(p => p.ProbeSnapshot)
-            .Where(s => s is not null)
-            .ToArray();
+        // Each panel's parts (a facet's panels are not parts, Issue #472's Decision): the figures are the largest over the panels.
         var markerArea = Math.PI * Math.Pow(diameter * engine.Scale / 2, 2);
         var (largest, smallest, largestPart, sampled) = (0.0, double.MaxValue, 0.0, 0);
-        var (count, level, tiles) = (0UL, -1, 0);
-        for (var f = from; f < views.Length; f += 30)
+        var (count, level, tiles, parts) = (0UL, -1, 0, 0);
+
+        // Issue #552: the product's definition (SpatialSnapshot.ProbeOverlap), the largest part's value.
+        var (overlap, overlapLeast) = (0.0, double.MaxValue);
+        (double PerPixel, ulong Count, double BinArea, int Level, int TileLevel, int Tiles, int Fills) densest = default;
+        var panels = engine.Plan!.Panels;
+        for (var at = 0; at < panels.Count; at++)
         {
-            var view = views[f];
-            var (x0, x1) = (view.X.Origin + view.X.Lower, view.X.Origin + view.X.Upper);
-            var (y0, y1) = (view.Y.Origin + view.Y.Lower, view.Y.Origin + view.Y.Upper);
-            var low = engine.ViewToPixel(panel, ViewRange.FromValues(x0, x0), ViewRange.FromValues(y0, y0));
-            var high = engine.ViewToPixel(panel, ViewRange.FromValues(x1, x1), ViewRange.FromValues(y1, y1));
-            var (perX, perY) = (Math.Abs(high.X - low.X) / (x1 - x0), Math.Abs(high.Y - low.Y) / (y1 - y0));
-            var sum = 0.0;
-            foreach (var snapshot in snapshots)
+            var snapshots = panels[at]
+                .Layers.SelectMany(l => l is SplitPlan split ? split.ProbeParts : [l])
+                .OfType<IndexedPointPlan>()
+                .Select(p => p.ProbeSnapshot)
+                .Where(s => s is not null)
+                .ToArray();
+            parts = Math.Max(parts, snapshots.Length);
+            var id = new PanelId(panel.Plot, at);
+            for (var f = from; f < views.Length; f += 30)
             {
-                var bin = snapshot!.ProbeMaxBin(x0, x1, y0, y1, perX, perY);
-                sum += double.IsNaN(bin.PerPixel) ? 0 : bin.PerPixel;
-                if (bin.PerPixel > largestPart)
+                var view = views[f];
+                var (x0, x1) = (view.X.Origin + view.X.Lower, view.X.Origin + view.X.Upper);
+                var (y0, y1) = (view.Y.Origin + view.Y.Lower, view.Y.Origin + view.Y.Upper);
+                var low = engine.ViewToPixel(id, ViewRange.FromValues(x0, x0), ViewRange.FromValues(y0, y0));
+                var high = engine.ViewToPixel(id, ViewRange.FromValues(x1, x1), ViewRange.FromValues(y1, y1));
+                var (perX, perY) = (Math.Abs(high.X - low.X) / (x1 - x0), Math.Abs(high.Y - low.Y) / (y1 - y0));
+                var (sum, viewOverlap) = (0.0, 0.0);
+                foreach (var snapshot in snapshots)
                 {
-                    (largestPart, count, level) = (bin.PerPixel, bin.Count, bin.Level);
+                    var bin = snapshot!.ProbeMaxBin(x0, x1, y0, y1, perX, perY);
+                    sum += double.IsNaN(bin.PerPixel) ? 0 : bin.PerPixel;
+                    if (bin.PerPixel > largestPart)
+                    {
+                        (largestPart, count, level) = (bin.PerPixel, bin.Count, bin.Level);
+                    }
+
+                    tiles += bin.Tiles;
+                    var product = snapshot.ProbeOverlap(x0, x1, y0, y1, perX, perY);
+                    viewOverlap = Math.Max(viewOverlap, double.IsNaN(product.PerPixel) ? 0 : product.PerPixel);
+                    if (product.PerPixel > densest.PerPixel)
+                    {
+                        densest = product;
+                    }
                 }
 
-                tiles += bin.Tiles;
+                (largest, smallest) = (Math.Max(largest, sum), Math.Min(smallest, sum));
+                (overlap, overlapLeast) = (Math.Max(overlap, viewOverlap), Math.Min(overlapLeast, viewOverlap));
+                sampled++;
             }
-
-            (largest, smallest) = (Math.Max(largest, sum), Math.Min(smallest, sum));
-            sampled++;
         }
 
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"max_bin: parts={snapshots.Length} views={sampled} sum_over_parts_points_per_px: max={largest:F2} min={smallest:F2}; largest_part_bin: points_per_px={largestPart:F2} count={count} tile_level={level}; tiles_read={tiles}; marker_area_px={markerArea:F2}; max_bin_x_marker_area={largest * markerArea:F1}"
+                $"max_bin: parts={parts} panels={panels.Count} views={sampled} sum_over_parts_points_per_px: max={largest:F2} min={smallest:F2}; largest_part_bin: points_per_px={largestPart:F2} count={count} tile_level={level}; tiles_read={tiles}; marker_area_px={markerArea:F2}; max_bin_x_marker_area={largest * markerArea:F1}; largest_part_x_marker_area={largestPart * markerArea:F1}"
+            )
+        );
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"overlap: product_definition largest_part_points_per_px: max={overlap:F2} min={overlapLeast:F2} count={densest.Count} bin_area_px={densest.BinArea:F3} chosen_level={densest.Level} tile_level={densest.TileLevel} tiles={densest.Tiles} fills={densest.Fills}; overlap_x_marker_area: max={overlap * markerArea:F1} min={overlapLeast * markerArea:F1}"
             )
         );
     }
