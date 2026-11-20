@@ -360,7 +360,9 @@ GPU は P8（210〜240 MHz）のままだった（3 周目の最後の 2 つは�
 | `Span<float>.Sort(TComparer)`（構造体の比較子） | 72 B / 回 | 88 B / 回 |
 
 - 比べる関数を渡さない並べ替えは、NativeAOT だけで 1 回 48 B を確保する。確保 0 の試験は JIT で走るので、これを数えない
-- ランタイムのどこが確保するかは、ソースで確かめていない（Issue #570 が挙げた 48 B と、この表の数が一致することだけを確かめた）
+- 原因はランタイムのソースで読める（dotnet/runtime のタグ `v10.0.0`）。NativeAOT の `ArraySortHelper<T>.Default` は、いつも比較子を通す実装である（`ArraySortHelper.NativeAot.cs`）。その `Sort(Span<T>, IComparer<T>?)` は、呼ばれるたびに `comparer.Compare` からデリゲートを作って `IntrospectiveSort` に渡す（`ArraySortHelper.cs` の 25〜26 行）。JIT（CoreCLR）は、`IComparable<T>` を持つ型に `GenericArraySortHelper<T>` を選び（`ArraySortHelper.CoreCLR.cs`）、デリゲートを作らない
+- 比べる関数を渡す並べ替えは、渡したデリゲートをそのまま同じ `IntrospectiveSort` に渡す（`ArraySortHelper.cs` の 54〜61 行）。NativeAOT では、前も後も同じ並べ替えの道を通り、違いは呼ぶたびのデリゲートの有無だけである
+- 48 B がデリゲート 1 個の大きさであることは、別には測っていない（表の 48 B が、Issue #570 の 1 回 48 B と一致する）
 - Issue #570 が「測っていない」とした 6 か所は、次のとおりである
 
 | 場所 | 呼び方 | いつ走るか | したこと |
