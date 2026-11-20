@@ -40,6 +40,52 @@ internal static class SplitProbe
             ? f
             : 0;
 
+    /// <summary>
+    /// HP_PROBE_BUDGET_FRACTION (Issue #567, with <see cref="VisibleBlocks"/>): each frame draws the first f of every block
+    /// in view, f = the budget left by the tiles over the bytes of the pages that hold a block in view. 1 ("heads"): a page
+    /// holds only the heads of its blocks, and is sent again when f changes. 2 ("whole"): a page holds every point and only
+    /// the drawn range follows f; the pages may then pass the budget unless <see cref="PageCap"/>. 0 (unset): off.
+    /// </summary>
+    internal static readonly int BudgetFraction = !VisibleBlocks
+        ? 0
+        : Environment.GetEnvironmentVariable("HP_PROBE_BUDGET_FRACTION") switch
+        {
+            "heads" => 1,
+            "whole" => 2,
+            _ => 0,
+        };
+
+    /// <summary>HP_PROBE_FRACTION_STEPS=n: f is rounded down to a multiple of 1/n. 0 (unset): f to a point of a block.</summary>
+    internal static readonly int FractionSteps =
+        int.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_FRACTION_STEPS"), out var steps) && steps > 0 ? steps : 0;
+
+    /// <summary>HP_PROBE_PAGE_CAP=1 (with "whole"): the whole pages stay inside the budget, so pages past it are not there.</summary>
+    internal static readonly bool PageCap = Environment.GetEnvironmentVariable("HP_PROBE_PAGE_CAP") == "1";
+
+    /// <summary>Gets or sets the bytes of points staged for the GPU (Issue #567).</summary>
+    internal static long UploadedBytes { get; set; }
+
+    /// <summary>Gets or sets the pages staged that were not on the GPU.</summary>
+    internal static long NewPages { get; set; }
+
+    /// <summary>Gets or sets the pages staged again with longer heads.</summary>
+    internal static long GrownPages { get; set; }
+
+    /// <summary>Gets or sets the pages staged again with shorter heads.</summary>
+    internal static long ShrunkPages { get; set; }
+
+    /// <summary>Gets or sets the blocks in view that drew fewer points than the f of the frame gives them (their page absent or its heads shorter).</summary>
+    internal static long ShortBlocks { get; set; }
+
+    /// <summary>Gets or sets the blocks in view.</summary>
+    internal static long VisibleBlockCount { get; set; }
+
+    /// <summary>Gets or sets the points of a full block the last frame drew (f times the block).</summary>
+    internal static int HeadPoints { get; set; }
+
+    /// <summary>Gets or sets the bytes of the pages that hold a block in view, of the last frame.</summary>
+    internal static long NeededBytes { get; set; }
+
     /// <summary>HP_PROBE_NO_RAW_LIMIT=1: a point layer of more than the raw limit draws its points. Read once: a read a frame allocates 24 B.</summary>
     internal static readonly bool NoRawLimit = Environment.GetEnvironmentVariable("HP_PROBE_NO_RAW_LIMIT") == "1";
 
@@ -107,7 +153,7 @@ internal static class SplitProbe
     internal static string Describe() =>
         string.Create(
             System.Globalization.CultureInfo.InvariantCulture,
-            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")} draw={(VisibleBlocks ? "visible_blocks" : "pages")} no_raw_limit={NoRawLimit} fraction={Fraction}"
+            $"probe: shuffle_blocks={ShuffleBlocks} block_points={BlockPoints} split={Split} order={(Interleave ? "interleave" : "parts")} color={Color} cb={(ConstantsWhenChanged ? "changed" : "always")} draw={(VisibleBlocks ? "visible_blocks" : "pages")} no_raw_limit={NoRawLimit} fraction={Fraction} budget_fraction={BudgetFraction switch { 1 => "heads", 2 => "whole", _ => "off" }} fraction_steps={FractionSteps} page_cap={PageCap} budget={ResidencyCache.DefaultBudget}"
         );
 
     private static int Read(string name, int fallback) =>

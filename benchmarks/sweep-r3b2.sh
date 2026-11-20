@@ -21,6 +21,13 @@
 #       beside the merged runs. 3 rounds.
 #   stage: the three reference scenes at 6 DIP and at 1 DIP (a marker of about a pixel: the points pass without the
 #       markers' pixels). One round.
+#   f567 (Issue #567): a Points layer past the budget (256 MiB): 4.4e7 uniform points in one part, 1 DIP, block 32,768,
+#       f from the budget each frame. The alternatives: "whole" (a page holds every point, the drawn range follows f, the
+#       pages pass the budget), "heads" (a page holds the heads of its blocks, sent again when f changes), both with f in
+#       steps of 1/16, and "heads" with f to the point; over a still view ("whole" script) and a pan that moves f
+#       ("edge"); and "whole" held inside the budget over the still view. A line a frame goes to
+#       <output without .txt>-frames/<scene>-r<round>.csv. A frame every 33.4 ms (F567_PERIOD): at 16.7 ms the GPU time of
+#       about 2e7 points passed the period in the trial. 3 rounds, round 2 reversed. About 17 minutes.
 #   clean: deletes the generated data.
 # The data (8 GB a distribution: generate-points, seed 1, unbuffered) lives in $P/.dev/data; run "clean" after o3 and o4.
 # The index's copy (about 13 GB at 1e9) is a temporary file the process deletes on close.
@@ -75,6 +82,7 @@ trap 'kill $SMI 2>/dev/null; touch "$MACHINE.stop"; wait $WATCH 2>/dev/null' EXI
 run() {
   local name env limit rest
   IFS='|' read -r name env limit rest <<< "$1"
+  env=${env//@R@/${r:-0}}
   echo "=== $name $(date +%H:%M:%S)" >> "$OUT"
   # shellcheck disable=SC2086
   timeout -k 10 "$limit" env $env "$E" $rest >> "$OUT" 2>&1 || echo "exit $? (run without a result)" >> "$OUT"
@@ -139,6 +147,19 @@ case "$MODE" in
     for f in 1 0.5 0.25; do
       SCENES+=("uniform-p1-f$f|HP_PROBE_BLOCK_POINTS=32768 $D2 HP_PROBE_FRACTION=$f|180|points 10000000 6 0.6 uniform 600 0 whole")
     done
+    ;;
+  f567)
+    FRAMES="${OUT%.txt}-frames"
+    mkdir -p "$FRAMES"
+    F="HP_PROBE_BLOCK_POINTS=32768 $D2 HP_PROBE_NO_RAW_LIMIT=1 HP_PROBE_PERIOD_MS=${F567_PERIOD:-33.4}"
+    S="points ${F567_POINTS:-44000000} ${F567_DIAMETER:-1} 0.6 uniform 600 0"
+    for script in whole edge; do
+      for v in whole-q16:whole:16 heads-q16:heads:16 heads-exact:heads:0; do
+        IFS=: read -r name mode steps <<< "$v"
+        SCENES+=("$script-$name|$F HP_PROBE_BUDGET_FRACTION=$mode HP_PROBE_FRACTION_STEPS=$steps HP_PROBE_FRACTION_LOG=$(cygpath -m "$FRAMES")/$script-$name-r@R@.csv|240|$S $script")
+      done
+    done
+    SCENES+=("whole-whole-capped|$F HP_PROBE_BUDGET_FRACTION=whole HP_PROBE_FRACTION_STEPS=16 HP_PROBE_PAGE_CAP=1 HP_PROBE_FRACTION_LOG=$(cygpath -m "$FRAMES")/whole-whole-capped-r@R@.csv|240|$S whole")
     ;;
   stage)
     for d in 6 1; do

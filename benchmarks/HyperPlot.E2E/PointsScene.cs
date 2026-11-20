@@ -63,6 +63,10 @@ internal static partial class PointsScene
         var categories = args.Length > 5 ? int.Parse(args[5], CultureInfo.InvariantCulture) : 0;
         var whole = args.Length > 6 && args[6] == "whole";
 
+        // Spike #567: "edge" pans the whole view off the data and back (EdgeShare), so that the bytes in view change.
+        var edge = args.Length > 6 && args[6] == "edge";
+        var fractionMode = HyperPlot.Rendering.SplitProbe.BudgetFraction;
+
         // Row R3f: what the categories set (the color, the shape, or both), whether a number sizes the points, and the shape.
         var channel = args.Length > 7 ? args[7] : "color";
         var shape = args.Length > 8 ? Enum.Parse<MarkerShape>(args[8]) : MarkerShape.Circle;
@@ -149,6 +153,11 @@ internal static partial class PointsScene
             var (cx, cy) = whole
                 ? (50 + (Math.Sin(t * 2 * Math.PI) / Zoom), 50 + (Math.Cos(t * 2 * Math.PI) / Zoom))
                 : (50 + (20 * Math.Sin(t * 2 * Math.PI)), 50 + (10 * Math.Cos(t * 2 * Math.PI)));
+            if (edge)
+            {
+                (span, cx, cy) = (102, 50 + (60 * EdgeShare(f - Warmup)), 50);
+            }
+
             views[f] = new PanelView2D(
                 ViewRange.FromValues(cx - (span / 2), cx + (span / 2)),
                 ViewRange.FromValues(cy - (span / 2), cy + (span / 2))
@@ -169,7 +178,9 @@ internal static partial class PointsScene
         }
 
         var (waited, firstRuns, pageFrames) = (0, -1.0, 0);
-        while (engine.IsProvisional)
+
+        // Spike #567: a view whose whole pages never fit the budget stays provisional, so the wait is bounded.
+        while (engine.IsProvisional && (fractionMode == 0 || waited < 600))
         {
             Thread.Sleep(1);
             engine.RenderFrame();
@@ -211,6 +222,10 @@ internal static partial class PointsScene
         long lastTimed = -1;
         long lastPass = -1;
 
+        // Spike #567: per frame, the f of the frame, the bytes in view and on the GPU, what was staged, and the flag.
+        var fractionFrames = new FractionFrame[total];
+        var gpuOf = new Dictionary<long, double>(total);
+
         // Spike R3b2 (Issue #472): HP_PROBE_PERIOD_MS sets the frame period (16.7 ms by default).
         var period = TimeSpan.FromMilliseconds(
             double.TryParse(Environment.GetEnvironmentVariable("HP_PROBE_PERIOD_MS"), NumberStyles.Float, CultureInfo.InvariantCulture, out var ms)
@@ -237,6 +252,14 @@ internal static partial class PointsScene
                 HyperPlot.Rendering.SplitProbe.ShapeAddBytes,
                 HyperPlot.Rendering.SplitProbe.ShapeOrderBytes
             );
+            var (u0, n0, g0, r0, b0, v0) = (
+                HyperPlot.Rendering.SplitProbe.UploadedBytes,
+                HyperPlot.Rendering.SplitProbe.NewPages,
+                HyperPlot.Rendering.SplitProbe.GrownPages,
+                HyperPlot.Rendering.SplitProbe.ShrunkPages,
+                HyperPlot.Rendering.SplitProbe.ShortBlocks,
+                HyperPlot.Rendering.SplitProbe.VisibleBlockCount
+            );
             var methods = System.Runtime.JitInfo.GetCompiledMethodCount(currentThread: true);
             var bytes = GC.GetAllocatedBytesForCurrentThread();
             var start = Stopwatch.GetTimestamp();
@@ -253,6 +276,18 @@ internal static partial class PointsScene
             shapeBytes[f, 4] = HyperPlot.Rendering.SplitProbe.ShapeOrderBytes - o0;
             engineFrame[f] = TimerProbe.Closing;
             took[f] = -1;
+            fractionFrames[f] = new FractionFrame(
+                HyperPlot.Rendering.SplitProbe.HeadPoints,
+                HyperPlot.Rendering.SplitProbe.NeededBytes,
+                backend.Images.Points.BytesInUse,
+                HyperPlot.Rendering.SplitProbe.UploadedBytes - u0,
+                (int)(HyperPlot.Rendering.SplitProbe.NewPages - n0),
+                (int)(HyperPlot.Rendering.SplitProbe.GrownPages - g0),
+                (int)(HyperPlot.Rendering.SplitProbe.ShrunkPages - r0),
+                (int)(HyperPlot.Rendering.SplitProbe.ShortBlocks - b0),
+                (int)(HyperPlot.Rendering.SplitProbe.VisibleBlockCount - v0),
+                engine.IsProvisional
+            );
             foreach (ref readonly var text in engine.Plan!.List.Texts)
             {
                 if (!lookup.Contains(text.Chars.Span))
@@ -269,6 +304,7 @@ internal static partial class PointsScene
                 lastTimed = time.Frame;
                 took[f] = time.Frame;
                 gpu.Add(time.Duration.TotalMilliseconds);
+                gpuOf[time.Frame] = time.Duration.TotalMilliseconds;
             }
 
             if (f >= Warmup && backend.LastPassTime is { } passTime && passTime.Frame > lastPass)
@@ -311,7 +347,14 @@ internal static partial class PointsScene
             $"{HyperPlot.Rendering.SplitProbe.Describe()} categories_by={Environment.GetEnvironmentVariable("HP_PROBE_CATEGORIES") ?? "rows"} zoom={Zoom} warmup={Warmup}; per frame: groups={HyperPlot.Rendering.SplitProbe.Groups / probeFrames:F2} drawn_points={HyperPlot.Rendering.SplitProbe.DrawnPoints / probeFrames:F0} parts={HyperPlot.Rendering.SplitProbe.Parts / probeFrames:F2} pipeline_binds={HyperPlot.Rendering.SplitProbe.PipelineBinds / probeFrames:F2} draws={HyperPlot.Rendering.SplitProbe.Draws / probeFrames:F1} page_binds={HyperPlot.Rendering.SplitProbe.PageBinds / probeFrames:F1} constant_writes={HyperPlot.Rendering.SplitProbe.ConstantWrites / probeFrames:F1} color_changes={HyperPlot.Rendering.SplitProbe.ColorChanges / probeFrames:F1}"
         );
 
-        PrintMaxBin(engine, panel, views, Warmup, diameter);
+        if (fractionMode == 0)
+        {
+            PrintMaxBin(engine, panel, views, Warmup, diameter);
+        }
+        else
+        {
+            PrintFraction(fractionFrames, engineFrame, gpuOf, cpu, Warmup);
+        }
 
         // Hit tests at seeded pixels of the whole view, each timed alone.
         engine.Views.SetView(panel, new PanelView2D(ViewRange.FromValues(0, 100), ViewRange.FromValues(0, 100)));
@@ -345,7 +388,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} sigma={Sigma} facet={FacetPanels} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} sigma={Sigma} facet={FacetPanels} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : edge ? "edge" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(
@@ -432,6 +475,76 @@ internal static partial class PointsScene
             )
         );
         return 0;
+    }
+
+    /// <summary>
+    /// Spike #567: the share of the pan of the "edge" script at a measured frame (negative: the warm-up, at rest). A round
+    /// is 300 frames: 45 frames out (the view's middle from 50 to 110, eased, so that the data covers from all of the view
+    /// to about two fifths of it), 105 at rest there, 45 back, 105 at rest.
+    /// </summary>
+    private static double EdgeShare(int measured)
+    {
+        static double Ease(double u) => (1 - Math.Cos(Math.PI * u)) / 2;
+        if (measured < 0)
+        {
+            return 0;
+        }
+
+        var p = measured % 300;
+        return p < 45 ? Ease((p + 1) / 45.0)
+            : p < 150 ? 1
+            : p < 195 ? 1 - Ease((p - 149) / 45.0)
+            : 0;
+    }
+
+    // Spike #567: the measured frames' figures on one line, and HP_PROBE_FRACTION_LOG=<file> a line per measured frame.
+    private static void PrintFraction(FractionFrame[] frames, long[] engineFrame, Dictionary<long, double> gpuOf, double[] cpu, int warmup)
+    {
+        var kept = frames.AsSpan(warmup).ToArray();
+        var block = (double)HyperPlot.Rendering.SplitProbe.BlockPoints;
+        var streaks = new List<string>();
+        var start = -1;
+        for (var i = 0; i <= kept.Length; i++)
+        {
+            var on = i < kept.Length && kept[i].Provisional;
+            if (on && start < 0)
+            {
+                start = i;
+            }
+            else if (!on && start >= 0)
+            {
+                streaks.Add(string.Create(CultureInfo.InvariantCulture, $"{start}+{i - start}"));
+                start = -1;
+            }
+        }
+
+        var sent = kept.Where(k => k.Uploaded > 0).Select(k => (double)k.Uploaded).ToArray();
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"fraction: f: min={kept.Min(k => k.Head) / block:F4} max={kept.Max(k => k.Head) / block:F4}; needed_bytes: min={kept.Min(k => k.Needed)} max={kept.Max(k => k.Needed)}; resident_bytes: min={kept.Min(k => k.Resident)} max={kept.Max(k => k.Resident)} end={kept[^1].Resident}; uploaded: total={kept.Sum(k => k.Uploaded)} frames={sent.Length} max_frame={kept.Max(k => k.Uploaded)} p50_of_sending_frames={Percentile(sent, 0.5):F0}; pages: new={kept.Sum(k => k.New)} grown={kept.Sum(k => k.Grown)} shrunk={kept.Sum(k => k.Shrunk)}; provisional_frames={kept.Count(k => k.Provisional)} frames_with_short_blocks={kept.Count(k => k.Short > 0)} short_blocks_last_frame={kept[^1].Short} of {kept[^1].Visible}; provisional_streaks(start+length)={string.Join(",", streaks)}"
+            )
+        );
+        var path = Environment.GetEnvironmentVariable("HP_PROBE_FRACTION_LOG");
+        if (string.IsNullOrEmpty(path))
+        {
+            return;
+        }
+
+        var lines = new List<string> { "frame,head,needed,resident,uploaded,new,grown,shrunk,short,visible,provisional,cpu_ms,gpu_ms" };
+        for (var i = 0; i < kept.Length; i++)
+        {
+            var k = kept[i];
+            var gpuMs = gpuOf.TryGetValue(engineFrame[warmup + i], out var ms) ? ms : double.NaN;
+            lines.Add(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"{i},{k.Head},{k.Needed},{k.Resident},{k.Uploaded},{k.New},{k.Grown},{k.Shrunk},{k.Short},{k.Visible},{(k.Provisional ? 1 : 0)},{cpu[warmup + i]:F3},{gpuMs:F3}"
+                )
+            );
+        }
+
+        File.WriteAllLines(path, lines);
     }
 
     // Spike R3b2 (Issue #472): HP_PROBE_TIMER_LOG=<file> writes a line per measured frame: what the timer did in the frame,
@@ -664,6 +777,20 @@ internal static partial class PointsScene
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     internal static partial uint TimeEndPeriod(uint period);
+
+    // Spike #567: a frame's figures of the fraction probe.
+    private readonly record struct FractionFrame(
+        int Head,
+        long Needed,
+        long Resident,
+        long Uploaded,
+        int New,
+        int Grown,
+        int Shrunk,
+        int Short,
+        int Visible,
+        bool Provisional
+    );
 
     internal static double Percentile(double[] values, double share)
     {

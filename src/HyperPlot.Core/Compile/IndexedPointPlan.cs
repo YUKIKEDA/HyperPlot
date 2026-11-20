@@ -206,6 +206,34 @@ internal sealed class IndexedPointPlan : LayerPlan
         // the next range does not touch it.
         var block = SplitProbe.VisibleBlocks ? SplitProbe.BlockPoints : 0;
         var (runPage, runSlot, runFrom, runTo) = (-1L, -1, 0, 0);
+
+        // Spike #567: the f of the frame as the points of a full block (head), from the bytes of the pages that hold a
+        // block in view, counted from the cells before any page is asked for; and what the page of the run holds.
+        var (fraction, head, runStored) = (SplitProbe.BudgetFraction, 0, 0);
+        if (fraction > 0)
+        {
+            var (needed, last) = (0L, -1L);
+            for (var c = 0; c < cells.Length; c++)
+            {
+                ref readonly var cell = ref cells[c];
+                if (!x.Sees(cell.CornerX, cell.ExtentX) || !y.Sees(cell.CornerY, cell.ExtentY))
+                {
+                    continue;
+                }
+
+                for (var page = Math.Max(cell.First / PointPages.PagePoints, last + 1); page * PointPages.PagePoints < cell.First + cell.Count; page++)
+                {
+                    last = page;
+                    needed += (long)PointPages.PointsOf(snapshot, (int)page) * PointPages.PointBytes;
+                }
+            }
+
+            var remaining = ResidencyCache.DefaultBudget - (context.Images.BytesInUse - pages.BytesInUse);
+            var f = needed <= remaining ? 1.0 : Math.Max(0, (double)remaining / needed);
+            head = SplitProbe.FractionSteps > 0 ? (int)(Math.Floor(f * SplitProbe.FractionSteps) * block / SplitProbe.FractionSteps) : (int)(f * block);
+            (SplitProbe.NeededBytes, SplitProbe.HeadPoints) = (needed, head);
+        }
+
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
@@ -220,6 +248,12 @@ internal sealed class IndexedPointPlan : LayerPlan
             // The cell's points lie in one or more pages, and each page is drawn whole, once: the cells come in the
             // copy's order, so a page seen before is the last one drawn.
             var end = cell.First + cell.Count;
+            if (fraction > 0 && head == 0)
+            {
+                // f is 0: nothing is drawn.
+                continue;
+            }
+
             if (block > 0)
             {
                 // Spike R3b2: the cell's points in each page, widened to the blocks' ends; the cells come in the copy's
@@ -236,10 +270,13 @@ internal sealed class IndexedPointPlan : LayerPlan
                         continue;
                     }
 
-                    DrawRun(list, style, runSlot, runFrom, runTo);
+                    _missing |= DrawRun(list, style, runSlot, runFrom, runTo, runStored, head);
                     if (page != runPage)
                     {
-                        runSlot = pages.Request(snapshot, (int)page);
+                        // Spike #567: "heads" asks for the heads of the frame, "whole" for every point of each block.
+                        runSlot = fraction > 0
+                            ? pages.Request(snapshot, (int)page, fraction == 1 ? head : block, out runStored)
+                            : pages.Request(snapshot, (int)page);
                         _missing |= runSlot < 0;
                     }
 
@@ -263,15 +300,48 @@ internal sealed class IndexedPointPlan : LayerPlan
             }
         }
 
-        DrawRun(list, style, runSlot, runFrom, runTo);
+        _missing |= DrawRun(list, style, runSlot, runFrom, runTo, runStored, head);
     }
 
-    // Spike R3b2: draws a run of consecutive blocks of a page in one call; nothing when its page is not there.
-    private static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
+    // Spike R3b2: draws a run of consecutive blocks of a page in one call; nothing when its page is not there. Spike
+    // #567: returns whether a block of the run drew fewer points than the f of the frame gives it.
+    private static bool DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to, int stored, int head)
     {
-        if (slot < 0 || to <= from)
+        if (to <= from)
         {
-            return;
+            return false;
+        }
+
+        if (SplitProbe.BudgetFraction > 0)
+        {
+            // Each block in a call of its own: the first points of its head, which begins at the block's number times
+            // the points the page holds for a full block.
+            var size = SplitProbe.BlockPoints;
+            var isShort = false;
+            for (var at = from; at < to; at += size)
+            {
+                var length = Math.Min(size, to - at);
+                var want = PointPages.HeadOf(length, size, head);
+                var have = slot < 0 ? 0 : PointPages.HeadOf(length, size, stored);
+                SplitProbe.VisibleBlockCount++;
+                if (have < want)
+                {
+                    isShort = true;
+                    SplitProbe.ShortBlocks++;
+                }
+
+                if (slot >= 0)
+                {
+                    list.DrawResidentMarkers(style with { Slot = slot, Count = Math.Min(want, have), First = at / size * stored });
+                }
+            }
+
+            return isShort;
+        }
+
+        if (slot < 0)
+        {
+            return false;
         }
 
         // Spike R3b2 (Issue #552, HP_PROBE_FRACTION): each block of the run in a call of its own, over the first share of
@@ -284,10 +354,11 @@ internal sealed class IndexedPointPlan : LayerPlan
                 list.DrawResidentMarkers(style with { Slot = slot, Count = points, First = at });
             }
 
-            return;
+            return false;
         }
 
         list.DrawResidentMarkers(style with { Slot = slot, Count = to - from, First = from });
+        return false;
     }
 
     /// <summary>Gives back the snapshot, lets its pages go, and disposes the index.</summary>

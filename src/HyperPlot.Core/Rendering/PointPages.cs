@@ -38,6 +38,9 @@ internal sealed class PointPages
     private Key?[] _keys = [];
     private long[] _lastUsed = [];
     private int[] _counts = [];
+
+    // Spike #567: the points a full block of the page of each slot holds (0: the page whole, in the order of main).
+    private int[] _heads = [];
     private ResidentPoint[] _staging = new ResidentPoint[ResidencyCache.FrameUpload / PointBytes];
     private int _staged;
 
@@ -71,25 +74,48 @@ internal sealed class PointPages
     /// </summary>
     /// <param name="snapshot">The full snapshot, which the caller borrows.</param>
     /// <param name="page">The page: the points from page × 65,536.</param>
-    internal int Request(SpatialSnapshot snapshot, int page)
+    internal int Request(SpatialSnapshot snapshot, int page) => Request(snapshot, page, 0, out _);
+
+    /// <summary>Spike #567: the points of a block of <paramref name="length"/> points when a full block of <paramref name="size"/> holds <paramref name="head"/>.</summary>
+    internal static int HeadOf(int length, int size, int head) => (int)((((long)length * head) + size - 1) / size);
+
+    /// <summary>
+    /// Spike #567: <see cref="Request(SpatialSnapshot, int)"/> for a page that holds the first <paramref name="head"/>
+    /// points of each full block (0: the page whole, in the order of main). A page that is there with other heads is
+    /// staged again when the upload of the frame and the budget allow: at once when its heads are shorter, and when they
+    /// are longer only while the cache has less than the upload of a frame as room. Otherwise the page stays as it is, and
+    /// <paramref name="stored"/> says what it holds.
+    /// </summary>
+    internal int Request(SpatialSnapshot snapshot, int page, int head, out int stored)
     {
         var key = new Key(snapshot, page);
         var frame = _owner.Frame;
+        var existing = -1;
+        stored = 0;
         if (_slots.TryGetValue(key, out var slot))
         {
             _lastUsed[slot] = frame;
-            return slot;
+            stored = _heads[slot];
+            if (head == 0 || stored == head || (stored > head && _owner.BytesInUse + ResidencyCache.FrameUpload <= ResidencyCache.DefaultBudget))
+            {
+                return slot;
+            }
+
+            existing = slot;
         }
 
-        var count = PointsOf(snapshot, page);
+        var all = PointsOf(snapshot, page);
+        var size = SplitProbe.BlockPoints;
+        var count = head > 0 ? ((all / size) * head) + HeadOf(all % size, size, head) : all;
         var bytes = (long)count * PointBytes;
+        var before = existing >= 0 ? (long)_counts[existing] * PointBytes : 0;
         if (!_owner.Unbounded && _owner.BytesThisFrame + bytes > ResidencyCache.FrameUpload)
         {
-            return -1;
+            return existing;
         }
 
         // Room in the budget: the pages used longest ago before this frame go first.
-        while (_owner.BytesInUse + bytes > ResidencyCache.DefaultBudget)
+        while (_owner.BytesInUse - before + bytes > ResidencyCache.DefaultBudget)
         {
             var (oldest, when) = (-1, frame);
             for (var s = 0; s < _keys.Length; s++)
@@ -102,13 +128,33 @@ internal sealed class PointPages
 
             if (oldest < 0)
             {
-                return -1;
+                // Spike #567 ("whole" without the cap): the pages in view pass the budget.
+                if (SplitProbe.BudgetFraction == 2 && !SplitProbe.PageCap)
+                {
+                    break;
+                }
+
+                return existing;
             }
 
             Drop(oldest);
         }
 
-        slot = Array.IndexOf(_keys, null);
+        if (existing >= 0)
+        {
+            // Staged again in its slot: the backend releases the buffer of a slot before it makes the new one.
+            slot = existing;
+            BytesInUse -= before;
+            _ = _slots.Remove(key);
+            SplitProbe.GrownPages += head > stored ? 1 : 0;
+            SplitProbe.ShrunkPages += head > stored ? 0 : 1;
+        }
+        else
+        {
+            slot = Array.IndexOf(_keys, null);
+            SplitProbe.NewPages++;
+        }
+
         if (slot < 0)
         {
             slot = _keys.Length;
@@ -116,6 +162,7 @@ internal sealed class PointPages
             Array.Resize(ref _keys, length);
             Array.Resize(ref _lastUsed, length);
             Array.Resize(ref _counts, length);
+            Array.Resize(ref _heads, length);
         }
 
         if (_staged + count > _staging.Length)
@@ -123,7 +170,8 @@ internal sealed class PointPages
             Array.Resize(ref _staging, Math.Max(_staged + count, _staging.Length * 2));
         }
 
-        var ordered = _ordered.AsSpan(0, count);
+        // The heads are taken in steps through each block, so the page is read whole whatever the heads.
+        var ordered = _ordered.AsSpan(0, all);
         var readStart = TimeProvider.System.GetTimestamp();
         snapshot.ReadBlock((long)page * PagePoints, ordered);
         SplitProbe.PageReadTicks += TimeProvider.System.GetTimestamp() - readStart;
@@ -132,24 +180,31 @@ internal sealed class PointPages
 
         // Spike R3b2: the page in runs of the copy's order, each in steps alone: runs of SplitProbe.BlockPoints points when
         // set, otherwise SplitProbe.ShuffleBlocks equal runs; one run is main's order.
-        var size = SplitProbe.BlockPoints;
-        var blocks = size > 0 ? (count + size - 1) / size : Math.Min(SplitProbe.ShuffleBlocks, count);
+        var blocks = size > 0 ? (all + size - 1) / size : Math.Min(SplitProbe.ShuffleBlocks, all);
+        var at = 0;
         for (var b = 0; b < blocks; b++)
         {
             var (start, end) =
-                size > 0 ? (b * size, Math.Min(count, (b + 1) * size)) : ((int)((long)count * b / blocks), (int)((long)count * (b + 1) / blocks));
+                size > 0 ? (b * size, Math.Min(all, (b + 1) * size)) : ((int)((long)all * b / blocks), (int)((long)all * (b + 1) / blocks));
             var length = end - start;
             var from = 0;
-            for (var k = 0; k < length; k++)
+
+            // Spike #567: the first points of the shuffled order of the block, the head of one block after another.
+            var take = head > 0 ? HeadOf(length, size, head) : length;
+            for (var k = 0; k < take; k++)
             {
-                staged[start + k] = ordered[start + from];
+                staged[at + k] = ordered[start + from];
                 from = (int)((from + (long)Stride) % length);
             }
+
+            at += take;
         }
 
         _uploads.Add(new PointUpload(slot, _staged, count));
         _staged += count;
-        (_keys[slot], _lastUsed[slot], _counts[slot]) = (key, frame, count);
+        SplitProbe.UploadedBytes += bytes;
+        stored = head;
+        (_keys[slot], _lastUsed[slot], _counts[slot], _heads[slot]) = (key, frame, count, head);
         _slots.Add(key, slot);
         BytesInUse += bytes;
 
