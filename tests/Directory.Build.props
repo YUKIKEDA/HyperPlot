@@ -14,4 +14,16 @@
     <!-- Dumps a test process that stops: build.ps1 turns it on (Issue #260). -->
     <PackageReference Include="Microsoft.Testing.Extensions.HangDump" />
   </ItemGroup>
+  <!--
+    xUnit runs the tests in the order of their unique IDs, and the test assembly's ID is a hash of the assembly's path unless a
+    file named after the assembly with the extension .uniqueid lies beside it; its first line is then the ID (xunit.v3 3.0.1 and
+    later, "What's New in v3" on xunit.net; UniqueIDGenerator.ForAssembly). With the file, the order is the same in every
+    checkout and on CI: without it, which WPF test failed depended on the worktree's folder (Issue #299).
+  -->
+  <Target Name="WriteTestAssemblyUniqueId" AfterTargets="Build" Condition="'$(OutputType)' == 'Exe'">
+    <WriteLinesToFile File="$(OutDir)$(AssemblyName).uniqueid" Lines="$(AssemblyName)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <FileWrites Include="$(OutDir)$(AssemblyName).uniqueid" />
+    </ItemGroup>
+  </Target>
 </Project>
