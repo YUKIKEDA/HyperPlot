@@ -174,6 +174,81 @@ public sealed class PointBlockTests
     }
 
     /// <summary>
+    /// A part of no point is a part too (design §5.5.2 "ブロック"): a layer of four categories, one of them with no finite
+    /// point, has the blocks of four parts, 8,192 points, not the 16,384 of three.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 150,000 seeded points over [0, 100]², colored by a category of 4 names that take turns row by row; the x of every
+    ///   row of the fourth name is NaN, so that its index holds no point. The other parts hold 37,500 points each, more
+    ///   than two blocks of either size.
+    /// - An engine that waits for its indexes, which sends every page in the frame that asks for it, on the null backend.
+    ///
+    /// Steps:
+    /// - Render the whole view. For the page of each part that holds points, request the page with a block of 8,192.
+    ///
+    /// Expected:
+    /// - The layer has 4 parts, one of no point. No request stages a page, and each staged page is in steps within blocks
+    ///   of 8,192.
+    /// </remarks>
+    [Fact]
+    public void Blocks_PartOfNoPoint_IsCounted()
+    {
+        const int Count = 150_000;
+        const int Block = 8_192;
+        var random = new Random(61);
+        using var xs = Column.Wrap(Enumerable.Range(0, Count).Select(i => i % 4 == 3 ? double.NaN : random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        var table = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("y", ys)
+            .Add("c", Column.Categorical(Enumerable.Range(0, Count).Select(i => (string?)$"k{i % 4}").ToArray()))
+            .Build();
+        var point = new PointLayerSpec
+        {
+            X = table.Col<double>("x"),
+            Y = table.Col<double>("y"),
+            ColorBy = table.Cat("c").ToColumnRef(),
+        };
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(GeomTesting.Spec(table, point) with { ScaleColor = Scale.Ordinal() });
+        engine.RenderFrame();
+
+        var pages = backend.Images.Points;
+        backend.Images.Unbounded = true;
+        var staged = pages.Uploads.Length;
+        Assert.Equal(3, staged);
+        var plans = Parts(engine.Plan!.Panels[0]);
+        Assert.Equal(4, plans.Length);
+        var empty = 0;
+        foreach (var plan in plans)
+        {
+            var snapshot = plan.SpatialIndex!.Acquire();
+            try
+            {
+                if (snapshot.PointCount == 0)
+                {
+                    empty++;
+                    continue;
+                }
+
+                Assert.Equal(37_500, snapshot.PointCount);
+                var slot = pages.Request(snapshot, 0, Block);
+                Assert.Equal(staged, pages.Uploads.Length);
+                AssertInSteps(snapshot, 0, Block, pages.Staged(Assert.Single(pages.Uploads.ToArray(), u => u.Slot == slot)));
+            }
+            finally
+            {
+                snapshot.Release();
+            }
+        }
+
+        Assert.Equal(1, empty);
+    }
+
+    /// <summary>
     /// A recording draws the blocks in view only: the points of the cells that reach into the view, widened to the blocks'
     /// ends, the blocks that follow one another in a page as one run and the others as runs of their own. The whole view is
     /// one run a page. Zooming and panning change the runs and not the blocks: no page is read again.
