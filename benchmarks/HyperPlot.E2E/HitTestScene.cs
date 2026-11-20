@@ -44,6 +44,10 @@ internal static class HitTestScene
     // half a pixel in a leaf there and goes on down the column of leaves (.cursor/rules/bench.mdc: the hardest input).
     private const double DeepShare = 0.000001;
 
+    // The reference machine's Core i5-13400F numbers the 12 logical processors of its 6 performance cores first, then its 4
+    // efficiency cores: a call that ends on processor 12 or later ran on an efficiency core (.cursor/rules/bench.mdc).
+    private const int FirstEfficiencyProcessor = 12;
+
     private static readonly TimeSpan Deadline = TimeSpan.FromMinutes(10);
     private static readonly double[] Shares = [0.01, 0.0001];
     private static readonly PanelId Panel = new(0, 0);
@@ -368,6 +372,7 @@ internal static class HitTestScene
             _ = engine.HitTest(cursor, radius, second, hits);
             var t6 = Stopwatch.GetTimestamp();
             allocated += GC.GetAllocatedBytesForCurrentThread() - bytes;
+            s.Processor = Thread.GetCurrentProcessorId();
 
             var xyFirst = first == HitMode.XY;
             s.Xy = new Answer(
@@ -436,6 +441,7 @@ internal static class HitTestScene
         var n = samples.Length;
         var (first, again, visited, read, alone) = (new double[n], new double[n], new List<double>(n), new List<double>(n), new List<double>(n));
         var (found, bins, provisional, overflowed) = (0, 0, 0, 0);
+        var (onPerformance, onEfficiency) = (new List<double>(n), new List<double>(n));
         var xr = snapshot.XRange;
         var yr = snapshot.YRange;
         var reach = mode == HitMode.XY ? radius + marker : radius;
@@ -444,6 +450,7 @@ internal static class HitTestScene
             ref var s = ref samples[i];
             var answer = mode == HitMode.XY ? s.Xy : s.X;
             (first[i], again[i]) = (answer.First, answer.Again);
+            (s.Processor >= FirstEfficiencyProcessor ? onEfficiency : onPerformance).Add(answer.First);
             found += answer.Found > 0 ? 1 : 0;
             bins += answer.Found > 0 && answer.Hit.Row < 0 ? 1 : 0;
             provisional += answer.Found > 0 && answer.Hit.Provisional ? 1 : 0;
@@ -523,7 +530,7 @@ internal static class HitTestScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"hit draw={draw} size={size} places={name} view_share={share} mode={mode} count={n} density_frames={density} provisional_frames={provisionalFrames} found={found} bins={bins} provisional={provisional} first_us p50={P(first, 0.5):F1} p99={P(first, 0.99):F1} max={first.Max():F1}; again_us p50={P(again, 0.5):F1} p99={P(again, 0.99):F1} max={again.Max():F1}; searched={visitedOf.Length} cells p50={P(visitedOf, 0.5):F0} p99={P(visitedOf, 0.99):F0} max={Most(visitedOf):F0} points p50={P(readOf, 0.5):F0} p99={P(readOf, 0.99):F0} max={Most(readOf):F0} overflowed={overflowed} search_alone_us p50={P(aloneOf, 0.5):F1} p99={P(aloneOf, 0.99):F1}; checked={checkedPlaces} mismatches={mismatches} max_excess_px={excess:F3} reference_s p50={P(referenceOf, 0.5):F4} max={Most(referenceOf):F4} leaves_max={mostLeaves} points_max={mostPoints}; allocated_both_modes={allocated} B; frames_and_calls={seconds:F1} s"
+                $"hit draw={draw} size={size} places={name} view_share={share} mode={mode} count={n} density_frames={density} provisional_frames={provisionalFrames} found={found} bins={bins} provisional={provisional} first_us p50={P(first, 0.5):F1} p99={P(first, 0.99):F1} max={first.Max():F1}; again_us p50={P(again, 0.5):F1} p99={P(again, 0.99):F1} max={again.Max():F1}; searched={visitedOf.Length} cells p50={P(visitedOf, 0.5):F0} p99={P(visitedOf, 0.99):F0} max={Most(visitedOf):F0} points p50={P(readOf, 0.5):F0} p99={P(readOf, 0.99):F0} max={Most(readOf):F0} overflowed={overflowed} search_alone_us p50={P(aloneOf, 0.5):F1} p99={P(aloneOf, 0.99):F1}; checked={checkedPlaces} mismatches={mismatches} max_excess_px={excess:F3} reference_s p50={P(referenceOf, 0.5):F4} max={Most(referenceOf):F4} leaves_max={mostLeaves} points_max={mostPoints}; allocated_both_modes={allocated} B; on_performance_cores={onPerformance.Count} p50={P([.. onPerformance], 0.5):F1} on_efficiency_cores={onEfficiency.Count} p50={P([.. onEfficiency], 0.5):F1}; frames_and_calls={seconds:F1} s"
             )
         );
 
@@ -534,7 +541,7 @@ internal static class HitTestScene
     /// <summary>What one mode's calls at a place answered: the hits found, the first of them, and the microseconds of the first and of the second call.</summary>
     private readonly record struct Answer(int Found, SeriesHit Hit, double First, double Again);
 
-    /// <summary>A place's cursor in physical pixels, its view's linear map (a corner's pixel, the pixels a data unit, and the corner's values), what the layer drew, and the answers.</summary>
+    /// <summary>A place's cursor in physical pixels, its view's linear map (a corner's pixel, the pixels a data unit, and the corner's values), what the layer drew, the processor the thread was on after the calls, and the answers.</summary>
     private struct Sample
     {
         public double Along;
@@ -546,6 +553,7 @@ internal static class HitTestScene
         public double X0;
         public double Y0;
         public bool Density;
+        public int Processor;
         public Answer Xy;
         public Answer X;
     }

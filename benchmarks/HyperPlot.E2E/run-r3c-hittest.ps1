@@ -17,6 +17,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# pwsh -File passes "a,b" as one string.
+$Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 # The main checkout's .dev/, also from a worktree under it: the parent of the shared .git folder.
 $dev = Join-Path (Split-Path -Parent (Resolve-Path (git -C $repo rev-parse --path-format=absolute --git-common-dir))) '.dev'
