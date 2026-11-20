@@ -6,8 +6,9 @@ namespace HyperPlot.Rendering;
 /// The pages of points a backend keeps on the GPU (design §5.1 "生の点のページ", §5.5.2, row R3a): a page is a run of 65,536
 /// points of a spatial snapshot's copy, or the rest of it, 12 bytes a point. Core decides which pages stay, by the byte
 /// budget it shares with the tiles and least-recently-used order, and reads the pages a frame sends; the backend makes a
-/// buffer for each and draws from it. A page holds its points in steps of <see cref="Stride"/> through the copy's order,
-/// so a page is drawn whole.
+/// buffer for each and draws from it. A page is cut into blocks of a size its layer's parts set (row R3b2, design §5.5.2
+/// "ブロック"), and holds each block's points in steps of <see cref="Stride"/> through the copy's order, so a page is drawn
+/// by whole blocks.
 /// </summary>
 /// <remarks>One thread at a time. After the staging has grown to a frame's size, a request allocates nothing.</remarks>
 internal sealed class PointPages
@@ -18,15 +19,22 @@ internal sealed class PointPages
     /// <summary>The bytes of a point on the GPU.</summary>
     internal const int PointBytes = 12;
 
+    /// <summary>The most points of a block: half a page, the block of a layer of one part.</summary>
+    internal const int MaxBlockPoints = 32_768;
+
+    /// <summary>The fewest points of a block that is not a page's last: the block of a layer of 64 parts or more.</summary>
+    internal const int MinBlockPoints = 512;
+
     /// <summary>
-    /// The step through a page's points in the copy's order: point k of the page on the GPU is point k × 104,729 modulo the
-    /// page's count. The step is a prime above the points of a page, so every point is taken once.
+    /// The step through a block's points in the copy's order: point k of the block on the GPU is point k × 104,729 modulo
+    /// the block's count. The step is a prime above the points of a block, so every point is taken once.
     /// </summary>
     /// <remarks>
     /// Measured, not explained: 1e7 discs of 6 pixels at alpha 0.6 took 15.9 ms of GPU time a frame in the copy's order,
     /// where a point's neighbors lie within a pixel of it, and 11.3 to 12.0 ms in steps through the page (RTX 3060 Ti,
-    /// 1,920 × 1,080; Issue #438). Steps within less than a page and across pages were slower, and what in the GPU makes
-    /// the difference was not found (docs/benchmarks/r3a-points.md).
+    /// 1,920 × 1,080; Issue #438, docs/benchmarks/r3a-points.md). A layer of 8 parts took 15.3 to 16.1 ms in steps through
+    /// the page and 9.9 ms in steps through blocks of 4,096 points (Issue #472, sweep 1). What in the GPU makes the
+    /// differences was not found.
     /// </remarks>
     internal const int Stride = 104_729;
 
@@ -58,6 +66,29 @@ internal sealed class PointPages
     /// <summary>Gets the number of pages on the GPU or staged for it. Tests only.</summary>
     internal int PagesInUse => _slots.Count;
 
+    /// <summary>
+    /// Gets or sets a value indicating whether a recording draws every block of each page it draws a block of, in view or
+    /// not: the form the blocks in view are compared with (design §9 "重なりと予算", §10 R3b2 row). Tests and benchmarks
+    /// only.
+    /// </summary>
+    internal bool DrawsWholePages { get; set; }
+
+    /// <summary>
+    /// Returns the points of a block of a layer's pages (design §5.5.2 "ブロック"): 32,768 over the parts, rounded up to a
+    /// power of two, from 512 to 32,768. A block's size divides a page's, so no block crosses a page.
+    /// </summary>
+    /// <param name="parts">The parts of the layer that lie over one another in a panel, 1 or more.</param>
+    internal static int BlockPoints(int parts)
+    {
+        var block = MinBlockPoints;
+        while (block < MaxBlockPoints && (long)block * parts < MaxBlockPoints)
+        {
+            block *= 2;
+        }
+
+        return block;
+    }
+
     /// <summary>Returns the number of points of a page of a snapshot.</summary>
     internal static int PointsOf(SpatialSnapshot snapshot, int page) => (int)Math.Min(PagePoints, snapshot.PointCount - ((long)page * PagePoints));
 
@@ -71,9 +102,14 @@ internal sealed class PointPages
     /// </summary>
     /// <param name="snapshot">The full snapshot, which the caller borrows.</param>
     /// <param name="page">The page: the points from page × 65,536.</param>
-    internal int Request(SpatialSnapshot snapshot, int page)
+    /// <param name="block">
+    /// The points of a block, from <see cref="BlockPoints"/>: the page is put in steps block by block, and the page's last
+    /// block holds the rest. A page asked for with another block is another page, and the first is let go of as any page
+    /// not used.
+    /// </param>
+    internal int Request(SpatialSnapshot snapshot, int page, int block)
     {
-        var key = new Key(snapshot, page);
+        var key = new Key(snapshot, page, block);
         var frame = _owner.Frame;
         if (_slots.TryGetValue(key, out var slot))
         {
@@ -126,11 +162,15 @@ internal sealed class PointPages
         var ordered = _ordered.AsSpan(0, count);
         snapshot.ReadBlock((long)page * PagePoints, ordered);
         var staged = _staging.AsSpan(_staged, count);
-        var from = 0;
-        for (var k = 0; k < staged.Length; k++)
+        for (var start = 0; start < count; start += block)
         {
-            staged[k] = ordered[from];
-            from = (int)((from + (long)Stride) % count);
+            var length = Math.Min(block, count - start);
+            var from = 0;
+            for (var k = 0; k < length; k++)
+            {
+                staged[start + k] = ordered[start + from];
+                from = (int)((from + (long)Stride) % length);
+            }
         }
 
         _uploads.Add(new PointUpload(slot, _staged, count));
@@ -193,5 +233,5 @@ internal sealed class PointPages
     /// <summary>A page to send: its slot, where its points begin in the staging, and how many they are.</summary>
     internal readonly record struct PointUpload(int Slot, int Offset, int Count);
 
-    private readonly record struct Key(SpatialSnapshot Snapshot, int Page);
+    private readonly record struct Key(SpatialSnapshot Snapshot, int Page, int Block);
 }

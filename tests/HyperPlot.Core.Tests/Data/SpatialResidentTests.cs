@@ -56,9 +56,9 @@ public sealed class SpatialResidentTests
     }
 
     /// <summary>
-    /// A page staged for the GPU holds every point of its part of the copy once, in steps of 104,729 through the copy's
-    /// order (design §5.5.2 "常駐のセルとページ"): two points that follow each other in the copy are not drawn one after
-    /// the other.
+    /// A page staged for the GPU holds every point of its part of the copy once, each block in steps of 104,729 through
+    /// the copy's order (design §5.5.2 "常駐のセルとページ", "ブロック"): two points that follow each other in the copy are
+    /// not drawn one after the other. The block is part of what names a page.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -66,36 +66,59 @@ public sealed class SpatialResidentTests
     /// - A residency cache with no frame budget.
     ///
     /// Steps:
-    /// - Request both pages and read what was staged for each. Read the same parts of the copy with ReadBlock.
+    /// - Request both pages with blocks of 32,768 points, the block of a layer of one part, and read what was staged for
+    ///   each. Read the same parts of the copy with ReadBlock.
+    /// - Request page 0 with blocks of 512 points, and with blocks of 32,768 again. Forget the snapshot.
     ///
     /// Expected:
-    /// - Point k of a staged page is point k × 104,729 modulo the page's count of the block, for every k of both pages.
-    /// - Point 1 of the whole page is point 39,193 of the block.
+    /// - Point k of a block of a staged page is point k × 104,729 modulo the block's count of the same block of the copy:
+    ///   the whole page has two blocks of 32,768, and the second page a block of 32,768 and one of the 1,696 points left.
+    /// - Point 1 of the whole page is point 6,425 of the copy's page, and point 32,769 is point 39,193.
+    /// - The blocks of 512 take a slot and a staged page of their own, in steps within each 512; asking with 32,768 again
+    ///   gives the first slot and stages nothing. After the forgetting no page is in use.
     /// </remarks>
     [Fact]
-    public void Pages_HoldTheirPointsInSteps()
+    public void Pages_HoldTheirBlocksPointsInSteps()
     {
+        const int Block = PointPages.MaxBlockPoints;
         var (xs, ys) = SpatialData.Uniform(100_000, seed: 3);
         using var built = SpatialBuilt.Of(xs, ys);
         var cache = new ResidencyCache { Unbounded = true };
         cache.BeginFrame();
-        Assert.Equal((0, 1), (cache.Points.Request(built.Snapshot, 0), cache.Points.Request(built.Snapshot, 1)));
+        Assert.Equal((0, 1), (cache.Points.Request(built.Snapshot, 0, Block), cache.Points.Request(built.Snapshot, 1, Block)));
         var uploads = cache.Points.Uploads.ToArray();
         Assert.Equal([PointPages.PagePoints, 100_000 - PointPages.PagePoints], uploads.Select(u => u.Count));
         for (var page = 0; page < 2; page++)
         {
-            var staged = cache.Points.Staged(uploads[page]);
-            var block = new ResidentPoint[staged.Length];
-            built.Snapshot.ReadBlock((long)page * PointPages.PagePoints, block);
-            for (var k = 0; k < staged.Length; k++)
-            {
-                Assert.Equal(block[(int)(((long)k * PointPages.Stride) % staged.Length)], staged[k]);
-            }
+            Check(page, Block, cache.Points.Staged(uploads[page]));
         }
 
         var first = new ResidentPoint[PointPages.PagePoints];
         built.Snapshot.ReadBlock(0, first);
-        Assert.Equal(first[39_193], cache.Points.Staged(uploads[0])[1]);
+        Assert.Equal(
+            (first[104_729 % Block], first[Block + (104_729 % Block)]),
+            (cache.Points.Staged(uploads[0])[1], cache.Points.Staged(uploads[0])[Block + 1])
+        );
+        Assert.Equal(6_425, 104_729 % Block);
+
+        Assert.Equal(2, cache.Points.Request(built.Snapshot, 0, 512));
+        Assert.Equal(0, cache.Points.Request(built.Snapshot, 0, Block));
+        Assert.Equal((3, 3), (cache.Points.Uploads.Length, cache.Points.PagesInUse));
+        Check(0, 512, cache.Points.Staged(cache.Points.Uploads[2]));
+        cache.Points.Forget(built.Snapshot);
+        Assert.Equal(0, cache.Points.PagesInUse);
+
+        void Check(int page, int block, ReadOnlySpan<ResidentPoint> staged)
+        {
+            var copy = new ResidentPoint[staged.Length];
+            built.Snapshot.ReadBlock((long)page * PointPages.PagePoints, copy);
+            for (var k = 0; k < staged.Length; k++)
+            {
+                var start = k / block * block;
+                var length = Math.Min(block, staged.Length - start);
+                Assert.Equal(copy[start + (int)(((long)(k - start) * PointPages.Stride) % length)], staged[k]);
+            }
+        }
     }
 
     /// <summary>

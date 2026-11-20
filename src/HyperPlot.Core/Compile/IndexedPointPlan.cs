@@ -257,6 +257,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         var color = point.Color ?? SeriesColor;
         var style = new ResidentMarkerRun(
             Slot: -1,
+            First: 0,
             Count: 0,
             Cells: offset,
             Size: point.Size * context.Scale,
@@ -269,7 +270,13 @@ internal sealed class IndexedPointPlan : LayerPlan
             Highlight: context.Highlight
         );
         var pages = context.Images.Points;
-        var drawn = -1L;
+
+        // The blocks of the part's pages, by the layer's parts in the panel (design §5.5.2 "ブロック"): the view does not
+        // change them. The run being made is blocks of one page that follow one another, recorded when the next range does
+        // not touch it (design §5.5.2 "見えるブロックだけを描く").
+        var block = PointPages.BlockPoints(_switch.PartCount);
+        var whole = pages.DrawsWholePages;
+        var (runPage, runSlot, runFrom, runTo) = (-1L, -1, 0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
@@ -281,20 +288,42 @@ internal sealed class IndexedPointPlan : LayerPlan
                 continue;
             }
 
-            // The cell's points lie in one or more pages, and each page is drawn whole, once: the cells come in the
-            // copy's order, so a page seen before is the last one drawn.
+            // The cell's points in each page they lie in, widened to the blocks' ends: a block's points are in steps, so
+            // it is drawn whole. The cells come in the copy's order, so a range begins at or after the run's start.
             var end = cell.First + cell.Count;
-            for (var page = Math.Max(cell.First / PointPages.PagePoints, drawn + 1); page * PointPages.PagePoints < end; page++)
+            for (var page = cell.First / PointPages.PagePoints; page * PointPages.PagePoints < end; page++)
             {
-                drawn = page;
-                var slot = pages.Request(snapshot, (int)page);
-                if (slot < 0)
+                var pageStart = page * PointPages.PagePoints;
+                var points = PointPages.PointsOf(snapshot, (int)page);
+                var from = whole ? 0 : (int)(Math.Max(cell.First, pageStart) - pageStart) / block * block;
+                var to = whole
+                    ? points
+                    : (int)Math.Min(points, (Math.Min(end, pageStart + PointPages.PagePoints) - pageStart + block - 1) / block * block);
+                if (page == runPage && from <= runTo)
                 {
-                    _missing = true;
+                    runTo = Math.Max(runTo, to);
                     continue;
                 }
 
-                list.DrawResidentMarkers(style with { Slot = slot, Count = PointPages.PointsOf(snapshot, (int)page) });
+                DrawRun(list, style, runSlot, runFrom, runTo);
+                if (page != runPage)
+                {
+                    runSlot = pages.Request(snapshot, (int)page, block);
+                    _missing |= runSlot < 0;
+                }
+
+                (runPage, runFrom, runTo) = (page, from, to);
+            }
+        }
+
+        DrawRun(list, style, runSlot, runFrom, runTo);
+
+        // A run of blocks that follow one another in a page, in one call; nothing when its page is not there.
+        static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
+        {
+            if (slot >= 0 && to > from)
+            {
+                list.DrawResidentMarkers(style with { Slot = slot, First = from, Count = to - from });
             }
         }
     }
