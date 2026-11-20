@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using HyperPlot.Interaction;
+using HyperPlot.Rendering;
 using HyperPlot.Rendering.D3D11;
 
 namespace HyperPlot.E2E;
@@ -11,19 +12,22 @@ namespace HyperPlot.E2E;
 /// point layer at 1,920 × 1,080 on the hardware, zoomed and panned by a script, a frame every 16.7 ms or more. Each frame's
 /// CPU time (the view's change and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and its allocations; then the time
 /// of a hit test at seeded pixels in both modes. A layer of at most 131,072 rows takes the CPU path, and a larger one the index path.
+/// Row R3b2 (design §9 "重なりと予算"): the runs and the points of the index path a frame, the blocks in view against whole
+/// pages, the frames without their drawing, and the cores the other processes used.
 /// </summary>
 internal static partial class PointsScene
 {
-    private const int Warmup = 30;
+    // Two seconds of frames before the measured ones: a GPU scene is drawn that long before it is timed (.cursor/rules/bench.mdc).
+    private const int Warmup = 120;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), and the layer's shape.</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's).</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         if (args.Length < 4)
         {
             Console.Error.WriteLine(
-                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape]"
+                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record]"
             );
             return 2;
         }
@@ -39,6 +43,10 @@ internal static partial class PointsScene
         // Row R3f: what the categories set (the color, the shape, or both), whether a number sizes the points, and the shape.
         var channel = args.Length > 7 ? args[7] : "color";
         var shape = args.Length > 8 ? Enum.Parse<MarkerShape>(args[8]) : MarkerShape.Circle;
+
+        // Row R3b2: whole pages instead of the blocks in view, and frames that record without drawing.
+        var pages = args.Length > 9 && args[9] == "pages";
+        var recordOnly = args.Length > 10 && args[10] == "record";
 
         // Seeded: uniform over [0, 100]², or a normal blob of a tenth of the side around the middle.
         var random = new Random(1);
@@ -83,7 +91,9 @@ internal static partial class PointsScene
             .ScaleX(Scale.Linear().WithDomain(0, 100))
             .ScaleY(Scale.Linear().WithDomain(0, 100))
             .Build();
-        using var backend = D3D11Backend.Create();
+        using var device = D3D11Backend.Create();
+        var backend = new CountingBackend(device);
+        backend.Images.Points.DrawsWholePages = pages;
         using var engine = new PlotEngine(backend, 1920, 1080);
 
         // The first display: frames until the index is built and every page the whole view draws is on the GPU.
@@ -138,6 +148,9 @@ internal static partial class PointsScene
 
         // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
         _ = TimeBeginPeriod(1);
+        var (runs, drawn) = (new int[total], new long[total]);
+        backend.Skips = recordOnly;
+        var (busyFrom, ownFrom, clockFrom) = (MachineBusy(), Environment.CpuUsage.TotalTime, DateTime.Now);
         var began = Stopwatch.GetTimestamp();
         for (var f = 0; f < total; f++)
         {
@@ -147,6 +160,7 @@ internal static partial class PointsScene
             engine.RenderFrame();
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
+            (runs[f], drawn[f]) = (backend.Runs, backend.Points);
             if (f >= Warmup && backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
                 lastTimed = time.Frame;
@@ -163,6 +177,11 @@ internal static partial class PointsScene
 
         var seconds = Stopwatch.GetElapsedTime(began).TotalSeconds;
         _ = TimeEndPeriod(1);
+
+        // The cores the other processes used over the frames: the machine's busy time less this process's (.cursor/rules/bench.mdc).
+        var others = ((MachineBusy() - busyFrom) - (Environment.CpuUsage.TotalTime - ownFrom)).TotalSeconds / seconds;
+        var clockTo = DateTime.Now;
+        backend.Skips = false;
 
         // Hit tests at seeded pixels of the whole view, each timed alone.
         engine.Views.SetView(panel, new PanelView2D(ViewRange.FromValues(0, 100), ViewRange.FromValues(0, 100)));
@@ -192,7 +211,20 @@ internal static partial class PointsScene
         }
 
         var kept = cpu.Skip(Warmup).ToArray();
-        var gpuKept = gpu.ToArray();
+        var gpuKept = gpu.Count > 0 ? gpu.ToArray() : [double.NaN];
+        var (keptRuns, keptDrawn) = (runs.Skip(Warmup).ToArray(), drawn.Skip(Warmup).ToArray());
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"form={(pages ? "pages" : "blocks")} frames={(recordOnly ? "record" : "draw")} ran {Clock(clockFrom)} to {Clock(clockTo)} other_cores={others:F2}"
+            )
+        );
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"resident_runs: mean={keptRuns.Average():F1} max={keptRuns.Max()} a frame; resident_points: mean={keptDrawn.Average():F0} max={keptDrawn.Max()} a frame"
+            )
+        );
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
@@ -208,7 +240,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"gpu_frame: frames={gpuKept.Length} p50={Percentile(gpuKept, 0.5):F3} p95={Percentile(gpuKept, 0.95):F3} p99={Percentile(gpuKept, 0.99):F3} max={gpuKept.Max():F3} ms"
+                $"gpu_frame: frames={gpu.Count} p50={Percentile(gpuKept, 0.5):F3} p95={Percentile(gpuKept, 0.95):F3} p99={Percentile(gpuKept, 0.99):F3} max={gpuKept.Max():F3} ms"
             )
         );
         Console.WriteLine(
@@ -236,6 +268,67 @@ internal static partial class PointsScene
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     internal static partial uint TimeEndPeriod(uint period);
+
+    [System.Runtime.InteropServices.LibraryImport("kernel32.dll", EntryPoint = "GetSystemTimes")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static partial bool GetSystemTimes(out long idle, out long kernel, out long user);
+
+    // The time every processor of the machine was busy since it started: the kernel time holds the idle time.
+    private static TimeSpan MachineBusy() =>
+        GetSystemTimes(out var idle, out var kernel, out var user) ? new TimeSpan(kernel + user - idle) : default;
+
+    // A wall-clock time as nvidia-smi writes its samples' times of day, without a date format (.cursor/rules/aot.mdc).
+    private static string Clock(DateTime time) =>
+        string.Create(CultureInfo.InvariantCulture, $"{time.Hour:D2}:{time.Minute:D2}:{time.Second:D2}.{time.Millisecond:D3}");
+
+    /// <summary>
+    /// The backend of the scene: the hardware's, with the resident runs and their points of each drawn list counted, and the
+    /// drawing left out when asked, so that a frame's CPU time is what the engine does before it draws.
+    /// </summary>
+    private sealed class CountingBackend(D3D11Backend inner) : IGpuBackend
+    {
+        public bool Skips { get; set; }
+
+        public int Runs { get; private set; }
+
+        public long Points { get; private set; }
+
+        public bool IsWarp => inner.IsWarp;
+
+        public long DeviceGeneration => inner.DeviceGeneration;
+
+        public GpuFrameTime? LastFrameTime => inner.LastFrameTime;
+
+        public TextEngine Text => inner.Text;
+
+        public ResidencyCache Images => inner.Images;
+
+        public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => inner.CreateRenderTarget(description);
+
+        public FrameScope BeginFrame() => inner.BeginFrame();
+
+        public void Draw(IRenderTarget target, RenderList list)
+        {
+            var runs = list.ResidentRuns;
+            long points = 0;
+            foreach (ref readonly var run in runs)
+            {
+                points += run.Count;
+            }
+
+            (Runs, Points) = (runs.Length, points);
+            if (!Skips)
+            {
+                inner.Draw(target, list);
+            }
+        }
+
+        public void Copy(IRenderTarget source, IRenderTarget destination) => inner.Copy(source, destination);
+
+        public void EndFrame(long token) => inner.EndFrame(token);
+
+        public void Dispose() => inner.Dispose();
+    }
 
     internal static double Percentile(double[] values, double share)
     {
