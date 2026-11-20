@@ -11,9 +11,10 @@
 #   Issue #552 (the overlap threshold), all at 1,920 x 1,080, opacity 0.6, "whole", 600 frames after 120, D2:
 #   ref: the three reference scenes of o1b (uniform and the clump as one part at 32,768, the clump as 6 colors at 8,192),
 #       one round: the overlap line gives the product's definition beside max_bin.
-#   thr: the scenes of THR_SCENES ("name:points:diameter:sigma[:categories[:block]]" separated by spaces; sigma 0 is
-#       uniform; the categories are colors, row i in category i mod n, 0 by default for one part; the block is 32,768
-#       by default): the clump's spread, the diameter, the count, and the parts varied. 3 rounds, round 2 reversed.
+#   thr: the scenes of THR_SCENES ("name:points:diameter:sigma[:categories[:block[:panels]]]" separated by spaces; sigma
+#       0 is uniform; the categories are colors, row i in category i mod n, 0 by default for one part; the block is
+#       32,768 by default; the panels are a facet's, 0 by default): the clump's spread, the diameter, the count, and the
+#       parts varied. 3 rounds, round 2 reversed.
 #   facet: uniform points wrapped into 6 panels, one part a panel, at 32,768 (panels not counted) and 8,192 (counted),
 #       beside one panel at 32,768. 3 rounds.
 #   frac: uniform, one part, 32,768: each block in view in a call of its own over its first f points (f = 1, 0.5, 0.25),
@@ -122,10 +123,10 @@ case "$MODE" in
     ;;
   thr)
     for t in ${THR_SCENES:?name:points:diameter:sigma ...}; do
-      IFS=: read -r name points diameter sigma categories block <<< "$t"
+      IFS=: read -r name points diameter sigma categories block facet <<< "$t"
       dist=cluster
       [ "$sigma" = 0 ] && dist=uniform && sigma=10
-      SCENES+=("$name|HP_PROBE_BLOCK_POINTS=${block:-32768} $D2 HP_PROBE_NO_RAW_LIMIT=1 HP_PROBE_CLUSTER_SIGMA=$sigma|240|points $points $diameter 0.6 $dist 600 ${categories:-0} whole")
+      SCENES+=("$name|HP_PROBE_BLOCK_POINTS=${block:-32768} $D2 HP_PROBE_NO_RAW_LIMIT=1 HP_PROBE_CLUSTER_SIGMA=$sigma HP_PROBE_FACET=${facet:-0}|240|points $points $diameter 0.6 $dist 600 ${categories:-0} whole")
     done
     ;;
   facet)

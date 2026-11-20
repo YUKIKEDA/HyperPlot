@@ -561,6 +561,118 @@ internal abstract unsafe class SpatialSnapshot
         return (best, count, binArea, level, from, seen.Count, fills);
     }
 
+    /// <summary>
+    /// Spike R3b2 (Issue #552): the sums behind a density averaged over the points, not the largest bin, over the same
+    /// cells as <see cref="ProbeOverlap"/> (the level the product chooses; each cell that touches the view). A cell with
+    /// its own tile counts every bin of the tile; a cell drawn from an ancestor's tile counts the ancestor's bins inside
+    /// the cell only, so no point is counted twice; a cell with no tile above it counts as one bin of its own area. Each
+    /// bin of n points and an area of a pixels adds n to the points, n·n / a to the squares, n·(n − 1) / a to
+    /// the pairs (the other points of a point's bin: without the 1 / a that a bin of one point alone would add), and a
+    /// to the occupied area when n is above 0. The cells are not cut at the view: The view's pairs and points
+    /// are the same sums over the bins that meet the view. The kept pairs are what the product could form from one sum
+    /// kept per tile: the bins of the cells' own tiles, and each other cell as one bin of its count and its area.
+    /// </summary>
+    /// <param name="x0">The view's least x, in data units.</param>
+    /// <param name="x1">The view's greatest x.</param>
+    /// <param name="y0">The view's least y.</param>
+    /// <param name="y1">The view's greatest y.</param>
+    /// <param name="pixelsPerX">The pixels of one data unit along x.</param>
+    /// <param name="pixelsPerY">The pixels of one data unit along y.</param>
+    /// <returns>The sums; all 0 without tiles.</returns>
+    internal (double Points, double Squares, double Pairs, double KeptPairs, double ViewPoints, double ViewPairs, double Occupied, int Tiles, int Ancestors, int Fills) ProbeMeanDensity(
+        double x0,
+        double x1,
+        double y0,
+        double y1,
+        double pixelsPerX,
+        double pixelsPerY
+    )
+    {
+        var (points, squares, pairs, keptPairs, viewPoints, viewPairs, occupied) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        var (ownTiles, ancestors, fills) = (0, 0, 0);
+        if (Stage != SpatialStage.Full || Tiles is not { } tiles)
+        {
+            return default;
+        }
+
+        var pixels = Math.Min(Math.Abs(_xAxis.ExtentAt(0) * pixelsPerX), Math.Abs(_yAxis.ExtentAt(0) * pixelsPerY));
+        var level = !(pixels >= DensityTiles.Side) ? 0 : Math.Clamp((int)Math.Floor(Math.Log2(pixels)) - DensityTiles.BinLevels, 0, DensityTiles.DeepestTileLevel);
+        var (originX, originY) = ((double)_xAxis.Origin, (double)_yAxis.Origin);
+        var rect = new SpatialRect(x0 - originX, x1 - originX, y0 - originY, y1 - originY);
+        var cells = new SpatialCell[GetCells(rect, level, [])];
+        _ = GetCells(rect, level, cells);
+        foreach (ref readonly var cell in cells.AsSpan())
+        {
+            var cellArea = Math.Abs(_xAxis.ExtentAt(cell.Level) * pixelsPerX * _yAxis.ExtentAt(cell.Level) * pixelsPerY);
+            var drawn = false;
+            for (var at = Math.Min(cell.Level, DensityTiles.DeepestTileLevel); at >= 0 && cell.Level - at <= DensityTiles.BinLevels; at--)
+            {
+                var code = cell.Code >> (2 * (cell.Level - at));
+                if (!tiles.TryGetTile(code, at, out var tile))
+                {
+                    continue;
+                }
+
+                // The cell's bins in the tile: the whole tile when it is the cell's own, and a square of it otherwise.
+                var side = DensityTiles.Side >> (cell.Level - at);
+                var mask = (1u << (cell.Level - at)) - 1;
+                var (firstX, firstY) = ((int)(SpatialCode.Axis2(cell.Code, 0) & mask) * side, (int)(SpatialCode.Axis2(cell.Code, 1) & mask) * side);
+                var (binX, binY) = (_xAxis.ExtentAt(at + DensityTiles.BinLevels), _yAxis.ExtentAt(at + DensityTiles.BinLevels));
+                var area = Math.Abs(binX * pixelsPerX * binY * pixelsPerY);
+                var shift = DeepestLevel - at;
+                var left = originX + _xAxis.DifferenceOf((ulong)SpatialCode.Axis2(code, 0) << shift);
+                var bottom = originY + _yAxis.DifferenceOf((ulong)SpatialCode.Axis2(code, 1) << shift);
+                var (fromX, toX) = ((int)Math.Floor((x0 - left) / binX), (int)Math.Floor((x1 - left) / binX));
+                var (fromY, toY) = ((int)Math.Floor((y0 - bottom) / binY), (int)Math.Floor((y1 - bottom) / binY));
+                var own = 0.0;
+                for (var by = firstY; by < firstY + side; by++)
+                {
+                    for (var bx = firstX; bx < firstX + side; bx++)
+                    {
+                        double n = tile[bx, by];
+                        if (n <= 0 || !(area > 0))
+                        {
+                            continue;
+                        }
+
+                        points += n;
+                        squares += n * n / area;
+                        pairs += n * (n - 1) / area;
+                        occupied += area;
+                        own += n * (n - 1) / area;
+                        if (bx >= fromX && bx <= toX && by >= fromY && by <= toY)
+                        {
+                            viewPoints += n;
+                            viewPairs += n * (n - 1) / area;
+                        }
+                    }
+                }
+
+                keptPairs += at == cell.Level ? own : cellArea > 0 ? cell.Count * (cell.Count - 1.0) / cellArea : 0;
+                ownTiles += at == cell.Level ? 1 : 0;
+                ancestors += at == cell.Level ? 0 : 1;
+                drawn = true;
+                break;
+            }
+
+            if (!drawn && cellArea > 0)
+            {
+                // One bin of the cell's own area, wholly in the view's sums: the cell touches the view.
+                double n = cell.Count;
+                points += n;
+                squares += n * n / cellArea;
+                pairs += n * (n - 1) / cellArea;
+                keptPairs += n * (n - 1) / cellArea;
+                occupied += cellArea;
+                viewPoints += n;
+                viewPairs += n * (n - 1) / cellArea;
+                fills++;
+            }
+        }
+
+        return (points, squares, pairs, keptPairs, viewPoints, viewPairs, occupied, ownTiles, ancestors, fills);
+    }
+
     /// <summary>Makes the codes of points of the copy again from their stored values (design §3.4 "ビンの値").</summary>
     /// <param name="first">The position of the first point: the points to read are in the copy.</param>
     /// <param name="codes">Where the codes go: one for each point to read.</param>

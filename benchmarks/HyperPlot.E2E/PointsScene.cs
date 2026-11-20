@@ -513,6 +513,13 @@ internal static partial class PointsScene
         // Issue #552: the product's definition (SpatialSnapshot.ProbeOverlap), the largest part's value.
         var (overlap, overlapLeast) = (0.0, double.MaxValue);
         (double PerPixel, ulong Count, double BinArea, int Level, int TileLevel, int Tiles, int Fills) densest = default;
+
+        // Issue #552: the density averaged over the points (SpatialSnapshot.ProbeMeanDensity), kept for the view where
+        // the largest part's value is greatest.
+        var (meanPair, meanLeast, meanSum, meanPooled) = (0.0, double.MaxValue, 0.0, 0.0);
+
+        // The sums of that view's largest part: points, squares, pairs, kept pairs, view points, view pairs, occupied, own tiles, ancestors, fills.
+        var meanOf = new double[10];
         var panels = engine.Plan!.Panels;
         for (var at = 0; at < panels.Count; at++)
         {
@@ -533,6 +540,8 @@ internal static partial class PointsScene
                 var high = engine.ViewToPixel(id, ViewRange.FromValues(x1, x1), ViewRange.FromValues(y1, y1));
                 var (perX, perY) = (Math.Abs(high.X - low.X) / (x1 - x0), Math.Abs(high.Y - low.Y) / (y1 - y0));
                 var (sum, viewOverlap) = (0.0, 0.0);
+                var (viewPair, viewSum, viewPairs, viewPoints) = (0.0, 0.0, 0.0, 0.0);
+                var viewOf = meanOf;
                 foreach (var snapshot in snapshots)
                 {
                     var bin = snapshot!.ProbeMaxBin(x0, x1, y0, y1, perX, perY);
@@ -549,10 +558,40 @@ internal static partial class PointsScene
                     {
                         densest = product;
                     }
+
+                    var mean = snapshot.ProbeMeanDensity(x0, x1, y0, y1, perX, perY);
+                    if (mean.Points > 0)
+                    {
+                        var pair = mean.Pairs / mean.Points;
+                        (viewSum, viewPairs, viewPoints) = (viewSum + pair, viewPairs + mean.Pairs, viewPoints + mean.Points);
+                        if (pair >= viewPair)
+                        {
+                            viewPair = pair;
+                            viewOf =
+                            [
+                                mean.Points,
+                                mean.Squares,
+                                mean.Pairs,
+                                mean.KeptPairs,
+                                mean.ViewPoints,
+                                mean.ViewPairs,
+                                mean.Occupied,
+                                mean.Tiles,
+                                mean.Ancestors,
+                                mean.Fills,
+                            ];
+                        }
+                    }
                 }
 
                 (largest, smallest) = (Math.Max(largest, sum), Math.Min(smallest, sum));
                 (overlap, overlapLeast) = (Math.Max(overlap, viewOverlap), Math.Min(overlapLeast, viewOverlap));
+                meanLeast = Math.Min(meanLeast, viewPair);
+                if (viewPair >= meanPair && viewPoints > 0)
+                {
+                    (meanPair, meanSum, meanPooled, meanOf) = (viewPair, viewSum, viewPairs / viewPoints, viewOf);
+                }
+
                 sampled++;
             }
         }
@@ -567,6 +606,13 @@ internal static partial class PointsScene
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"overlap: product_definition largest_part_points_per_px: max={overlap:F2} min={overlapLeast:F2} count={densest.Count} bin_area_px={densest.BinArea:F3} chosen_level={densest.Level} tile_level={densest.TileLevel} tiles={densest.Tiles} fills={densest.Fills}; overlap_x_marker_area: max={overlap * markerArea:F1} min={overlapLeast * markerArea:F1}"
+            )
+        );
+        var meanPoints = Math.Max(meanOf[0], 1);
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"mean_density: largest_part points_per_px: pair={meanPair:F3} min={meanLeast:F3} squares={meanOf[1] / meanPoints:F3} kept={meanOf[3] / meanPoints:F3} view={(meanOf[4] > 0 ? meanOf[5] / meanOf[4] : 0):F3} area_mean={(meanOf[6] > 0 ? meanOf[0] / meanOf[6] : 0):F3}; points={meanOf[0]:F0} view_points={meanOf[4]:F0} occupied_px={meanOf[6]:F0} own_tiles={meanOf[7]:F0} ancestors={meanOf[8]:F0} fills={meanOf[9]:F0}; sum_over_parts_pair={meanSum:F3}; pooled_pair={meanPooled:F3}; pair_x_marker_area={meanPair * markerArea:F1}"
             )
         );
     }
