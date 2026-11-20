@@ -107,8 +107,10 @@ internal sealed class PointPages
     /// block holds the rest. A page asked for with another block is another page, and the first is let go of as any page
     /// not used.
     /// </param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="block"/> is 0 or less.</exception>
     internal int Request(SpatialSnapshot snapshot, int page, int block)
     {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(block);
         var key = new Key(snapshot, page, block);
         var frame = _owner.Frame;
         if (_slots.TryGetValue(key, out var slot))

@@ -68,7 +68,8 @@ public sealed class SpatialResidentTests
     /// Steps:
     /// - Request both pages with blocks of 32,768 points, the block of a layer of one part, and read what was staged for
     ///   each. Read the same parts of the copy with ReadBlock.
-    /// - Request page 0 with blocks of 512 points, and with blocks of 32,768 again. Forget the snapshot.
+    /// - Request page 0 with blocks of 512 points, and with blocks of 32,768 again. Forget the snapshot. Request page 0
+    ///   with a block of 0 points.
     ///
     /// Expected:
     /// - Point k of a block of a staged page is point k × 104,729 modulo the block's count of the same block of the copy:
@@ -76,6 +77,7 @@ public sealed class SpatialResidentTests
     /// - Point 1 of the whole page is point 6,425 of the copy's page, and point 32,769 is point 39,193.
     /// - The blocks of 512 take a slot and a staged page of their own, in steps within each 512; asking with 32,768 again
     ///   gives the first slot and stages nothing. After the forgetting no page is in use.
+    /// - A block of 0 points throws ArgumentOutOfRangeException.
     /// </remarks>
     [Fact]
     public void Pages_HoldTheirBlocksPointsInSteps()
@@ -107,6 +109,7 @@ public sealed class SpatialResidentTests
         Check(0, 512, cache.Points.Staged(cache.Points.Uploads[2]));
         cache.Points.Forget(built.Snapshot);
         Assert.Equal(0, cache.Points.PagesInUse);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => cache.Points.Request(built.Snapshot, 0, 0));
 
         void Check(int page, int block, ReadOnlySpan<ResidentPoint> staged)
         {
