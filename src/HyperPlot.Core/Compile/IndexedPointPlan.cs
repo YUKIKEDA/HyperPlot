@@ -288,12 +288,10 @@ internal sealed class IndexedPointPlan : LayerPlan
             {
                 drawn = page;
                 var slot = pages.Request(snapshot, (int)page);
-                if (slot < 0)
-                {
-                    _missing = true;
-                    continue;
-                }
+                _missing |= slot < 0;
 
+                // A page that is not on the GPU yet is recorded too, with no slot, and draws nothing: the list and the
+                // backend's steps grow to what the view asks for in its first frame, not later as its pages arrive.
                 list.DrawResidentMarkers(style with { Slot = slot, Count = PointPages.PointsOf(snapshot, (int)page) });
             }
         }
