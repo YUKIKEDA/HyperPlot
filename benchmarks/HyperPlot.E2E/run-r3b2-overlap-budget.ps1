@@ -42,7 +42,12 @@ function Write-Clocks([string[]] $lines) {
     $to = [TimeSpan]::Parse($Matches[2])
     $clocks = @()
     $states = @{}
-    foreach ($row in [IO.File]::ReadAllLines($clockLog)) {
+    # nvidia-smi holds the log open for writing: read it shared.
+    $stream = [IO.FileStream]::new($clockLog, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+    $reader = [IO.StreamReader]::new($stream)
+    $rows = $reader.ReadToEnd() -split "`n"
+    $reader.Dispose()
+    foreach ($row in $rows) {
         if ($row -match '^\d+/\d+/\d+ (\d\d:\d\d:\d\d\.\d+), (\d+) MHz, (P\d+)') {
             $at = [TimeSpan]::Parse($Matches[1])
             if ($at -ge $from -and $at -le $to) {
