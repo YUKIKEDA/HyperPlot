@@ -110,18 +110,21 @@ internal static class SelectionScene
                 new(ViewRange.FromValues(-1.5, 100.5), ViewRange.FromValues(-1.0, 101.0)),
             ];
 
-            // What the engine's map of one value to its pixel allocates, called 256 times as for a lasso's vertices.
-            _ = engine.ViewToPixel(Panel, ViewRange.FromValues(50.0, 50.0), ViewRange.FromValues(50.0, 50.0));
-            var mapped = GC.GetAllocatedBytesForCurrentThread();
-            for (var k = 0; k < LassoVertices; k++)
+            // What sorting a row's crossings allocates, as the lasso's mask and its fill sort them: two floats, once a pixel
+            // row of the panel. Under NativeAOT a sort of a span allocates; under the JIT it does not.
+            Span<float> crossings = [2, 1];
+            crossings.Sort();
+            var sorted = GC.GetAllocatedBytesForCurrentThread();
+            for (var row = 0; row < guide.Height; row++)
             {
-                _ = engine.ViewToPixel(Panel, ViewRange.FromValues(50.0, 50.0), ViewRange.FromValues(50.0, 50.0));
+                (crossings[0], crossings[1]) = (2, 1);
+                crossings.Sort();
             }
 
             Console.WriteLine(
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"{LassoVertices} calls of ViewToPixel allocated {GC.GetAllocatedBytesForCurrentThread() - mapped} B"
+                    $"{guide.Height} sorts of a span of 2 floats allocated {GC.GetAllocatedBytesForCurrentThread() - sorted} B"
                 )
             );
 

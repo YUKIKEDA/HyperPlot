@@ -2,8 +2,9 @@
 # scenes of this project on a NativeAOT build. The figures the requirements wait for come first: P-6 (the mouse alone over
 # 1e7 selected raw points) and P-5 (the hit test at 1e9 points, uniform, then clustered); then the selection over a density
 # whose cells are fills (a lasso over the panel) and over one whose cells have tiles (docs/benchmarks/r3c-hittest.md).
-# Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3c-hittest.ps1 <output file> [-Pilot]
+# Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3c-hittest.ps1 <output file> [-Pilot] [-Only <steps>]
 # -Pilot runs every step small (1e7 points, 60 frames, one round) to check the script before the machine is taken.
+# -Only runs the named steps alone (selection-points, hittest-uniform, hittest-clustered, selection-fills, selection-tiles).
 # The machine is shared and no run waits for it to be quiet (.cursor/rules/bench.mdc): each scene prints the cores the other
 # processes used. The machine log and the GPU clock log go next to the output file (<output>.machine.log,
 # <output>.clocks.csv). Each step's start, end, and exit code go to .dev/out/queue.log with the prefix r3c526; the first
@@ -11,7 +12,8 @@
 # 12 GB while a scene runs) goes under .dev/ and is deleted at the end with the published build.
 param(
     [Parameter(Mandatory)] [string] $Out,
-    [switch] $Pilot
+    [switch] $Pilot,
+    [string[]] $Only = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +38,10 @@ function Write-Queue([string] $text) {
 
 # One step: the scene with a time limit. A step that fails, or that is stopped at its limit (no result), stops the queue.
 function Invoke-Step([string] $name, [int] $minutes, [string[]] $arguments) {
+    if ($Only.Count -gt 0 -and $name -notin $Only) {
+        return
+    }
+
     if ($script:stopped) {
         Write-Out "=== $name not run: an earlier step stopped the queue"
         return

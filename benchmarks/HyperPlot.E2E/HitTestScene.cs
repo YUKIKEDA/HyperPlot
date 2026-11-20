@@ -411,7 +411,8 @@ internal static class HitTestScene
 
     /// <summary>
     /// Prints one line: the times of the mode's calls, what the answers were, what the same search reads when it is called on
-    /// the snapshot with the panel's linear map (cells taken from the queue, points read, queues that overflowed), and the
+    /// the snapshot with the panel's linear map (cells taken from the queue, points read, queues that overflowed, and the
+    /// time of that call alone, which leaves out the engine and the placing of a point as the vertex shader does), and the
     /// check of the places whose layer drew raw points against the nearest point of every leaf under the reach.
     /// </summary>
     private static void Report(
@@ -433,7 +434,7 @@ internal static class HitTestScene
     )
     {
         var n = samples.Length;
-        var (first, again, visited, read) = (new double[n], new double[n], new List<double>(n), new List<double>(n));
+        var (first, again, visited, read, alone) = (new double[n], new double[n], new List<double>(n), new List<double>(n), new List<double>(n));
         var (found, bins, provisional, overflowed) = (0, 0, 0, 0);
         var xr = snapshot.XRange;
         var yr = snapshot.YRange;
@@ -449,7 +450,9 @@ internal static class HitTestScene
             if (!s.Density)
             {
                 var screen = new LinearScreen(s.OriginX + ((xr.Origin - s.X0) * s.PerX), s.PerX, s.OriginY + ((yr.Origin - s.Y0) * s.PerY), s.PerY);
+                var began = Stopwatch.GetTimestamp();
                 var nearest = snapshot.Nearest(ref screen, s.Along, s.Across, radius, marker, mode, work.Scratch);
+                alone.Add(Stopwatch.GetElapsedTime(began).TotalMicroseconds);
                 visited.Add(nearest.CellsVisited);
                 read.Add(nearest.PointsRead);
                 overflowed += nearest.Overflowed ? 1 : 0;
@@ -516,11 +519,11 @@ internal static class HitTestScene
             }
         }
 
-        var (visitedOf, readOf, referenceOf) = (visited.ToArray(), read.ToArray(), referenceTimes.ToArray());
+        var (visitedOf, readOf, aloneOf, referenceOf) = (visited.ToArray(), read.ToArray(), alone.ToArray(), referenceTimes.ToArray());
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"hit draw={draw} size={size} places={name} view_share={share} mode={mode} count={n} density_frames={density} provisional_frames={provisionalFrames} found={found} bins={bins} provisional={provisional} first_us p50={P(first, 0.5):F1} p99={P(first, 0.99):F1} max={first.Max():F1}; again_us p50={P(again, 0.5):F1} p99={P(again, 0.99):F1} max={again.Max():F1}; searched={visitedOf.Length} cells p50={P(visitedOf, 0.5):F0} p99={P(visitedOf, 0.99):F0} max={Most(visitedOf):F0} points p50={P(readOf, 0.5):F0} p99={P(readOf, 0.99):F0} max={Most(readOf):F0} overflowed={overflowed}; checked={checkedPlaces} mismatches={mismatches} max_excess_px={excess:F3} reference_s p50={P(referenceOf, 0.5):F4} max={Most(referenceOf):F4} leaves_max={mostLeaves} points_max={mostPoints}; allocated_both_modes={allocated} B; frames_and_calls={seconds:F1} s"
+                $"hit draw={draw} size={size} places={name} view_share={share} mode={mode} count={n} density_frames={density} provisional_frames={provisionalFrames} found={found} bins={bins} provisional={provisional} first_us p50={P(first, 0.5):F1} p99={P(first, 0.99):F1} max={first.Max():F1}; again_us p50={P(again, 0.5):F1} p99={P(again, 0.99):F1} max={again.Max():F1}; searched={visitedOf.Length} cells p50={P(visitedOf, 0.5):F0} p99={P(visitedOf, 0.99):F0} max={Most(visitedOf):F0} points p50={P(readOf, 0.5):F0} p99={P(readOf, 0.99):F0} max={Most(readOf):F0} overflowed={overflowed} search_alone_us p50={P(aloneOf, 0.5):F1} p99={P(aloneOf, 0.99):F1}; checked={checkedPlaces} mismatches={mismatches} max_excess_px={excess:F3} reference_s p50={P(referenceOf, 0.5):F4} max={Most(referenceOf):F4} leaves_max={mostLeaves} points_max={mostPoints}; allocated_both_modes={allocated} B; frames_and_calls={seconds:F1} s"
             )
         );
 
