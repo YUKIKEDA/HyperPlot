@@ -40,12 +40,12 @@ internal static class HitTestScene
     // A step coprime to every set's size, so that the places checked before the time runs out are spread over the set.
     private const int CheckStep = 7919;
 
-    private static readonly TimeSpan Deadline = TimeSpan.FromMinutes(10);
-    private static readonly double[] Shares = [0.01, 0.0001];
-
     // A view of a millionth of the domain's side, measured where Auto draws: a search along x alone finds no point within
     // half a pixel in a leaf there and goes on down the column of leaves (.cursor/rules/bench.mdc: the hardest input).
     private const double DeepShare = 0.000001;
+
+    private static readonly TimeSpan Deadline = TimeSpan.FromMinutes(10);
+    private static readonly double[] Shares = [0.01, 0.0001];
     private static readonly PanelId Panel = new(0, 0);
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
