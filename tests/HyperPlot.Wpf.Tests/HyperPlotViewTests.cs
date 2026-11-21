@@ -100,6 +100,71 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.Equal(Target(view), Rgba(Pixels(Assert.IsType<WriteableBitmap>(view.Shown))));
         });
 
+    /// <summary>
+    /// A front buffer that WPF itself takes away and gives back, by its own notification, reads the frames back and then
+    /// shows through <c>D3DImage</c> again (design §7.2, Issue #556): the view does not detach <c>D3DImage</c> from its
+    /// bitmap while the front buffer is lost, or the notification that it is back never comes. The one test of the real
+    /// notification, which waits in real time with a bound (rule testing).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene of <see cref="SharedTextures_ShowTheEnginesPixels"/>, shown through <c>D3DImage</c>, whose front buffer
+    ///   is there. No test seam replaces the front buffer's value.
+    ///
+    /// Steps:
+    /// - Set the process to render in software only (<c>RenderOptions.ProcessRenderMode</c>; with the window's own
+    ///   target alone, the fixture's window keeps WPF's device and nothing is lost); let the dispatcher run until
+    ///   <c>D3DImage</c> says the front buffer is lost, at most 10 s (measured: within 31 ms); draw until shown. Set the mode
+    ///   back; let the dispatcher run until the front buffer is back, at most 10 s (measured: 23 to 75 ms); draw until shown.
+    ///
+    /// Expected:
+    /// - Lost: the view does not use the shared textures, shows no shared texture, and the image shows a bitmap with the
+    ///   target's pixels. Back: the front buffer is there within the bound, which is the assertion that guards the fix (with
+    ///   a null back buffer set at the loss it never comes back); the image shows the D3DImage, and the shown texture has
+    ///   the target's pixels. A machine on which rendering in software takes no front buffer away skips the test.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "OsTiming")]
+    public void FrontBufferLostByWpf_ReadsBackAndComesBack() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            DrawUntilShown(view);
+            _ = Assert.IsType<D3DImage>(view.Shown);
+            Assert.True(view.FrontBufferAvailable);
+            var mode = RenderOptions.ProcessRenderMode;
+            var bound = TimeSpan.FromSeconds(10);
+
+            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+            try
+            {
+                if (!WaitUntil(() => !view.FrontBufferAvailable, bound))
+                {
+                    Assert.Skip("A process set to render in software took no front buffer from D3DImage within 10 s on this machine.");
+                }
+
+                DrawUntilShown(view);
+                Assert.False(view.UsesSharedTextures);
+                Assert.Equal(0, view.ShownHandle);
+                Assert.Equal(Target(view), Rgba(Pixels(Assert.IsType<WriteableBitmap>(view.Shown))));
+            }
+            finally
+            {
+                RenderOptions.ProcessRenderMode = mode;
+            }
+
+            Assert.True(
+                WaitUntil(() => view.FrontBufferAvailable, bound),
+                "D3DImage did not say that its front buffer was back within 10 s of the process rendering in hardware again (Issue #556)."
+            );
+            DrawUntilShown(view);
+            _ = Assert.IsType<D3DImage>(view.Shown);
+            Assert.NotEqual(0, view.ShownHandle);
+            using var d3d9 = new D3D9Reader();
+            AssertShown(view, d3d9);
+        });
+
     /// <summary>A backend on another adapter than Direct3D 9Ex's is read back (design §7.2), and stays its owner's.</summary>
     /// <remarks>
     /// Preconditions:
@@ -804,6 +869,32 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         Assert.Fail(
             $"The shown texture {shown} does not hold the target's pixels (Issue #299): {state}; all 0 {zeros}; equal after 200 ms {again}; equal after 200 ms and a pump {afterPump}; provisional {view.Engine.IsProvisional}; shared textures {view.UsesSharedTextures} (backend WARP {view.Backend.IsWarp}, adapter {view.Backend.AdapterLuid}, Direct3D 9Ex's {view.Host.D3D9?.AdapterLuid}, its device {view.Host.D3D9?.HasDevice}, front buffer {view.FrontBufferAvailable}, the test's {view.FrontBuffer?.ToString() ?? "none"}); waits for the tick {view.Hooked}."
         );
+    }
+
+    /// <summary>
+    /// Runs the dispatcher in real time until a condition holds or a time has passed, and returns whether it holds: for what
+    /// WPF tells the view by a notification of its own. The timer that checks is the watchdog too, so the wait always ends.
+    /// </summary>
+    private static bool WaitUntil(Func<bool> done, TimeSpan bound)
+    {
+        var frame = new DispatcherFrame();
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var timer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(5),
+            DispatcherPriority.Background,
+            (_, _) => frame.Continue = !done() && System.Diagnostics.Stopwatch.GetElapsedTime(started) < bound,
+            Dispatcher.CurrentDispatcher
+        );
+        try
+        {
+            Dispatcher.PushFrame(frame);
+        }
+        finally
+        {
+            timer.Stop();
+        }
+
+        return done();
     }
 
     private static void DrawUntilShown(HyperPlotView view)

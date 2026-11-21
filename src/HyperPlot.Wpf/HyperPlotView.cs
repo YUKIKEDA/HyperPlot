@@ -251,7 +251,10 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
         }
     }
 
-    /// <summary>The front buffer came or went (design §7.2): a lost one reads back; a new one opens the textures again.</summary>
+    /// <summary>
+    /// The front buffer came or went (design §7.2): a lost one reads back, and <c>D3DImage</c> keeps its back buffer, so that
+    /// it can say when the front buffer is there again; a new one opens the textures again.
+    /// </summary>
     internal void FrontBufferChanged()
     {
         ReleaseOpened();
@@ -809,13 +812,26 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
         return made;
     }
 
+    /// <summary>
+    /// Releases the surfaces the view opened in Direct3D 9Ex, and takes the shown one from <c>D3DImage</c> while it has its
+    /// front buffer (design §7.2).
+    /// </summary>
     private void ReleaseOpened()
     {
         if (_shown != 0)
         {
-            _d3dImage.Lock();
-            _d3dImage.SetBackBuffer(D3DResourceType.IDirect3DSurface9, 0);
-            _d3dImage.Unlock();
+            // Without its front buffer, D3DImage is given no null back buffer: SetBackBuffer detaches the bitmap it had, a
+            // detached bitmap tells D3DImage nothing more, and a null makes no new one, so IsFrontBufferAvailable would stay
+            // false for good (read in dotnet/wpf's main: D3DImage.SetBackBuffer, CInteropDeviceBitmap::Detach and
+            // NotifyAdapterStatusInternal; measured on .NET 10: of 11 lost front buffers none came back with the null, and
+            // 15 of 16 without it, Issue #556). WPF has released the surface itself by then, so nothing is held.
+            if (_d3dImage.IsFrontBufferAvailable)
+            {
+                _d3dImage.Lock();
+                _d3dImage.SetBackBuffer(D3DResourceType.IDirect3DSurface9, 0);
+                _d3dImage.Unlock();
+            }
+
             _shown = 0;
         }
 
