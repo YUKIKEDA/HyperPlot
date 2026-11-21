@@ -30,3 +30,4 @@ M:System.Collections.Generic.List`1.Sort;Allocates under NativeAOT on every call
 M:System.Array.Sort``1(``0[]);Allocates under NativeAOT on every call: use SpanSort.Ascending or pass a static comparison (.cursor/rules/perf.mdc, Issue #585)
 M:System.Array.Sort``1(``0[],System.Int32,System.Int32);Allocates under NativeAOT on every call: sort a slice with SpanSort.Ascending or a static comparison (.cursor/rules/perf.mdc, Issue #585)
 M:System.Array.Sort(System.Array);Allocates under NativeAOT on every call: use SpanSort.Ascending or pass a static comparison (.cursor/rules/perf.mdc, Issue #585)
+M:System.Array.Sort(System.Array,System.Int32,System.Int32);Allocates under NativeAOT on every call: sort a slice with SpanSort.Ascending or a static comparison (.cursor/rules/perf.mdc, Issue #585)
