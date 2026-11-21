@@ -1,4 +1,5 @@
 using System.Numerics;
+using System.Runtime.InteropServices;
 using HyperPlot.Rendering;
 
 namespace HyperPlot;
@@ -889,6 +890,30 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
 
             part.Plan.Record(context);
             context.Flush();
+        }
+    }
+
+    internal override bool Scans
+    {
+        get
+        {
+            foreach (var part in CollectionsMarshal.AsSpan(_parts))
+            {
+                if (part.Plan.Scans)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    internal override void Scan(RecordContext context)
+    {
+        foreach (var part in CollectionsMarshal.AsSpan(_parts))
+        {
+            part.Plan.Scan(context);
         }
     }
 

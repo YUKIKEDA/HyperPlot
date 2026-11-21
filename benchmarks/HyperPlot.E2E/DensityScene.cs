@@ -315,6 +315,7 @@ internal static class DensityScene
                         $"first frame not provisional: {shown.Elapsed.TotalSeconds:F3} s (frame {frames}, {images} images, {engine.Plan!.List.ResidentRuns.Length} runs of resident points); density faces on the GPU {slots}, frames that sent faces {sending}, at most {mostFaces} faces ({(long)mostFaces * ResidencyCache.FaceBytes} bytes) a frame; pages of points {backend.Images.Points.PagesInUse} ({backend.Images.Points.BytesInUse} bytes)"
                     )
                 );
+                PointsScene.PrintCells(engine.Plan!);
                 return frames;
             }
 
@@ -338,6 +339,9 @@ internal static class DensityScene
         var faces = new int[total];
         var slots = backend.Images.SlotsInUse;
 
+        // Row R3b2: the time of the layers' scan before the recording, the stage that chooses the drawing (design §5.5.2).
+        var scan = new double[total];
+
         // The wall clock of the frames, to match the GPU clock log of nvidia-smi to them.
         var from = DateTime.Now;
         var began = Stopwatch.GetTimestamp();
@@ -349,6 +353,7 @@ internal static class DensityScene
             engine.RenderFrame();
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
+            scan[f] = engine.Plan!.ScanTicks * 1000.0 / Stopwatch.Frequency;
 
             // A time arrives some frames after its frame (design §5.2); each goes to the frame it timed.
             if (backend.LastFrameTime is { } time && time.Frame >= rendered && time.Frame < rendered + total)
@@ -394,6 +399,17 @@ internal static class DensityScene
                 $"cpu_frame: p50={PointsScene.Percentile(kept, 0.5):F3} p95={PointsScene.Percentile(kept, 0.95):F3} p99={PointsScene.Percentile(kept, 0.99):F3} max={kept.Max():F3} ms"
             )
         );
+        foreach (var kind in "DP")
+        {
+            var times = scan[Warmup..].Where((_, i) => kindsKept[i] == kind).ToArray();
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"scan ({(kind == 'D' ? "density" : "raw points")} frames): n={times.Length} p50={(times.Length == 0 ? double.NaN : PointsScene.Percentile(times, 0.5)):F4} p95={(times.Length == 0 ? double.NaN : PointsScene.Percentile(times, 0.95)):F4} max={(times.Length == 0 ? double.NaN : times.Max()):F4} ms"
+                )
+            );
+        }
+
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,

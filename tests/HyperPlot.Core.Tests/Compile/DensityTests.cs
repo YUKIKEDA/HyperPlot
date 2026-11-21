@@ -82,19 +82,21 @@ public sealed class DensityTests
 
     /// <summary>
     /// Auto draws a density when the upper count of the view passes the threshold, raw points when it falls under 0.8
-    /// times it, and the last drawing between; Points and Density do not count (design §5.5.2 "入れ替わりを抑える").
+    /// times it, and the last drawing between; Points and Density do not count (design §5.5.2 "入れ替わりを抑える"). The
+    /// markers are small, so that the predicted time stays under its band and the count alone decides (row R3b2).
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 131,073 seeded points over [0, 100]² in an engine that waits for its indexes; a threshold of 10,000.
+    /// - 131,073 seeded points over [0, 100]² in an engine that waits for its indexes; a threshold of 10,000; markers of
+    ///   the default 6 DIPs.
     ///
     /// Steps:
     /// - Zoom in from the whole view to a side of 2 in 200 steps, then out again, drawing each view. Draw a whole view with
     ///   Points and a side of 5 with Density.
     ///
     /// Expected:
-    /// - At each view, Auto draws a density exactly when the upper count passes 10,000 after raw points, or stays at or over
-    ///   8,000 after a density. The walk passes both kinds of view between 8,000 and 10,000: one drawn as a density (zooming
+    /// - At each view, the predicted time is under 11.28 ms, and Auto draws a density exactly when the upper count passes
+    ///   10,000 after raw points, or stays at or over 8,000 after a density. The walk passes both kinds of view between 8,000 and 10,000: one drawn as a density (zooming
     ///   in) and one drawn as raw points (zooming out). The whole view is a density; a side of 2 is raw points.
     /// - Points: raw points at the whole view. Density: a density at a side of 5.
     /// </remarks>
@@ -132,6 +134,7 @@ public sealed class DensityTests
         {
             var drawn = Density(side);
             var count = Plan().Switch.LastCount;
+            Assert.True(Plan().Switch.LastTime < PredictedTime.Threshold * DensitySwitch.Back);
             Assert.Equal(last ? count >= Threshold * DensitySwitch.Back : count > Threshold, drawn);
             var between = count >= Threshold * DensitySwitch.Back && count <= Threshold;
             (heldDensity, heldPoints) = (heldDensity || (between && drawn), heldPoints || (between && !drawn));
@@ -244,7 +247,7 @@ public sealed class DensityTests
         Assert.Equal(0, list.ResidentRuns.Length);
         Assert.NotEqual(0, list.Images.Length);
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
-        Assert.True(plan.Switch.Top > 0);
+        Assert.True(plan.Panel.Top > 0);
         Assert.All(
             list.Images.ToArray(),
             image => Assert.Equal(ImageInstance.ZeroTransparent | (2u << 2), image.Flags & (ImageInstance.ZeroTransparent | (3u << 2)))

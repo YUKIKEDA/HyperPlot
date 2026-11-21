@@ -7,6 +7,10 @@
 #   p4      requirement P-4's scenes: 1 and 64 parts whole, 1 and 8 parts zoomed, 6 shapes (uniform and clustered), 3 rounds
 #   record  the frames of the zoom script recorded and not drawn, 8 and 64 parts, the two forms alternated: the CPU time of
 #           the recording
+#   scan    (Issue #600) the time of the scan before the recording, which chooses the drawing: 1e7 points uniform and
+#           clustered, 1 and 8 parts, the whole view and the zoom script, drawn, 2 rounds
+#   stage   (Issue #600) the frames of the zoom script recorded and not drawn, 1 and 8 parts, against a baseline build
+#           (-Baseline, an executable of main that times the same stage, its count of the view), alternated A, B, B, A
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -14,7 +18,8 @@
 param(
     [Parameter(Mandatory)] [string] $Out,
     [string[]] $Sets = @('path', 'zoom64', 'p4', 'record'),
-    [int] $TimeoutSeconds = 300
+    [int] $TimeoutSeconds = 300,
+    [string] $Baseline = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,13 +74,13 @@ function Write-Clocks([string] $name, [string[]] $lines) {
 
 # One run of the scene; a run that fails or passes its time limit is written and counted, and the next runs
 # (.cursor/rules/bench.mdc).
-function Invoke-Scene([string] $name, [string[]] $arguments) {
+function Invoke-Scene([string] $name, [string[]] $arguments, [string] $program = $exe) {
     $began = Get-Date
     Write-Out "=== $name started $($began.ToString('HH:mm:ss')): points $($arguments -join ' ')"
     $stdout = "$Out.run.txt"
     # One row a frame, next to the output file: the frame's times, its runs and points, and its allocations by stage.
     $frames = "$Out.$($name -replace '[^A-Za-z0-9]+', '-').csv"
-    $process = Start-Process -FilePath $exe -ArgumentList (@('points') + $arguments + @($frames)) -NoNewWindow -PassThru `
+    $process = Start-Process -FilePath $program -ArgumentList (@('points') + $arguments + @($frames)) -NoNewWindow -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError "$Out.run.err.txt"
     $code = 'timeout'
     if ($process.WaitForExit($TimeoutSeconds * 1000)) {
@@ -101,7 +106,7 @@ function Get-Arguments([string] $distribution, [int] $categories, [string] $view
     @('10000000', '6', '0.6', $distribution, '600', "$categories", $view, $channel, 'Circle', $form, $frames)
 }
 
-Set-Content -Path $Out -Value "# r3b2 run (Issue #577), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
+Set-Content -Path $Out -Value "# r3b2 run (Issues #577 and #600), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
 $watcher = $null
 $clocks = $null
 try {
@@ -152,6 +157,41 @@ try {
             foreach ($i in $order) {
                 $scene = $scenes[$i]
                 Invoke-Scene "p4 $($scene[0]), round $round" (Get-Arguments $scene[1] $scene[2] $scene[3] $scene[4] 'blocks' 'draw')
+            }
+        }
+    }
+
+    if ($Sets -contains 'scan') {
+        $scenes = @(
+            @('1 part whole uniform', 'uniform', 0, 'whole'),
+            @('1 part whole cluster', 'cluster', 0, 'whole'),
+            @('8 parts whole uniform', 'uniform', 8, 'whole'),
+            @('8 parts whole cluster', 'cluster', 8, 'whole'),
+            @('1 part zoom uniform', 'uniform', 0, 'zoom'),
+            @('1 part zoom cluster', 'cluster', 0, 'zoom'),
+            @('8 parts zoom uniform', 'uniform', 8, 'zoom'),
+            @('8 parts zoom cluster', 'cluster', 8, 'zoom')
+        )
+        for ($round = 1; $round -le 2; $round++) {
+            $order = if ($round % 2) { 0..7 } else { 7..0 }
+            foreach ($i in $order) {
+                $scene = $scenes[$i]
+                Invoke-Scene "scan $($scene[0]), round $round" (Get-Arguments $scene[1] $scene[2] $scene[3] 'color' 'blocks' 'draw')
+            }
+        }
+    }
+
+    if ($Sets -contains 'stage') {
+        if (-not (Test-Path $Baseline)) {
+            throw "the stage set needs -Baseline, an executable of main that times its count of the view"
+        }
+
+        foreach ($categories in @(0, 8)) {
+            $round = 0
+            foreach ($side in @('head', 'main', 'main', 'head', 'head', 'main', 'main', 'head')) {
+                $round++
+                $program = if ($side -eq 'head') { $exe } else { $Baseline }
+                Invoke-Scene "stage $categories parts zoom $side, run $round" (Get-Arguments 'uniform' $categories 'zoom' 'color' 'blocks' 'record') $program
             }
         }
     }

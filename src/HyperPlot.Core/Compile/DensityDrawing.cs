@@ -5,14 +5,18 @@ using HyperPlot.Rendering;
 namespace HyperPlot;
 
 /// <summary>
-/// What the parts of one point layer on the index path share in a panel (design §5.5.2 "行 R3b1 の密度と切り替え"): the
-/// drawing the layer takes this frame, raw points or density, chosen once a frame from the upper counts of all its parts,
-/// and the top of the density's scale, the largest normalized bin of every part's drawn tiles.
+/// The drawing of one point layer on the index path (design §5.5.2 "`Auto` の切り替え"): raw points or density, chosen once
+/// a frame for all its parts, those of every facet panel included, from what each part's scan before the recording found
+/// (<see cref="IndexedPointPlan.Scan"/>): the upper counts of the points in the view, summed, and the largest bin, the
+/// greatest of the parts'.
 /// </summary>
-/// <remarks>One thread at a time: the frame's. After the parts' lists have grown, a frame allocates nothing.</remarks>
+/// <remarks>One thread at a time: the frame's. After the parts' list has grown, a frame allocates nothing.</remarks>
 internal sealed class DensitySwitch
 {
-    /// <summary>The share of the threshold under which a layer drawn as a density goes back to raw points.</summary>
+    /// <summary>
+    /// The share of each threshold under which a layer drawn as a density goes back to raw points (design §5.5.2
+    /// "入れ替わりを抑える"): of <see cref="PointLayerSpec.DensityThreshold"/>, and of <see cref="PredictedTime.Threshold"/>.
+    /// </summary>
     internal const double Back = 0.8;
 
     private readonly List<IndexedPointPlan> _parts = [];
@@ -21,31 +25,32 @@ internal sealed class DensitySwitch
     private long _threshold = -1;
     private bool _density;
 
-    /// <summary>Gets a value indicating whether the layer draws a density this frame. Valid after <see cref="Prepare"/>.</summary>
+    /// <summary>Gets a value indicating whether the layer draws a density this frame. Valid after <see cref="Choose"/>.</summary>
     public bool Density => _density;
-
-    /// <summary>Gets the top of the density's scale this frame, in points a square physical pixel; 0 when nothing is drawn.</summary>
-    public double Top { get; private set; }
 
     /// <summary>Gets the upper count of the points in the view the last choice read, summed over the parts. Tests only.</summary>
     internal long LastCount { get; private set; }
 
-    /// <summary>
-    /// Gets the number of the layer's parts in the panel, a part of no point too (design §5.5.2 "ブロック"): the parts that
-    /// lie over one another, which set the points of a block of their pages. Another panel's parts are not among them.
-    /// </summary>
-    public int PartCount => _parts.Count;
+    /// <summary>Gets the largest bin the last choice read, the greatest of the parts', in points a physical pixel. Tests only.</summary>
+    internal double LastLargestBin { get; private set; }
 
-    /// <summary>Adds a part of the layer.</summary>
+    /// <summary>Gets the predicted time of drawing the layer as raw points the last choice read, in ms; 0 when it read none. Tests only.</summary>
+    internal double LastTime { get; private set; }
+
+    /// <summary>Gets the predicted time the last choice read with four times the largest bin, in ms. Tests only.</summary>
+    internal double LastTimeAtFourBins { get; private set; }
+
+    /// <summary>Adds a part of the layer, of any panel.</summary>
     public void Add(IndexedPointPlan part) => _parts.Add(part);
 
     /// <summary>
-    /// Chooses the drawing of the layer for a frame, once a frame: for <see cref="PointDraw.Auto"/>, density when the upper
-    /// count of the points in the view (<c>Inside + Touching</c>, summed over the parts) passes the threshold, raw points when
-    /// it falls under 0.8 times it, and the last frame's drawing between. Then plans every part's density and takes the top.
+    /// Chooses the drawing of the layer for a frame, once a frame (design §5.5.2 "`Auto` の切り替え", "入れ替わりを抑える"):
+    /// for <see cref="PointDraw.Auto"/>, the drawing <see cref="Next"/> gives from the last one, the summed upper count, and
+    /// the predicted times of the parts the frame scanned on a full snapshot; <see cref="PointDraw.Points"/> and
+    /// <see cref="PointDraw.Density"/> read nothing. A layer with no full snapshot predicts no time.
     /// </summary>
     /// <returns>Whether the layer draws a density this frame.</returns>
-    public bool Prepare(RecordContext context, PointLayerSpec point)
+    public bool Choose(RecordContext context, PointLayerSpec point)
     {
         var frame = context.Images.Frame;
         if (frame == _frame)
@@ -61,31 +66,137 @@ internal sealed class DensitySwitch
             (_draw, _threshold, _density) = (point.Draw, point.DensityThreshold, false);
         }
 
-        if (point.Draw == PointDraw.Auto)
-        {
-            long count = 0;
-            foreach (var part in CollectionsMarshal.AsSpan(_parts))
-            {
-                count += part.UpperCount(context);
-            }
-
-            LastCount = count;
-            _density = _density ? count >= point.DensityThreshold * Back : count > point.DensityThreshold;
-        }
-        else
+        if (point.Draw != PointDraw.Auto)
         {
             _density = point.Draw == PointDraw.Density;
+            return _density;
         }
 
-        // Every part plans its pieces, a part still on its coarse snapshot too, and the top is the largest of them.
+        var (count, largest, full) = (0L, 0.0, false);
+        foreach (var part in CollectionsMarshal.AsSpan(_parts))
+        {
+            if (part.ScannedFull(frame))
+            {
+                (count, largest, full) = (count + part.ScannedCount, Math.Max(largest, part.ScannedLargestBin), true);
+            }
+        }
+
+        // The markers' diameter in physical pixels, as the recording scales it.
+        var diameter = point.Size * context.Scale;
+        var (time, timeAtFour) = full
+            ? (PredictedTime.Of(count, diameter, largest), PredictedTime.Of(count, diameter, PredictedTime.LevelJump * largest))
+            : (0, 0);
+        (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins) = (count, largest, time, timeAtFour);
+        _density = Next(_density, count, point.DensityThreshold, time, timeAtFour);
+        return _density;
+    }
+
+    /// <summary>
+    /// Returns the drawing of an <see cref="PointDraw.Auto"/> layer after a frame (design §5.5.2 "`Auto` の切り替え",
+    /// "入れ替わりを抑える", "水準が替わるところ"): from raw points, a density when the upper count passes the threshold or the
+    /// predicted time reaches <see cref="PredictedTime.Threshold"/>; from a density, raw points only when the count is under
+    /// 0.8 times the threshold, the time under 0.8 times its threshold, and the time with four times the largest bin under
+    /// its threshold. A layer with no drawing yet comes from raw points.
+    /// </summary>
+    /// <param name="density">Whether the layer drew a density in the last frame.</param>
+    /// <param name="count">The upper count of the points in the view, summed over the parts.</param>
+    /// <param name="threshold">The layer's <see cref="PointLayerSpec.DensityThreshold"/>.</param>
+    /// <param name="time">The predicted time, in ms (<see cref="PredictedTime.Of"/>).</param>
+    /// <param name="timeAtFourBins">The predicted time with four times the largest bin, in ms.</param>
+    internal static bool Next(bool density, long count, long threshold, double time, double timeAtFourBins) =>
+        density
+            ? !(count < threshold * Back && time < PredictedTime.Threshold * Back && timeAtFourBins < PredictedTime.Threshold)
+            : count > threshold || time >= PredictedTime.Threshold;
+}
+
+/// <summary>
+/// What the parts of one point layer on the index path share in a panel (design §5.5.2 "ブロック", "濃さの上端 m"): their
+/// number, which sets the points of a block of their pages, and the top of the density's scale, the largest normalized bin
+/// of every part's drawn pieces. Another panel's parts are not among them.
+/// </summary>
+/// <remarks>One thread at a time: the frame's. After the parts' list has grown, a frame allocates nothing.</remarks>
+internal sealed class DensityPanel
+{
+    private readonly List<IndexedPointPlan> _parts = [];
+    private long _frame = -1;
+
+    /// <summary>Gets the top of the density's scale this frame, in points a square physical pixel; 0 when nothing is drawn.</summary>
+    public double Top { get; private set; }
+
+    /// <summary>
+    /// Gets the number of the layer's parts in the panel, a part of no point too (design §5.5.2 "ブロック"): the parts that
+    /// lie over one another, which set the points of a block of their pages.
+    /// </summary>
+    public int PartCount => _parts.Count;
+
+    /// <summary>Adds a part of the layer in the panel.</summary>
+    public void Add(IndexedPointPlan part) => _parts.Add(part);
+
+    /// <summary>
+    /// Sets each part's drawing for the frame, once a frame, and takes the top: the largest of the parts' that draw a
+    /// density, a part still on its coarse snapshot too.
+    /// </summary>
+    public void Prepare(RecordContext context, bool density)
+    {
+        var frame = context.Images.Frame;
+        if (frame == _frame)
+        {
+            return;
+        }
+
+        _frame = frame;
         var top = 0.0;
         foreach (var part in CollectionsMarshal.AsSpan(_parts))
         {
-            top = Math.Max(top, part.PlanDensity(context, _density));
+            top = Math.Max(top, part.PlanDensity(density));
         }
 
         Top = top;
-        return _density;
+    }
+}
+
+/// <summary>
+/// The predicted GPU time of drawing a point layer as raw points (design §5.5.2 "予測時間"): T̂ = 1.95 + 5.46 n + 0.0612 n
+/// A ρ^0.40 ms, with n the points in the view over 1e7, A the area of a disc of the markers' diameter in square physical
+/// pixels, and ρ the largest bin in points a physical pixel. The coefficients and the threshold are the reference machine's
+/// (an RTX 3060 Ti, a JIT build); another machine is not promised to fit 16.7 ms under the threshold.
+/// </summary>
+internal static class PredictedTime
+{
+    /// <summary>The fixed term, in ms.</summary>
+    internal const double Fixed = 1.95;
+
+    /// <summary>The term of the points, in ms a unit of <see cref="PointsUnit"/> points.</summary>
+    internal const double PerPoints = 5.46;
+
+    /// <summary>The coefficient of the overlap term: n · A · ρ^<see cref="Exponent"/>, A in square physical pixels, ρ in points a physical pixel.</summary>
+    internal const double Overlap = 0.0612;
+
+    /// <summary>The exponent of the largest bin in the overlap term.</summary>
+    internal const double Exponent = 0.40;
+
+    /// <summary>The points of one unit of n.</summary>
+    internal const double PointsUnit = 1e7;
+
+    /// <summary>The predicted time, in ms, from which an <see cref="PointDraw.Auto"/> layer draws a density (design §5.5.2 "境目").</summary>
+    internal const double Threshold = 14.1;
+
+    /// <summary>
+    /// The most the largest bin grows when the chosen tile level gets one deeper (design §5.5.2 "水準が替わるところ"): a bin's
+    /// area on the screen is a quarter, so its points a pixel are 1 to 4 times the shallower level's.
+    /// </summary>
+    internal const double LevelJump = 4;
+
+    /// <summary>Returns the predicted time, in ms, in doubles, not rounded. Allocates nothing.</summary>
+    /// <param name="points">The upper count of the points in the view, summed over the layer's parts.</param>
+    /// <param name="diameter">The markers' diameter in physical pixels, whatever their shape.</param>
+    /// <param name="largestBin">The largest bin, in points a physical pixel.</param>
+    public static double Of(long points, double diameter, double largestBin)
+    {
+        var n = points / PointsUnit;
+        var area = Math.PI * diameter * diameter / 4;
+        var overlap = n > 0 && largestBin > 0 ? Overlap * n * area * Math.Pow(largestBin, Exponent) : 0;
+        return Fixed + (PerPoints * n) + overlap;
     }
 }
 

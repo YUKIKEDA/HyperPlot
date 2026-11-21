@@ -150,6 +150,12 @@ internal sealed partial class PlotPlan : IDisposable
     /// <summary>Gets the number of layers the last recording drew, over every panel (row W1b1). Tests only.</summary>
     internal int LayersRecorded { get; private set; }
 
+    /// <summary>
+    /// Gets the time the last recording's scan of the layers took (design §5.5.2 "`Auto` の切り替え"), in ticks of
+    /// <see cref="TimeProvider.System"/>: the stage the measurements of design §9 time on raw-point frames. Benchmarks only.
+    /// </summary>
+    internal long ScanTicks { get; private set; }
+
     /// <summary>Gets the number of pyramids the plan's store holds or its makings reserved (row W1b2). Tests only.</summary>
     internal int PyramidsInStore => _store.Count;
 
@@ -2623,6 +2629,16 @@ internal sealed partial class PlotPlan : IDisposable
         _guides.RecordBehind(_list, spec);
         LayersRecorded = 0;
         _annotationHits.Clear();
+
+        // The layers' scan before any records (design §5.5.2 "`Auto` の切り替え"): a point layer's drawing reads all its
+        // parts, those of the panels after this one too. Timed for the measurements of design §9.
+        var scanned = TimeProvider.System.GetTimestamp();
+        for (var p = 0; p < _panels.Length; p++)
+        {
+            ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
+        }
+
+        ScanTicks = TimeProvider.System.GetTimestamp() - scanned;
         for (var p = 0; p < _panels.Length; p++)
         {
             RecordPanel(spec, p, _panels[p], _guides.PanelAt(p), flipped);
@@ -2631,18 +2647,21 @@ internal sealed partial class PlotPlan : IDisposable
         _guides.RecordOver(_list, spec);
     }
 
+    /// <summary>Returns the x scale's reverse, its clamp, and its band axis, if any.</summary>
+    private (bool Reverse, bool Clamp, BandAxis? Band) AxisOfX(PlotSpec spec) =>
+        spec.ScaleX switch
+        {
+            // A band axis increases with the positions of its categories, which hold its reverse (design §4.2, row G7b).
+            BandScaleSpec b => (false, false, new BandAxis(BandColumn(spec)?.CategoryCount ?? 0, b.PaddingInner, b.Reverse)),
+            ContinuousScaleSpec c => (c.Reverse, c.Clamp, null),
+            _ => (false, false, null),
+        };
+
     /// <summary>Records a panel's layers inside its clip, mapped by its axes (row G6b).</summary>
     private void RecordPanel(PlotSpec spec, int index, PlotPanel panel, PanelGuide guide, bool flipped)
     {
         var yScale = (ContinuousScaleSpec)spec.ScaleY;
-
-        // A band axis increases with the positions of its categories, which hold its reverse (design §4.2, row G7b).
-        var (xReverse, xClamp, band) = spec.ScaleX switch
-        {
-            BandScaleSpec b => (false, false, (BandAxis?)new BandAxis(BandColumn(spec)?.CategoryCount ?? 0, b.PaddingInner, b.Reverse)),
-            ContinuousScaleSpec c => (c.Reverse, c.Clamp, null),
-            _ => (false, false, null),
-        };
+        var (xReverse, xClamp, band) = AxisOfX(spec);
         var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
         if (guide.Polar is { } polar)
         {
@@ -2658,6 +2677,32 @@ internal sealed partial class PlotPlan : IDisposable
             return;
         }
 
+        var (x, y, x2, y2) = BeginCartesian(spec, panel, guide, flipped, xReverse, xClamp, band);
+
+        // The region of the plot's selection on the panel, which its point layers highlight (row R3c): of the panel's scales.
+        // A lasso's mask covers the same rectangle as the clip of RecordLayers (ClipToPanel), so a density's fill cut by the mask
+        // leaves out only what the clip takes; RenderList.DrawRectCutByMask throws if the clip reaches past the mask.
+        _context.Highlight = AddHighlight(index, x, y, flipped, (left, top, width, height));
+        RecordLayers(panel, spec.Theme.Palette, flipped);
+        RecordAnnotations(spec, index, guide, new AnnotationAxes(x, y, x2, y2, flipped));
+    }
+
+    /// <summary>
+    /// Makes a cartesian panel's axes, its primary and secondary pairs (row G6a), keeps them as the panel's frames, and begins
+    /// the context on the primary pair.
+    /// </summary>
+    private (GeomFrame.Axis X, GeomFrame.Axis Y, GeomFrame.Axis X2, GeomFrame.Axis Y2) BeginCartesian(
+        PlotSpec spec,
+        PlotPanel panel,
+        PanelGuide guide,
+        bool flipped,
+        bool xReverse,
+        bool xClamp,
+        BandAxis? band
+    )
+    {
+        var yScale = (ContinuousScaleSpec)spec.ScaleY;
+        var (left, top, width, height) = (guide.Left, guide.Top, guide.Width, guide.Height);
         var x = flipped
             ? new GeomFrame.Axis(_xTransform, panel.X, !xReverse, xClamp, top, height, band)
             : new GeomFrame.Axis(_xTransform, panel.X, xReverse, xClamp, left, width, band);
@@ -2683,13 +2728,60 @@ internal sealed partial class PlotPlan : IDisposable
 
         panel.Frames = (x, y, x2, y2);
         _context.Begin(x, y, panel.Boundaries, _scale, flipped, (left, top, width, height), null);
+        return (x, y, x2, y2);
+    }
 
-        // The region of the plot's selection on the panel, which its point layers highlight (row R3c): of the panel's scales.
-        // A lasso's mask covers the same rectangle as the clip of RecordLayers (ClipToPanel), so a density's fill cut by the mask
-        // leaves out only what the clip takes; RenderList.DrawRectCutByMask throws if the clip reaches past the mask.
-        _context.Highlight = AddHighlight(index, x, y, flipped, (left, top, width, height));
-        RecordLayers(panel, spec.Theme.Palette, flipped);
-        RecordAnnotations(spec, index, guide, new AnnotationAxes(x, y, x2, y2, flipped));
+    /// <summary>
+    /// Scans a panel's drawn layers before any records (design §5.5.2 "`Auto` の切り替え"), each mapped by its pair's axes.
+    /// A polar panel has no layer to scan: the index path does not take polar (row R3a).
+    /// </summary>
+    private void ScanPanel(PlotSpec spec, PlotPanel panel, PanelGuide guide, bool flipped)
+    {
+        if (guide.Polar is not null)
+        {
+            return;
+        }
+
+        var (current, begun) = (0, false);
+        var layers = panel.Layers;
+        for (var i = 0; i < layers.Length; i++)
+        {
+            var layer = layers[i];
+            if (!layer.Scans || !Drawn(i, layer))
+            {
+                continue;
+            }
+
+            if (!begun)
+            {
+                var (xReverse, xClamp, band) = AxisOfX(spec);
+                _ = BeginCartesian(spec, panel, guide, flipped, xReverse, xClamp, band);
+                begun = true;
+            }
+
+            current = BeginPair(panel, Pair(layer.Spec), current, flipped);
+            layer.Scan(_context);
+        }
+    }
+
+    /// <summary>Begins the context on a pair of a panel's scales (row G6a) when the layer's pair is another than the current one; returns the pair.</summary>
+    private int BeginPair(PlotPanel panel, int pair, int current, bool flipped)
+    {
+        if (pair != current)
+        {
+            var frames = panel.Frames;
+            _context.Begin(
+                (pair & 1) != 0 ? frames.X2 : frames.X,
+                (pair & 2) != 0 ? frames.Y2 : frames.Y,
+                (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries,
+                _scale,
+                flipped,
+                _context.Panel,
+                null
+            );
+        }
+
+        return pair;
     }
 
     /// <summary>
@@ -2708,22 +2800,7 @@ internal sealed partial class PlotPlan : IDisposable
 
             // A layer on a secondary scale is mapped by its pair's axes (row G6a); polar has none. A layer reads its own batch
             // (row W1b2).
-            var pair = Pair(layer.Spec);
-            if (pair != current)
-            {
-                var frames = panel.Frames;
-                _context.Begin(
-                    (pair & 1) != 0 ? frames.X2 : frames.X,
-                    (pair & 2) != 0 ? frames.Y2 : frames.Y,
-                    (pair & 1) != 0 ? panel.Boundaries2 : panel.Boundaries,
-                    _scale,
-                    flipped,
-                    _context.Panel,
-                    null
-                );
-                current = pair;
-            }
-
+            current = BeginPair(panel, Pair(layer.Spec), current, flipped);
             _context.Use(layer.Batch);
 
             layer.SeriesColor = palette.Series(i);
