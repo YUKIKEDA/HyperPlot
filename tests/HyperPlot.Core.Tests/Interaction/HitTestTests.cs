@@ -244,7 +244,8 @@ public sealed class HitTestTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread (`testing.mdc`); a line over a Y of two chunks whose chunk 1 is held on the worker.
+    /// - A pool of 1 thread (`testing.mdc`) whose worker takes no frame job, so that only the pyramid's build is held (Issue
+    ///   #589); a line over a Y of two chunks whose chunk 1 is held on the worker.
     ///
     /// Steps:
     /// - Draw once; hit test the panel's middle with XY and a radius as large as the panel. Release the chunk.
@@ -256,7 +257,7 @@ public sealed class HitTestTests
     public void BuildingPyramid_AnswersProvisionally()
     {
         const int Chunk = Column.ChunkLength;
-        using var pool = new PlotWorkerPool(1);
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
         using var y = TestStorage<float>.MakeColumn([.. Enumerable.Range(0, 2 * Chunk).Select(i => MathF.Sin(i * 0.001f))], out var storage);
         storage.Hold(1);
         try
