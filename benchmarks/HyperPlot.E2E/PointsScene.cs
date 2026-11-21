@@ -21,13 +21,15 @@ internal static partial class PointsScene
     private const int Warmup = 120;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's).</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), and a file to write one row a frame to (its times and allocations).</param>
     public static int Run(ReadOnlySpan<string> args)
     {
+        // Row R3b2: a file of one row a frame, when named after the other arguments.
+        var csv = args.Length > 11 ? args[11] : null;
         if (args.Length < 4)
         {
             Console.Error.WriteLine(
-                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record]"
+                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame]"
             );
             return 2;
         }
@@ -119,6 +121,7 @@ internal static partial class PointsScene
                 $"first display: {shown.Elapsed.TotalSeconds:F3} s over {waited} frames; first pages at {firstRuns:F3} s; frames that sent pages: {pageFrames}; pages on the GPU: {backend.Images.Points.PagesInUse} ({backend.Images.Points.BytesInUse} bytes)"
             )
         );
+        PrintCells(engine.Plan!);
 
         // The script: zoom in to a tenth of the side around a point that drifts, and out again, 300 frames a round. The
         // views are made before the frames: a view is an object of the scene's own.
@@ -149,22 +152,40 @@ internal static partial class PointsScene
         // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
         _ = TimeBeginPeriod(1);
         var (runs, drawn) = (new int[total], new long[total]);
+
+        // Each frame's allocations by stage (the view's change, the drawing, the rest of the frame), its GPU time put on the
+        // frame it timed, and when it began, for a file of one row a frame (.cursor/rules/bench.mdc).
+        var (inView, inDraw) = (new long[total], new long[total]);
+        var (gpuOf, beganAt) = (new double[total], new double[total]);
+        Array.Fill(gpuOf, double.NaN);
         backend.Skips = recordOnly;
         var (busyFrom, ownFrom, clockFrom) = (MachineBusy(), Environment.CpuUsage.TotalTime, DateTime.Now);
         var began = Stopwatch.GetTimestamp();
+        var firstFrame = backend.Frames;
         for (var f = 0; f < total; f++)
         {
+            beganAt[f] = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             var bytes = GC.GetAllocatedBytesForCurrentThread();
             var start = Stopwatch.GetTimestamp();
             engine.Views.SetView(panel, views[f]);
+            inView[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
             engine.RenderFrame();
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
-            (runs[f], drawn[f]) = (backend.Runs, backend.Points);
-            if (f >= Warmup && backend.LastFrameTime is { } time && time.Frame > lastTimed)
+            (runs[f], drawn[f], inDraw[f]) = (backend.Runs, backend.Points, backend.DrawBytes);
+            if (backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
                 lastTimed = time.Frame;
-                gpu.Add(time.Duration.TotalMilliseconds);
+                var timed = time.Frame - firstFrame;
+                if (timed >= 0 && timed < total)
+                {
+                    gpuOf[timed] = time.Duration.TotalMilliseconds;
+                }
+
+                if (f >= Warmup)
+                {
+                    gpu.Add(time.Duration.TotalMilliseconds);
+                }
             }
 
             // A frame a period at the fastest: back to back, the GPU's clock rises and its time reads low (.cursor/rules/bench.mdc).
@@ -260,7 +281,76 @@ internal static partial class PointsScene
                 $"hit_x: p50={Percentile(inX, 0.5):F4} p99={Percentile(inX, 0.99):F4} max={inX.Max():F4} ms; hit_xy: p50={Percentile(inXY, 0.5):F4} p99={Percentile(inXY, 0.99):F4} max={inXY.Max():F4} ms; found={found}"
             )
         );
+
+        // The frames after the warm-up that allocated, by stage: what the view's change, the drawing, and the rest of the
+        // frame (the plan's layout, its guides, and the layers' recording) allocated.
+        for (var f = Warmup; f < total; f++)
+        {
+            if (allocated[f] != 0)
+            {
+                Console.WriteLine(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"  allocated at frame {f}: {allocated[f]} B = view {inView[f]} + draw {inDraw[f]} + rest {allocated[f] - inView[f] - inDraw[f]}; runs {runs[f]}, the most before {(f == 0 ? 0 : runs[..f].Max())}"
+                    )
+                );
+            }
+        }
+
+        if (csv is not null)
+        {
+            using var writer = new StreamWriter(csv);
+            writer.WriteLine("frame,began_ms,cpu_ms,gpu_ms,runs,points,allocated,view_bytes,draw_bytes");
+            for (var f = 0; f < total; f++)
+            {
+                writer.WriteLine(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{f},{beganAt[f]:F3},{cpu[f]:F4},{gpuOf[f]:F4},{runs[f]},{drawn[f]},{allocated[f]},{inView[f]},{inDraw[f]}"
+                    )
+                );
+            }
+        }
+
         return 0;
+    }
+
+    /// <summary>
+    /// Prints the resident cells of the plot's first layer: their number over its parts on the index path, and the fewest
+    /// and the most of a part, with the mean points of a cell (design §5.5.2 "セルの表").
+    /// </summary>
+    private static void PrintCells(PlotPlan plan)
+    {
+        var layer = plan.Layers[0];
+        IEnumerable<LayerPlan> parts = layer is SplitPlan split ? split.Parts : [layer];
+        var (cells, least, most, points, indexed) = (0L, int.MaxValue, 0, 0L, 0);
+        foreach (var part in parts)
+        {
+            if (part is not IndexedPointPlan { SpatialIndex: { } index })
+            {
+                continue;
+            }
+
+            var snapshot = index.Acquire();
+            var count = snapshot.ResidentCells.Length;
+            (cells, least, most, points, indexed) = (
+                cells + count,
+                Math.Min(least, count),
+                Math.Max(most, count),
+                points + snapshot.PointCount,
+                indexed + 1
+            );
+            snapshot.Release();
+        }
+
+        Console.WriteLine(
+            indexed == 0
+                ? "resident_cells: none (the CPU path)"
+                : string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"resident_cells: {cells} over {indexed} parts, {least} to {most} a part, {(double)points / cells:F0} points a cell"
+                )
+        );
     }
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
@@ -305,9 +395,31 @@ internal static partial class PointsScene
 
         public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => inner.CreateRenderTarget(description);
 
-        public FrameScope BeginFrame() => inner.BeginFrame();
+        // The frames begun: the number the hardware's timer gives the next frame, as it numbers each frame it begins.
+        public long Frames { get; private set; }
+
+        // What the last drawing allocated on this thread, the counting included.
+        public long DrawBytes { get; private set; }
+
+        public FrameScope BeginFrame()
+        {
+            Frames++;
+            return inner.BeginFrame();
+        }
 
         public void Draw(IRenderTarget target, RenderList list)
+        {
+            var bytes = GC.GetAllocatedBytesForCurrentThread();
+            Count(list);
+            if (!Skips)
+            {
+                inner.Draw(target, list);
+            }
+
+            DrawBytes = GC.GetAllocatedBytesForCurrentThread() - bytes;
+        }
+
+        private void Count(RenderList list)
         {
             var runs = list.ResidentRuns;
             long points = 0;
@@ -317,10 +429,6 @@ internal static partial class PointsScene
             }
 
             (Runs, Points) = (runs.Length, points);
-            if (!Skips)
-            {
-                inner.Draw(target, list);
-            }
         }
 
         public void Copy(IRenderTarget source, IRenderTarget destination) => inner.Copy(source, destination);

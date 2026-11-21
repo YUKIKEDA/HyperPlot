@@ -8,8 +8,9 @@
 #   record  the frames of the zoom script recorded and not drawn, 8 and 64 parts, the two forms alternated: the CPU time of
 #           the recording
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
-# The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv). The
-# published build goes under .dev/ and is deleted at the end.
+# The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
+# does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
+# the end.
 param(
     [Parameter(Mandatory)] [string] $Out,
     [string[]] $Sets = @('path', 'zoom64', 'p4', 'record'),
@@ -72,7 +73,9 @@ function Invoke-Scene([string] $name, [string[]] $arguments) {
     $began = Get-Date
     Write-Out "=== $name started $($began.ToString('HH:mm:ss')): points $($arguments -join ' ')"
     $stdout = "$Out.run.txt"
-    $process = Start-Process -FilePath $exe -ArgumentList (@('points') + $arguments) -NoNewWindow -PassThru `
+    # One row a frame, next to the output file: the frame's times, its runs and points, and its allocations by stage.
+    $frames = "$Out.$($name -replace '[^A-Za-z0-9]+', '-').csv"
+    $process = Start-Process -FilePath $exe -ArgumentList (@('points') + $arguments + @($frames)) -NoNewWindow -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError "$Out.run.err.txt"
     $code = 'timeout'
     if ($process.WaitForExit($TimeoutSeconds * 1000)) {

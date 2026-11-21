@@ -14,7 +14,7 @@ using HyperPlot.Samples;
 //     [--hover | --hover-whole: the hover's scene of row I2b instead, 300 frames of the mouse alone, or as many drawn whole]
 //     [--hover-frames <frames of the hover's scene, 300 by default>]
 //   <dir>/HyperPlot.E2E.exe points <count> <diameter DIPs> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom]
-//     [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record]: the scene of the raw points of rows R3a, R3f,
+//     [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [csv]: the scene of the raw points of rows R3a, R3f,
 //     and R3b2 instead, with no data file (PointsScene).
 //   <dir>/HyperPlot.E2E.exe annotations <shapes> [frames]: the scene of 1,024 marker annotations of row R3f instead, with
 //     no data file (AnnotationsScene).
