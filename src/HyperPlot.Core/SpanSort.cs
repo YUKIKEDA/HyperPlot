@@ -1,8 +1,8 @@
 namespace HyperPlot;
 
 /// <summary>
-/// Sorts short spans without allocating: the frame path's (design §11 invariant 3, Issue #570) and a worker's that runs
-/// once per x (the stack's crossings, Issue #585).
+/// Sorts spans without allocating: the frame path's (design §11 invariant 3, Issue #570), a worker's that runs once per x
+/// (the stack's crossings), and the rows of an answer given one by one (Issue #585).
 /// </summary>
 /// <remarks>
 /// A sort with no comparison allocates in a NativeAOT build and not under the JIT, so the Zero-Alloc tests do not see it.
@@ -19,4 +19,8 @@ internal static class SpanSort
     /// <summary>Sorts values in ascending order, NaN first, as <see cref="double.CompareTo(double)"/> orders them.</summary>
     /// <param name="values">The values to sort in place.</param>
     public static void Ascending(Span<double> values) => values.Sort(static (a, b) => a.CompareTo(b));
+
+    /// <summary>Sorts values in ascending order.</summary>
+    /// <param name="values">The values to sort in place.</param>
+    public static void Ascending(Span<long> values) => values.Sort(static (a, b) => a.CompareTo(b));
 }
