@@ -1,7 +1,8 @@
 namespace HyperPlot;
 
 /// <summary>
-/// Sorts the short spans of the frame path without allocating (design §11 invariant 3, Issue #570).
+/// Sorts short spans without allocating: the frame path's (design §11 invariant 3, Issue #570) and a worker's that runs
+/// once per x (the stack's crossings, Issue #585).
 /// </summary>
 /// <remarks>
 /// A sort with no comparison allocates in a NativeAOT build and not under the JIT, so the Zero-Alloc tests do not see it.
