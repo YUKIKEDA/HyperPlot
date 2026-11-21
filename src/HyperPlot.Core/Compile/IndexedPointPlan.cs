@@ -257,6 +257,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         var color = point.Color ?? SeriesColor;
         var style = new ResidentMarkerRun(
             Slot: -1,
+            First: 0,
             Count: 0,
             Cells: offset,
             Size: point.Size * context.Scale,
@@ -269,32 +270,67 @@ internal sealed class IndexedPointPlan : LayerPlan
             Highlight: context.Highlight
         );
         var pages = context.Images.Points;
-        var drawn = -1L;
+
+        // The blocks of the part's pages, by the layer's parts in the panel (design §5.5.2 "ブロック"): the view does not
+        // change them. The run being made is blocks of one page that follow one another, recorded when the next range does
+        // not touch it (design §5.5.2 "見えるブロックだけを描く").
+        var block = PointPages.BlockPoints(_switch.PartCount);
+        var whole = pages.DrawsWholePages;
+
+        // A cell outside the view by less than a marker's reach has markers that cover pixels in it (design §5.5.2 "ページ"):
+        // the reach of the vertex shader's box, half the diameter and half a pixel, in units of each axis.
+        var reach = (style.Size / 2) + 0.5;
+        var (reachX, reachY) = (x.UnitsOf(reach), y.UnitsOf(reach));
+        var (runPage, slot, runFrom, runTo) = (-1L, -1, 0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
             var (baseX, pixelX, scaleX) = x.Place(cell.CornerX, cell.ExtentX);
             var (baseY, pixelY, scaleY) = y.Place(cell.CornerY, cell.ExtentY);
             records[c] = new ResidentCellRecord(baseX, baseY, pixelX, pixelY, scaleX, scaleY);
-            if (!x.Sees(cell.CornerX, cell.ExtentX) || !y.Sees(cell.CornerY, cell.ExtentY))
+            if (!x.Sees(cell.CornerX, cell.ExtentX, reachX) || !y.Sees(cell.CornerY, cell.ExtentY, reachY))
             {
                 continue;
             }
 
-            // The cell's points lie in one or more pages, and each page is drawn whole, once: the cells come in the
-            // copy's order, so a page seen before is the last one drawn.
+            // The cell's points in each page they lie in, widened to the blocks' ends: a block's points are in steps, so
+            // it is drawn whole. The cells come in the copy's order, so a range begins at or after the run's start.
             var end = cell.First + cell.Count;
-            for (var page = Math.Max(cell.First / PointPages.PagePoints, drawn + 1); page * PointPages.PagePoints < end; page++)
+            for (var page = cell.First / PointPages.PagePoints; page * PointPages.PagePoints < end; page++)
             {
-                drawn = page;
-                var slot = pages.Request(snapshot, (int)page);
-                if (slot < 0)
+                var pageStart = page * PointPages.PagePoints;
+                var points = PointPages.PointsOf(snapshot, (int)page);
+                var from = whole ? 0 : (int)(Math.Max(cell.First, pageStart) - pageStart) / block * block;
+                var to = whole
+                    ? points
+                    : (int)Math.Min(points, (Math.Min(end, pageStart + PointPages.PagePoints) - pageStart + block - 1) / block * block);
+                if (page == runPage && from <= runTo)
                 {
-                    _missing = true;
+                    runTo = Math.Max(runTo, to);
                     continue;
                 }
 
-                list.DrawResidentMarkers(style with { Slot = slot, Count = PointPages.PointsOf(snapshot, (int)page) });
+                DrawRun(list, style, slot, runFrom, runTo);
+                if (page != runPage)
+                {
+                    slot = pages.Request(snapshot, (int)page, block);
+                    _missing |= slot < 0;
+                }
+
+                (runPage, runFrom, runTo) = (page, from, to);
+            }
+        }
+
+        DrawRun(list, style, slot, runFrom, runTo);
+
+        // A run of blocks that follow one another in a page, in one call. A page that is not on the GPU yet is recorded
+        // too, with no slot, and draws nothing: the list and the backend's steps grow to what the view asks for in its
+        // first frame, not later as its pages arrive.
+        static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
+        {
+            if (to > from)
+            {
+                list.DrawResidentMarkers(style with { Slot = slot, First = from, Count = to - from });
             }
         }
     }
@@ -947,11 +983,18 @@ internal sealed class IndexedPointPlan : LayerPlan
             return one[0];
         }
 
+        /// <summary>Returns the units of this axis that span the given physical pixels: 0 when the view has no width.</summary>
+        public double UnitsOf(double pixels) => _perUnit != 0 ? pixels / Math.Abs(_perUnit) : 0;
+
         /// <summary>
-        /// Returns whether a cell's points are drawn on this axis: the cell reaches into the view, or the axis clamps, so
-        /// that the points outside the view are drawn at its ends as the CPU path draws them.
+        /// Returns whether a cell's points are drawn on this axis: the cell reaches into the view widened by a marker's reach
+        /// on each side, so that a marker whose center is outside the view and whose shape covers pixels in it is drawn, as
+        /// the CPU path draws it; or the axis clamps, so that the points outside the view are drawn at its ends.
         /// </summary>
-        public bool Sees(double corner, double extent) => _clamps || (corner <= _high && corner + extent >= _low);
+        /// <param name="corner">The cell's lower corner on this axis, as a difference from the snapshot's origin.</param>
+        /// <param name="extent">The cell's extent on this axis.</param>
+        /// <param name="reach">A marker's reach on this axis, in its units (<see cref="UnitsOf"/>).</param>
+        public bool Sees(double corner, double extent, double reach) => _clamps || (corner <= _high + reach && corner + extent >= _low - reach);
 
         /// <summary>
         /// Returns a cell's record on this axis (design §5.5.2 "セルの表"): the base, the view's lower end held in the cell,
