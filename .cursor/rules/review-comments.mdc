@@ -29,8 +29,6 @@ Read the pull request's comments again just before posting a reply to a review: 
 
 A point that the summary of the answers to a review leaves as "the owner's decision is needed" is answered on the pull request in the turn the owner decides it; a record on an Issue alone leaves the pull request looking unanswered. The summary is posted after the gate, and the NativeAOT publish when the change needs it, have run on the head that holds the fixes. Otherwise the summary says that they have not run and when they will, and their result is posted on the pull request when they end. PR #549's summary said that the owner's decision was needed; the answers were recorded on Issues only, and neither the gate nor the NativeAOT publish had run on the fix head. The owner had to ask, because the pull request looked as if it still waited for an answer.
 
-Before pushing the fixes for a review, read the pull request's state (`gh pr view <n> --json state`, `.cursor/rules/git.mdc`): the owner may merge it while the fixes are written. When it is merged, the fixes go to a new branch and pull request from `main`, which names the review it answers. PR #596 was merged about a minute and a half after its review, and its branch was deleted; the push of the fix re-created the branch, and the one-commit fix went out as PR #598.
-
 ```text
 # BAD
 The chunk-boundary check is missing. A later pull request sits on this head, so merge.
