@@ -11,6 +11,8 @@
 #           clustered, 1 and 8 parts, the whole view and the zoom script, drawn, 2 rounds
 #   stage   (Issue #600) the frames of the zoom script recorded and not drawn, 1 and 8 parts, against a baseline build
 #           (-Baseline, an executable of main that times the same stage, its count of the view), alternated A, B, B, A
+#   scan1e9 (Issue #600) the same scan at 1e9 uniform points (about 65,536 resident cells), the density scene's zoom with
+#           Auto; its 8 GB of data files go under .dev/r3b2p2-data and are deleted at the end
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -74,13 +76,13 @@ function Write-Clocks([string] $name, [string[]] $lines) {
 
 # One run of the scene; a run that fails or passes its time limit is written and counted, and the next runs
 # (.cursor/rules/bench.mdc).
-function Invoke-Scene([string] $name, [string[]] $arguments, [string] $program = $exe) {
+function Invoke-Scene([string] $name, [string[]] $arguments, [string] $program = $exe, [string] $scene = 'points') {
     $began = Get-Date
-    Write-Out "=== $name started $($began.ToString('HH:mm:ss')): points $($arguments -join ' ')"
+    Write-Out "=== $name started $($began.ToString('HH:mm:ss')): $scene $($arguments -join ' ')"
     $stdout = "$Out.run.txt"
     # One row a frame, next to the output file: the frame's times, its runs and points, and its allocations by stage.
     $frames = "$Out.$($name -replace '[^A-Za-z0-9]+', '-').csv"
-    $process = Start-Process -FilePath $program -ArgumentList (@('points') + $arguments + @($frames)) -NoNewWindow -PassThru `
+    $process = Start-Process -FilePath $program -ArgumentList (@($scene) + $arguments + $(if ($scene -eq 'points') { @($frames) } else { @() })) -NoNewWindow -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError "$Out.run.err.txt"
     $code = 'timeout'
     if ($process.WaitForExit($TimeoutSeconds * 1000)) {
@@ -193,6 +195,17 @@ try {
                 $program = if ($side -eq 'head') { $exe } else { $Baseline }
                 Invoke-Scene "stage $categories parts zoom $side, run $round" (Get-Arguments 'uniform' $categories 'zoom' 'color' 'blocks' 'record') $program
             }
+        }
+    }
+
+    if ($Sets -contains 'scan1e9') {
+        $data = Join-Path $dev 'r3b2p2-data'
+        New-Item -ItemType Directory -Force -Path $data | Out-Null
+        try {
+            Invoke-Scene 'scan 1e9 uniform zoom auto' @($data, '1e9', 'uniform', 'zoom', '600', 'auto') $exe 'density'
+        }
+        finally {
+            Remove-Item -LiteralPath $data -Recurse -Force
         }
     }
 
