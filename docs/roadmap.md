@@ -24,10 +24,10 @@ GitHub Issue は着手中の作業単位だけ切る。完了条件の詳細は 
 - **並べた design の行:** K0b（運用 2）。ブランチ —、Issue #481（設計）、#488（試作、済み）
 - **並べた design の行:** K0d（運用 2）。ブランチ —、Issue #483（設計）、#490（試作、済み）
 - **並べた design の行:** K0e（運用 2）。ブランチ —、Issue #484（設計）、#491（試作、済み）
-- **並べた design の行:** R3b2（運用 2）。ブランチ —、Issue #472（設計、済み）、#552（`Auto` の切り替えの式の試作、済み）、#567（`Points` の割合の試作、済み）、#577（実装の 1 本目、済み）、#563（層をまたぐ条件）。試作のブランチ `spike/r3b2-split`（e6ccd60）は、#552 と #567 の Result がそのコミットを名で挙げ、再現の手順がその上の `benchmarks/sweep-r3b2.sh` を使うので消さず、e6ccd60 にタグを付けて残し、2 つの Result がタグの名を挙げる（`.cursor/rules/workflow.mdc` の 8）
+- **並べた design の行:** R3b2（運用 2）。ブランチ —、Issue #472（設計、済み）、#552（`Auto` の切り替えの式の試作、済み）、#567（`Points` の割合の試作、済み）、#577（実装の 1 本目、済み）、#563（層をまたぐ条件）。試作のブランチ `spike/r3b2-split`（e6ccd60）は、#552 と #567 の Result がそのコミットを名で挙げ、再現の手順がその上の `benchmarks/sweep-r3b2.sh` を使うので消さず、e6ccd60 のタグ `r3b2-split-measurement` で残す。2 つの Result がタグの名を挙げる（`.cursor/rules/workflow.mdc` の 8）
 - **並べた design の行:** R3d1・R3d2・R3d3（運用 2。行 R3d を分けた、Issue #499 の決定 1）。ブランチ —、Issue #499（設計。R3d1〜R3d3 の設計）、#517（試作）
 - **並べた design の行:** R3e1・R3e4・R3e2・R3e3（運用 2。行 R3e を分けた、Issue #504 の決定 1）。ブランチ —、Issue #504（設計）、#514（R3e2 の試作）、#515（R3e3 の試作）、#516（R3e4 の試作）
-- **並べた design の行:** K1（運用 2。行 K1 の設計だけで、実装は K1 の順を待つ）。ブランチ —、Issue #509（設計）、#513（試作、終わった）。試作のブランチ `spike/509-depth`（a0ec79d）は、#513 の Result がそのコミットを名で挙げ、再現の手順がその上の `benchmarks/HyperPlot.Depth3D/run-k1.ps1` を使うので消さず、a0ec79d にタグを付けて残し、Result がタグの名を挙げる（`.cursor/rules/workflow.mdc` の 8）
+- **並べた design の行:** K1（運用 2。行 K1 の設計だけで、実装は K1 の順を待つ）。ブランチ —、Issue #509（設計）、#513（試作、終わった）。試作のブランチ `spike/509-depth`（a0ec79d）は、#513 の Result がそのコミットを名で挙げ、再現の手順がその上の `benchmarks/HyperPlot.Depth3D/run-k1.ps1` を使うので消さず、a0ec79d のタグ `k1-depth-measurement` で残す。Result がタグの名を挙げる（`.cursor/rules/workflow.mdc` の 8）
 
 ## ツールチェーン
 

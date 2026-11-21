@@ -31,7 +31,7 @@ Read the rules that match the work before changing anything. `alwaysApply` rules
 | `pace` | Split off what is outside the row; limit an investigation and a spike, its safe side measured too; long runs on the side |
 | `open-ends` | No untimed frame-path stage and no unexplained figure in a PR |
 | `record-corrections` | A correction lands in the rule, design, ADR, or skill it belongs to |
-| `review-comments` | A finding is about the head it was written on; a review the owner asks for is posted on the PR |
+| `review-comments` | A finding is about the head it was written on; a review the owner asks for is posted on the PR; read the PR's state before pushing fixes |
 | `similar-findings` | Fix the same kind of problem where it also occurs |
 | `no-dead-code` | Remove everything that only served a removed path |
 | `spec-checks` | A test implements the whole design statement |
