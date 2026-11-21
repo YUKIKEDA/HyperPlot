@@ -832,6 +832,8 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
                 _d3dImage.Unlock();
             }
 
+            // With the front buffer or without it, the shown surface is released below, so the next shown frame must give
+            // D3DImage its back buffer again.
             _shown = 0;
         }
 
