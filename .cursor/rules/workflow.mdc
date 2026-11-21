@@ -99,7 +99,7 @@ Create an Issue before its number is written anywhere: a branch name, a commit, 
 
 ## Stacked PRs
 
-A second Issue that builds on an open PR gets its own branch and PR based on the first. A stacked PR is merged only after its base has merged. When the base merges, retarget the next PR to `main` first, then delete the merged branch.
+A second Issue that builds on an open PR gets its own branch and PR based on the first. A stacked PR is merged only after its base has merged. When the base merges, retarget the next PR to `main` first, then delete the merged branch. Two pieces of work that change the same code, stacked or side by side, get an owner of that change before either is written: one PR carries it, and the other is based on that PR or takes it from `main` after the merge, and does not write it again. The brief of each agent names the PR that carries it. PR #579 (Issue #528) and PR #582 (row R3b2's first PR) both made the resident-marker record keep the pages not yet on the GPU. The agent of #582 had been told to keep the shape of #579, and wrote the same change itself (`8352594`). The review found it, the two PRs conflicted in three files, and #582 merged #579's branch and dropped its own commit (Issue #577, the owner's decision of 2026-11-21).
 
 A stacked PR's base is the first PR's branch, so a merge of it before the retarget goes into that branch, not into `main`, and reaches `main` only inside the first PR's merge. PR #584 was merged with its base still PR #574's branch: the merge went into that branch, and both PRs reached `main` in one merge commit (ece186e). The code was right, but `main`'s history shows one merge for two PRs, where the order above gives each PR its own.
 

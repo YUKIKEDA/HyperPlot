@@ -23,12 +23,12 @@ Read the rules that match the work before changing anything. `alwaysApply` rules
 
 | Rule | One line |
 | --- | --- |
-| `workflow` | Grill, Issue, branch, PR, human squash merge, retrospective; labels; gates |
+| `workflow` | Grill, Issue, branch, PR, human squash merge, retrospective; one PR carries a shared change; labels; gates |
 | `consent` | A question is not a decision; options need a recommendation; outward actions need an order |
 | `git` | Finished work goes to a PR on its branch without asking; destructive git needs a named order; never `main` |
 | `scope` | Requirements decide scope; no half-shipped capability |
 | `defer` | Deferral only as a named roadmap row |
-| `pace` | Split off what is outside the row; limit an investigation; long runs on the side |
+| `pace` | Split off what is outside the row; limit an investigation and a spike, its safe side measured too; long runs on the side |
 | `open-ends` | No untimed frame-path stage and no unexplained figure in a PR |
 | `record-corrections` | A correction lands in the rule, design, ADR, or skill it belongs to |
 | `review-comments` | A finding is about the head it was written on; a review the owner asks for is posted on the PR |
@@ -49,7 +49,7 @@ Read the rules that match the work before changing anything. `alwaysApply` rules
 | `aot` | No reflection or dynamic code; the WPF exception; the NativeAOT publish check |
 | `interop` | P/Invoke, COM, unsafe code, mapped memory, native callbacks (`src/**`) |
 | `csharp` | Style, naming, types, errors, XML docs (`*.cs`) |
-| `testing` | xUnit v3, fake time and other outside state, test layers, test docs (`tests/**`) |
+| `testing` | xUnit v3, fake time and other outside state, test layers, references that share no decision with the code, test docs (`tests/**`) |
 | `dev-docs` | Mermaid, math, byte units, and pseudo-code in `docs/` |
 
 ## Skills
