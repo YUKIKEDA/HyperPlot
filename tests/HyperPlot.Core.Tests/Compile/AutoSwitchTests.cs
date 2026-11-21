@@ -521,7 +521,8 @@ public sealed class AutoSwitchTests
     ///
     /// Expected:
     /// - Before the tiles: the largest bin is the test's estimate to within 1e-9 of it, and above 0; at the new size the
-    ///   time is 16 ms, the count under the threshold, and the layer draws a density.
+    ///   time is 16 ms, the time of four times the bin is the formula's of four times the estimate, the count is under the
+    ///   threshold, and the layer draws a density.
     /// - After: the largest bin is the part's top of its tiles, and the estimate is no greater than it.
     /// </remarks>
     [Fact]
@@ -580,6 +581,7 @@ public sealed class AutoSwitchTests
             engine.RenderFrame();
             Assert.Same(plan, engine.Plan!.Layers[0]);
             Assert.Equal(16, choice.LastTime, 1e-4);
+            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, 4 * plan.Estimate), choice.LastTimeAtFourBins);
             Assert.True(choice.LastCount <= 10_000_000);
             Assert.True(plan.DrewDensity);
 
@@ -677,6 +679,70 @@ public sealed class AutoSwitchTests
                 yield return (50, 50, 100 / Math.Pow(2, k));
                 yield return (35, 60, 100 / Math.Pow(2, k));
             }
+        }
+    }
+
+    /// <summary>
+    /// The estimate reads the resident cells that touch the view itself, also on axes that clamp, where the cells outside
+    /// the view are drawn at its ends (design §5.5.2 "密度タイルが付く前", "クランプする軸").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 200,000 seeded points: 100,000 of a normal blob of σ 1 around (80, 80) and 100,000 uniform over [0, 100)². Auto at
+    ///   1 DIP; both scales clamp; a plan of 640 × 360 that waits.
+    ///
+    /// Steps:
+    /// - Render the view [0, 50]², which the blob lies outside.
+    ///
+    /// Expected:
+    /// - The estimate is the test's, over the cells that touch [0, 50]², to within 1e-9 of it; the same estimate over every
+    ///   resident cell is more than 10 times greater (the blob's cells).
+    /// </remarks>
+    [Fact]
+    public void Estimate_OnAxesThatClamp_ReadsTheCellsOfTheViewOnly()
+    {
+        const int Count = 200_000;
+        var random = new Random(609);
+        var (x, y) = (new double[Count], new double[Count]);
+        for (var i = 0; i < Count; i++)
+        {
+            (x[i], y[i]) =
+                i < Count / 2
+                    ? (80 + (Normal(random, 1).X - 50), 80 + (Normal(random, 1).Y - 50))
+                    : (random.NextDouble() * 100, random.NextDouble() * 100);
+        }
+
+        using var xs = Column.Wrap(x);
+        using var ys = Column.Wrap(y);
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
+        using var pool = new PlotWorkerPool(4);
+        using var plan = TestPlans.Create(pool, 640, 360);
+        _ = plan.Render(
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = 1,
+                }
+            ) with
+            {
+                ScaleX = Scale.Linear().WithDomain(0, 50) with { Clamp = true },
+                ScaleY = Scale.Linear().WithDomain(0, 50) with { Clamp = true },
+            }
+        );
+        var layer = (IndexedPointPlan)plan.Layers[0];
+        var snapshot = layer.SpatialIndex!.Acquire();
+        try
+        {
+            var inView = Estimate(snapshot, layer.TileLevel, 640, 360, side: 50);
+            Assert.Equal(inView, layer.Estimate, inView * 1e-9);
+            Assert.True(Estimate(snapshot, layer.TileLevel, 640, 360, side: 50, everyCell: true) > 10 * inView);
+        }
+        finally
+        {
+            snapshot.Release();
         }
     }
 
@@ -962,13 +1028,13 @@ public sealed class AutoSwitchTests
     }
 
     /// <summary>
-    /// Returns the design's estimate of the largest bin of a full snapshot drawn over the view [0, 100]² of a panel of a
-    /// width and a height: the greatest count over the area on the screen of the resident cells that touch the view, a
-    /// cell's area no less than a bin of the tile level.
+    /// Returns the design's estimate of the largest bin of a full snapshot drawn over the view [0, side]² of a panel of a
+    /// width and a height: the greatest count over the area on the screen of the resident cells that touch the view (every
+    /// cell when <paramref name="everyCell"/>), a cell's area no less than a bin of the tile level.
     /// </summary>
-    private static double Estimate(SpatialSnapshot snapshot, int level, double width, double height)
+    private static double Estimate(SpatialSnapshot snapshot, int level, double width, double height, double side = 100, bool everyCell = false)
     {
-        var (perX, perY) = (width / 100, height / 100);
+        var (perX, perY) = (width / side, height / side);
         var (_, _, rangeX, rangeY) = snapshot.CellBox(0, 0);
         var bin = rangeX / Math.Pow(2, level + 8) * perX * (rangeY / Math.Pow(2, level + 8) * perY);
         var (lowX, lowY) = (0.0 - snapshot.XRange.Origin, 0.0 - snapshot.YRange.Origin);
@@ -976,10 +1042,13 @@ public sealed class AutoSwitchTests
         foreach (var cell in snapshot.ResidentCells)
         {
             if (
-                cell.CornerX <= lowX + 100
-                && cell.CornerX + cell.ExtentX >= lowX
-                && cell.CornerY <= lowY + 100
-                && cell.CornerY + cell.ExtentY >= lowY
+                everyCell
+                || (
+                    cell.CornerX <= lowX + side
+                    && cell.CornerX + cell.ExtentX >= lowX
+                    && cell.CornerY <= lowY + side
+                    && cell.CornerY + cell.ExtentY >= lowY
+                )
             )
             {
                 largest = Math.Max(largest, cell.Count / Math.Max(cell.ExtentX * perX * cell.ExtentY * perY, bin));
