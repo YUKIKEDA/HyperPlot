@@ -100,6 +100,71 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.Equal(Target(view), Rgba(Pixels(Assert.IsType<WriteableBitmap>(view.Shown))));
         });
 
+    /// <summary>
+    /// A front buffer that WPF itself takes away and gives back, by its own notification, reads the frames back and then
+    /// shows through <c>D3DImage</c> again (design §7.2, Issue #556): the view does not detach <c>D3DImage</c> from its
+    /// bitmap while the front buffer is lost, or the notification that it is back never comes. The one test of the real
+    /// notification, which waits in real time with a bound (rule testing).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene of <see cref="SharedTextures_ShowTheEnginesPixels"/>, shown through <c>D3DImage</c>, whose front buffer
+    ///   is there. No test seam replaces the front buffer's value.
+    ///
+    /// Steps:
+    /// - Set the process to render in software only (<c>RenderOptions.ProcessRenderMode</c>; with the window's own
+    ///   target alone, the fixture's window keeps WPF's device and nothing is lost); let the dispatcher run until
+    ///   <c>D3DImage</c> says the front buffer is lost, at most 10 s (measured: within 31 ms); draw until shown. Set the mode
+    ///   back; let the dispatcher run until the front buffer is back, at most 10 s (measured: 23 to 75 ms); draw until shown.
+    ///
+    /// Expected:
+    /// - Lost: the view does not use the shared textures, shows no shared texture, and the image shows a bitmap with the
+    ///   target's pixels. Back: the front buffer is there within the bound, which is the assertion that guards the fix (with
+    ///   a null back buffer set at the loss it never comes back); the image shows the D3DImage, and the shown texture has
+    ///   the target's pixels. A machine on which rendering in software takes no front buffer away skips the test.
+    /// </remarks>
+    [Fact]
+    [Trait("Category", "OsTiming")]
+    public void FrontBufferLostByWpf_ReadsBackAndComesBack() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            DrawUntilShown(view);
+            _ = Assert.IsType<D3DImage>(view.Shown);
+            Assert.True(view.FrontBufferAvailable);
+            var mode = RenderOptions.ProcessRenderMode;
+            var bound = TimeSpan.FromSeconds(10);
+
+            RenderOptions.ProcessRenderMode = RenderMode.SoftwareOnly;
+            try
+            {
+                if (!WaitUntil(() => !view.FrontBufferAvailable, bound))
+                {
+                    Assert.Skip("A process set to render in software took no front buffer from D3DImage within 10 s on this machine.");
+                }
+
+                DrawUntilShown(view);
+                Assert.False(view.UsesSharedTextures);
+                Assert.Equal(0, view.ShownHandle);
+                Assert.Equal(Target(view), Rgba(Pixels(Assert.IsType<WriteableBitmap>(view.Shown))));
+            }
+            finally
+            {
+                RenderOptions.ProcessRenderMode = mode;
+            }
+
+            Assert.True(
+                WaitUntil(() => view.FrontBufferAvailable, bound),
+                "D3DImage did not say that its front buffer was back within 10 s of the process rendering in hardware again (Issue #556)."
+            );
+            DrawUntilShown(view);
+            _ = Assert.IsType<D3DImage>(view.Shown);
+            Assert.NotEqual(0, view.ShownHandle);
+            using var d3d9 = new D3D9Reader();
+            AssertShown(view, d3d9);
+        });
+
     /// <summary>A backend on another adapter than Direct3D 9Ex's is read back (design §7.2), and stays its owner's.</summary>
     /// <remarks>
     /// Preconditions:
@@ -561,15 +626,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
             var x = X(view);
 
-            Assert.True(view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse));
+            AssertInput(
+                view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse),
+                "The press was not used."
+            );
             Assert.True(view.IsFocused);
             Assert.True(view.IsMouseCaptured);
             _ = view.Pointer(PointerEventKind.Move, middle + new Vector(30, 0), PointerButtons.None, PointerButtons.Left, PointerKind.Mouse);
-            Assert.NotEqual(x, X(view));
+            AssertInput(x != X(view), "The drag inside the view did not pan x.");
             var inside = X(view);
             var outside = new Point(view.ActualWidth + 40, middle.Y);
             _ = view.Pointer(PointerEventKind.Move, outside, PointerButtons.None, PointerButtons.Left, PointerKind.Mouse);
-            Assert.NotEqual(inside, X(view));
+            AssertInput(inside != X(view), "The drag outside the view did not pan x.");
             _ = view.Pointer(PointerEventKind.Up, outside, PointerButtons.Left, PointerButtons.None, PointerKind.Mouse);
             Assert.False(view.IsMouseCaptured);
 
@@ -603,7 +671,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
 
             _ = view.Pointer(PointerEventKind.Move, middle, PointerButtons.None, PointerButtons.None, PointerKind.Mouse);
-            Assert.NotEqual(0, view.Engine.Hover.Length);
+            AssertInput(view.Engine.Hover.Length != 0, "The move hovers nothing.");
             view.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent });
             Assert.Equal(0, view.Engine.Hover.Length);
         });
@@ -641,15 +709,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
 
             var x = X(view);
-            Assert.True(view.Wheel(middle, 0, 2));
-            Assert.True(Width(X(view)) < Width(x));
+            AssertInput(view.Wheel(middle, 0, 2), "The wheel was not used.");
+            AssertInput(Width(X(view)) < Width(x), "The wheel did not narrow x.");
             x = X(view);
-            Assert.True(view.Key(KeyEventKind.Down, Key.Add, repeat: false));
-            Assert.True(Width(X(view)) < Width(x));
+            AssertInput(view.Key(KeyEventKind.Down, Key.Add, repeat: false), "Add was not used.");
+            AssertInput(Width(X(view)) < Width(x), "Add did not narrow x.");
             Assert.False(view.Key(KeyEventKind.Down, Key.F1, repeat: false));
 
             var screen = view.PointToScreen(middle);
-            Assert.True(view.HorizontalWheel((nint)120 << 16, Words((int)screen.X, (int)screen.Y)));
+            AssertInput(
+                view.HorizontalWheel((nint)120 << 16, Words((int)screen.X, (int)screen.Y)),
+                "The horizontal wheel over the view was not used."
+            );
             Assert.Equal([1.0], tool.Turns);
             var outside = view.PointToScreen(new Point(-20, middle.Y));
             Assert.False(view.HorizontalWheel((nint)120 << 16, Words((int)outside.X, (int)outside.Y)));
@@ -687,18 +758,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
 
             view.Manipulate(middle, new Vector(2, 2), default);
             Assert.Equal(x, X(view));
-            Assert.True(view.Touch(view.Touches.Down(1), PointerEventKind.Down, middle));
+            AssertInput(view.Touch(view.Touches.Down(1), PointerEventKind.Down, middle), "The first finger was not used.");
             Assert.True(view.IsFocused);
             _ = view.Touch(view.Touches.Move(1), PointerEventKind.Move, middle + new Vector(30, 0));
-            Assert.NotEqual(x, X(view));
-            Assert.True(view.Touch(view.Touches.Down(2), PointerEventKind.Down, middle + new Vector(0, 20)));
+            AssertInput(x != X(view), "The finger's move did not pan x.");
+            AssertInput(view.Touch(view.Touches.Down(2), PointerEventKind.Down, middle + new Vector(0, 20)), "The second finger was not used.");
 
             x = X(view);
             view.Manipulate(middle, new Vector(1.5, 1.5), default);
-            Assert.True(Width(X(view)) < Width(x) * 0.9);
+            AssertInput(Width(X(view)) < Width(x) * 0.9, "The pinch did not narrow x.");
             x = X(view);
             view.Manipulate(middle, new Vector(1, 1), new Vector(20, 0));
-            Assert.NotEqual(x, X(view));
+            AssertInput(x != X(view), "The scroll did not move x.");
             Assert.Equal(Width(x), Width(X(view)), 1e-9 * Width(x));
             _ = view.Touch(view.Touches.Up(1), PointerEventKind.Up, middle);
             _ = view.Touch(view.Touches.Up(2), PointerEventKind.Up, middle);
@@ -804,6 +875,44 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         Assert.Fail(
             $"The shown texture {shown} does not hold the target's pixels (Issue #299): {state}; all 0 {zeros}; equal after 200 ms {again}; equal after 200 ms and a pump {afterPump}; provisional {view.Engine.IsProvisional}; shared textures {view.UsesSharedTextures} (backend WARP {view.Backend.IsWarp}, adapter {view.Backend.AdapterLuid}, Direct3D 9Ex's {view.Host.D3D9?.AdapterLuid}, its device {view.Host.D3D9?.HasDevice}, front buffer {view.FrontBufferAvailable}, the test's {view.FrontBuffer?.ToString() ?? "none"}); waits for the tick {view.Hooked}."
         );
+    }
+
+    /// <summary>
+    /// Runs the dispatcher in real time until a condition holds or a time has passed, and returns whether it holds: for what
+    /// WPF tells the view by a notification of its own. The timer that checks is the watchdog too, so the wait always ends.
+    /// </summary>
+    private static bool WaitUntil(Func<bool> done, TimeSpan bound)
+    {
+        var frame = new DispatcherFrame();
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        var timer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(5),
+            DispatcherPriority.Background,
+            (_, _) => frame.Continue = !done() && System.Diagnostics.Stopwatch.GetElapsedTime(started) < bound,
+            Dispatcher.CurrentDispatcher
+        );
+        try
+        {
+            Dispatcher.PushFrame(frame);
+        }
+        finally
+        {
+            timer.Stop();
+        }
+
+        return done();
+    }
+
+    /// <summary>
+    /// Asserts what an input the test sent did, and says on a failure which modifier keys WPF read at that moment (Issue #564):
+    /// the view passes them with the input, and the default bindings of a move, a drag, and the wheel take none.
+    /// </summary>
+    private static void AssertInput(bool done, string otherwise)
+    {
+        if (!done)
+        {
+            Assert.Fail($"{otherwise} Keyboard.Modifiers is {Keyboard.Modifiers}.");
+        }
     }
 
     private static void DrawUntilShown(HyperPlotView view)

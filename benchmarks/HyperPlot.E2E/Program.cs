@@ -23,6 +23,11 @@ using HyperPlot.Samples;
 //     x and y files of HyperPlot.DataPath's generate-points (DensityScene).
 //   <dir>/HyperPlot.E2E.exe wheel-after-hover <labels> <hover frames> [cycles]: the wheel frame after hover frames of PR
 //     #511 instead, with no data file (WheelAfterHoverScene).
+//   <dir>/HyperPlot.E2E.exe hittest <folder for the data files> <count> <uniform|cluster> [reference seconds a line]
+//     [places with 16-DIP markers forced to points]: the scene of the hit test of scatter of row R3c instead, over the
+//     same x and y files as the density scene (HitTestScene).
+//   <dir>/HyperPlot.E2E.exe selection <count> <points|density> [frames] [rounds]: the scene of the selection of scatter
+//     of row R3c instead, with no data file (SelectionScene).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
 if (args.Length > 0 && args[0] == "points")
 {
@@ -50,6 +55,20 @@ if (args.Length > 0 && args[0] == "wheel-after-hover")
     using var own = Process.GetCurrentProcess();
     own.PriorityClass = ProcessPriorityClass.High;
     return HyperPlot.E2E.WheelAfterHoverScene.Run(args.AsSpan(1));
+}
+
+if (args.Length > 0 && args[0] == "hittest")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.HitTestScene.Run(args.AsSpan(1));
+}
+
+if (args.Length > 0 && args[0] == "selection")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.SelectionScene.Run(args.AsSpan(1));
 }
 
 string? directory = null;

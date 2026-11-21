@@ -234,7 +234,7 @@ internal readonly struct PolarTransform
         {
             // Between the cuts, each edge keeps one sign, so raising it to 0 keeps it straight.
             Span<double> cuts = [c0, Cross(c0, c1, e0, e1), Cross(c0, c1, f0, f1), Math.Min(c1, c0 + FullTurn)];
-            cuts[1..3].Sort();
+            SpanSort.Ascending(cuts[1..3]);
             var count = 0;
             for (var i = 0; i < 3; i++)
             {
@@ -319,7 +319,7 @@ internal readonly struct PolarTransform
         }
 
         Span<double> corners = [l0, l1, h0, h1];
-        corners.Sort();
+        SpanSort.Ascending(corners);
         var count = 0;
         for (var i = 0; i < 3; i++)
         {
@@ -393,7 +393,7 @@ internal readonly struct PolarTransform
         }
 
         Span<double> cuts = [0, Crossing(outer0, outer1, _outer), Crossing(inner0, inner1, _outer), 1];
-        cuts[1..3].Sort();
+        SpanSort.Ascending(cuts[1..3]);
         var count = 0;
         for (var i = 0; i < 3; i++)
         {

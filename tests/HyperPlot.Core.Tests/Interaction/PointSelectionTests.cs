@@ -506,6 +506,273 @@ public sealed class PointSelectionTests
         Assert.True(copies >= 40, $"{copies} frames of 40 or more copied the kept layer.");
     }
 
+    /// <summary>
+    /// A density drawn as fills under a lasso draws each pixel of the panel as the region judges its center: the fill's own
+    /// alpha where <see cref="RenderList.Holds"/>, a fifth of it where not, from one rectangle, and the fills keep their area
+    /// on the panel (design §6.4 "密度の強調", Issue #576).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 200,000 seeded points over [0, 100]² drawn as a density (no tile: fills), 640 × 360.
+    /// - A lasso: the notched one over [20, 80] × [15, 85] (concave); a polygon of 12 vertices on a circle of radius 12
+    ///   around (40, 45); or one on a circle of radius 60 around (50, 50), which the panel's four edges cut.
+    /// - A view: [0, 100]², which draws the root's cell as one fill; or [35.3, 64.7] × [40.1, 64.9], which draws four cells,
+    ///   each reaching past the panel, and where the panel's edges cut the first two lassos.
+    ///
+    /// Steps:
+    /// - Set the view, draw, and read the layer's rectangles (those under the panel's clip). Select the lasso, draw, and read
+    ///   them again.
+    /// - For each pixel of the panel, find the rectangles of each frame that hold its center, and ask Holds at the center.
+    ///
+    /// Expected:
+    /// - The layer drew a density in fills, one in the first view and four in the second; the region has a mask; some
+    ///   centers are held and some are not.
+    /// - A center no fill held before is held by no rectangle after. Each other center is held by one rectangle after, whose
+    ///   alpha is the fill's when the region holds the center and a fifth of it, rounded, when not.
+    /// - The rectangles after lie inside the panel, and their area is the area of the fills on the panel, within half a
+    ///   pixel (the sums of some thousands of float widths).
+    /// </remarks>
+    [Theory]
+    [InlineData("notched", false)]
+    [InlineData("notched", true)]
+    [InlineData("small", false)]
+    [InlineData("small", true)]
+    [InlineData("large", false)]
+    public void DensityFills_UnderALasso_DrawEachPixelAsTheRegionJudgesItsCenter(string lasso, bool zoomed)
+    {
+        var (_, _, table) = Uniform(200_000, seed: 39);
+        using var engine = Drawn(
+            new NullBackend(),
+            Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Density))
+        );
+        if (zoomed)
+        {
+            engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(35.3, 64.7), ViewRange.FromValues(40.1, 64.9)));
+        }
+
+        engine.RenderFrame();
+        var g = engine.Plan!.Guides;
+        var clip = new ClipRect(g.Left, g.Top, g.Left + g.Width, g.Top + g.Height);
+        var before = Fills();
+        Assert.True(((IndexedPointPlan)engine.Plan.Layers[0]).DrewDensity);
+        Assert.Equal(zoomed ? 4 : 1, before.Length);
+        Assert.Empty(engine.Plan.List.Images.ToArray());
+
+        var circle = Enumerable
+            .Range(0, 12)
+            .Select(k => new Vector2(0.5f + (0.5f * MathF.Cos(k * MathF.PI / 6)), 0.5f + (0.5f * MathF.Sin(k * MathF.PI / 6))))
+            .ToArray();
+        engine.Select(
+            lasso switch
+            {
+                "large" => Selection2D.Lasso(Panel, ViewRange.FromValues(-10.0, 110.0), ViewRange.FromValues(-10.0, 110.0), circle),
+                "small" => Selection2D.Lasso(Panel, ViewRange.FromValues(28.0, 52.0), ViewRange.FromValues(33.0, 57.0), circle),
+                _ => Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched),
+            }
+        );
+        engine.RenderFrame();
+        var list = engine.Plan!.List;
+        var after = Fills();
+        Assert.NotEqual(0u, Assert.Single(list.Highlights.ToArray()).MaskStride);
+
+        var (was, now) = (Holders(before), Holders(after));
+        var (some, others) = (false, false);
+        for (var py = 0; py < g.Height; py++)
+        {
+            for (var px = 0; px < g.Width; px++)
+            {
+                var at = (py * g.Width) + px;
+                var where = $"The pixel ({g.Left + px}, {g.Top + py})";
+                Assert.True(was[at].Count <= 1, $"{where}: {was[at].Count} fills hold its center.");
+                Assert.True(now[at].Count == was[at].Count, $"{where}: {now[at].Count} rectangles hold its center, {was[at].Count} fills did.");
+                if (was[at].Count == 0)
+                {
+                    continue;
+                }
+
+                var inside = list.Holds(1, new Vector2(g.Left + px + 0.5f, g.Top + py + 0.5f));
+                (some, others) = (some || inside, others || !inside);
+                var alpha = (int)Math.Round(was[at].Alpha * 255);
+                var expected = inside ? alpha : (int)Math.Round(alpha * 0.2);
+                Assert.True(
+                    (int)Math.Round(now[at].Alpha * 255) == expected,
+                    $"{where}, inside {inside}: alpha {now[at].Alpha * 255}, not {expected}."
+                );
+            }
+        }
+
+        Assert.True(some && others);
+        Assert.All(
+            after,
+            r => Assert.True(r.X >= clip.Left && r.Y >= clip.Top && r.X + r.Width <= clip.Right && r.Y + r.Height <= clip.Bottom, $"{r}")
+        );
+        var onPanel = before.Sum(r =>
+            Math.Max(0.0, Math.Min((double)r.X + r.Width, clip.Right) - Math.Max(r.X, clip.Left))
+            * Math.Max(0.0, Math.Min((double)r.Y + r.Height, clip.Bottom) - Math.Max(r.Y, clip.Top))
+        );
+        Assert.Equal(onPanel, after.Sum(r => (double)r.Width * r.Height), 0.5);
+
+        // The layer's rectangles: those recorded under the panel's clip.
+        RectInstance[] Fills()
+        {
+            var list = engine.Plan!.List;
+            var (rects, clips) = (list.Rects.ToArray(), list.RectClips.ToArray());
+            return [.. rects.Where((_, i) => clips[i] == clip)];
+        }
+
+        // For each pixel of the panel, how many of the rectangles hold its center, and the alpha of the last that does.
+        (int Count, float Alpha)[] Holders(RectInstance[] rects)
+        {
+            var holders = new (int Count, float Alpha)[g.Width * g.Height];
+            foreach (var r in rects)
+            {
+                // The pixels whose centers lie in [X, X + Width) × [Y, Y + Height).
+                var (x0, x1) = ((int)Math.Ceiling(r.X - 0.5 - g.Left), (int)Math.Ceiling((double)r.X + r.Width - 0.5 - g.Left));
+                var (y0, y1) = ((int)Math.Ceiling(r.Y - 0.5 - g.Top), (int)Math.Ceiling((double)r.Y + r.Height - 0.5 - g.Top));
+                for (var py = Math.Max(y0, 0); py < Math.Min(y1, g.Height); py++)
+                {
+                    for (var px = Math.Max(x0, 0); px < Math.Min(x1, g.Width); px++)
+                    {
+                        ref var holder = ref holders[(py * g.Width) + px];
+                        holder = (holder.Count + 1, r.Color.W);
+                    }
+                }
+            }
+
+            return holders;
+        }
+    }
+
+    /// <summary>
+    /// The overlay's fill of a lasso covers the pixels of the panel whose centers the polygon holds by the even-odd rule, a
+    /// rectangle a run of a pixel row, between the row's crossings in order (design §6.4 "強調", Issue #364 Decision 5).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 2,000 seeded points over [0, 100]² at the view [0, 100]², 640 × 360; the notched lasso over [20, 80] × [15, 85],
+    ///   whose rows through the notch cross four edges, and whose edges come in an order that is not the crossings'.
+    ///
+    /// Steps:
+    /// - Select the lasso, draw, and read the rectangles of the overlay's list in 15 % of the theme's foreground.
+    /// - For each pixel of the panel, count the rectangles that hold its center, and ask the even-odd rule over the
+    ///   polygon's pixels.
+    ///
+    /// Expected:
+    /// - Each rectangle is a pixel high. A center the polygon holds lies in one rectangle, and one it does not hold in none,
+    ///   but a center within a thousandth of a pixel of an edge; both kinds are met, and so is a row of two rectangles.
+    /// </remarks>
+    [Fact]
+    public void LassoFill_OfTheOverlay_CoversThePixelsThePolygonHolds()
+    {
+        var backend = new NullBackend();
+        var (_, _, table) = Uniform(2_000, seed: 41);
+        using var engine = Drawn(backend, Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y")));
+        engine.Select(Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched));
+        engine.RenderFrame();
+        var g = engine.Plan!.Guides;
+        var foreground = Theme.Light.Foreground;
+        var faint = (float)Math.Round(foreground.A * 0.15) / 255;
+        var fill = backend.LastList!.Rects.ToArray().Where(r => r.Color.W == faint).ToArray();
+        Assert.All(fill, r => Assert.Equal(1f, r.Height));
+        Assert.Contains(fill.GroupBy(r => r.Y), row => row.Count() == 2);
+
+        var polygon = Notched.Select(s => Pixel(engine, 20 + (s.X * 60.0), 15 + (s.Y * 70.0))).ToArray();
+        var (some, others) = (false, false);
+        for (var py = g.Top; py < g.Top + g.Height; py++)
+        {
+            for (var px = g.Left; px < g.Left + g.Width; px++)
+            {
+                var center = new Vector2(px + 0.5f, py + 0.5f);
+                var (inside, edge) = EvenOdd(polygon, center);
+                if (edge)
+                {
+                    continue;
+                }
+
+                var holders = fill.Count(r => r.Y == py && r.X <= center.X && center.X < (double)r.X + r.Width);
+                Assert.True(holders == (inside ? 1 : 0), $"The pixel ({px}, {py}), inside {inside}: {holders} rectangles.");
+                (some, others) = (some || inside, others || !inside);
+            }
+        }
+
+        Assert.True(some && others);
+    }
+
+    /// <summary>
+    /// The frames that set another lasso, and the frames that change the view under a lasso that stands, allocate nothing
+    /// once warm, whichever way the point layer draws (invariant 3, Issues #570 and #576). The tests run on the JIT, where
+    /// the sort of a row's crossings never allocated; the NativeAOT build's count is the End-to-end scene's
+    /// (<c>docs/benchmarks/r3c-hittest.md</c>).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Seeded points over [0, 100]², 640 × 360: 131,072 raw points (the CPU path), 400,000 raw points (the index path),
+    ///   400,000 as a density (the root's tile), or 131,073 as a density (a fill). Two lassos made before the frames: the
+    ///   notched one over [20, 80] × [15, 85] and over [22, 78] × [15, 85]. Two views: [0, 100]² and [0.5, 100.5] × [0, 100].
+    ///
+    /// Steps:
+    /// - A round: 4 frames that each select the other lasso; then, the last lasso standing, 4 frames that each set the other
+    ///   view. Three rounds to warm; count the thread's allocations over a fourth.
+    ///
+    /// Expected:
+    /// - 0 bytes. Each frame of the rounds drew the plot's list again, not provisional, with one region of a mask; the fill's
+    ///   frames recorded more rectangles than the panel has rows.
+    /// </remarks>
+    [Theory]
+    [InlineData(Cpu, PointDraw.Points)]
+    [InlineData(Dense, PointDraw.Points)]
+    [InlineData(Dense, PointDraw.Density)]
+    [InlineData(Cpu + 1, PointDraw.Density)]
+    public void LassoFrames_AllocateNothing(int points, PointDraw draw)
+    {
+        var backend = new NullBackend();
+        var (_, _, table) = Uniform(points, seed: 40);
+        using var engine = Drawn(backend, Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(draw)));
+        Selection2D[] lassos =
+        [
+            Selection2D.Lasso(Panel, ViewRange.FromValues(20.0, 80.0), ViewRange.FromValues(15.0, 85.0), Notched),
+            Selection2D.Lasso(Panel, ViewRange.FromValues(22.0, 78.0), ViewRange.FromValues(15.0, 85.0), Notched),
+        ];
+        PanelView2D[] views =
+        [
+            new(ViewRange.FromValues(0.0, 100.0), ViewRange.FromValues(0.0, 100.0)),
+            new(ViewRange.FromValues(0.5, 100.5), ViewRange.FromValues(0.0, 100.0)),
+        ];
+        var rows = engine.Plan!.Guides.Height;
+        var (frames, redrawn, masked, fewest) = (0, 0, 0, int.MaxValue);
+        void Frame()
+        {
+            backend.Images.Sent();
+            engine.RenderFrame();
+            var list = engine.Plan!.List;
+            frames++;
+            redrawn += backend.DrawsInFrame == 2 && !engine.IsProvisional ? 1 : 0;
+            masked += list.Highlights.Length == 1 && list.Highlights[0].MaskStride != 0 ? 1 : 0;
+            fewest = Math.Min(fewest, list.Rects.Length);
+        }
+
+        PerformanceAssert.DoesNotAllocate(
+            () =>
+            {
+                for (var f = 0; f < 4; f++)
+                {
+                    engine.Select(lassos[(f + 1) % 2]);
+                    Frame();
+                }
+
+                for (var f = 0; f < 4; f++)
+                {
+                    engine.Views.SetView(Panel, views[(f + 1) % 2]);
+                    Frame();
+                }
+            },
+            warmUps: 3
+        );
+
+        Assert.Equal((32, 32, 32), (frames, redrawn, masked));
+        Assert.True(points != Cpu + 1 || draw != PointDraw.Density || fewest > rows, $"{fewest} rectangles over {rows} rows.");
+    }
+
     // Whether a polygon holds a point by the even-odd rule, as the engine fills a lasso, and whether an edge it crosses passes
     // within a thousandth of a pixel of it.
     private static (bool Inside, bool Edge) EvenOdd(Vector2[] polygon, Vector2 point)
