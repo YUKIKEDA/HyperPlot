@@ -52,6 +52,10 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
     private readonly long[] _excluded = new long[Groups * Stride];
     private readonly long[] _dropped = new long[Groups * Stride];
 
+    // The order of the frontier of a level, made once a builder: a sort given a comparer object makes a delegate on each
+    // call, and one given no comparison does so under NativeAOT (.cursor/rules/perf.mdc, Issue #585).
+    private readonly Comparison<int> _byCode;
+
     private SpatialRow* _rows;
     private long _rowCapacity;
     private int _rowCount;
@@ -82,6 +86,7 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
     internal SpatialTableBuilder(SpatialLayout layout, SpatialIndexTuning tuning, long capacity, long maxTableRows)
     {
         _layout = layout;
+        _byCode = CompareCodes;
         _leafCapacity = tuning.LeafCapacity;
         _capacity = capacity;
 
@@ -171,6 +176,13 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
     private ReadOnlySpan<int> Lookup => new(_lookup, _lookup == null ? 0 : _layout.FirstCellCount);
 
     private Span<OpenCell> Open => new(_open, _openCount);
+
+    /// <summary>Compares two rows of a table by their codes: the order in which the single job splits a level's cells.</summary>
+    /// <param name="rows">The table's rows.</param>
+    /// <param name="x">The first row.</param>
+    /// <param name="y">The second row.</param>
+    /// <returns>The order of the two rows' codes, as <see cref="ulong.CompareTo(ulong)"/> gives it.</returns>
+    internal static int CompareCodes(ReadOnlySpan<SpatialRow> rows, int x, int y) => rows[x].Code.CompareTo(rows[y].Code);
 
     /// <summary>Counts one unit's points in the first counters of a group.</summary>
     /// <param name="group">The group of the unit.</param>
@@ -527,7 +539,7 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
             }
 
             var frontier = _frontier.AsSpan();
-            frontier.Sort(new CodeOrder(_rows, _rowCount));
+            frontier.Sort(_byCode);
             for (var i = 0; i < frontier.Length; i++)
             {
                 Split(frontier[i]);
@@ -1032,6 +1044,9 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
         _candidates.Free();
     }
 
+    // The table's rows do not move while the frontier of one level is sorted.
+    private int CompareCodes(int x, int y) => CompareCodes(Table, x, y);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct FirstCounter
     {
@@ -1077,19 +1092,6 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
         {
             NativeMemory.AlignedFree(Items);
             this = default;
-        }
-    }
-
-    private readonly struct CodeOrder(SpatialRow* rows, int count) : IComparer<int>
-    {
-        // The table's rows, which do not move while the frontier of one level is sorted.
-        private readonly SpatialRow* _rows = rows;
-        private readonly int _count = count;
-
-        public int Compare(int x, int y)
-        {
-            var rows = new ReadOnlySpan<SpatialRow>(_rows, _count);
-            return rows[x].Code.CompareTo(rows[y].Code);
         }
     }
 }

@@ -613,6 +613,61 @@ public sealed class SpatialTableBuilderTests
         Assert.Contains(leaves, leaf => leaf.Kind == (byte)SpatialCellKind.CoincidentLeaf && leaf.Count >= 490);
     }
 
+    /// <summary>
+    /// The single job's sort of a level's frontier by <see cref="SpatialTableBuilder.CompareCodes(ReadOnlySpan{SpatialRow}, int, int)"/>, given as a
+    /// comparison, puts the rows in the order that the sort given a comparer struct put them before Issue #585, ties too.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400 seeded tables of 1 to 3,000 rows, and for each a frontier of rows of the table in a shuffled order, a row at
+    ///   most once. The codes of a table come from 1 value, from 2 to 8 values, or from the whole range of 64 bits, so
+    ///   that some frontiers hold many rows of one code. The frontiers have 0 to 3,000 rows, many over 16 (where the
+    ///   runtime's sort stops sorting by insertion).
+    ///
+    /// Steps:
+    /// - Sort a copy of the frontier as <c>Resolve</c> does now (<c>Span.Sort</c> with a <see cref="Comparison{T}"/> that
+    ///   calls <see cref="SpatialTableBuilder.CompareCodes(ReadOnlySpan{SpatialRow}, int, int)"/>), and a copy with the comparer struct of the code before,
+    ///   which compared the same codes (<c>Span.Sort&lt;int, TComparer&gt;</c>).
+    ///
+    /// Expected:
+    /// - The two copies hold the same rows in the same order, also where rows of the same code are next to each other.
+    ///   Over the frontiers, some have rows of the same code next to each other after the sort, and some more than 16 rows.
+    /// </remarks>
+    [Fact]
+    public void CompareCodes_SortOfAFrontier_KeepsTheOrderOfTheComparerSortBefore()
+    {
+        var random = new Random(585);
+        var (tied, long16) = (0, 0);
+        for (var round = 0; round < 400; round++)
+        {
+            var rows = new SpatialRow[1 + random.Next(3_000)];
+            var distinct = (round % 3) switch
+            {
+                0 => 1,
+                1 => 2 + random.Next(7),
+                _ => 0,
+            };
+            for (var i = 0; i < rows.Length; i++)
+            {
+                rows[i].Code = distinct == 0 ? Bits(random, 64) : (ulong)random.Next(distinct) * 0x9E37_79B9_7F4A_7C15UL;
+            }
+
+            var all = Enumerable.Range(0, rows.Length).ToArray();
+            random.Shuffle(all);
+            var frontier = all[..random.Next(rows.Length + 1)];
+            var (before, now) = ((int[])frontier.Clone(), (int[])frontier.Clone());
+
+            before.AsSpan().Sort(new CodeOrderBefore(rows));
+            now.AsSpan().Sort((x, y) => SpatialTableBuilder.CompareCodes(rows, x, y));
+
+            Assert.Equal(before, now);
+            tied += Enumerable.Range(1, Math.Max(0, now.Length - 1)).Any(i => rows[now[i - 1]].Code == rows[now[i]].Code) ? 1 : 0;
+            long16 += now.Length > 16 ? 1 : 0;
+        }
+
+        Assert.True(tied > 100 && long16 > 100, $"Frontiers with ties {tied}, with more than 16 rows {long16}.");
+    }
+
     private static long ScratchBytes(SpatialBuild build)
     {
         long bytes = 0;
@@ -687,5 +742,12 @@ public sealed class SpatialTableBuilderTests
 
         random.Shuffle(codes);
         return codes;
+    }
+
+    // The comparer of the frontier's sort before Issue #585: Span.Sort<int, TComparer> boxed it and made a delegate of it on
+    // each call.
+    private readonly struct CodeOrderBefore(SpatialRow[] rows) : IComparer<int>
+    {
+        public int Compare(int x, int y) => rows[x].Code.CompareTo(rows[y].Code);
     }
 }

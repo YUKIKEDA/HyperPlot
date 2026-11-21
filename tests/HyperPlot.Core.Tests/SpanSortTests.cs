@@ -2,22 +2,22 @@ using HyperPlot.Testing;
 
 namespace HyperPlot.Tests;
 
-/// <summary>The sorts of the frame path's short spans (Issue #570).</summary>
+/// <summary>The sorts that allocate nothing, for the frame path's short spans and the engine's other sorts (Issues #570 and #585).</summary>
 public sealed class SpanSortTests
 {
     private static float _sink;
 
     /// <summary>
-    /// <see cref="SpanSort"/> orders floats and doubles as the runtime's sort with no comparison does, by value: ascending,
-    /// NaN first.
+    /// <see cref="SpanSort"/> orders floats, doubles, and longs as the runtime's sort with no comparison does, by value:
+    /// ascending, NaN first.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - 200 seeded arrays of 0 to 40 values, each value one of: a random value in [−100, 100), a value repeated from the
-    ///   array, 0, −0, NaN, +∞, −∞.
+    ///   array, 0, −0, NaN, +∞, −∞. The longs are the finite values times 10^15, and a random long in place of each other.
     ///
     /// Steps:
-    /// - Sort a copy with <c>Array.Sort</c> and a copy with <see cref="SpanSort"/>, as floats and as doubles.
+    /// - Sort a copy with <c>Array.Sort</c> and a copy with <see cref="SpanSort"/>, as floats, as doubles, and as longs.
     ///
     /// Expected:
     /// - The two copies are equal value for value (NaN equal to NaN, −0 equal to 0). Over the arrays, some hold NaN, some an
@@ -58,6 +58,12 @@ public sealed class SpanSortTests
             Array.Sort(expectedFloats);
             SpanSort.Ascending(actualFloats);
             Assert.Equal(expectedFloats, actualFloats);
+
+            var longs = doubles.Select(v => double.IsFinite(v) ? (long)(v * 1e15) : random.NextInt64()).ToArray();
+            var (expectedLongs, actualLongs) = ((long[])longs.Clone(), (long[])longs.Clone());
+            Array.Sort(expectedLongs);
+            SpanSort.Ascending(actualLongs);
+            Assert.Equal(expectedLongs, actualLongs);
         }
 
         Assert.True(
@@ -73,7 +79,7 @@ public sealed class SpanSortTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - Spans of 2 floats, of 2 and 4 doubles, and of 300 floats in descending order, on the stack.
+    /// - Spans of 2 floats, of 2 and 4 doubles, of 3 longs, and of 300 floats in descending order, on the stack.
     ///
     /// Steps:
     /// - Sort each, 100 times round, once to warm; count the thread's allocations over a second run.
@@ -92,6 +98,7 @@ public sealed class SpanSortTests
                 Span<float> two = [2, 1];
                 Span<double> cuts = [0, 2, 1, 3];
                 Span<double> corners = [4, 2, 1, 3];
+                Span<long> rows = [3, 1, 2];
                 for (var i = 0; i < many.Length; i++)
                 {
                     many[i] = many.Length - i;
@@ -100,8 +107,9 @@ public sealed class SpanSortTests
                 SpanSort.Ascending(two);
                 SpanSort.Ascending(cuts[1..3]);
                 SpanSort.Ascending(corners);
+                SpanSort.Ascending(rows);
                 SpanSort.Ascending(many);
-                _sink = two[0] + (float)cuts[1] + (float)corners[0] + many[0];
+                _sink = two[0] + (float)cuts[1] + (float)corners[0] + rows[0] + many[0];
             }
 
             for (var i = 1; i < many.Length; i++)
@@ -113,7 +121,7 @@ public sealed class SpanSortTests
             }
         });
 
-        // The least of each of the four sorted spans is 1.
-        Assert.Equal(4, _sink);
+        // The least of each of the five sorted spans is 1.
+        Assert.Equal(5, _sink);
     }
 }
