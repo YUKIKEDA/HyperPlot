@@ -86,6 +86,9 @@ internal sealed unsafe class SpatialTableBuilder : IDisposable
     internal SpatialTableBuilder(SpatialLayout layout, SpatialIndexTuning tuning, long capacity, long maxTableRows)
     {
         _layout = layout;
+
+        // The comparison reads Table on each call, so it is only right while the rows do not move: a sort that grows _rows
+        // in the middle would compare against freed memory.
         _byCode = CompareCodes;
         _leafCapacity = tuning.LeafCapacity;
         _capacity = capacity;
