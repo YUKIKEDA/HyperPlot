@@ -157,6 +157,9 @@ internal static partial class PointsScene
         // frame it timed, and when it began, for a file of one row a frame (.cursor/rules/bench.mdc).
         var (inView, inDraw) = (new long[total], new long[total]);
         var (gpuOf, beganAt) = (new double[total], new double[total]);
+
+        // The baseline of Issue #600: the time of the count that chooses the drawing on main, as head prints its scan.
+        var scan = new double[total];
         Array.Fill(gpuOf, double.NaN);
         backend.Skips = recordOnly;
         var (busyFrom, ownFrom, clockFrom) = (MachineBusy(), Environment.CpuUsage.TotalTime, DateTime.Now);
@@ -166,6 +169,7 @@ internal static partial class PointsScene
         {
             beganAt[f] = Stopwatch.GetElapsedTime(began).TotalMilliseconds;
             var bytes = GC.GetAllocatedBytesForCurrentThread();
+            DensitySwitch.StageTicks = 0;
             var start = Stopwatch.GetTimestamp();
             engine.Views.SetView(panel, views[f]);
             inView[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
@@ -173,6 +177,7 @@ internal static partial class PointsScene
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
             (runs[f], drawn[f], inDraw[f]) = (backend.Runs, backend.Points, backend.DrawBytes);
+            scan[f] = DensitySwitch.StageTicks * 1000.0 / Stopwatch.Frequency;
             if (backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
                 lastTimed = time.Frame;
@@ -262,6 +267,13 @@ internal static partial class PointsScene
             string.Create(
                 CultureInfo.InvariantCulture,
                 $"gpu_frame: frames={gpu.Count} p50={Percentile(gpuKept, 0.5):F3} p95={Percentile(gpuKept, 0.95):F3} p99={Percentile(gpuKept, 0.99):F3} max={gpuKept.Max():F3} ms"
+            )
+        );
+        var scanKept = scan.Skip(Warmup).ToArray();
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"scan: p50={Percentile(scanKept, 0.5):F4} p95={Percentile(scanKept, 0.95):F4} max={scanKept.Max():F4} ms; baseline main count"
             )
         );
         Console.WriteLine(

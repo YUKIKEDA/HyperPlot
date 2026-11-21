@@ -27,6 +27,9 @@ internal sealed class DensitySwitch
     /// <summary>Gets the top of the density's scale this frame, in points a square physical pixel; 0 when nothing is drawn.</summary>
     public double Top { get; private set; }
 
+    /// <summary>Gets or sets the ticks the choices of Auto layers took since the scene last set it to 0. Baseline of Issue #600 only.</summary>
+    internal static long StageTicks { get; set; }
+
     /// <summary>Gets the upper count of the points in the view the last choice read, summed over the parts. Tests only.</summary>
     internal long LastCount { get; private set; }
 
@@ -63,6 +66,7 @@ internal sealed class DensitySwitch
 
         if (point.Draw == PointDraw.Auto)
         {
+            var began = TimeProvider.System.GetTimestamp();
             long count = 0;
             foreach (var part in CollectionsMarshal.AsSpan(_parts))
             {
@@ -71,6 +75,7 @@ internal sealed class DensitySwitch
 
             LastCount = count;
             _density = _density ? count >= point.DensityThreshold * Back : count > point.DensityThreshold;
+            StageTicks += TimeProvider.System.GetTimestamp() - began;
         }
         else
         {
