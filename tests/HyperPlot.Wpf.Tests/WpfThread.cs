@@ -72,7 +72,11 @@ public sealed class WpfThread : IDisposable
             return 0;
         });
 
-    /// <summary>Runs work on the dispatcher's thread and returns its result.</summary>
+    /// <summary>
+    /// Runs work on the dispatcher's thread and returns its result. The work starts with Shift, Ctrl, and Alt up in the
+    /// thread's key state (<see cref="ThreadKeys"/>, Issue #564), so that a key held on the machine while the tests run is
+    /// not read as a modifier of the input a test sends.
+    /// </summary>
     public T Run<T>(Func<T> work)
     {
         ExceptionDispatchInfo? failure = null;
@@ -80,6 +84,7 @@ public sealed class WpfThread : IDisposable
         {
             try
             {
+                ThreadKeys.ReleaseModifiers();
                 return work();
             }
             catch (Exception exception)
