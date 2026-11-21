@@ -107,6 +107,7 @@ internal sealed partial class PlotPlan
             pixels[i] = flipped ? new Vector2(across, along) : new Vector2(along, across);
         }
 
+        // The mask's box is the panel's clip (the caller's rect), which RenderList.DrawRectCutByMask checks.
         var number = _list.AddHighlight(rect.Left, rect.Top, rect.Width, rect.Height, out var mask);
         var stride = (rect.Width / 32) + 1;
         Span<float> crossings = stackalloc float[shares.Length];

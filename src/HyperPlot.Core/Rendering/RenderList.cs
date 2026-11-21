@@ -198,7 +198,7 @@ public sealed class RenderList
     /// of a pixel row's pixels that <see cref="Holds"/> judges alike at their centers, in one color inside the region and in
     /// another outside it. The runs are read from the mask's words, so the work follows the mask's rows and words, not the
     /// rectangle's pixels. The rectangle's part outside the mask's box is not recorded: the mask covers the panel, and the
-    /// panel's clip takes what a layer draws past it.
+    /// panel's clip takes what a layer draws past it. So the clip lies inside the mask's box, or this throws.
     /// </summary>
     /// <param name="highlight">The number of a region with a mask.</param>
     /// <param name="left">The rectangle's left edge, in physical pixels.</param>
@@ -207,10 +207,16 @@ public sealed class RenderList
     /// <param name="bottom">The bottom edge.</param>
     /// <param name="inside">The color of the pixels in the region.</param>
     /// <param name="outside">The color of the others.</param>
+    /// <exception cref="InvalidOperationException">The clip reaches past the mask's box.</exception>
     internal void DrawRectCutByMask(int highlight, float left, float top, float right, float bottom, Color inside, Color outside)
     {
         var region = _highlights[highlight - 1];
         var box = region.Box;
+        if (_clip.Left < box.X || _clip.Top < box.Y || _clip.Right > box.Z || _clip.Bottom > box.W)
+        {
+            ThrowHelper.ThrowClipPastHighlightMask();
+        }
+
         (left, top, right, bottom) = (MathF.Max(left, box.X), MathF.Max(top, box.Y), MathF.Min(right, box.Z), MathF.Min(bottom, box.W));
         if (!(left < right && top < bottom))
         {

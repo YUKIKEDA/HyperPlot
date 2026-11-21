@@ -107,4 +107,9 @@ internal static class ThrowHelper
     [StackTraceHidden]
     internal static void ThrowNoCoarseDensity(string paramName) =>
         throw new ArgumentException("The snapshot holds nothing, so it has no coarse density.", paramName);
+
+    [DoesNotReturn]
+    [StackTraceHidden]
+    internal static void ThrowClipPastHighlightMask() =>
+        throw new InvalidOperationException("The clip reaches past the lasso mask's box, whose outside a cut by the mask leaves out.");
 }
