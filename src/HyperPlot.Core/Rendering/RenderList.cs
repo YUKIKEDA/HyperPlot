@@ -228,7 +228,10 @@ public sealed class RenderList
     /// Records markers of one look at points that stay on the GPU (design §5.1 "常駐の点", row R3a): a run of a page of the
     /// residency cache, placed by the cells' records. Internal: it names data that only Core puts on the GPU.
     /// </summary>
-    /// <param name="run">The run. Its clip is the list's current clip.</param>
+    /// <param name="run">
+    /// The run. Its clip is the list's current clip. Its slot may be −1, for a page that is not on the GPU yet: the run is
+    /// recorded and draws nothing (<see cref="ResidentMarkerRun.Slot"/>).
+    /// </param>
     internal void DrawResidentMarkers(in ResidentMarkerRun run)
     {
         if (_residentRunCount == _residentRuns.Length)
