@@ -113,7 +113,7 @@ public sealed class RowSelection
     internal static RowSelection OfRows(ReadOnlySpan<long> rows, bool derived)
     {
         var sorted = rows.ToArray();
-        Array.Sort(sorted);
+        SpanSort.Ascending(sorted);
         var (starts, ends) = (new List<long>(), new List<long>());
         foreach (var row in sorted)
         {
