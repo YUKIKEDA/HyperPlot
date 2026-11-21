@@ -561,15 +561,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
             var x = X(view);
 
-            Assert.True(view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse));
+            AssertInput(
+                view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse),
+                "The press was not used."
+            );
             Assert.True(view.IsFocused);
             Assert.True(view.IsMouseCaptured);
             _ = view.Pointer(PointerEventKind.Move, middle + new Vector(30, 0), PointerButtons.None, PointerButtons.Left, PointerKind.Mouse);
-            Assert.NotEqual(x, X(view));
+            AssertInput(x != X(view), "The drag inside the view did not pan x.");
             var inside = X(view);
             var outside = new Point(view.ActualWidth + 40, middle.Y);
             _ = view.Pointer(PointerEventKind.Move, outside, PointerButtons.None, PointerButtons.Left, PointerKind.Mouse);
-            Assert.NotEqual(inside, X(view));
+            AssertInput(inside != X(view), "The drag outside the view did not pan x.");
             _ = view.Pointer(PointerEventKind.Up, outside, PointerButtons.Left, PointerButtons.None, PointerKind.Mouse);
             Assert.False(view.IsMouseCaptured);
 
@@ -603,7 +606,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
 
             _ = view.Pointer(PointerEventKind.Move, middle, PointerButtons.None, PointerButtons.None, PointerKind.Mouse);
-            Assert.NotEqual(0, view.Engine.Hover.Length);
+            AssertInput(view.Engine.Hover.Length != 0, "The move hovers nothing.");
             view.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent });
             Assert.Equal(0, view.Engine.Hover.Length);
         });
@@ -641,15 +644,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
 
             var x = X(view);
-            Assert.True(view.Wheel(middle, 0, 2));
-            Assert.True(Width(X(view)) < Width(x));
+            AssertInput(view.Wheel(middle, 0, 2), "The wheel was not used.");
+            AssertInput(Width(X(view)) < Width(x), "The wheel did not narrow x.");
             x = X(view);
-            Assert.True(view.Key(KeyEventKind.Down, Key.Add, repeat: false));
-            Assert.True(Width(X(view)) < Width(x));
+            AssertInput(view.Key(KeyEventKind.Down, Key.Add, repeat: false), "Add was not used.");
+            AssertInput(Width(X(view)) < Width(x), "Add did not narrow x.");
             Assert.False(view.Key(KeyEventKind.Down, Key.F1, repeat: false));
 
             var screen = view.PointToScreen(middle);
-            Assert.True(view.HorizontalWheel((nint)120 << 16, Words((int)screen.X, (int)screen.Y)));
+            AssertInput(
+                view.HorizontalWheel((nint)120 << 16, Words((int)screen.X, (int)screen.Y)),
+                "The horizontal wheel over the view was not used."
+            );
             Assert.Equal([1.0], tool.Turns);
             var outside = view.PointToScreen(new Point(-20, middle.Y));
             Assert.False(view.HorizontalWheel((nint)120 << 16, Words((int)outside.X, (int)outside.Y)));
@@ -687,18 +693,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
 
             view.Manipulate(middle, new Vector(2, 2), default);
             Assert.Equal(x, X(view));
-            Assert.True(view.Touch(view.Touches.Down(1), PointerEventKind.Down, middle));
+            AssertInput(view.Touch(view.Touches.Down(1), PointerEventKind.Down, middle), "The first finger was not used.");
             Assert.True(view.IsFocused);
             _ = view.Touch(view.Touches.Move(1), PointerEventKind.Move, middle + new Vector(30, 0));
-            Assert.NotEqual(x, X(view));
-            Assert.True(view.Touch(view.Touches.Down(2), PointerEventKind.Down, middle + new Vector(0, 20)));
+            AssertInput(x != X(view), "The finger's move did not pan x.");
+            AssertInput(view.Touch(view.Touches.Down(2), PointerEventKind.Down, middle + new Vector(0, 20)), "The second finger was not used.");
 
             x = X(view);
             view.Manipulate(middle, new Vector(1.5, 1.5), default);
-            Assert.True(Width(X(view)) < Width(x) * 0.9);
+            AssertInput(Width(X(view)) < Width(x) * 0.9, "The pinch did not narrow x.");
             x = X(view);
             view.Manipulate(middle, new Vector(1, 1), new Vector(20, 0));
-            Assert.NotEqual(x, X(view));
+            AssertInput(x != X(view), "The scroll did not move x.");
             Assert.Equal(Width(x), Width(X(view)), 1e-9 * Width(x));
             _ = view.Touch(view.Touches.Up(1), PointerEventKind.Up, middle);
             _ = view.Touch(view.Touches.Up(2), PointerEventKind.Up, middle);
@@ -804,6 +810,18 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         Assert.Fail(
             $"The shown texture {shown} does not hold the target's pixels (Issue #299): {state}; all 0 {zeros}; equal after 200 ms {again}; equal after 200 ms and a pump {afterPump}; provisional {view.Engine.IsProvisional}; shared textures {view.UsesSharedTextures} (backend WARP {view.Backend.IsWarp}, adapter {view.Backend.AdapterLuid}, Direct3D 9Ex's {view.Host.D3D9?.AdapterLuid}, its device {view.Host.D3D9?.HasDevice}, front buffer {view.FrontBufferAvailable}, the test's {view.FrontBuffer?.ToString() ?? "none"}); waits for the tick {view.Hooked}."
         );
+    }
+
+    /// <summary>
+    /// Asserts what an input the test sent did, and says on a failure which modifier keys WPF read at that moment (Issue #564):
+    /// the view passes them with the input, and the default bindings of a move, a drag, and the wheel take none.
+    /// </summary>
+    private static void AssertInput(bool done, string otherwise)
+    {
+        if (!done)
+        {
+            Assert.Fail($"{otherwise} Keyboard.Modifiers is {Keyboard.Modifiers}.");
+        }
     }
 
     private static void DrawUntilShown(HyperPlotView view)
