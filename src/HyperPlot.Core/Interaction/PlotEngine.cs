@@ -1920,7 +1920,7 @@ public sealed partial class PlotEngine : IDisposable
                     }
                 }
 
-                crossings[..n].Sort();
+                SpanSort.Ascending(crossings[..n]);
                 for (var c = 0; c + 1 < n; c += 2)
                 {
                     var (from, to) = (

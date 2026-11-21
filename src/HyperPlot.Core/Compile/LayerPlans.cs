@@ -1794,7 +1794,8 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>
     /// Records a rectangle between two x pixels and two y pixels as <see cref="DrawRect"/> does, its part outside the region of
     /// the panel's selection faded to <see cref="HighlightRegion.Faded"/> of its alpha (design §6.4 "密度の強調", row R3c): a
-    /// rectangle's or an x range's region cuts it in five at most, a lasso's mask in runs of a pixel row, a pixel by its center.
+    /// rectangle's or an x range's region cuts it in five at most, a lasso's mask in runs of a pixel row, a pixel by its center
+    /// (<see cref="RenderList.DrawRectCutByMask"/>, which leaves out the rectangle's part past the panel).
     /// </summary>
     public void DrawHighlighted(double x0, double x1, double y0, double y1, Color fill)
     {
@@ -1836,23 +1837,7 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
             return;
         }
 
-        for (var row = MathF.Floor(top); row < bottom; row++)
-        {
-            var (from, to) = (MathF.Max(top, row), MathF.Min(bottom, row + 1));
-            var start = left;
-            var inside = list.Holds(Highlight, new Vector2(MathF.Floor(left) + 0.5f, row + 0.5f));
-            for (var column = MathF.Floor(left) + 1; column < right; column++)
-            {
-                var now = list.Holds(Highlight, new Vector2(column + 0.5f, row + 0.5f));
-                if (now != inside)
-                {
-                    Fill(start, from, column, to, inside ? fill : faded);
-                    (start, inside) = (column, now);
-                }
-            }
-
-            Fill(start, from, right, to, inside ? fill : faded);
-        }
+        list.DrawRectCutByMask(Highlight, left, top, right, bottom, fill, faded);
 
         void Fill(float x, float y, float xEnd, float yEnd, Color color)
         {

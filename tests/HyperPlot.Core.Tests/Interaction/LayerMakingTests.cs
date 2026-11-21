@@ -461,7 +461,8 @@ public sealed class LayerMakingTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread; a bin over a column, and a line over a Y of two chunks; drawn until not provisional. Then chunk
+    /// - A pool of 1 thread whose worker takes no frame job, so that only the pyramid's build is held (Issue #589); a bin
+    ///   over a column, and a line over a Y of two chunks; drawn until not provisional. Then chunk
     ///   1 held on the worker and the Y invalidated, so that its pyramid is built again behind the bin made off the frame;
     ///   drawn until the worker reads chunk 1, and 10 frames more.
     ///
@@ -476,7 +477,7 @@ public sealed class LayerMakingTests
     public void ProvisionalFramesAfterTheMaking_AllocateNothingOnceWarm()
     {
         const int Chunk = Column.ChunkLength;
-        using var pool = new PlotWorkerPool(1);
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
         var values = new float[2 * Chunk];
         for (var i = 0; i < values.Length; i++)
         {

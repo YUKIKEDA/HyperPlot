@@ -34,7 +34,7 @@ internal static class DensityScene
     private const long MaxCategoryRows = 100_000_000;
 
     // The seed of HyperPlot.DataPath's generate-points (SeriesFile.DefaultSeed), so that both write the same bytes.
-    private const ulong Seed = 0x48_79_70_65_72_50_6C_6FUL;
+    internal const ulong Seed = 0x48_79_70_65_72_50_6C_6FUL;
 
     // The wait for the index and the tiles, past which the scene ends with exit code 1 (.cursor/rules/bench.mdc). Row C3a's
     // builds of 1e9 points took 48 to 82 s.
@@ -176,7 +176,7 @@ internal static class DensityScene
     /// Returns the paths of the x and y files of the count and distribution in the folder, writing them from <see cref="Seed"/>
     /// when either is missing or of another length, and whether it wrote them.
     /// </summary>
-    private static (string X, string Y, bool Written) Ensure(string directory, long count, string distribution)
+    internal static (string X, string Y, bool Written) Ensure(string directory, long count, string distribution)
     {
         var prefix = Path.Combine(directory, string.Create(CultureInfo.InvariantCulture, $"density-{distribution}-{count}"));
         var (x, y) = PointFiles.Paths(prefix);
@@ -212,7 +212,7 @@ internal static class DensityScene
     /// Draws a layer of 2^20 points as density until its frames are no longer provisional, so that the measured plot's
     /// first frames do not make the GPU's pipelines (.cursor/rules/bench.mdc); returns the frames it drew on the backend.
     /// </summary>
-    private static int Warm(D3D11Backend backend)
+    internal static int Warm(D3D11Backend backend)
     {
         const int Count = 1 << 20;
         var random = new Random(2);
@@ -257,7 +257,7 @@ internal static class DensityScene
     /// P-15's build), and its density tiles (P-15's tiles after it), each seen at the end of a frame, and when the last
     /// provisional frame ended; returns the frames drawn, or −1 past the deadline.
     /// </summary>
-    private static int Show(PlotEngine engine, D3D11Backend backend, PlotSpec plot)
+    internal static int Show(PlotEngine engine, D3D11Backend backend, PlotSpec plot)
     {
         var (coarse, coarseFrame, coarseImages) = (-1.0, -1, 0);
         var (frames, sending, mostFaces) = (0, 0, 0);
@@ -549,7 +549,7 @@ internal static class DensityScene
     /// Returns what the plot's last frame recorded for the layer: 'D' for density faces (images), 'P' for runs of resident
     /// points, 'B' for both, '-' for neither. The legend's sample is a marker, not a run, so it does not count.
     /// </summary>
-    private static char KindOf(RenderList list) =>
+    internal static char KindOf(RenderList list) =>
         (list.Images.Length > 0, list.ResidentRuns.Length > 0) switch
         {
             (true, false) => 'D',

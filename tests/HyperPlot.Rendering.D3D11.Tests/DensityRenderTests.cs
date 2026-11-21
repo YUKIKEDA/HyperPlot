@@ -311,6 +311,92 @@ public sealed class DensityRenderTests
         );
     }
 
+    /// <summary>
+    /// A view of raw points drawn first while most of its pages were not on the GPU, and drawn again once they all are,
+    /// allocates nothing the second time (design §11 invariant 3, Issue #528): a page not sent yet is recorded as a run
+    /// that draws nothing, so the list and the backend's steps reach the view's size in its first frame.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 1,048,576 seeded float points spread evenly over [0, 100]², 16 pages of 65,536 points; Draw is Points; domains
+    ///   [0, 100]; an engine on WARP that does not wait for its indexes, so a frame sends 4 MB at most, 5 pages; the fake
+    ///   text backend; 640 × 360. The index has ended.
+    ///
+    /// Steps:
+    /// - Render the whole view once. Then render each quarter of it, [0.5, 49.5] or [50.5, 99.5] on each axis, until the
+    ///   quarter's frame has all its pages. Collect, then render the whole view again, counting the thread's allocations
+    ///   over the view's change and the frame.
+    ///
+    /// Expected:
+    /// - The first frame of the whole view is provisional with 5 pages on the GPU, and records 16 runs, 5 of them with a
+    ///   slot.
+    /// - No quarter's frame records more than 8 runs, so that nothing but the first frame grew the list past 8 runs; after
+    ///   the quarters, 16 pages are on the GPU.
+    /// - The last frame is not provisional, records 16 runs with a slot each, and allocated 0 bytes.
+    /// </remarks>
+    [Fact]
+    public void RawPoints_ViewDrawnBeforeItsPagesArrived_AllocatesNothingWhenDrawnAgain()
+    {
+        const int Pages = 16;
+        const int Count = Pages * PointPages.PagePoints;
+        using var pool = new PlotWorkerPool(4);
+        using var x = Column.CreateNative<float>(Count, (first, chunk) => Fill(chunk, first, Uniform, ofX: true));
+        using var y = Column.CreateNative<float>(Count, (first, chunk) => Fill(chunk, first, Uniform, ofX: false));
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        var spec = Plot.Create(table)
+            .Point(table.Col<float>("x"), table.Col<float>("y"), p => p.Draw(PointDraw.Points))
+            .ScaleX(Scale.Linear().WithDomain(0, 100))
+            .ScaleY(Scale.Linear().WithDomain(0, 100))
+            .Build();
+        using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));
+        using var engine = new PlotEngine(backend, 640, 360, 1, pool);
+        var panel = new PanelId(0, 0);
+        var whole = new PanelView2D(ViewRange.FromValues(0, 100), ViewRange.FromValues(0, 100));
+        engine.SetPlot(spec);
+        engine.RenderFrame();
+        var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
+        Eventually.Completes(plan.SpatialIndex!.WhenComplete());
+
+        engine.Views.SetView(panel, whole);
+        engine.RenderFrame();
+        var first = engine.Plan!.List.ResidentRuns.ToArray();
+        Assert.True(engine.IsProvisional);
+        Assert.Equal(5, backend.Images.Points.PagesInUse);
+
+        (double Low, double High)[] halves = [(0.5, 49.5), (50.5, 99.5)];
+        var most = 0;
+        foreach (var (lowX, highX) in halves)
+        {
+            foreach (var (lowY, highY) in halves)
+            {
+                engine.Views.SetView(panel, new PanelView2D(ViewRange.FromValues(lowX, highX), ViewRange.FromValues(lowY, highY)));
+                var missed = true;
+                while (missed)
+                {
+                    engine.RenderFrame();
+                    most = Math.Max(most, engine.Plan!.List.ResidentRuns.Length);
+                    missed = plan.MissedPages;
+                }
+            }
+        }
+
+        Assert.InRange(most, 1, 8);
+        Assert.Equal(Pages, backend.Images.Points.PagesInUse);
+
+        // An allocation that follows a collection is counted in every run (.cursor/rules/bench.mdc).
+        GC.Collect();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        engine.Views.SetView(panel, whole);
+        engine.RenderFrame();
+        var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        var last = engine.Plan!.List.ResidentRuns.ToArray();
+        Assert.False(engine.IsProvisional);
+        Assert.Equal((Pages, Pages), (last.Length, last.Count(run => run.Slot >= 0)));
+        Assert.Equal(0, bytes);
+        Assert.Equal((Pages, 5), (first.Length, first.Count(run => run.Slot >= 0)));
+    }
+
     private static void Check(PlotSpec spec, PlotWorkerPool pool, int width, int height, string baseline, Action<HeadlessRenderer> drew)
     {
         using var backend = D3D11Backend.CreateForTest(useWarp: true, createDevice: null, new TextEngine(new FakeTextBackend()));

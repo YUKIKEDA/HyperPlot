@@ -318,8 +318,9 @@ public sealed class HoverTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread (<c>TestStorage</c> holds every read on a worker); a line over a uniform x and a Y of two chunks,
-    ///   chunk 1 held on the worker; an engine that does not wait; the hover in XY with a radius of 400 DIPs.
+    /// - A pool of 1 thread (<c>TestStorage</c> holds every read on a worker) whose worker takes no frame job, so that only
+    ///   the pyramid's build is held (Issue #589); a line over a uniform x and a Y of two chunks, chunk 1 held on the worker;
+    ///   an engine that does not wait; the hover in XY with a radius of 400 DIPs.
     ///
     /// Steps:
     /// - Draw until the worker reads chunk 1; draw; move to three quarters of the panel's width (over chunk 1); draw; move a
@@ -340,7 +341,7 @@ public sealed class HoverTests
             values[i] = i < Chunk ? MathF.Sin(i * 0.001f) : 10 * MathF.Sin(i * 0.001f);
         }
 
-        using var pool = new PlotWorkerPool(1);
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
         using var y = TestStorage<float>.MakeColumn(values, out var storage);
         storage.Hold(1);
         try

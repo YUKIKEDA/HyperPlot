@@ -49,7 +49,7 @@ Read the rules that match the work before changing anything. `alwaysApply` rules
 | `aot` | No reflection or dynamic code; the WPF exception; the NativeAOT publish check |
 | `interop` | P/Invoke, COM, unsafe code, mapped memory, native callbacks (`src/**`) |
 | `csharp` | Style, naming, types, errors, XML docs (`*.cs`) |
-| `testing` | xUnit v3, fake time, test layers, test docs (`tests/**`) |
+| `testing` | xUnit v3, fake time and other outside state, test layers, test docs (`tests/**`) |
 | `dev-docs` | Mermaid, math, byte units, and pseudo-code in `docs/` |
 
 ## Skills

@@ -524,6 +524,15 @@ public sealed class PlotWorkerPool : IDisposable
     internal bool CallerTakesJobs { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets a value indicating whether the workers take the jobs of Extract; tests turn it off so that the caller
+    /// alone runs them (Issue #589). A test that holds a chunk on its only worker needs it: a worker that takes the frame's
+    /// job before it reaches the held chunk reads that chunk's edge elements, is held there, and the frame waits until the
+    /// hold's watchdog. Set it before the first extraction, and never off together with <see cref="CallerTakesJobs"/>, which
+    /// leaves a batch that no thread ends.
+    /// </summary>
+    internal bool WorkersTakeJobs { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets a test hook called on a worker after it ran a job it took: true for a frame job, false for a chunk. A
     /// chunk's call comes after the chunk is built, so after a completion that chunk ends.
     /// </summary>
@@ -682,9 +691,10 @@ public sealed class PlotWorkerPool : IDisposable
     private bool RunOne()
     {
         // The jobs of a frame come before pyramid chunks (design §8.1). With no batch, the build path takes no lock; a batch
-        // linked just after this read wakes the threads, so it is not missed.
+        // linked just after this read wakes the threads, so it is not missed. The switch is read after the list: a test sets
+        // it before it links a batch, so a worker that sees the batch sees the switch too.
         M4Batch? batch = null;
-        if (Volatile.Read(ref _batches) is not null)
+        if (Volatile.Read(ref _batches) is not null && WorkersTakeJobs)
         {
             lock (_gate)
             {
