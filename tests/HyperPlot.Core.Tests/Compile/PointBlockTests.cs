@@ -12,6 +12,11 @@ namespace HyperPlot.Tests;
 [Collection("Large data")]
 public sealed class PointBlockTests
 {
+    // A marker's radius in physical pixels, the half of the default 6 at a scale of 1; and its reach, the vertex shader's
+    // box: the radius and half a pixel (design §5.5.2 "ページ").
+    private const double Radius = 3;
+    private const double Reach = Radius + 0.5;
+
     private static readonly PanelId Panel = new(0, 0);
 
     /// <summary>
@@ -261,13 +266,16 @@ public sealed class PointBlockTests
     /// Steps:
     /// - Render the whole view, and say that its pages were sent. Then render each of five views: a tall strip at the left,
     ///   a small square off the middle, the strip moved right by 7, a wide strip at the bottom, and the middle half.
-    /// - For each view, mark every block that holds a point of a resident cell whose box reaches into the view (its ends
-    ///   included), and join the marked blocks that follow one another in a page.
+    /// - For each view, mark every block that holds a point of a resident cell whose box reaches into the view widened by
+    ///   a marker's reach on each side (3.5 physical pixels, from the engine's pixels of the view; the ends included), and
+    ///   join the marked blocks that follow one another in a page. Apart from the cells, read every point's value and mark
+    ///   the blocks of the points whose center lies within the view widened by the marker's radius (3 pixels).
     /// - Render the first view again with the cache drawing whole pages.
     ///
     /// Expected:
     /// - The whole view records one run a page, from 0, of the page's points.
-    /// - Each view records exactly the joined blocks, as (part, page, first, count), and stages no page.
+    /// - Each view records exactly the joined blocks, as (part, page, first, count), and stages no page. Every block of a
+    ///   point within the radius is in a run, each run is whole blocks of one page, and no two runs of a page touch.
     /// - Over the views, some run begins after its page's first block, and each view draws fewer points than the whole
     ///   view. Some page of the 8 parts (16 blocks a page) has two runs or more; no page of the one part (2 blocks) has.
     /// - With whole pages: one run, from 0 and of the page's points, for each page that has a run without.
@@ -289,7 +297,7 @@ public sealed class PointBlockTests
         using var layer = new Layer(engine, backend.Images, block);
 
         var whole = layer.Runs(backend.LastList!);
-        Assert.Equal(layer.Expected(0, 100, 0, 100, clampX: false, wholePages: false), whole);
+        Assert.Equal(layer.Expected(engine, 0, 100, 0, 100, clampX: false, wholePages: false), whole);
         Assert.Equal(pages.PagesInUse, whole.Length);
         Assert.All(whole, run => Assert.Equal((0, layer.PointsOf(run.Part, run.Page)), (run.First, run.Count)));
         Assert.Equal(count, whole.Sum(r => r.Count));
@@ -310,7 +318,8 @@ public sealed class PointBlockTests
             engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(x0, x1), ViewRange.FromValues(y0, y1)));
             engine.RenderFrame();
             var runs = layer.Runs(backend.LastList!);
-            Assert.Equal(layer.Expected(x0, x1, y0, y1, clampX: false, wholePages: false), runs);
+            Assert.Equal(layer.Expected(engine, x0, x1, y0, y1, clampX: false, wholePages: false), runs);
+            Assert.NotEmpty(layer.AssertDrawsTheNeeded(engine, data, runs, (x0, x1, y0, y1)));
             Assert.Equal(0, pages.Uploads.Length);
             Assert.InRange(runs.Sum(r => r.Count), 1, count - 1);
             split |= runs.GroupBy(r => (r.Part, r.Page)).Any(g => g.Count() > 1);
@@ -328,7 +337,7 @@ public sealed class PointBlockTests
         engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(wx0, wx1), ViewRange.FromValues(wy0, wy1)));
         engine.RenderFrame();
         var drawnWhole = layer.Runs(backend.LastList!);
-        Assert.Equal(layer.Expected(wx0, wx1, wy0, wy1, clampX: false, wholePages: true), drawnWhole);
+        Assert.Equal(layer.Expected(engine, wx0, wx1, wy0, wy1, clampX: false, wholePages: true), drawnWhole);
         Assert.Equal(first.Select(r => (r.Part, r.Page)).Distinct(), drawnWhole.Select(r => (r.Part, r.Page)));
         Assert.All(drawnWhole, run => Assert.Equal((0, layer.PointsOf(run.Part, run.Page)), (run.First, run.Count)));
         Assert.True(drawnWhole.Sum(r => r.Count) > first.Sum(r => r.Count));
@@ -341,34 +350,242 @@ public sealed class PointBlockTests
     /// <remarks>
     /// Preconditions:
     /// - 600,000 seeded points over [0, 100]² in one part, in an engine that waits for its indexes, on the null backend
-    ///   with no frame budget. The x domain is [200, 300], past every point; the y domain is [2.1, 31.3].
+    ///   with no frame budget. On the axis that clamps (<paramref name="clampsX"/> for x, else y) the domain is [200, 300],
+    ///   past every point; on the other axis it is [2.1, 31.3].
     ///
     /// Steps:
-    /// - Render with an x scale that does not clamp, and with one that does.
+    /// - Render with a scale on that axis that does not clamp, and with one that does.
     ///
     /// Expected:
-    /// - Without the clamp: no run. With it: exactly the joined blocks of the cells whose y reaches into [2.1, 31.3],
-    ///   whatever their x; fewer points than the layer has, and more than none.
+    /// - Without the clamp: no run. With it: exactly the joined blocks of the cells whose box on the other axis reaches into
+    ///   [2.1, 31.3] widened by a marker's reach, whatever they hold on the clamped axis; every block of a point within the
+    ///   radius of that range on the other axis is drawn; fewer points than the layer has, and more than none.
     /// </remarks>
-    [Fact]
-    public void Recording_ClampedAxis_DrawsTheBlocksOfTheCellsOutsideTheView()
+    /// <param name="clampsX">Whether x clamps; y does otherwise.</param>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Recording_ClampedAxis_DrawsTheBlocksOfTheCellsOutsideTheView(bool clampsX)
     {
         const int Count = 600_000;
         using var data = new Data(Count, seed: 53, parts: 1);
         var backend = new NullBackend();
         using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
-        var spec = data.Spec() with { ScaleX = Scale.Linear().WithDomain(200, 300), ScaleY = Scale.Linear().WithDomain(2.1, 31.3) };
+        var (far, near) = (Scale.Linear().WithDomain(200, 300), Scale.Linear().WithDomain(2.1, 31.3));
+        var spec = clampsX ? data.Spec() with { ScaleX = far, ScaleY = near } : data.Spec() with { ScaleX = near, ScaleY = far };
         engine.SetPlot(spec);
         engine.RenderFrame();
         Assert.Equal(0, backend.LastList!.ResidentRuns.Length);
 
         backend.Images.Sent();
-        engine.SetPlot(spec with { ScaleX = Scale.Linear().WithDomain(200, 300) with { Clamp = true } });
+        engine.SetPlot(clampsX ? spec with { ScaleX = far with { Clamp = true } } : spec with { ScaleY = far with { Clamp = true } });
         engine.RenderFrame();
         using var layer = new Layer(engine, backend.Images, PointPages.MaxBlockPoints, resident: false);
         var runs = layer.Runs(backend.LastList!);
-        Assert.Equal(layer.Expected(200, 300, 2.1, 31.3, clampX: true, wholePages: false), runs);
+        var view = clampsX ? (200.0, 300.0, 2.1, 31.3) : (2.1, 31.3, 200.0, 300.0);
+        Assert.Equal(layer.Expected(engine, view.Item1, view.Item2, view.Item3, view.Item4, clampsX, wholePages: false, clampY: !clampsX), runs);
+        Assert.NotEmpty(layer.AssertDrawsTheNeeded(engine, data, runs, view, clampsX, clampY: !clampsX));
         Assert.InRange(runs.Sum(r => r.Count), 1, Count - 1);
+    }
+
+    /// <summary>
+    /// A cell outside the view by less than a marker's reach is drawn (design §5.5.2 "ページ"): its markers whose centers lie
+    /// just past the view's edge cover pixels inside it, as the CPU path draws them (Issue #583).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 600,000 seeded points over [0, 100]² in one part, in an engine that waits for its indexes, on the null backend.
+    ///   E is, on each axis, the cells' edge nearest the middle of their span that no cell crosses.
+    /// - The view [Ex − 20.05, Ex − 0.05] × [Ey + 0.05, Ey + 20.05]: its right and lower edges lie 0.05 from E, under a
+    ///   marker's radius (3 pixels, about 0.09 of x and 0.17 of y at 640 × 360).
+    ///
+    /// Steps:
+    /// - Render the whole view, then the view at the edges.
+    ///
+    /// Expected:
+    /// - The runs are the joined blocks of the cells within a marker's reach of the view; every block of a point within the
+    ///   radius is drawn, and some of those blocks hold no point of a cell whose box reaches into the view itself, on each
+    ///   of the two edges.
+    /// </remarks>
+    [Fact]
+    public void Recording_CellPastTheEdgeByLessThanAMarker_DrawsItsBlocks()
+    {
+        const int Count = 600_000;
+        using var data = new Data(Count, seed: 67, parts: 1);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(data.Spec());
+        engine.RenderFrame();
+        using var layer = new Layer(engine, backend.Images, PointPages.MaxBlockPoints);
+        var snapshot = Parts(engine.Plan!.Panels[0])[0].SpatialIndex!.Acquire();
+        var cells = snapshot.ResidentCells.ToArray();
+        var ex = snapshot.XRange.Origin + Edge(cells, ofX: true);
+        var ey = snapshot.YRange.Origin + Edge(cells, ofX: false);
+        var view = (ex - 20.05, ex - 0.05, ey + 0.05, ey + 20.05);
+
+        backend.Images.Sent();
+        engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(view.Item1, view.Item2), ViewRange.FromValues(view.Item3, view.Item4)));
+        engine.RenderFrame();
+        var runs = layer.Runs(backend.LastList!);
+        Assert.Equal(layer.Expected(engine, view.Item1, view.Item2, view.Item3, view.Item4, clampX: false, wholePages: false), runs);
+        var needed = layer.AssertDrawsTheNeeded(engine, data, runs, view);
+
+        // The blocks of the cells whose box reaches into the view itself: the needed blocks past each edge are not all among them.
+        var (x0, x1) = (view.Item1 - snapshot.XRange.Origin, view.Item2 - snapshot.XRange.Origin);
+        var (y0, y1) = (view.Item3 - snapshot.YRange.Origin, view.Item4 - snapshot.YRange.Origin);
+        var inside = new HashSet<long>();
+        foreach (var cell in cells.Where(c => c.CornerX <= x1 && c.CornerX + c.ExtentX >= x0 && c.CornerY <= y1 && c.CornerY + c.ExtentY >= y0))
+        {
+            for (var b = cell.First / PointPages.MaxBlockPoints; b * PointPages.MaxBlockPoints < cell.First + cell.Count; b++)
+            {
+                _ = inside.Add(b);
+            }
+        }
+
+        // A point past E within the radius of the view, in a block no cell in the view holds: only the reach draws it.
+        var (perX, perY) = PixelsPerUnit(engine, view.Item1, view.Item2, view.Item3, view.Item4);
+        var (radiusX, radiusY) = (Radius / perX, Radius / perY);
+        var (xs, ys, rows) = (new double[Count], new double[Count], new long[Count]);
+        snapshot.ReadPoints(0, xs, ys, rows);
+        var (originX, originY) = (snapshot.XRange.Origin, snapshot.YRange.Origin);
+        snapshot.Release();
+        bool Past(int i, bool ofX)
+        {
+            var (x, y) = (originX + xs[i], originY + ys[i]);
+            var near = x >= view.Item1 - radiusX && x <= view.Item2 + radiusX && y >= view.Item3 - radiusY && y <= view.Item4 + radiusY;
+            return near && (ofX ? x > ex : y < ey) && !inside.Contains(i / PointPages.MaxBlockPoints);
+        }
+
+        var (pastX, pastY) = (Enumerable.Range(0, Count).Any(i => Past(i, true)), Enumerable.Range(0, Count).Any(i => Past(i, false)));
+        Assert.True(pastX && pastY, $"A needed point past the right edge alone: {pastX}; past the lower edge alone: {pastY}.");
+        Assert.NotEmpty(needed);
+    }
+
+    /// <summary>
+    /// A run that would read past a page is refused when it is recorded: its first point and its count are not negative, and
+    /// it ends within the 65,536 points of a page.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A list.
+    ///
+    /// Steps:
+    /// - Record runs from 65,024 of 512 points, from 65,025 of 512, from −1, and of −1 points.
+    ///
+    /// Expected:
+    /// - The first is recorded; the others throw ArgumentOutOfRangeException and are not.
+    /// </remarks>
+    [Fact]
+    public void DrawResidentMarkers_RunPastAPage_Throws()
+    {
+        var list = new RenderList();
+        var run = new ResidentMarkerRun(0, 65_024, 512, 0, 6, 0, default, false, default, default, default);
+        list.DrawResidentMarkers(run);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawResidentMarkers(run with { First = 65_025 }));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawResidentMarkers(run with { First = -1 }));
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => list.DrawResidentMarkers(run with { Count = -1 }));
+        Assert.Equal(1, list.ResidentRuns.Length);
+    }
+
+    /// <summary>
+    /// A cell whose points lie in two pages is drawn as two runs, one to the end of the first page and one from the start of
+    /// the second: a run does not cross a page.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 600,000 seeded points over [0, 100]² in one part (blocks of 32,768), in an engine that waits for its indexes, on
+    ///   the null backend. A resident cell whose points begin in a page and end in the next.
+    ///
+    /// Steps:
+    /// - Render the whole view, then a view of a hundredth of that cell's box on each axis around its middle.
+    ///
+    /// Expected:
+    /// - The runs are the joined blocks of the cells within a marker's reach of the view. One run of the first page ends at
+    ///   its last point, and one run of the next page begins at its first; every needed block is drawn.
+    /// </remarks>
+    [Fact]
+    public void Recording_CellAcrossTwoPages_IsCutAtThePageEnd()
+    {
+        const int Count = 600_000;
+        using var data = new Data(Count, seed: 71, parts: 1);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(data.Spec());
+        engine.RenderFrame();
+        using var layer = new Layer(engine, backend.Images, PointPages.MaxBlockPoints);
+        var snapshot = Parts(engine.Plan!.Panels[0])[0].SpatialIndex!.Acquire();
+        var cell = snapshot.ResidentCells.ToArray().First(c => c.First / PointPages.PagePoints != (c.First + c.Count - 1) / PointPages.PagePoints);
+        var (cx, cy) = (snapshot.XRange.Origin + cell.CornerX + (cell.ExtentX / 2), snapshot.YRange.Origin + cell.CornerY + (cell.ExtentY / 2));
+        snapshot.Release();
+        var (hx, hy) = (cell.ExtentX / 200, cell.ExtentY / 200);
+        var view = (cx - hx, cx + hx, cy - hy, cy + hy);
+
+        backend.Images.Sent();
+        engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(view.Item1, view.Item2), ViewRange.FromValues(view.Item3, view.Item4)));
+        engine.RenderFrame();
+        var runs = layer.Runs(backend.LastList!);
+        Assert.Equal(layer.Expected(engine, view.Item1, view.Item2, view.Item3, view.Item4, clampX: false, wholePages: false), runs);
+        _ = layer.AssertDrawsTheNeeded(engine, data, runs, view);
+        var page = (int)(cell.First / PointPages.PagePoints);
+        Assert.Contains(runs, r => r.Page == page && r.First + r.Count == PointPages.PagePoints);
+        Assert.Contains(runs, r => r.Page == page + 1 && r.First == 0);
+    }
+
+    /// <summary>
+    /// Two cells whose ranges, widened to the blocks' ends, meet at a block's end (the next begins where the run ends) are
+    /// drawn as one run, not as two that touch.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 16 parts (blocks of 2,048), each a 256 × 256 lattice over [0, 100]² (65,536 points, one page), so that cells hold
+    ///   powers of two; an engine that waits for its indexes, on the null backend. Some part has two resident cells that
+    ///   follow one another in the copy, the first ending at a multiple of 2,048 inside the page.
+    ///
+    /// Steps:
+    /// - Render the whole view.
+    ///
+    /// Expected:
+    /// - One run a page, from 0, of the page's points; each such pair of cells lies in one run.
+    /// </remarks>
+    [Fact]
+    public void Recording_RangesThatMeetAtABlockEnd_AreOneRun()
+    {
+        const int Count = 16 * 256 * 256;
+        const int Block = 2_048;
+        using var data = new Data(Count, seed: 73, parts: 16, lattice: 256);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(data.Spec());
+        engine.RenderFrame();
+        using var layer = new Layer(engine, backend.Images, Block);
+        var meets = new List<(int Part, long End)>();
+        var plans = Parts(engine.Plan!.Panels[0]);
+        for (var part = 0; part < plans.Length; part++)
+        {
+            var snapshot = plans[part].SpatialIndex!.Acquire();
+            var cells = snapshot.ResidentCells;
+            for (var c = 1; c < cells.Length; c++)
+            {
+                var end = cells[c - 1].First + cells[c - 1].Count;
+                if (end % Block == 0 && end % PointPages.PagePoints != 0 && cells[c].First == end && cells[c].Count > 0)
+                {
+                    meets.Add((part, end));
+                }
+            }
+
+            snapshot.Release();
+        }
+
+        Assert.NotEmpty(meets);
+        var runs = layer.Runs(backend.LastList!);
+        Assert.Equal(layer.Expected(engine, 0, 100, 0, 100, clampX: false, wholePages: false), runs);
+        Assert.All(runs, run => Assert.Equal((0, layer.PointsOf(run.Part, run.Page)), (run.First, run.Count)));
+        foreach (var (part, end) in meets)
+        {
+            var page = (int)(end / PointPages.PagePoints);
+            var inPage = (int)(end % PointPages.PagePoints);
+            Assert.Contains(runs, r => r.Part == part && r.Page == page && r.First < inPage && r.First + r.Count > inPage);
+        }
     }
 
     /// <summary>
@@ -449,6 +666,33 @@ public sealed class PointBlockTests
         }
     }
 
+    /// <summary>
+    /// Returns a cell's lower edge on an axis, as a difference from the snapshot's origin, that no cell crosses and that lies
+    /// between 40 and 60 of the data: the one nearest 50.
+    /// </summary>
+    private static double Edge(ResidentCell[] cells, bool ofX)
+    {
+        static (double Corner, double Extent) Of(in ResidentCell c, bool ofX) => ofX ? (c.CornerX, c.ExtentX) : (c.CornerY, c.ExtentY);
+        var edges = cells
+            .Select(c => Of(c, ofX).Corner)
+            .Distinct()
+            .Where(e => !cells.Any(c => Of(c, ofX).Corner < e && Of(c, ofX).Corner + Of(c, ofX).Extent > e))
+            .ToArray();
+        var span = (cells.Min(c => Of(c, ofX).Corner), cells.Max(c => Of(c, ofX).Corner + Of(c, ofX).Extent));
+        var middle = (span.Item1 + span.Item2) / 2;
+        var edge = edges.OrderBy(e => Math.Abs(e - middle)).First();
+        Assert.InRange(edge, middle - ((span.Item2 - span.Item1) / 10), middle + ((span.Item2 - span.Item1) / 10));
+        return edge;
+    }
+
+    /// <summary>Returns the physical pixels of one data unit along each axis in the engine's current view of the panel.</summary>
+    private static (double X, double Y) PixelsPerUnit(PlotEngine engine, double x0, double x1, double y0, double y1)
+    {
+        var low = engine.ViewToPixel(Panel, ViewRange.FromValues(x0, x0), ViewRange.FromValues(y0, y0));
+        var high = engine.ViewToPixel(Panel, ViewRange.FromValues(x1, x1), ViewRange.FromValues(y1, y1));
+        return (Math.Abs(high.X - low.X) / (x1 - x0), Math.Abs(high.Y - low.Y) / (y1 - y0));
+    }
+
     /// <summary>Returns the parts of a panel's first layer on the index path.</summary>
     private static IndexedPointPlan[] Parts(PlotPanel panel) =>
         panel.Layers[0] is SplitPlan split ? [.. split.Parts.Cast<IndexedPointPlan>()] : [(IndexedPointPlan)panel.Layers[0]];
@@ -489,11 +733,21 @@ public sealed class PointBlockTests
         private readonly int _parts;
         private readonly int _panels;
 
-        public Data(int count, int seed, int parts, int panels = 1)
+        public Data(int count, int seed, int parts, int panels = 1, int lattice = 0)
         {
             var random = new Random(seed);
-            _x = Column.Wrap(Enumerable.Range(0, count).Select(_ => random.NextDouble() * 100).ToArray());
-            _y = Column.Wrap(Enumerable.Range(0, count).Select(_ => random.NextDouble() * 100).ToArray());
+            X = [.. Enumerable.Range(0, count).Select(_ => random.NextDouble() * 100)];
+            Y = [.. Enumerable.Range(0, count).Select(_ => random.NextDouble() * 100)];
+
+            // A lattice of the given side in each part instead: row i, of part i mod parts, at the part's (i / parts)-th node.
+            for (var i = 0; lattice > 0 && i < count; i++)
+            {
+                var node = i / parts;
+                (X[i], Y[i]) = (((node % lattice) + 0.5) * 100 / lattice, (((node / lattice) % lattice) + 0.5) * 100 / lattice);
+            }
+
+            _x = Column.Wrap(X);
+            _y = Column.Wrap(Y);
             (_parts, _panels) = (parts, panels);
             var builder = DataTable.Create().Add("x", _x).Add("y", _y);
             var names = Enumerable.Range(0, Math.Max(parts, panels)).Select(i => $"k{i:D2}").ToArray();
@@ -503,6 +757,12 @@ public sealed class PointBlockTests
         }
 
         public DataTable Table { get; }
+
+        /// <summary>Gets the x of each row.</summary>
+        public double[] X { get; }
+
+        /// <summary>Gets the y of each row.</summary>
+        public double[] Y { get; }
 
         /// <summary>Returns the spec of the point layer over [0, 100]², split by the parts and wrapped by the panels.</summary>
         public PlotSpec Spec()
@@ -570,23 +830,27 @@ public sealed class PointBlockTests
             ];
 
         /// <summary>
-        /// Returns the runs the design gives for a view in data units: every block that holds a point of a resident cell
-        /// whose box reaches into the view, the marked blocks that follow one another in a page joined; or, for whole
-        /// pages, each page that has such a block.
+        /// Returns the runs the design gives for a view in data units (design §5.5.2 "ページ" and "見えるブロックだけを描く"):
+        /// every block that holds a point of a resident cell whose box reaches into the view widened on each side by a
+        /// marker's reach (half the diameter and half a pixel, here from the engine's pixels of the view), the marked blocks
+        /// that follow one another in a page joined; or, for whole pages, each page that has such a block.
         /// </summary>
-        public Run[] Expected(double x0, double x1, double y0, double y1, bool clampX, bool wholePages)
+        public Run[] Expected(PlotEngine engine, double x0, double x1, double y0, double y1, bool clampX, bool wholePages, bool clampY = false)
         {
+            var (perX, perY) = PixelsPerUnit(engine, x0, x1, y0, y1);
+            var (reachX, reachY) = (Reach / perX, Reach / perY);
             var runs = new List<Run>();
             for (var part = 0; part < _snapshots.Length; part++)
             {
                 var snapshot = _snapshots[part];
                 var marked = new bool[(snapshot.PointCount + _block - 1) / _block];
-                var (lowX, highX) = (x0 - snapshot.XRange.Origin, x1 - snapshot.XRange.Origin);
-                var (lowY, highY) = (y0 - snapshot.YRange.Origin, y1 - snapshot.YRange.Origin);
+                var (lowX, highX) = (x0 - reachX - snapshot.XRange.Origin, x1 + reachX - snapshot.XRange.Origin);
+                var (lowY, highY) = (y0 - reachY - snapshot.YRange.Origin, y1 + reachY - snapshot.YRange.Origin);
                 foreach (var cell in snapshot.ResidentCells)
                 {
                     var seesX = clampX || (cell.CornerX <= highX && cell.CornerX + cell.ExtentX >= lowX);
-                    if (seesX && cell.CornerY <= highY && cell.CornerY + cell.ExtentY >= lowY)
+                    var seesY = clampY || (cell.CornerY <= highY && cell.CornerY + cell.ExtentY >= lowY);
+                    if (seesX && seesY)
                     {
                         for (var b = cell.First / _block; b * _block < cell.First + cell.Count; b++)
                         {
@@ -627,6 +891,71 @@ public sealed class PointBlockTests
             }
 
             return [.. runs];
+        }
+
+        /// <summary>
+        /// Asserts what the drawn runs must hold, read from the points' values and not from the cells, so that a fault the
+        /// cells' test shares with <see cref="Expected"/> shows: every block that holds a point whose center lies within the
+        /// view widened by a marker's radius on each axis (3 pixels, the half of the default 6; such a marker covers a
+        /// pixel of the view) is in a run; each run is whole blocks of one page; no two runs of a page touch.
+        /// </summary>
+        /// <returns>The needed blocks, as (part, block of the part's copy).</returns>
+        public HashSet<(int Part, long Block)> AssertDrawsTheNeeded(
+            PlotEngine engine,
+            Data data,
+            Run[] runs,
+            (double X0, double X1, double Y0, double Y1) view,
+            bool clampX = false,
+            bool clampY = false
+        )
+        {
+            var (perX, perY) = PixelsPerUnit(engine, view.X0, view.X1, view.Y0, view.Y1);
+            var (radiusX, radiusY) = (Radius / perX, Radius / perY);
+            var needed = new HashSet<(int, long)>();
+            for (var part = 0; part < _snapshots.Length; part++)
+            {
+                var snapshot = _snapshots[part];
+                var (xs, ys, rows) = (new double[snapshot.PointCount], new double[snapshot.PointCount], new long[snapshot.PointCount]);
+                snapshot.ReadPoints(0, xs, ys, rows);
+                for (var i = 0; i < rows.Length; i++)
+                {
+                    var (x, y) = (snapshot.XRange.Origin + xs[i], snapshot.YRange.Origin + ys[i]);
+                    var inX = clampX || (x >= view.X0 - radiusX && x <= view.X1 + radiusX);
+                    var inY = clampY || (y >= view.Y0 - radiusY && y <= view.Y1 + radiusY);
+                    if (inX && inY)
+                    {
+                        _ = needed.Add((part, i / _block));
+                    }
+                }
+            }
+
+            var drawn = new HashSet<(int, long)>();
+            foreach (var run in runs)
+            {
+                Assert.Equal(0, run.First % _block);
+                Assert.True(run.Count > 0 && (run.First + run.Count == PointsOf(run.Part, run.Page) || (run.First + run.Count) % _block == 0));
+                var start = ((long)run.Page * PointPages.PagePoints) + run.First;
+                for (var b = start / _block; b * _block < start + run.Count; b++)
+                {
+                    _ = drawn.Add((run.Part, b));
+                }
+            }
+
+            var missing = needed.Except(drawn).ToArray();
+            Assert.True(
+                missing.Length == 0,
+                $"{missing.Length} needed blocks are not drawn, the first {(missing.Length > 0 ? missing[0] : default)}."
+            );
+            foreach (var page in runs.GroupBy(r => (r.Part, r.Page)))
+            {
+                var ordered = page.OrderBy(r => r.First).ToArray();
+                for (var k = 1; k < ordered.Length; k++)
+                {
+                    Assert.True(ordered[k].First > ordered[k - 1].First + ordered[k - 1].Count, $"Two runs of page {page.Key} touch.");
+                }
+            }
+
+            return needed;
         }
 
         public void Dispose()

@@ -232,8 +232,15 @@ public sealed class RenderList
     /// The run. Its clip is the list's current clip. Its slot may be −1, for a page that is not on the GPU yet: the run is
     /// recorded and draws nothing (<see cref="ResidentMarkerRun.Slot"/>).
     /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The run's first point or its count is negative, or the run ends past the 65,536 points of a page: the backend would
+    /// read past the page's buffer. A snapshot's last page is shorter; the recording stops its runs at that page's points.
+    /// </exception>
     internal void DrawResidentMarkers(in ResidentMarkerRun run)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(run.First, nameof(run));
+        ArgumentOutOfRangeException.ThrowIfNegative(run.Count, nameof(run));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(run.First + run.Count, PointPages.PagePoints, nameof(run));
         if (_residentRunCount == _residentRuns.Length)
         {
             Array.Resize(ref _residentRuns, _residentRuns.Length * 2);

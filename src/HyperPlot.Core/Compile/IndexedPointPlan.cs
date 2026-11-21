@@ -276,6 +276,11 @@ internal sealed class IndexedPointPlan : LayerPlan
         // not touch it (design §5.5.2 "見えるブロックだけを描く").
         var block = PointPages.BlockPoints(_switch.PartCount);
         var whole = pages.DrawsWholePages;
+
+        // A cell outside the view by less than a marker's reach has markers that cover pixels in it (design §5.5.2 "ページ"):
+        // the reach of the vertex shader's box, half the diameter and half a pixel, in units of each axis.
+        var reach = (style.Size / 2) + 0.5;
+        var (reachX, reachY) = (x.UnitsOf(reach), y.UnitsOf(reach));
         var (runPage, slot, runFrom, runTo) = (-1L, -1, 0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
@@ -283,7 +288,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             var (baseX, pixelX, scaleX) = x.Place(cell.CornerX, cell.ExtentX);
             var (baseY, pixelY, scaleY) = y.Place(cell.CornerY, cell.ExtentY);
             records[c] = new ResidentCellRecord(baseX, baseY, pixelX, pixelY, scaleX, scaleY);
-            if (!x.Sees(cell.CornerX, cell.ExtentX) || !y.Sees(cell.CornerY, cell.ExtentY))
+            if (!x.Sees(cell.CornerX, cell.ExtentX, reachX) || !y.Sees(cell.CornerY, cell.ExtentY, reachY))
             {
                 continue;
             }
@@ -978,11 +983,18 @@ internal sealed class IndexedPointPlan : LayerPlan
             return one[0];
         }
 
+        /// <summary>Returns the units of this axis that span the given physical pixels: 0 when the view has no width.</summary>
+        public double UnitsOf(double pixels) => _perUnit != 0 ? pixels / Math.Abs(_perUnit) : 0;
+
         /// <summary>
-        /// Returns whether a cell's points are drawn on this axis: the cell reaches into the view, or the axis clamps, so
-        /// that the points outside the view are drawn at its ends as the CPU path draws them.
+        /// Returns whether a cell's points are drawn on this axis: the cell reaches into the view widened by a marker's reach
+        /// on each side, so that a marker whose center is outside the view and whose shape covers pixels in it is drawn, as
+        /// the CPU path draws it; or the axis clamps, so that the points outside the view are drawn at its ends.
         /// </summary>
-        public bool Sees(double corner, double extent) => _clamps || (corner <= _high && corner + extent >= _low);
+        /// <param name="corner">The cell's lower corner on this axis, as a difference from the snapshot's origin.</param>
+        /// <param name="extent">The cell's extent on this axis.</param>
+        /// <param name="reach">A marker's reach on this axis, in its units (<see cref="UnitsOf"/>).</param>
+        public bool Sees(double corner, double extent, double reach) => _clamps || (corner <= _high + reach && corner + extent >= _low - reach);
 
         /// <summary>
         /// Returns a cell's record on this axis (design §5.5.2 "セルの表"): the base, the view's lower end held in the cell,
