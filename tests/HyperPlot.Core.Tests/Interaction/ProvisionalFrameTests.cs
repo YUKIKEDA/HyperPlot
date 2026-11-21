@@ -20,8 +20,9 @@ public sealed class ProvisionalFrameTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread; a line over a uniform x and a Y of two chunks, values in [−1, 1] in chunk 0 and [−10, 10] in
-    ///   chunk 1, chunk 1 held on the worker.
+    /// - A pool of 1 thread whose worker takes no frame job, so that only the pyramid's build is held (Issue #589); a line
+    ///   over a uniform x and a Y of two chunks, values in [−1, 1] in chunk 0 and [−10, 10] in chunk 1, chunk 1 held on the
+    ///   worker.
     ///
     /// Steps:
     /// - Draw until the worker reads chunk 1; draw. Once with the full view, once with a view of x [0, 100] and y [−5, 5]
@@ -37,7 +38,7 @@ public sealed class ProvisionalFrameTests
     [InlineData(true)]
     public void Pyramid_Building_DrawsProvisionalAndLearnsAsItFills(bool zoomed)
     {
-        using var pool = new PlotWorkerPool(1);
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
         using var y = TestStorage<float>.MakeColumn(TwoChunks(), out var storage);
         storage.Hold(1);
         var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();
@@ -489,7 +490,7 @@ public sealed class ProvisionalFrameTests
     [Fact]
     public void ProvisionalFrames_AllocateNothingOnceWarm()
     {
-        using var pool = new PlotWorkerPool(1);
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
         using var y = TestStorage<float>.MakeColumn(TwoChunks(), out var storage);
         storage.Hold(1);
         var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();

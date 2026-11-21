@@ -249,7 +249,10 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         context->OMSetRenderTargets(1, &view, null);
     }
 
-    /// <summary>Draws one run: points of one page under one clip, in one call. A run whose page has no buffer draws nothing.</summary>
+    /// <summary>
+    /// Draws one run: the points of one page from the run's first, under one clip, in one call. A run whose page has no
+    /// buffer draws nothing.
+    /// </summary>
     internal void Draw(D3D11RenderTarget target, in ResidentMarkerRun run)
     {
         if ((uint)run.Slot >= (uint)_pageViews.Length || _pageViews[run.Slot] == 0 || run.Count <= 0)
@@ -277,6 +280,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
             Size = run.Size,
             Kind = run.Kind,
             Swap = run.Swap ? 1u : 0u,
+            First = (uint)run.First,
             Color = run.Color,
             ClampLow = run.ClampLow,
             ClampHigh = run.ClampHigh,
@@ -335,7 +339,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         public float Size;
         public uint Kind;
         public uint Swap;
-        public uint Unused1;
+        public uint First;
         public Vector4 Color;
         public Vector2 ClampLow;
         public Vector2 ClampHigh;

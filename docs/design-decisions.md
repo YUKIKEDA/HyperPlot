@@ -1153,6 +1153,19 @@ Rejected:
   - ワーカーから UI のスレッドへ終わりを知らせる（`SynchronizationContext` を捕まえる）: Core が UI のスレッドの仕組みを知ることになり、ホストごとの違いを持ち込む。暫定の間フレームを要求すれば、ホストの描画の時機で調べられる
   - 層のテクスチャでの合成を W1 で作る: W1 にはマウスを動かしただけのフレームを作るものがほとんどなく（矩形ズームの枠だけ）、P-6 を測れない
 
+## WPF のホスト: フロントバッファがない間は `SetBackBuffer` に null を渡さない（Issue #556）
+
+Decision:
+  `D3DImage` がフロントバッファの喪失を知らせたら、`HyperPlotView` は表示していた共有テクスチャを忘れ、自分が開いた D3D9Ex の面だけを放す。`SetBackBuffer` に null は渡さない。真に戻った通知のあと、次のフレームで新しい面を `SetBackBuffer` に渡して共有へ戻る（§7.2）
+
+Reason:
+  null を渡すと WPF は `D3DImage` をビットマップから切り離し、切り離したビットマップは通知を出さない（dotnet/wpf の main の `D3DImage.SetBackBuffer`、`CInteropDeviceBitmap::Detach`）。`IsFrontBufferAvailable` を変えるのはその通知だけなので、ビューは読み出しの経路から戻れない。Issue #556 の計測（2026-11-21、.NET 10）で、null を渡す形は 11 件の喪失のうち 0 件が真に戻り、渡さない形は 16 件のうち 15 件が戻った。
+  フロントバッファがない間、WPF は利用者の面への参照を自分で放す（`CInteropDeviceBitmap::NotifyAdapterStatusInternal`）ので、null を渡さなくても D3D9Ex のデバイスと面を作り直せる
+
+Rejected:
+  - 喪失で null を渡し、一定の間隔かフレームごとに面を渡し直して、新しいビットマップの最初の Present の通知で状態を知る: 戻れるようにはなるが、フロントバッファがない間も共有テクスチャを開いて渡し続け、そのフレームは表示されない。渡さない形で通知が戻ることを計測で確かめたので、足す理由がない
+  - `SetBackBuffer` の `enableSoftwareFallback` を真にして、フロントバッファがない間は WPF に写させる: 読み出しの経路（要件 H-3）を WPF の写しに置き換えることになる。待たない読み出し（上の項）と、その間のデバイスの喪失の扱いを決め直すことになり、この不具合の直しに要らない
+
 ## 層を作る段の待たない形: 計画ごとのスレッドプールのタスク、層ごとの M4 の一括、上書きの集め直し（行 W1b2、Issue #297）
 
 Decision:

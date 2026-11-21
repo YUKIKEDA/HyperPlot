@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.InteropServices;
 
 namespace HyperPlot;
 
@@ -560,7 +561,7 @@ internal sealed class SeriesStack : IDisposable
                 }
             }
 
-            _crossings.Sort();
+            SpanSort.Ascending(CollectionsMarshal.AsSpan(_crossings));
             var last = double.NaN;
             foreach (var x in _crossings)
             {

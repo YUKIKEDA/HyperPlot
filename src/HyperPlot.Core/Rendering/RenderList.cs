@@ -193,6 +193,72 @@ public sealed class RenderList
         return ((word >> (column & 31)) & 1) != 0;
     }
 
+    /// <summary>
+    /// Records a rectangle cut by a lasso's region (design §6.4 "密度の強調", row R3c, Issue #576): a rectangle for each run
+    /// of a pixel row's pixels that <see cref="Holds"/> judges alike at their centers, in one color inside the region and in
+    /// another outside it. The runs are read from the mask's words, so the work follows the mask's rows and words, not the
+    /// rectangle's pixels. The rectangle's part outside the mask's box is not recorded: the mask covers the panel, and the
+    /// panel's clip takes what a layer draws past it. So the clip lies inside the mask's box, or this throws.
+    /// </summary>
+    /// <param name="highlight">The number of a region with a mask.</param>
+    /// <param name="left">The rectangle's left edge, in physical pixels.</param>
+    /// <param name="top">The top edge.</param>
+    /// <param name="right">The right edge.</param>
+    /// <param name="bottom">The bottom edge.</param>
+    /// <param name="inside">The color of the pixels in the region.</param>
+    /// <param name="outside">The color of the others.</param>
+    /// <exception cref="InvalidOperationException">The clip reaches past the mask's box.</exception>
+    internal void DrawRectCutByMask(int highlight, float left, float top, float right, float bottom, Color inside, Color outside)
+    {
+        var region = _highlights[highlight - 1];
+        var box = region.Box;
+        if (_clip.Left < box.X || _clip.Top < box.Y || _clip.Right > box.Z || _clip.Bottom > box.W)
+        {
+            ThrowHelper.ThrowClipPastHighlightMask();
+        }
+
+        (left, top, right, bottom) = (MathF.Max(left, box.X), MathF.Max(top, box.Y), MathF.Min(right, box.Z), MathF.Min(bottom, box.W));
+        if (!(left < right && top < bottom))
+        {
+            return;
+        }
+
+        // The row's first pixel and the end of its pixels left of the right edge, as bits of a row of the mask.
+        var stride = (int)region.MaskStride;
+        var (first, end) = ((int)MathF.Floor(left) - region.MaskLeft, (int)MathF.Ceiling(right) - region.MaskLeft);
+        for (var row = MathF.Floor(top); row < bottom; row++)
+        {
+            var (from, to) = (MathF.Max(top, row), MathF.Min(bottom, row + 1));
+            var words = _highlightMasks.AsSpan((int)region.MaskFirst + (((int)row - region.MaskTop) * stride), stride);
+            var held = ((words[first >> 5] >> (first & 31)) & 1) != 0;
+            var start = left;
+            var bit = first + 1;
+            while (bit < end)
+            {
+                // The lowest bit of this word, from this bit on, that is unlike the run's.
+                var unlike = (held ? ~words[bit >> 5] : words[bit >> 5]) >> (bit & 31);
+                if (unlike == 0)
+                {
+                    bit = (bit | 31) + 1;
+                    continue;
+                }
+
+                bit += BitOperations.TrailingZeroCount(unlike);
+                if (bit >= end)
+                {
+                    break;
+                }
+
+                var column = (float)(bit + region.MaskLeft);
+                DrawRect(start, from, column - start, to - from, held ? inside : outside);
+                (start, held) = (column, !held);
+                bit++;
+            }
+
+            DrawRect(start, from, right - start, to - from, held ? inside : outside);
+        }
+    }
+
     private int AddHighlight(in HighlightRegion region)
     {
         if (_highlightCount == _highlights.Length)
@@ -228,9 +294,19 @@ public sealed class RenderList
     /// Records markers of one look at points that stay on the GPU (design §5.1 "常駐の点", row R3a): a run of a page of the
     /// residency cache, placed by the cells' records. Internal: it names data that only Core puts on the GPU.
     /// </summary>
-    /// <param name="run">The run. Its clip is the list's current clip.</param>
+    /// <param name="run">
+    /// The run. Its clip is the list's current clip. Its slot may be −1, for a page that is not on the GPU yet: the run is
+    /// recorded and draws nothing (<see cref="ResidentMarkerRun.Slot"/>).
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The run's first point or its count is negative, or the run ends past the 65,536 points of a page: the backend would
+    /// read past the page's buffer. A snapshot's last page is shorter; the recording stops its runs at that page's points.
+    /// </exception>
     internal void DrawResidentMarkers(in ResidentMarkerRun run)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(run.First, nameof(run));
+        ArgumentOutOfRangeException.ThrowIfNegative(run.Count, nameof(run));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(run.First + run.Count, PointPages.PagePoints, nameof(run));
         if (_residentRunCount == _residentRuns.Length)
         {
             Array.Resize(ref _residentRuns, _residentRuns.Length * 2);
@@ -1370,11 +1446,16 @@ internal readonly record struct MarkerInstance(Vector2 Center, float Size, uint 
 internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float PixelX, float PixelY, float ScaleX, float ScaleY);
 
 /// <summary>
-/// A run of resident markers: the points of one page of the residency cache, drawn with one look (design §5.1 "常駐の点").
-/// A run is a whole page: a page's points are not in the copy's order (<see cref="PointPages.Stride"/>).
+/// A run of resident markers: points that follow one another in one page of the residency cache, drawn with one look
+/// (design §5.1 "常駐の点"). A run is whole blocks of the page (row R3b2, design §5.5.2 "見えるブロックだけを描く"): a block's
+/// points are not in the copy's order (<see cref="PointPages.Stride"/>), so a run is not cut inside one.
 /// </summary>
-/// <param name="Slot">The page's slot in <see cref="PointPages"/>.</param>
-/// <param name="Count">The number of points of the page.</param>
+/// <param name="Slot">
+/// The page's slot in <see cref="PointPages"/>, or −1 for a page that is not on the GPU yet: the run draws nothing, and
+/// holds the place the page's run takes once the page is sent.
+/// </param>
+/// <param name="First">The run's first point in the page.</param>
+/// <param name="Count">The number of points of the run.</param>
 /// <param name="Cells">Where the part's cells begin in <see cref="RenderList.ResidentCells"/>: a point's cell number is added to it.</param>
 /// <param name="Size">The size of each marker, in physical pixels.</param>
 /// <param name="Kind">The shape and the stroke of a cross or an x, as <see cref="MarkerInstance.Kind"/>.</param>
@@ -1389,6 +1470,7 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// </param>
 internal readonly record struct ResidentMarkerRun(
     int Slot,
+    int First,
     int Count,
     int Cells,
     float Size,

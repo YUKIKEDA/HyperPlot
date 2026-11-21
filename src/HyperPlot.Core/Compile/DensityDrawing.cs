@@ -30,6 +30,12 @@ internal sealed class DensitySwitch
     /// <summary>Gets the upper count of the points in the view the last choice read, summed over the parts. Tests only.</summary>
     internal long LastCount { get; private set; }
 
+    /// <summary>
+    /// Gets the number of the layer's parts in the panel, a part of no point too (design §5.5.2 "ブロック"): the parts that
+    /// lie over one another, which set the points of a block of their pages. Another panel's parts are not among them.
+    /// </summary>
+    public int PartCount => _parts.Count;
+
     /// <summary>Adds a part of the layer.</summary>
     public void Add(IndexedPointPlan part) => _parts.Add(part);
 

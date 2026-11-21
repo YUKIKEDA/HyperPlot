@@ -2685,6 +2685,8 @@ internal sealed partial class PlotPlan : IDisposable
         _context.Begin(x, y, panel.Boundaries, _scale, flipped, (left, top, width, height), null);
 
         // The region of the plot's selection on the panel, which its point layers highlight (row R3c): of the panel's scales.
+        // A lasso's mask covers the same rectangle as the clip of RecordLayers (ClipToPanel), so a density's fill cut by the mask
+        // leaves out only what the clip takes; RenderList.DrawRectCutByMask throws if the clip reaches past the mask.
         _context.Highlight = AddHighlight(index, x, y, flipped, (left, top, width, height));
         RecordLayers(panel, spec.Theme.Palette, flipped);
         RecordAnnotations(spec, index, guide, new AnnotationAxes(x, y, x2, y2, flipped));

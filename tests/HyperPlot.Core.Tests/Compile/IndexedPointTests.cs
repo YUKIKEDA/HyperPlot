@@ -255,7 +255,8 @@ public sealed class IndexedPointTests
     /// - Zoom to [50, 50.5] × [50, 50.5] and render.
     ///
     /// Expected:
-    /// - Fewer runs than 7, and each is still a whole page.
+    /// - Fewer points than 400,000 in runs of whole blocks of 32,768 points, no two of them over one point (row R3b2; which
+    ///   blocks is PointBlockTests').
     /// </remarks>
     [Fact]
     public void Frames_DrawNothingUntilTheIndexAndSendPagesByTheBudget()
@@ -325,9 +326,20 @@ public sealed class IndexedPointTests
         engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(50, 50.5), ViewRange.FromValues(50, 50.5)));
         engine.RenderFrame();
         var zoomed = backend.LastList!.ResidentRuns.ToArray();
-        Assert.InRange(zoomed.Length, 1, 6);
-        Assert.Equal(zoomed.Length, zoomed.Select(r => r.Slot).Distinct().Count());
-        Assert.All(zoomed, r => Assert.Contains(runs, whole => whole.Slot == r.Slot && whole.Count == r.Count));
+        Assert.InRange(zoomed.Sum(r => r.Count), 1, Count - 1);
+        Assert.All(
+            zoomed,
+            r =>
+            {
+                var page = Assert.Single(runs, whole => whole.Slot == r.Slot);
+                Assert.Equal(0, r.First % PointPages.MaxBlockPoints);
+                Assert.True(r.Count % PointPages.MaxBlockPoints == 0 || r.First + r.Count == page.Count);
+                Assert.DoesNotContain(
+                    zoomed,
+                    other => other != r && other.Slot == r.Slot && other.First < r.First + r.Count && r.First < other.First + other.Count
+                );
+            }
+        );
     }
 
     /// <summary>

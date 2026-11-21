@@ -161,7 +161,8 @@ public sealed class MeasureTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A pool of 1 thread; 2 chunks of rows, x the row, y 1 everywhere, chunk 1 held on the worker; a frame not waiting.
+    /// - A pool of 1 thread whose worker takes no frame job, so that only the pyramid's build is held (Issue #589); 2 chunks
+    ///   of rows, x the row, y 1 everywhere, chunk 1 held on the worker; a frame not waiting.
     ///
     /// Steps:
     /// - Draw until the worker reads chunk 1; measure the range [0, 2 chunks) by code. Release chunk 1; draw until a frame is
@@ -175,7 +176,7 @@ public sealed class MeasureTests
     [Fact]
     public void Provisional_IsFoundAgainOnceBuilt()
     {
-        using var pool = new PlotWorkerPool(1);
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
         using var y = TestStorage<float>.MakeColumn([.. Enumerable.Repeat(1f, 2 * Chunk)], out var storage);
         storage.Hold(1);
         var table = DataTable.Create().Add("x", Column.Uniform(0, 1, 2 * Chunk)).Add("y", y).Build();

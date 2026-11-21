@@ -419,6 +419,68 @@ public sealed class M4BatchTests
     }
 
     /// <summary>
+    /// A pool whose workers take no job leaves every job of a batch to the caller, also when its worker is free while a job
+    /// is left (Issue #589): the switch that keeps a test's held chunk to the pyramid's build.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A pool of 1 thread whose worker takes no job, and nothing queued; a batch of 2 series over built pyramids.
+    ///
+    /// Steps:
+    /// - Extract. Inside series 0, on the caller, queue a pyramid over another column and wait until the worker reads its
+    ///   chunk 0: the worker has passed the batch while series 1 was left to take. Record each series' pyramid read on a
+    ///   worker thread.
+    ///
+    /// Expected:
+    /// - The worker read the queued chunk, and no series ran on it; each series has the result of the series alone. With
+    ///   the switch on, the worker takes series 1 before the chunk (design §8.1), and the first assertion fails.
+    /// </remarks>
+    [Fact]
+    public void Extract_WorkersTakeNoJobs_FreeWorkerLeavesTheJobsToTheCaller()
+    {
+        using var pool = new PlotWorkerPool(1) { WorkersTakeJobs = false };
+        using var fixture = new Fixture(pool, 2);
+        using var column = TestStorage<float>.MakeColumn(new float[PyramidData.Length], out var storage);
+        MinMaxPyramid<float>? queued = null;
+        var onWorker = 0;
+        fixture.Pyramids[0].TestAfterSequenceRead = () =>
+        {
+            if (OnWorker())
+            {
+                Volatile.Write(ref onWorker, 1);
+            }
+            else if (queued is null)
+            {
+                queued = pool.BuildPyramid(column);
+                storage.WaitForWorker(0);
+            }
+        };
+        fixture.Pyramids[1].TestAfterSequenceRead = () =>
+        {
+            if (OnWorker())
+            {
+                Volatile.Write(ref onWorker, 1);
+            }
+        };
+        var batch = fixture.Batch(2);
+        try
+        {
+            pool.Extract(batch, default, fixture.Boundaries);
+        }
+        finally
+        {
+            fixture.Pyramids[0].TestAfterSequenceRead = null;
+            fixture.Pyramids[1].TestAfterSequenceRead = null;
+            queued?.Dispose();
+        }
+
+        Assert.Equal((true, 0), (queued is not null, Volatile.Read(ref onWorker)));
+        fixture.AssertEqualsAlone(batch);
+
+        static bool OnWorker() => Thread.CurrentThread.Name?.StartsWith("HyperPlot worker", StringComparison.Ordinal) == true;
+    }
+
+    /// <summary>
     /// Arguments are checked once before any series runs; a worker cannot extract; batches on two threads at once each
     /// equal the series alone (design §5.5.1, §8.1).
     /// </summary>
