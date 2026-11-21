@@ -84,6 +84,8 @@ public sealed class WpfThread : IDisposable
         {
             try
             {
+                // A real key pressed on a developer's machine during the run can still reach the thread after this
+                // release and before the work reads it; an unattended CI machine presses none.
                 ThreadKeys.ReleaseModifiers();
                 return work();
             }

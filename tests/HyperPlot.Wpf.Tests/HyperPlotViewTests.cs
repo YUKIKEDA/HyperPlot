@@ -816,7 +816,13 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// Asserts what an input the test sent did, and says on a failure which modifier keys WPF read at that moment (Issue #564):
     /// the view passes them with the input, and the default bindings of a move, a drag, and the wheel take none.
     /// </summary>
-    private static void AssertInput(bool done, string otherwise) => Assert.True(done, $"{otherwise} Keyboard.Modifiers is {Keyboard.Modifiers}.");
+    private static void AssertInput(bool done, string otherwise)
+    {
+        if (!done)
+        {
+            Assert.Fail($"{otherwise} Keyboard.Modifiers is {Keyboard.Modifiers}.");
+        }
+    }
 
     private static void DrawUntilShown(HyperPlotView view)
     {
