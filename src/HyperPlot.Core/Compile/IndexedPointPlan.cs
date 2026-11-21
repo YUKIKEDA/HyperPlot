@@ -276,7 +276,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         // not touch it (design §5.5.2 "見えるブロックだけを描く").
         var block = PointPages.BlockPoints(_switch.PartCount);
         var whole = pages.DrawsWholePages;
-        var (runPage, runSlot, runFrom, runTo) = (-1L, -1, 0, 0);
+        var (runPage, slot, runFrom, runTo) = (-1L, -1, 0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
@@ -305,22 +305,22 @@ internal sealed class IndexedPointPlan : LayerPlan
                     continue;
                 }
 
-                DrawRun(list, style, runSlot, runFrom, runTo);
+                DrawRun(list, style, slot, runFrom, runTo);
                 if (page != runPage)
                 {
-                    runSlot = pages.Request(snapshot, (int)page, block);
-                    _missing |= runSlot < 0;
+                    slot = pages.Request(snapshot, (int)page, block);
+                    _missing |= slot < 0;
                 }
 
                 (runPage, runFrom, runTo) = (page, from, to);
             }
         }
 
-        DrawRun(list, style, runSlot, runFrom, runTo);
+        DrawRun(list, style, slot, runFrom, runTo);
 
         // A run of blocks that follow one another in a page, in one call. A page that is not on the GPU yet is recorded
-        // too, with a slot of −1, which the backend draws nothing for: the list's arrays reach the view's size in the
-        // first frame that asks for the view, not in the frame its last page arrives (Issue #528).
+        // too, with no slot, and draws nothing: the list and the backend's steps grow to what the view asks for in its
+        // first frame, not later as its pages arrive.
         static void DrawRun(RenderList list, in ResidentMarkerRun style, int slot, int from, int to)
         {
             if (to > from)

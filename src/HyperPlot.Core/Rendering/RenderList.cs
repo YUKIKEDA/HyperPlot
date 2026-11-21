@@ -228,7 +228,10 @@ public sealed class RenderList
     /// Records markers of one look at points that stay on the GPU (design §5.1 "常駐の点", row R3a): a run of a page of the
     /// residency cache, placed by the cells' records. Internal: it names data that only Core puts on the GPU.
     /// </summary>
-    /// <param name="run">The run. Its clip is the list's current clip.</param>
+    /// <param name="run">
+    /// The run. Its clip is the list's current clip. Its slot may be −1, for a page that is not on the GPU yet: the run is
+    /// recorded and draws nothing (<see cref="ResidentMarkerRun.Slot"/>).
+    /// </param>
     internal void DrawResidentMarkers(in ResidentMarkerRun run)
     {
         if (_residentRunCount == _residentRuns.Length)
@@ -1374,7 +1377,10 @@ internal readonly record struct ResidentCellRecord(uint BaseX, uint BaseY, float
 /// (design §5.1 "常駐の点"). A run is whole blocks of the page (row R3b2, design §5.5.2 "見えるブロックだけを描く"): a block's
 /// points are not in the copy's order (<see cref="PointPages.Stride"/>), so a run is not cut inside one.
 /// </summary>
-/// <param name="Slot">The page's slot in <see cref="PointPages"/>; −1 for a page that is not on the GPU yet, which draws nothing.</param>
+/// <param name="Slot">
+/// The page's slot in <see cref="PointPages"/>, or −1 for a page that is not on the GPU yet: the run draws nothing, and
+/// holds the place the page's run takes once the page is sent.
+/// </param>
 /// <param name="First">The run's first point in the page.</param>
 /// <param name="Count">The number of points of the run.</param>
 /// <param name="Cells">Where the part's cells begin in <see cref="RenderList.ResidentCells"/>: a point's cell number is added to it.</param>

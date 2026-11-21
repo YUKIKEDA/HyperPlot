@@ -488,7 +488,7 @@ public sealed class DensityTests
     /// Expected:
     /// - 16 pages in use, and the bytes in use within the budget; the 960 faces are still in their slots.
     /// - The last frame is provisional, asked for pages it did not get, drew no density and no image, and records 23 runs
-    ///   of whole pages: 16 with a slot, and 7 with a slot of −1 for the pages that did not fit, which draw nothing.
+    ///   of whole pages: 16 with a slot, and 7 without one, which draw nothing.
     /// </remarks>
     [Fact]
     public void PointsLayer_OverTheBudget_DrawsThePagesThatFitAndStaysProvisional()
@@ -546,9 +546,9 @@ public sealed class DensityTests
         Assert.False(plan.DrewDensity);
         var list = backend.LastList!;
         Assert.Equal(0, list.Images.Length);
-        Assert.Equal(Pages, list.ResidentRuns.Length);
-        Assert.Equal((fit, Pages - fit), (list.ResidentRuns.ToArray().Count(r => r.Slot >= 0), list.ResidentRuns.ToArray().Count(r => r.Slot == -1)));
-        Assert.All(list.ResidentRuns.ToArray(), run => Assert.Equal(PointPages.PagePoints, run.Count));
+        var runs = list.ResidentRuns.ToArray();
+        Assert.Equal((Pages, fit), (runs.Length, runs.Count(run => run.Slot >= 0)));
+        Assert.All(runs, run => Assert.Equal(PointPages.PagePoints, run.Count));
     }
 
     /// <summary>
