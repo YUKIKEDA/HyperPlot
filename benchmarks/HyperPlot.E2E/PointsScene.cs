@@ -395,7 +395,10 @@ internal static partial class PointsScene
 
         public IRenderTarget CreateRenderTarget(in RenderTargetDescription description) => inner.CreateRenderTarget(description);
 
-        // The frames begun: the number the hardware's timer gives the next frame, as it numbers each frame it begins.
+        // The hardware's scopes of the open frames, innermost last: a frame opened inside another is not numbered.
+        private readonly Stack<FrameScope> _open = new();
+
+        // The outermost frames begun: the number the hardware's timer gives the next one, as it numbers only those.
         public long Frames { get; private set; }
 
         // What the last drawing allocated on this thread, the counting included.
@@ -403,8 +406,9 @@ internal static partial class PointsScene
 
         public FrameScope BeginFrame()
         {
-            Frames++;
-            return inner.BeginFrame();
+            Frames += _open.Count == 0 ? 1 : 0;
+            _open.Push(inner.BeginFrame());
+            return new FrameScope(this, _open.Count);
         }
 
         public void Draw(IRenderTarget target, RenderList list)
@@ -433,7 +437,14 @@ internal static partial class PointsScene
 
         public void Copy(IRenderTarget source, IRenderTarget destination) => inner.Copy(source, destination);
 
-        public void EndFrame(long token) => inner.EndFrame(token);
+        // Frames close innermost first: the token is the depth the frame was opened at.
+        public void EndFrame(long token)
+        {
+            if (token > 0 && token == _open.Count)
+            {
+                _open.Pop().Dispose();
+            }
+        }
 
         public void Dispose() => inner.Dispose();
     }
