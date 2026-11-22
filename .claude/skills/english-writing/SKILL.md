@@ -56,6 +56,9 @@ The left column is the term in `docs/requirements.ja.md` and `docs/design.ja.md`
 | CPU の道、索引の道（散布） | CPU path, index path |
 | 常駐、生の点のページ、常駐のセル | resident, point page, resident cell |
 | ブロック（ページの中の、点をかき混ぜる単位）、見えるブロック | block (of a point page), blocks in view |
+| 読み、読みの場所（ワーカーがページを読む、キャッシュの 10 個）、ステージング | read (of a page; the cache's reads), staging |
+| 読みの例外（層の索引の失敗として記録する） | read fault (`SpatialIndex.ReadFault`) |
+| セルの表、セルの取り分（層の上限 131,072 の、部分の分） | table of cells (the cells' records), share (of the layer's resident cells) |
 | セルの中の位置（目盛り） | position in the cell (in units of 2^-32 of its extent) |
 | 並べ直した写し（索引が持つ x、y、元の位置） | reordered copy |
 | 元の位置（写しの点の、行の範囲の先頭からの行の数） | original position |
