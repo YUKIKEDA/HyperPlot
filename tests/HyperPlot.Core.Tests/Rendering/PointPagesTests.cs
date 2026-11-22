@@ -624,7 +624,7 @@ public sealed class PointPagesTests
     /// Steps:
     /// - Ask for pages 0 and 1, and wait until page 0's read is held. On another thread, dispose the pool, and keep whether
     ///   the hold had ended when the disposal returned. Wait until the disposal has begun, then let the read go; join.
-    /// - Wait for the reads.
+    /// - Wait for the reads, on another thread, for 30 s at most.
     ///
     /// Expected:
     /// - The disposal returned after the hold ended.
@@ -665,7 +665,11 @@ public sealed class PointPagesTests
         hold.Release();
         Assert.True(disposer.Join(Watchdog), "The disposal did not return in 30 s.");
         Assert.True(endedAtReturn);
-        _ = pages.AwaitReads();
+
+        // The read no worker took ends with the pool's exception: the wait for the reads returns.
+        var waiter = new Thread(() => pages.AwaitReads()) { IsBackground = true };
+        waiter.Start();
+        Assert.True(waiter.Join(Watchdog), "A read asked for of the disposed pool did not end.");
         Assert.Equal([0], read.ToArray());
     }
 

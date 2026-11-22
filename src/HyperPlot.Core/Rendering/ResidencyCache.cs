@@ -18,7 +18,7 @@ public sealed class ResidencyCache
     /// <summary>The bytes of GPU memory the tiles take at most: 256 MB.</summary>
     public const long DefaultBudget = 256L << 20;
 
-    /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs.</summary>
+    /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs, its pages of points ten at a time.</summary>
     public const int FrameUpload = 4 << 20;
 
     /// <summary>The side of a slot's face: a tile of 256 texels and a border of a texel copied from its neighbors.</summary>
@@ -75,7 +75,10 @@ public sealed class ResidencyCache
         Rgba = 1,
     }
 
-    /// <summary>Gets or sets a value indicating whether a frame sends every tile it asks for, past <see cref="FrameUpload"/>: a headless render.</summary>
+    /// <summary>
+    /// Gets or sets a value indicating whether a frame sends every tile it asks for, and every page of points the workers have
+    /// read, past <see cref="FrameUpload"/>: a headless render.
+    /// </summary>
     internal bool Unbounded { get; set; }
 
     /// <summary>Gets the tiles to send before the frame draws.</summary>
