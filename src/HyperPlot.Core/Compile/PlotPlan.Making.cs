@@ -568,7 +568,7 @@ internal sealed partial class PlotPlan
             _failures = new Exception?[spec.Layers.Count];
             List<Column> columns = [];
             List<Raster> rasters = [];
-            var indexing = new SpatialIndexing();
+            var indexing = new SpatialIndexing { CellLimit = _plan.CellLimit };
             for (var p = 0; p < count; p++)
             {
                 var (data, table) = facet is null ? (_layer < 0 ? (null, spec.Data) : _panelData[p]) : (facet.Panels[p], facet.Panels[p].Data);

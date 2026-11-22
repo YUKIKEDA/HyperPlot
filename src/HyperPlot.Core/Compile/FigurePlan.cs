@@ -162,6 +162,12 @@ internal sealed class FigurePlan : IDisposable
 
         _plans = [];
         _store.Dispose();
+
+        // The cache the figure made for itself lets its page readers go (design §5.5.2 "ページの読み出し").
+        if (_ownImages)
+        {
+            _images.Detach();
+        }
     }
 
     /// <summary>Returns the plot at a place of a figure: a concatenation's in its order, a grid's in its cells' order.</summary>

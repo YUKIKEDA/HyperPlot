@@ -96,8 +96,22 @@ public sealed class ResidencyCache
     /// <summary>Returns the staged texels of an upload: a face of 258 × 258.</summary>
     internal ReadOnlySpan<uint> Face(in Upload upload) => _staging.AsSpan(upload.Offset, FaceTexels);
 
-    /// <summary>Starts a frame: tiles asked for from now on are this frame's, and are not let go of for another.</summary>
-    internal void BeginFrame() => _frame++;
+    /// <summary>
+    /// Starts a frame: tiles asked for from now on are this frame's, and are not let go of for another. The reads of pages
+    /// the last frame did not ask for are withdrawn (design §5.5.2 "要らなくなった読み").
+    /// </summary>
+    internal void BeginFrame()
+    {
+        _frame++;
+        Points.BeginFrame();
+    }
+
+    /// <summary>
+    /// Lets the cache go (design §5.5.2 "ページの読み出し"): its page readers leave their pools, so that no worker reads for
+    /// it again and a pool's works do not grow by a cache that is gone. The owner calls it when it is disposed; waits for no
+    /// read.
+    /// </summary>
+    internal void Detach() => Points.Detach();
 
     /// <summary>Says that the backend sent the uploads: the staging is free again.</summary>
     internal void Sent()

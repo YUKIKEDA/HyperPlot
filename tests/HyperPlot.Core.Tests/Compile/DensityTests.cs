@@ -486,7 +486,8 @@ public sealed class DensityTests
     ///   does not wait, whose index has ended.
     ///
     /// Steps:
-    /// - Render 46 frames at the whole view, saying before each that the last frame's uploads were sent.
+    /// - Render 46 frames at the whole view, saying before each that the last frame's uploads were sent, and waiting after
+    ///   each for the workers' reads (row R3b2).
     ///
     /// Expected:
     /// - 16 pages in use, and the bytes in use within the budget; the 960 faces are still in their slots.
@@ -539,6 +540,7 @@ public sealed class DensityTests
         {
             cache.Sent();
             engine.RenderFrame();
+            _ = cache.Points.AwaitReads();
         }
 
         Assert.Equal(fit, cache.Points.PagesInUse);

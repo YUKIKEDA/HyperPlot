@@ -323,13 +323,14 @@ public sealed class DensityRenderTests
     ///   text backend; 640 × 360. The index has ended.
     ///
     /// Steps:
-    /// - Render the whole view once. Then render each quarter of it, [0.5, 49.5] or [50.5, 99.5] on each axis, until the
-    ///   quarter's frame has all its pages. Collect, then render the whole view again, counting the thread's allocations
-    ///   over the view's change and the frame.
+    /// - Render the whole view once; wait for the workers' reads it asked for (row R3b2) and render it again. Then render
+    ///   each quarter of it, [0.5, 49.5] or [50.5, 99.5] on each axis, until the quarter's frame has all its pages, waiting
+    ///   for the reads after each frame. Collect, then render the whole view again, counting the thread's allocations over
+    ///   the view's change and the frame.
     ///
     /// Expected:
-    /// - The first frame of the whole view is provisional with 5 pages on the GPU, and records 16 runs, 5 of them with a
-    ///   slot.
+    /// - The first frame of the whole view is provisional with no page on the GPU, and records 16 runs, none with a slot.
+    ///   The next is provisional with 5 pages on the GPU, and records 16 runs, 5 of them with a slot.
     /// - No quarter's frame records more than 8 runs, so that nothing but the first frame grew the list past 8 runs; after
     ///   the quarters, 16 pages are on the GPU.
     /// - The last frame is not provisional, records 16 runs with a slot each, and allocated 0 bytes.
@@ -359,6 +360,12 @@ public sealed class DensityRenderTests
 
         engine.Views.SetView(panel, whole);
         engine.RenderFrame();
+        var asked = engine.Plan!.List.ResidentRuns.ToArray();
+        Assert.True(engine.IsProvisional);
+        Assert.Equal(0, backend.Images.Points.PagesInUse);
+        Assert.Equal((Pages, 0), (asked.Length, asked.Count(run => run.Slot >= 0)));
+        _ = backend.Images.Points.AwaitReads();
+        engine.RenderFrame();
         var first = engine.Plan!.List.ResidentRuns.ToArray();
         Assert.True(engine.IsProvisional);
         Assert.Equal(5, backend.Images.Points.PagesInUse);
@@ -376,6 +383,7 @@ public sealed class DensityRenderTests
                     engine.RenderFrame();
                     most = Math.Max(most, engine.Plan!.List.ResidentRuns.Length);
                     missed = plan.MissedPages;
+                    _ = backend.Images.Points.AwaitReads();
                 }
             }
         }

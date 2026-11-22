@@ -42,15 +42,22 @@ internal sealed class SpatialIndexing
     internal const int MaxParts = 64;
 
     private readonly Dictionary<int, int> _parts = [];
+    private readonly Dictionary<int, long> _rows = [];
     private readonly Dictionary<int, DensitySwitch> _switches = [];
     private readonly Dictionary<(PlanBuild Build, int Layer), DensityPanel> _panels = [];
 
     /// <summary>Gets or sets the index started last: the next starts when its build has ended.</summary>
     public SpatialIndex? Building { get; set; }
 
-    /// <summary>Counts one more part of a layer on the index path.</summary>
+    /// <summary>
+    /// Gets the most resident cells of a layer's parts together (design §5.5.2 "セルの表"):
+    /// <see cref="SpatialSnapshot.MaxResidentCells"/>, or fewer for a test.
+    /// </summary>
+    public int CellLimit { get; init; } = SpatialSnapshot.MaxResidentCells;
+
+    /// <summary>Counts one more part of a layer on the index path, of the given number of rows.</summary>
     /// <exception cref="InvalidOperationException">The layer has more than <see cref="MaxParts"/> parts.</exception>
-    public void Enter(int layer)
+    public void Enter(int layer, long rows)
     {
         _ = _parts.TryGetValue(layer, out var count);
         if (count == MaxParts)
@@ -61,6 +68,18 @@ internal sealed class SpatialIndexing
         }
 
         _parts[layer] = count + 1;
+        _rows[layer] = _rows.GetValueOrDefault(layer) + rows;
+    }
+
+    /// <summary>
+    /// Returns a part's share of its layer's resident cells (design §5.5.2 "セルの表", the owner's decision of 2026-11-22):
+    /// ⌊<see cref="CellLimit"/> × the part's rows ÷ the rows of the layer's parts⌋, fixed before the part's index is built.
+    /// Every part of a layer is counted before the first build starts, since the parts are made with the layer.
+    /// </summary>
+    public int CellShare(int layer, long rows)
+    {
+        var total = _rows.GetValueOrDefault(layer);
+        return total > 0 ? (int)((long)CellLimit * rows / total) : CellLimit;
     }
 
     /// <summary>
@@ -105,6 +124,7 @@ internal sealed class IndexedPointPlan : LayerPlan
     private readonly IScale? _xTransform;
     private readonly IScale? _yTransform;
     private readonly SpatialIndexing _indexing;
+    private readonly int _layer;
 
     // The switch the layer's parts share, in every panel, and what they share in this panel (design §5.5.2 "`Auto` の切り替え").
     private readonly DensitySwitch _switch;
@@ -140,6 +160,10 @@ internal sealed class IndexedPointPlan : LayerPlan
     private int[] _visible = new int[64];
     private int _visibleCount;
 
+    // The cells' records of this frame's view (design §5.5.2 "セルの表"), written by the same walk that finds the visible
+    // cells, and copied into the list when the part records raw points.
+    private ResidentCellRecord[] _records = new ResidentCellRecord[64];
+
     // The density's color table of the layer's own color, made again when the color changes.
     private ColorMap? _ramp;
     private Color _rampColor;
@@ -157,7 +181,8 @@ internal sealed class IndexedPointPlan : LayerPlan
     {
         SetColumns(spec.X.Column, spec.Y.Column);
         (_pool, _xTransform, _yTransform, _indexing) = (build.Pool, build.XTransform, build.YTransform, build.Indexing);
-        _indexing.Enter(build.Layer);
+        _layer = build.Layer;
+        _indexing.Enter(build.Layer, RowCount(spec, rows));
         _switch = _indexing.SwitchOf(build.Layer);
         _switch.Add(this);
         _panel = _indexing.PanelOf(build, build.Layer);
@@ -250,6 +275,7 @@ internal sealed class IndexedPointPlan : LayerPlan
                 Rows = Rows,
                 XTransform = _xTransform,
                 YTransform = _yTransform,
+                CellLimit = _indexing.CellShare(_layer, RowCount(point, Rows)),
             };
             _index = ((ISpatialColumn)point.X.Column).BuildSpatialIndex(_pool, point.Y.Column, input);
             _indexing.Building = _index;
@@ -263,6 +289,13 @@ internal sealed class IndexedPointPlan : LayerPlan
         else if (_index.Fault is { } fault)
         {
             ExceptionDispatchInfo.Throw(fault);
+        }
+
+        // A worker's read of a page failed (design §5.5.2 "読みの例外"): the layer fails as for its build, the headless
+        // render too.
+        if (_index.ReadFault is { } read)
+        {
+            ExceptionDispatchInfo.Throw(read);
         }
 
         // The newest full snapshot is the one drawn; an older one stays until the next is full. Before the first full one,
@@ -323,7 +356,10 @@ internal sealed class IndexedPointPlan : LayerPlan
         var x = new AxisMap(context.X, context.Transform, ofX: true, snapshot.XRange.Origin);
         var y = new AxisMap(context.Y, context.Transform, ofX: false, snapshot.YRange.Origin);
         var list = context.List;
+
+        // The cells' records the scan before the recording wrote for this view (design §5.5.2 "記録の前の走査").
         var offset = list.AddResidentCells(cells.Length, out var records);
+        _records.AsSpan(0, cells.Length).CopyTo(records);
         var color = point.Color ?? SeriesColor;
         var style = new ResidentMarkerRun(
             Slot: -1,
@@ -346,13 +382,6 @@ internal sealed class IndexedPointPlan : LayerPlan
         // not touch it (design §5.5.2 "見えるブロックだけを描く").
         var block = PointPages.BlockPoints(_panel.PartCount);
         var whole = pages.DrawsWholePages;
-        for (var c = 0; c < cells.Length; c++)
-        {
-            ref readonly var cell = ref cells[c];
-            var (baseX, pixelX, scaleX) = x.Place(cell.CornerX, cell.ExtentX);
-            var (baseY, pixelY, scaleY) = y.Place(cell.CornerY, cell.ExtentY);
-            records[c] = new ResidentCellRecord(baseX, baseY, pixelX, pixelY, scaleX, scaleY);
-        }
 
         // The cells whose points the view draws, found by the scan before the recording, in the copy's order.
         var (runPage, slot, runFrom, runTo) = (-1L, -1, 0, 0);
@@ -707,6 +736,9 @@ internal sealed class IndexedPointPlan : LayerPlan
         return await Select(snapshot, query, length).ConfigureAwait(false);
     }
 
+    // The rows a part reads: its run of its columns.
+    private static long RowCount(PointLayerSpec spec, RowRange rows) => Math.Max(0, rows.EndIn(spec.X.Column.Length) - rows.Start);
+
     private void DropCoarse()
     {
         if (_coarse is { } coarse)
@@ -772,16 +804,18 @@ internal sealed class IndexedPointPlan : LayerPlan
     }
 
     /// <summary>
-    /// Walks the resident cells once (design §5.5.2 "見えるブロックだけを描く", "密度タイルが付く前"): keeps the positions of
-    /// those that reach into the view widened by a marker's reach, whose points the recording draws, and takes the estimate
-    /// of the largest bin, the greatest "points over the area on the screen" of the cells that touch the view itself, a cell
-    /// smaller than a bin of the chosen level divided by the bin's area.
+    /// Walks the resident cells once (design §5.5.2 "見えるブロックだけを描く", "密度タイルが付く前", "セルの表"): writes each
+    /// cell's record of the view, keeps the positions of those that reach into the view widened by a marker's reach, whose
+    /// points the recording draws, and takes the estimate of the largest bin, the greatest "points over the area on the
+    /// screen" of the cells that touch the view itself, a cell smaller than a bin of the chosen level divided by the bin's
+    /// area.
     /// </summary>
     private void ScanCells(ReadOnlySpan<ResidentCell> cells, in AxisMap x, in AxisMap y, float diameter, double binArea)
     {
         if (_visible.Length < cells.Length)
         {
             _visible = new int[Math.Max(cells.Length, _visible.Length * 2)];
+            _records = new ResidentCellRecord[_visible.Length];
         }
 
         // A cell outside the view by less than a marker's reach has markers that cover pixels in it (design §5.5.2 "ページ"):
@@ -796,6 +830,9 @@ internal sealed class IndexedPointPlan : LayerPlan
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
+            var (baseX, pixelX, scaleX) = x.Place(cell.CornerX, cell.ExtentX);
+            var (baseY, pixelY, scaleY) = y.Place(cell.CornerY, cell.ExtentY);
+            _records[c] = new ResidentCellRecord(baseX, baseY, pixelX, pixelY, scaleX, scaleY);
             if (x.Sees(cell.CornerX, cell.ExtentX, reachX) && y.Sees(cell.CornerY, cell.ExtentY, reachY))
             {
                 _visible[count++] = c;

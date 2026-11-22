@@ -427,6 +427,9 @@ public sealed unsafe class D3D11Backend : IGpuBackend
 
         ReleaseDevice();
         _directWrite?.Dispose();
+
+        // The backend's cache lets its page readers go (design §5.5.2 "ページの読み出し").
+        Images.Detach();
         _state = State.Disposed;
     }
 

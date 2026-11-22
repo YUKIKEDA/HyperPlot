@@ -236,19 +236,22 @@ public sealed class IndexedPointTests
 
     /// <summary>
     /// A frame that does not wait draws nothing of the layer until its index is built, and then sends at most 4 MB of pages a
-    /// frame; the frame is provisional until every page it draws is there (design §5.5.2 "索引ができるまで", "常駐").
+    /// frame; the frame is provisional until every page it draws is there (design §5.5.2 "索引ができるまで", "常駐"). The
+    /// workers read the pages a frame asks for, and a later frame sends them (row R3b2, "ページの読み出し").
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A point layer of 400,000 seeded rows (7 pages) in an engine that does not wait, on the null backend.
+    /// - A point layer of 400,000 seeded rows (7 pages) in an engine that does not wait, on the null backend, which keeps
+    ///   the bytes of the pages each draw sends.
     ///
     /// Steps:
-    /// - Render frames, saying before each that the last frame's uploads were sent, until a frame is not provisional.
+    /// - Render frames, saying before each that the last frame's tiles were sent, until a frame is not provisional; after a
+    ///   frame that records runs, wait for the workers' reads.
     ///
     /// Expected:
     /// - The first frame is provisional and records no run.
-    /// - The first frame that records runs sends the 5 whole pages and the short last page that fit in 4 MB, and is
-    ///   provisional; the next sends the sixth whole page.
+    /// - The first frame that records runs sends nothing. The next sends the 5 whole pages and the short last page that fit
+    ///   in 4 MB, and is provisional; the next sends the sixth whole page.
     /// - The last frame is not provisional; 7 pages are in use, and its 7 runs are the 7 pages, each whole and once.
     ///
     /// Steps:
@@ -282,18 +285,27 @@ public sealed class IndexedPointTests
         Assert.Equal(0, backend.LastList!.ResidentRuns.Length);
 
         var sent = new List<long>();
+        var asked = false;
+        backend.Sending = cache =>
+        {
+            if (cache.Points.BytesThisFrame > 0)
+            {
+                Assert.True(asked, "A page was sent in the frame that asked for it.");
+                sent.Add(cache.Points.BytesThisFrame);
+            }
+        };
         var clock = Stopwatch.StartNew();
         while (engine.IsProvisional)
         {
             Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The index was not built in 60 s.");
             backend.Images.Sent();
             engine.RenderFrame();
-            if (pages.BytesThisFrame > 0)
+            if (backend.LastList!.ResidentRuns.Length > 0)
             {
-                sent.Add(pages.BytesThisFrame);
-                Assert.True(pages.BytesThisFrame <= ResidencyCache.FrameUpload);
+                asked = true;
+                _ = pages.AwaitReads();
             }
-            else if (sent.Count == 0)
+            else
             {
                 Thread.Sleep(2);
             }
@@ -349,10 +361,12 @@ public sealed class IndexedPointTests
     /// <remarks>
     /// Preconditions:
     /// - A point layer of 600,000 seeded rows colored by a column of 3 categories, 200,000 rows each: 4 pages a part, 12
-    ///   pages of 7,200,000 bytes, more than a frame sends. An engine that does not wait, on the null backend.
+    ///   pages of 7,200,000 bytes, more than a frame sends and than the 10 reads at once. An engine that does not wait, on
+    ///   the null backend, which keeps the bytes of the pages each draw sends.
     ///
     /// Steps:
-    /// - Render frames, saying before each that the last frame's uploads were sent, until a frame is not provisional.
+    /// - Render frames, saying before each that the last frame's tiles were sent, until a frame is not provisional; after a
+    ///   frame that records runs, wait for the workers' reads.
     ///
     /// Expected:
     /// - The first frame that is not provisional has 12 pages in use, and its runs hold the 600,000 points.
@@ -381,18 +395,22 @@ public sealed class IndexedPointTests
                 .Build()
         );
         var pages = backend.Images.Points;
-        engine.RenderFrame();
         var sending = 0;
+        backend.Sending = cache =>
+        {
+            Assert.True(cache.Points.BytesThisFrame <= ResidencyCache.FrameUpload);
+            sending += cache.Points.BytesThisFrame > 0 ? 1 : 0;
+        };
+        engine.RenderFrame();
         var clock = Stopwatch.StartNew();
         while (engine.IsProvisional)
         {
             Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The indexes were not built in 60 s.");
             backend.Images.Sent();
             engine.RenderFrame();
-            Assert.True(pages.BytesThisFrame <= ResidencyCache.FrameUpload);
-            if (pages.BytesThisFrame > 0)
+            if (backend.LastList!.ResidentRuns.Length > 0)
             {
-                sending++;
+                _ = pages.AwaitReads();
             }
             else
             {
@@ -403,6 +421,80 @@ public sealed class IndexedPointTests
         Assert.Equal(12, pages.PagesInUse);
         Assert.Equal(Count, backend.LastList!.ResidentRuns.ToArray().Sum(r => r.Count));
         Assert.True(sending >= 2);
+    }
+
+    /// <summary>
+    /// The resident cells of a layer are limited over all its parts (design §5.5.2 "セルの表", the owner's decision of
+    /// 2026-11-22): each part takes ⌊limit × its rows ÷ the layer's rows⌋ before its index is built, a part within its share
+    /// is not stopped, and a part past it stops at an upper level.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 400,000 seeded points over [0, 100]² colored by a category whose rows take turns a, b, c, c: parts of 100,000,
+    ///   100,000, and 200,000 rows. Uniform points, so that a part of 100,000 has 4 resident cells of level 1 (about 25,000
+    ///   points each) and the part of 200,000 has 16 of level 2 (about 12,500 each), 24 together.
+    /// - A plan that waits for its indexes, whose limit of a layer's cells is 16: shares of 4, 4, and 8.
+    ///
+    /// Steps:
+    /// - Render, and read each part's resident cells.
+    ///
+    /// Expected:
+    /// - 4, 4, and 4 cells: the parts of 100,000 are within their share of 4 exactly and keep their cells; the part of
+    ///   200,000 stops at level 1, its 4 cells of about 50,000 points, since level 2 has 16, past its 8. Together 12, no
+    ///   more than 16; counted a part at a time, the part of 200,000 would keep its 16.
+    /// - Each part's cells cover its copy in order.
+    /// </remarks>
+    [Fact]
+    public void ResidentCells_TakeTheirPartsShareOfTheLayersLimit()
+    {
+        const int Count = 400_000;
+        var random = new Random(31);
+        using var xs = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
+        string[] names = ["a", "b", "c", "c"];
+        var table = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("y", ys)
+            .Add("c", Column.Categorical(Enumerable.Range(0, Count).Select(i => (string?)names[i % 4]).ToArray()))
+            .Build();
+        using var pool = new PlotWorkerPool(3);
+        using var plan = TestPlans.Create(pool, 640, 360);
+        plan.CellLimit = 16;
+        _ = plan.Render(
+            Plot.Create(table)
+                .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.ColorBy(table.Cat("c")))
+                .ScaleX(Scale.Linear().WithDomain(0, 100))
+                .ScaleY(Scale.Linear().WithDomain(0, 100))
+                .Build()
+        );
+        var parts = ((SplitPlan)plan.Panels[0].Layers[0]).Parts.Cast<IndexedPointPlan>().ToArray();
+        var counts = new int[parts.Length];
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var snapshot = parts[i].SpatialIndex!.Acquire();
+            try
+            {
+                var cells = snapshot.ResidentCells.ToArray();
+                counts[i] = cells.Length;
+                Assert.Equal(snapshot.PointCount, cells.Sum(c => c.Count));
+                for (var c = 1; c < cells.Length; c++)
+                {
+                    Assert.Equal(cells[c - 1].First + cells[c - 1].Count, cells[c].First);
+                }
+
+                if (snapshot.PointCount == 200_000)
+                {
+                    Assert.All(cells, c => Assert.InRange(c.Count, 40_000, 60_000));
+                }
+            }
+            finally
+            {
+                snapshot.Release();
+            }
+        }
+
+        Assert.Equal([4, 4, 4], counts);
     }
 
     /// <summary>

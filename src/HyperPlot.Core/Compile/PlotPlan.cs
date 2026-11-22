@@ -76,6 +76,9 @@ internal sealed partial class PlotPlan : IDisposable
     private bool _pendingAnnotations;
     private bool _pendingExtract;
     private bool _pendingRecord;
+
+    // A render that waits recorded pages not on the GPU yet: the next one records again (design §5.5.2 "ヘッドレス").
+    private bool _recordAgain;
     private PanelDomains[] _views = [];
     private PanelDomains[] _full = [];
     private bool _viewChanged;
@@ -156,6 +159,13 @@ internal sealed partial class PlotPlan : IDisposable
     /// </summary>
     internal long ScanTicks { get; private set; }
 
+    /// <summary>
+    /// Gets the time the last Render's M4 extraction of every series took, in ticks of <see cref="TimeProvider.System"/>, or
+    /// 0 when it extracted nothing: the stage design §9 times while the workers read pages of points (row R3b2).
+    /// Benchmarks only.
+    /// </summary>
+    internal long ExtractTicks { get; private set; }
+
     /// <summary>Gets the number of pyramids the plan's store holds or its makings reserved (row W1b2). Tests only.</summary>
     internal int PyramidsInStore => _store.Count;
 
@@ -212,6 +222,12 @@ internal sealed partial class PlotPlan : IDisposable
     }
 
     /// <summary>
+    /// Gets or sets the most resident cells of a point layer's parts together (design §5.5.2 "セルの表"), which the next
+    /// making of the layers takes. Tests only: they lower it below <see cref="SpatialSnapshot.MaxResidentCells"/>.
+    /// </summary>
+    internal int CellLimit { get; set; } = SpatialSnapshot.MaxResidentCells;
+
+    /// <summary>
     /// Gets a value indicating whether the last Render was provisional (row W1b1): a layer drew results older than its
     /// columns or nothing yet, a domain learned without every chunk's statistics, or M4 read a pyramid not built. A layer
     /// that failed does not make it provisional. Always false for a render that waits.
@@ -240,9 +256,12 @@ internal sealed partial class PlotPlan : IDisposable
     internal RenderList Render(PlotSpec spec)
     {
         Compile(spec);
+        ExtractTicks = 0;
         if (Prepare())
         {
+            var extracting = TimeProvider.System.GetTimestamp();
             _pool.ExtractTogether(_allBatches, _allOrigins, _allBoundaries, _allBatches.Length, rethrow: Waits);
+            ExtractTicks = TimeProvider.System.GetTimestamp() - extracting;
         }
 
         Finish();
@@ -895,8 +914,9 @@ internal sealed partial class PlotPlan : IDisposable
                 SkipSeries();
             }
         }
-        else if ((_pendingAnnotations || _selectionChanged) && !_guides.Empty)
+        else if ((_pendingAnnotations || _selectionChanged || _recordAgain) && !_guides.Empty)
         {
+            // A render that waits records again while pages the workers read are missing (design §5.5.2 "ヘッドレス").
             // A new selection is recorded again alone, as annotations are: the point layers highlight it (row R3c).
             _pendingRecord = true;
         }
@@ -936,6 +956,7 @@ internal sealed partial class PlotPlan : IDisposable
         {
             Record(_pendingSpec!, _pendingFlipped);
             Recordings++;
+            _recordAgain = Waits && RecordedProvisional();
 
             // An image that drew a tile from an ancestor waits for tiles the frame's budget left out (design §5.5.3, Issue
             // #319): the frame is provisional, so that the next one sends more.
@@ -990,6 +1011,12 @@ internal sealed partial class PlotPlan : IDisposable
         _facet?.Dispose();
         _facet = null;
         _spec = null;
+
+        // The cache the plan made for itself lets its page readers go (design §5.5.2 "ページの読み出し").
+        if (_ownImages)
+        {
+            _context.Images.Detach();
+        }
     }
 
     /// <summary>
@@ -2261,7 +2288,7 @@ internal sealed partial class PlotPlan : IDisposable
         // Layers made again try again (row W1b1): the passes of statistics a failed one started are forgotten too.
         _indexes.Forget();
         var shared = SharedSources(spec, _facet);
-        var indexing = new SpatialIndexing();
+        var indexing = new SpatialIndexing { CellLimit = CellLimit };
         for (var p = 0; p < count; p++)
         {
             var panel = _panels[p];
@@ -2576,9 +2603,11 @@ internal sealed partial class PlotPlan : IDisposable
     {
         foreach (var panel in _panels)
         {
-            foreach (var layer in panel.Layers)
+            for (var i = 0; i < panel.Layers.Length; i++)
             {
-                if (layer.RecordedProvisional)
+                // A failed layer is not recorded, and what its last recording missed (a page a worker's read failed for,
+                // row R3b2) does not keep the frame provisional (design §5.5.2 "索引ができるまでと、失敗").
+                if (!Failed(i) && panel.Layers[i].RecordedProvisional)
                 {
                     return true;
                 }
