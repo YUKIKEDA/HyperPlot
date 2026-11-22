@@ -9,6 +9,8 @@ using HyperPlot.Rendering;
 using HyperPlot.Rendering.D3D11;
 using HyperPlot.Rendering.D3D11.Tests;
 using TerraFX.Interop.DirectX;
+using TerraFX.Interop.Windows;
+using static TerraFX.Interop.Windows.Windows;
 
 namespace HyperPlot.Wpf.Tests;
 
@@ -838,6 +840,346 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Assert.True(KeyboardNavigation.GetIsTabStop(scene.View));
         });
 
+    /// <summary>The input, the size, and the spec a disposed view is given (Issue #601).</summary>
+    public enum Given
+    {
+        /// <summary>A mouse button pressed.</summary>
+        MouseDown,
+
+        /// <summary>The mouse moved.</summary>
+        MouseMove,
+
+        /// <summary>The mouse left the view.</summary>
+        MouseLeave,
+
+        /// <summary>A mouse button released.</summary>
+        MouseUp,
+
+        /// <summary>The wheel turned.</summary>
+        Wheel,
+
+        /// <summary>The window's <c>WM_MOUSEHWHEEL</c> message over the view.</summary>
+        HorizontalWheel,
+
+        /// <summary>A finger down.</summary>
+        TouchDown,
+
+        /// <summary>A finger that is down moved.</summary>
+        TouchMove,
+
+        /// <summary>A finger that is down lifted.</summary>
+        TouchUp,
+
+        /// <summary>A manipulation starting.</summary>
+        ManipulationStarting,
+
+        /// <summary>A manipulation's step while two fingers are down.</summary>
+        ManipulationDelta,
+
+        /// <summary>A manipulation's inertia starting.</summary>
+        ManipulationInertiaStarting,
+
+        /// <summary>A key pressed that the engine knows.</summary>
+        KeyDown,
+
+        /// <summary>A key released that the engine knows.</summary>
+        KeyUp,
+
+        /// <summary>The view resized.</summary>
+        Size,
+
+        /// <summary>A new spec.</summary>
+        Spec,
+    }
+
+    /// <summary>
+    /// A disposed view that is still in its window takes no input, size, or spec: each does nothing and throws nothing
+    /// (Issue #601, design §7.2). Before the fix, each one that reached the engine threw <see cref="ObjectDisposedException"/>
+    /// out of WPF's input, and the others marked the event as the view's.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene's view, drawn, with the default bindings, left in its window. Before the view is disposed, the state with
+    ///   which a view that is not disposed passes the input on to the engine: finger 1 down for the finger's move and lift,
+    ///   fingers 1 and 2 down for the manipulation's step. The lost capture is
+    ///   <see cref="Dispose_InADrag_ReleasesTheMouseAndTheFingers"/>'s: a disposed view holds no capture to lose.
+    ///
+    /// Steps:
+    /// - Dispose the view. Then, one case each: raise MouseDown, MouseMove, MouseLeave, MouseUp (left button), and
+    ///   MouseWheel (120) on it; post <c>WM_MOUSEHWHEEL</c> of 120
+    ///   at the view's middle to the window and pump; raise TouchDown, TouchMove, and TouchUp of finger 1 of a test touch
+    ///   device; start a manipulation on the view with a test manipulator, move it 30 device-independent pixels right and
+    ///   lay the view out (the manipulation reads its contacts then), and remove it, pumping after each; raise KeyDown and KeyUp of Add; make the view half as wide and pump; set a figure of
+    ///   two plots as the spec.
+    ///
+    /// Expected:
+    /// - Nothing throws. Each routed event the test raises or WPF raises is not marked handled, and each that WPF raises
+    ///   (the manipulation's) did reach the view; the view has no mouse capture.
+    /// </remarks>
+    [Theory]
+    [InlineData(Given.MouseDown)]
+    [InlineData(Given.MouseMove)]
+    [InlineData(Given.MouseLeave)]
+    [InlineData(Given.MouseUp)]
+    [InlineData(Given.Wheel)]
+    [InlineData(Given.HorizontalWheel)]
+    [InlineData(Given.TouchDown)]
+    [InlineData(Given.TouchMove)]
+    [InlineData(Given.TouchUp)]
+    [InlineData(Given.ManipulationStarting)]
+    [InlineData(Given.ManipulationDelta)]
+    [InlineData(Given.ManipulationInertiaStarting)]
+    [InlineData(Given.KeyDown)]
+    [InlineData(Given.KeyUp)]
+    [InlineData(Given.Size)]
+    [InlineData(Given.Spec)]
+    public void Disposed_TakesNoInput(Given given) =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            DrawUntilShown(view);
+            var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
+            using var finger = new TestTouchDevice(1, middle, PresentationSource.FromVisual(view));
+            switch (given)
+            {
+                case Given.TouchMove or Given.TouchUp:
+                    _ = view.Touches.Down(finger.Id);
+                    break;
+                case Given.ManipulationDelta:
+                    _ = view.Touches.Down(1);
+                    _ = view.Touches.Down(2);
+                    break;
+            }
+
+            var screen = view.PointToScreen(middle);
+            view.Dispose();
+            var handled = given switch
+            {
+                Given.MouseDown => Raise(
+                    view,
+                    new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = Mouse.MouseDownEvent }
+                ),
+                Given.MouseMove => Raise(view, new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseMoveEvent }),
+                Given.MouseLeave => Raise(view, new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent }),
+                Given.MouseUp => Raise(view, new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = Mouse.MouseUpEvent }),
+                Given.Wheel => Raise(view, new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, 120) { RoutedEvent = Mouse.MouseWheelEvent }),
+                Given.HorizontalWheel => PostHorizontalWheel(scene.Window, screen),
+                Given.TouchDown => Raise(view, new TouchEventArgs(finger, 0) { RoutedEvent = UIElement.TouchDownEvent }),
+                Given.TouchMove => Raise(view, new TouchEventArgs(finger, 0) { RoutedEvent = UIElement.TouchMoveEvent }),
+                Given.TouchUp => Raise(view, new TouchEventArgs(finger, 0) { RoutedEvent = UIElement.TouchUpEvent }),
+                Given.ManipulationStarting => Manipulate(view, middle, UIElement.ManipulationStartingEvent),
+                Given.ManipulationDelta => Manipulate(view, middle, UIElement.ManipulationDeltaEvent),
+                Given.ManipulationInertiaStarting => Manipulate(view, middle, UIElement.ManipulationInertiaStartingEvent),
+                Given.KeyDown => Raise(
+                    view,
+                    new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(view), 0, Key.Add) { RoutedEvent = Keyboard.KeyDownEvent }
+                ),
+                Given.KeyUp => Raise(
+                    view,
+                    new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(view), 0, Key.Add) { RoutedEvent = Keyboard.KeyUpEvent }
+                ),
+                Given.Size => Resize(view),
+                Given.Spec => SetSpec(view, Figure.HConcat(scene.Plot, scene.Plot)),
+                _ => throw new ArgumentOutOfRangeException(nameof(given), given, "No such input."),
+            };
+
+            Assert.False(handled, $"The disposed view marked {given} as its own.");
+            Assert.False(view.IsMouseCaptured);
+
+            static bool Raise(UIElement view, RoutedEventArgs e)
+            {
+                view.RaiseEvent(e);
+                return e.Handled;
+            }
+
+            static bool PostHorizontalWheel(Window window, Point screen)
+            {
+                var hwnd = (HWND)new WindowInteropHelper(window).Handle;
+                var at = ((uint)(ushort)(short)screen.Y << 16) | (ushort)(short)screen.X;
+                Assert.True(PostMessageW(hwnd, InputTranslator.WmMouseHWheel, (nuint)(120 << 16), (nint)at));
+                WpfThread.Pump();
+                return false;
+            }
+
+            static bool Resize(HyperPlotView view)
+            {
+                // The view's own size, laid out in the pump. A window resized here lays out inside this call, and on the code
+                // before Issue #601's fix the exception thrown there ended the test process, and with it every test after it.
+                view.Width = view.ActualWidth / 2;
+                WpfThread.Pump();
+                return false;
+            }
+
+            static bool SetSpec(HyperPlotView view, SpecNode spec)
+            {
+                view.Spec = spec;
+                return false;
+            }
+        });
+
+    /// <summary>
+    /// A view disposed in a drag lets go of the mouse capture and of the fingers it captured (Issue #601): it no longer takes
+    /// the release that would let them go. The lost capture then reaches the disposed view, which throws nothing. On the code
+    /// before the fix, the capture stayed, and the window's close lost it into the disposed engine, which ended the test
+    /// process.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The scene's view, drawn, with the default bindings.
+    ///
+    /// Steps:
+    /// - Press the left button at the middle; dispose the view. Make a second scene; raise TouchDown of finger 1 of a test
+    ///   touch device at its view's middle; dispose that view.
+    ///
+    /// Expected:
+    /// - After the press the view captures the mouse, and after the disposal neither it nor any element does. After the
+    ///   finger, the second view captures it, and after the disposal it captures no finger.
+    /// </remarks>
+    [Fact]
+    public void Dispose_InADrag_ReleasesTheMouseAndTheFingers() =>
+        wpf.Run(() =>
+        {
+            using (var scene = new Scene())
+            {
+                var view = scene.View;
+                DrawUntilShown(view);
+                var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
+                AssertInput(
+                    view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse),
+                    "The press was not used."
+                );
+                Assert.True(view.IsMouseCaptured);
+                view.Dispose();
+                Assert.False(view.IsMouseCaptured);
+                Assert.Null(Mouse.Captured);
+            }
+
+            using (var scene = new Scene())
+            {
+                var view = scene.View;
+                DrawUntilShown(view);
+                var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
+                using var finger = new TestTouchDevice(1, middle, PresentationSource.FromVisual(view));
+                view.RaiseEvent(new TouchEventArgs(finger, 0) { RoutedEvent = UIElement.TouchDownEvent });
+                Assert.Equal([finger], view.TouchesCaptured);
+                view.Dispose();
+                Assert.Empty(view.TouchesCaptured);
+            }
+        });
+
+    /// <summary>
+    /// A view under the mouse that is taken out of its panel and disposed takes the mouse's leave that WPF then sends it,
+    /// and throws nothing (Issue #601, the investigation's P7): what closing a tab or replacing a plot does. The one test of
+    /// the element under the mouse as WPF itself keeps it.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A grid with the scene's view, in the window; drawn. The real cursor is not moved and no window is put under it: the
+    ///   test sends its window a <c>WM_MOUSEMOVE</c> at the view's middle while the window holds the thread's mouse capture
+    ///   (<c>SetCapture</c>). WPF starts a window's mouse input only when the cursor is over the window or the window has the
+    ///   capture (read in dotnet/wpf's main, 2026-11-22: <c>HwndMouseInputProvider.ReportInput</c>), and a capture taken
+    ///   with no button down does not take the machine's mouse from other windows (the comment on <c>WM_CAPTURECHANGED</c> in
+    ///   the same file: Windows picks the queue without this capture).
+    ///
+    /// Steps:
+    /// - Take the capture; send <c>WM_MOUSEMOVE</c>; release the capture. Take the view out of the grid; dispose it; pump
+    ///   the dispatcher.
+    ///
+    /// Expected:
+    /// - After the message the mouse is over the view. The pump throws nothing; the view got the mouse's leave after it
+    ///   was disposed (so the disposed view's handler ran); after the pump the mouse is not over it.
+    /// </remarks>
+    [Fact]
+    public void Disposed_UnderTheMouse_TakesTheLeave() =>
+        wpf.Run(() =>
+        {
+            using var scene = new Scene();
+            var view = scene.View;
+            var grid = new System.Windows.Controls.Grid();
+            scene.Window.Content = grid;
+            _ = grid.Children.Add(view);
+            DrawUntilShown(view);
+            var middle = new Point(view.ActualWidth / 2, view.ActualHeight / 2);
+            var disposed = false;
+            var leavesAfterDispose = 0;
+            view.AddHandler(Mouse.MouseLeaveEvent, new MouseEventHandler((_, _) => leavesAfterDispose += disposed ? 1 : 0), handledEventsToo: true);
+
+            var client = PresentationSource
+                .FromVisual(scene.Window)
+                .CompositionTarget.TransformToDevice.Transform(view.TranslatePoint(middle, scene.Window));
+            var at = ((uint)(ushort)(short)Math.Round(client.Y) << 16) | (ushort)(short)Math.Round(client.X);
+            var hwnd = (HWND)new WindowInteropHelper(scene.Window).Handle;
+            Assert.Equal(HWND.NULL, SetCapture(hwnd));
+            try
+            {
+                _ = SendMessageW(hwnd, WM.WM_MOUSEMOVE, 0, (nint)at);
+            }
+            finally
+            {
+                Assert.True(ReleaseCapture());
+            }
+
+            Assert.True(view.IsMouseOver, $"The mouse is not over the view after WM_MOUSEMOVE at {client} (over {Mouse.DirectlyOver}).");
+
+            grid.Children.Remove(view);
+            view.Dispose();
+            disposed = true;
+            WpfThread.Pump();
+            Assert.Equal(1, leavesAfterDispose);
+            Assert.False(view.IsMouseOver);
+        });
+
+    /// <summary>
+    /// Starts a manipulation on the view with a test manipulator, moves it, and ends it, pumping after each, and returns
+    /// whether the event of <paramref name="routedEvent"/> was marked handled; asserts that it came.
+    /// </summary>
+    private static bool Manipulate(HyperPlotView view, Point at, RoutedEvent routedEvent)
+    {
+        bool? handled = null;
+        view.AddHandler(routedEvent, new RoutedEventHandler((_, e) => handled ??= e.Handled), handledEventsToo: true);
+        var came = new List<string>();
+        foreach (
+            var each in new[]
+            {
+                UIElement.ManipulationStartingEvent,
+                UIElement.ManipulationStartedEvent,
+                UIElement.ManipulationDeltaEvent,
+                UIElement.ManipulationInertiaStartingEvent,
+                UIElement.ManipulationCompletedEvent,
+            }
+        )
+        {
+            view.AddHandler(each, new RoutedEventHandler((_, e) => came.Add(e.RoutedEvent.Name)), handledEventsToo: true);
+        }
+
+        var manipulator = new TestManipulator(1, at);
+        try
+        {
+            Manipulation.AddManipulator(view, manipulator);
+            WpfThread.Pump();
+            manipulator.Move(at + new Vector(30, 0));
+
+            // The manipulation reads its contacts at WPF's rendering tick or after a layout of its container; a layout is made
+            // here, so the test does not wait for the tick.
+            view.InvalidateArrange();
+            view.UpdateLayout();
+            WpfThread.Pump();
+            Manipulation.RemoveManipulator(view, manipulator);
+            WpfThread.Pump();
+        }
+        finally
+        {
+            if (Manipulation.IsManipulationActive(view))
+            {
+                Manipulation.CompleteManipulation(view);
+            }
+        }
+
+        Assert.True(handled.HasValue, $"{routedEvent.Name} did not reach the view; it got {string.Join(", ", came)}.");
+        return handled.Value;
+    }
+
     /// <summary>
     /// Asserts that the view waits for WPF's rendering tick, or that the tick already drew a frame since <paramref name="drawn"/>
     /// (Issue #305): a pump of the dispatcher may run WPF's own tick, which draws the frame the view waited for.
@@ -1011,6 +1353,51 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             Window.Close();
             View.Dispose();
             _y.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// A finger of the test's, at a fixed position in device-independent pixels of the element that asks; active on a
+    /// window's source from its making to its disposal, as a finger is while it touches (WPF lists only active fingers among
+    /// an element's captured ones).
+    /// </summary>
+    private sealed class TestTouchDevice : TouchDevice, IDisposable
+    {
+        private readonly Point _position;
+
+        public TestTouchDevice(int id, Point position, PresentationSource source)
+            : base(id)
+        {
+            _position = position;
+            SetActiveSource(source);
+            Activate();
+        }
+
+        public void Dispose() => Deactivate();
+
+        public override TouchPoint GetTouchPoint(IInputElement relativeTo) =>
+            new(this, _position, new Rect(_position, new Size(1, 1)), TouchAction.Move);
+
+        public override TouchPointCollection GetIntermediateTouchPoints(IInputElement relativeTo) => [];
+    }
+
+    /// <summary>A manipulator of the test's: a contact at a position in device-independent pixels, moved by the test.</summary>
+    private sealed class TestManipulator(int id, Point position) : IManipulator
+    {
+        private Point _position = position;
+
+        public event EventHandler? Updated;
+
+        public int Id => id;
+
+        public Point GetPosition(IInputElement relativeTo) => _position;
+
+        public void ManipulationEnded(bool cancel) { }
+
+        public void Move(Point to)
+        {
+            _position = to;
+            Updated?.Invoke(this, EventArgs.Empty);
         }
     }
 
