@@ -13,6 +13,16 @@
 #           (-Baseline, an executable of main that times the same stage, its count of the view), alternated A, B, B, A
 #   scan1e9 (Issue #600) the same scan at 1e9 uniform points (about 65,536 resident cells), the density scene's zoom with
 #           Auto; its 8 GB of data files go under .dev/r3b2p2-data and are deleted at the end
+#   reads   (Issue #603) 1e9 uniform points drawn as points: a tenth of the square filled with its pages and panned, with
+#           the index's copy in the page cache and then out of it, and the pool disposed while pages are read; 3 runs
+#   m4      (Issue #603) the same with 16 line series of 1e6 points, whose M4 extraction is timed with reads and without;
+#           2 runs
+#   cells   (Issue #603) 1e9 uniform and clustered points, a still view whose pages are all on the GPU, recorded and not
+#           drawn: the time and the bytes of the table of cells, against a baseline build that writes no table
+#           (-Baseline), alternated A, B, B, A
+#   cap     (Issue #603) 1e8 points in clusters with halos (past 131,072 resident cells), deep zooms into a cluster, with the
+#           limit of cells and without it, alternated
+#   The data files of reads, m4, cells, and cap go under .dev/r3b2p4-data and are deleted at the end.
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -108,7 +118,7 @@ function Get-Arguments([string] $distribution, [int] $categories, [string] $view
     @('10000000', '6', '0.6', $distribution, '600', "$categories", $view, $channel, 'Circle', $form, $frames)
 }
 
-Set-Content -Path $Out -Value "# r3b2 run (Issues #577 and #600), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
+Set-Content -Path $Out -Value "# r3b2 run (Issues #577, #600, and #603), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
 $watcher = $null
 $clocks = $null
 try {
@@ -206,6 +216,53 @@ try {
         }
         finally {
             Remove-Item -LiteralPath $data -Recurse -Force
+        }
+    }
+
+    $data4 = Join-Path $dev 'r3b2p4-data'
+    if ($Sets | Where-Object { $_ -in @('reads', 'm4', 'cells', 'cap') }) {
+        New-Item -ItemType Directory -Force -Path $data4 | Out-Null
+    }
+
+    try {
+        if ($Sets -contains 'reads') {
+            for ($round = 1; $round -le 3; $round++) {
+                Invoke-Scene "reads 1e9 uniform, run $round" @('fill', $data4, '1e9', 'uniform') $exe 'reads'
+            }
+        }
+
+        if ($Sets -contains 'm4') {
+            for ($round = 1; $round -le 2; $round++) {
+                Invoke-Scene "m4 1e9 uniform, run $round" @('m4', $data4, '1e9', 'uniform') $exe 'reads'
+            }
+        }
+
+        if ($Sets -contains 'cells') {
+            if (-not (Test-Path $Baseline)) {
+                throw "the cells set needs -Baseline, an executable that writes no table of cells"
+            }
+
+            foreach ($distribution in @('uniform', 'cluster')) {
+                $round = 0
+                foreach ($side in @('head', 'base', 'base', 'head')) {
+                    $round++
+                    $program = if ($side -eq 'head') { $exe } else { $Baseline }
+                    Invoke-Scene "cells 1e9 $distribution $side, run $round" @('cells', $data4, '1e9', $distribution) $program 'reads'
+                }
+            }
+        }
+
+        if ($Sets -contains 'cap') {
+            $round = 0
+            foreach ($limit in @('capped', 'free', 'free', 'capped')) {
+                $round++
+                Invoke-Scene "cap 1e8 $limit, run $round" @('cap', $data4, '1e8', $limit) $exe 'reads'
+            }
+        }
+    }
+    finally {
+        if (Test-Path $data4) {
+            Remove-Item -LiteralPath $data4 -Recurse -Force
         }
     }
 

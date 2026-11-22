@@ -30,6 +30,9 @@ using HyperPlot.Samples;
 //     of the hit test over vertical lines of Issue #569 instead, over x and y files it writes (HitTestScene.RunLines).
 //   <dir>/HyperPlot.E2E.exe selection <count> <points|density> [frames] [rounds]: the scene of the selection of scatter
 //     of row R3c instead, with no data file (SelectionScene).
+//   <dir>/HyperPlot.E2E.exe reads <fill|m4|cells> <folder for the data files> <count> <uniform|cluster>, or reads cap
+//     <folder> <count> <capped|free>: the scenes of the workers' reads of the pages, the table of cells, and the limit of
+//     cells of row R3b2 (Issue #603) instead, over the density scene's files or clusters with halos (ReadScene).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
 if (args.Length > 0 && args[0] == "points")
 {
@@ -43,6 +46,13 @@ if (args.Length > 0 && args[0] == "annotations")
     using var own = Process.GetCurrentProcess();
     own.PriorityClass = ProcessPriorityClass.High;
     return HyperPlot.E2E.AnnotationsScene.Run(args.AsSpan(1));
+}
+
+if (args.Length > 0 && args[0] == "reads")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.ReadScene.Run(args.AsSpan(1));
 }
 
 if (args.Length > 0 && args[0] == "density")
