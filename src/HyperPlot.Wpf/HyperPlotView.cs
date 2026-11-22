@@ -953,9 +953,10 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     /// <summary>The horizontal wheel (design §6.1): WPF raises no event for <c>WM_MOUSEHWHEEL</c>, so the window's hook reads it.</summary>
     private nint WndProc(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
-        // Dispose removes the hook, but the window calls the hooks it had when the message came, so a hook before this one
-        // that disposes the view still reaches it (read in dotnet/wpf's main, 2026-11-22: HwndWrapper.WndProc enumerates
-        // its WeakReferenceList, a CopyOnWriteList whose Remove copies the list it gave out).
+        // Dispose removes the hook, but a disposed view still gets messages here: the release of its mouse capture in Dispose
+        // sends WM_CAPTURECHANGED before the hook goes (seen in the tests of Issue #601), and the window calls the hooks it
+        // had when a message came, so a hook before this one that disposes the view still reaches it (read in dotnet/wpf's
+        // main, 2026-11-22: HwndWrapper.WndProc enumerates a CopyOnWriteList, whose Remove copies the list it gave out).
         if (_disposed || message != InputTranslator.WmMouseHWheel || !IsVisible)
         {
             return 0;

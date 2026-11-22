@@ -855,9 +855,6 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         /// <summary>A mouse button released.</summary>
         MouseUp,
 
-        /// <summary>The mouse capture lost in a drag.</summary>
-        LostMouseCapture,
-
         /// <summary>The wheel turned.</summary>
         Wheel,
 
@@ -888,7 +885,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
         /// <summary>A key released that the engine knows.</summary>
         KeyUp,
 
-        /// <summary>The window resized.</summary>
+        /// <summary>The view resized.</summary>
         Size,
 
         /// <summary>A new spec.</summary>
@@ -903,15 +900,16 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     /// <remarks>
     /// Preconditions:
     /// - The scene's view, drawn, with the default bindings, left in its window. Before the view is disposed, the state with
-    ///   which a view that is not disposed passes the input on to the engine: a press it used and its mouse capture for the
-    ///   lost capture, finger 1 down for the finger's move and lift, fingers 1 and 2 down for the manipulation's step.
+    ///   which a view that is not disposed passes the input on to the engine: finger 1 down for the finger's move and lift,
+    ///   fingers 1 and 2 down for the manipulation's step. The lost capture is
+    ///   <see cref="Dispose_InADrag_ReleasesTheMouseAndTheFingers"/>'s: a disposed view holds no capture to lose.
     ///
     /// Steps:
     /// - Dispose the view. Then, one case each: raise MouseDown, MouseMove, MouseLeave, MouseUp (left button), and
-    ///   MouseWheel (120) on it; take the mouse capture away (<c>Mouse.Capture(null)</c>); post <c>WM_MOUSEHWHEEL</c> of 120
+    ///   MouseWheel (120) on it; post <c>WM_MOUSEHWHEEL</c> of 120
     ///   at the view's middle to the window and pump; raise TouchDown, TouchMove, and TouchUp of finger 1 of a test touch
     ///   device; start a manipulation on the view with a test manipulator, move it 30 device-independent pixels right and
-    ///   lay the view out (the manipulation reads its contacts then), and remove it, pumping after each; raise KeyDown and KeyUp of Add; make the window 400 × 260 and pump; set a figure of
+    ///   lay the view out (the manipulation reads its contacts then), and remove it, pumping after each; raise KeyDown and KeyUp of Add; make the view half as wide and pump; set a figure of
     ///   two plots as the spec.
     ///
     /// Expected:
@@ -923,7 +921,6 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     [InlineData(Given.MouseMove)]
     [InlineData(Given.MouseLeave)]
     [InlineData(Given.MouseUp)]
-    [InlineData(Given.LostMouseCapture)]
     [InlineData(Given.Wheel)]
     [InlineData(Given.HorizontalWheel)]
     [InlineData(Given.TouchDown)]
@@ -946,13 +943,6 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
             using var finger = new TestTouchDevice(1, middle, PresentationSource.FromVisual(view));
             switch (given)
             {
-                case Given.LostMouseCapture:
-                    AssertInput(
-                        view.Pointer(PointerEventKind.Down, middle, PointerButtons.Left, PointerButtons.Left, PointerKind.Mouse),
-                        "The press was not used."
-                    );
-                    Assert.True(view.IsMouseCaptured);
-                    break;
                 case Given.TouchMove or Given.TouchUp:
                     _ = view.Touches.Down(finger.Id);
                     break;
@@ -973,7 +963,6 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
                 Given.MouseMove => Raise(view, new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseMoveEvent }),
                 Given.MouseLeave => Raise(view, new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent }),
                 Given.MouseUp => Raise(view, new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left) { RoutedEvent = Mouse.MouseUpEvent }),
-                Given.LostMouseCapture => TakeTheCapture(),
                 Given.Wheel => Raise(view, new MouseWheelEventArgs(Mouse.PrimaryDevice, 0, 120) { RoutedEvent = Mouse.MouseWheelEvent }),
                 Given.HorizontalWheel => PostHorizontalWheel(scene.Window, screen),
                 Given.TouchDown => Raise(view, new TouchEventArgs(finger, 0) { RoutedEvent = UIElement.TouchDownEvent }),
@@ -990,7 +979,7 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
                     view,
                     new KeyEventArgs(Keyboard.PrimaryDevice, PresentationSource.FromVisual(view), 0, Key.Add) { RoutedEvent = Keyboard.KeyUpEvent }
                 ),
-                Given.Size => Resize(scene.Window),
+                Given.Size => Resize(view),
                 Given.Spec => SetSpec(view, Figure.HConcat(scene.Plot, scene.Plot)),
                 _ => throw new ArgumentOutOfRangeException(nameof(given), given, "No such input."),
             };
@@ -1004,12 +993,6 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
                 return e.Handled;
             }
 
-            static bool TakeTheCapture()
-            {
-                _ = Mouse.Capture(null);
-                return false;
-            }
-
             static bool PostHorizontalWheel(Window window, Point screen)
             {
                 var hwnd = (HWND)new WindowInteropHelper(window).Handle;
@@ -1019,10 +1002,11 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
                 return false;
             }
 
-            static bool Resize(Window window)
+            static bool Resize(HyperPlotView view)
             {
-                window.Width = 400;
-                window.Height = 260;
+                // The view's own size, laid out in the pump. A window resized here lays out inside this call, and on the code
+                // before Issue #601's fix the exception thrown there ended the test process, and with it every test after it.
+                view.Width = view.ActualWidth / 2;
                 WpfThread.Pump();
                 return false;
             }
@@ -1036,7 +1020,9 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
 
     /// <summary>
     /// A view disposed in a drag lets go of the mouse capture and of the fingers it captured (Issue #601): it no longer takes
-    /// the release that would let them go.
+    /// the release that would let them go. The lost capture then reaches the disposed view, which throws nothing. On the code
+    /// before the fix, the capture stayed, and the window's close lost it into the disposed engine, which ended the test
+    /// process.
     /// </summary>
     /// <remarks>
     /// Preconditions:
