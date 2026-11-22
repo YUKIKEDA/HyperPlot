@@ -57,6 +57,9 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     private bool _hooked;
     private bool _pressed;
     private bool _releasing;
+
+    // WPF still sends a disposed view its input while it stays in a window or the mouse device still holds it as the
+    // element under the mouse (Issue #601), and its size and spec can still change: each of those returns at once.
     private bool _disposed;
 
     static HyperPlotView()
@@ -152,7 +155,10 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     /// <inheritdoc />
     protected override int VisualChildrenCount => 1;
 
-    /// <summary>Releases the view's engine and surfaces. The backend stays with its owner.</summary>
+    /// <summary>
+    /// Releases the view's engine and surfaces, and the mouse and the touches it captured. The backend stays with its owner.
+    /// The view takes no more input, size, or spec.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed)
@@ -161,8 +167,16 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
         }
 
         _disposed = true;
-        Unhook();
-        StopSummary();
+
+        // A drag the view held would keep the mouse and the fingers on a view that no longer takes their release.
+        _pressed = false;
+        if (IsMouseCaptured)
+        {
+            ReleaseMouseCapture();
+        }
+
+        ReleaseAllTouchCaptures();
+        Detach();
         ReleaseOpened();
         _shared?.Dispose();
         _readback?.Dispose();
@@ -265,6 +279,11 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     /// <summary>Reads the size in DIPs and the DPI, and resizes the engine's target to the pixels they make (design §7.2).</summary>
     internal void UpdateSize()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         var dpi = VisualTreeHelper.GetDpi(this);
         _dpi = (dpi.DpiScaleX, dpi.DpiScaleY);
         var (width, height) = InputTranslator.PixelSize(ActualWidth, ActualHeight, dpi.DpiScaleX, dpi.DpiScaleY);
@@ -334,7 +353,7 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnMouseDown(MouseButtonEventArgs e)
     {
         base.OnMouseDown(e);
-        if (!IsTouch(e))
+        if (!_disposed && !IsTouch(e))
         {
             e.Handled = Pointer(PointerEventKind.Down, e.GetPosition(this), InputTranslator.Button(e.ChangedButton), Held(e), Device(e));
         }
@@ -344,7 +363,7 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
-        if (!IsTouch(e))
+        if (!_disposed && !IsTouch(e))
         {
             e.Handled = Pointer(PointerEventKind.Move, e.GetPosition(this), PointerButtons.None, Held(e), Device(e));
         }
@@ -355,7 +374,7 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
-        if (!IsTouch(e))
+        if (!_disposed && !IsTouch(e))
         {
             _ = Pointer(PointerEventKind.Leave, e.GetPosition(this), PointerButtons.None, Held(e), Device(e));
         }
@@ -365,7 +384,7 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnMouseUp(MouseButtonEventArgs e)
     {
         base.OnMouseUp(e);
-        if (!IsTouch(e))
+        if (!_disposed && !IsTouch(e))
         {
             e.Handled = Pointer(PointerEventKind.Up, e.GetPosition(this), InputTranslator.Button(e.ChangedButton), Held(e), Device(e));
         }
@@ -376,7 +395,7 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnLostMouseCapture(MouseEventArgs e)
     {
         base.OnLostMouseCapture(e);
-        if (_pressed && !_releasing)
+        if (!_disposed && _pressed && !_releasing)
         {
             _pressed = false;
             _ = Engine.OnPointer(
@@ -397,13 +416,21 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnMouseWheel(MouseWheelEventArgs e)
     {
         base.OnMouseWheel(e);
-        e.Handled = Wheel(e.GetPosition(this), 0, InputTranslator.Notches(e.Delta));
+        if (!_disposed)
+        {
+            e.Handled = Wheel(e.GetPosition(this), 0, InputTranslator.Notches(e.Delta));
+        }
     }
 
     /// <inheritdoc />
     protected override void OnTouchDown(TouchEventArgs e)
     {
         base.OnTouchDown(e);
+        if (_disposed)
+        {
+            return;
+        }
+
         _ = CaptureTouch(e.TouchDevice);
         _ = Touch(_touch.Down(e.TouchDevice.Id), PointerEventKind.Down, e.GetTouchPoint(this).Position);
 
@@ -415,6 +442,11 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnTouchMove(TouchEventArgs e)
     {
         base.OnTouchMove(e);
+        if (_disposed)
+        {
+            return;
+        }
+
         _ = Touch(_touch.Move(e.TouchDevice.Id), PointerEventKind.Move, e.GetTouchPoint(this).Position);
         e.Handled = true;
     }
@@ -423,6 +455,11 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnTouchUp(TouchEventArgs e)
     {
         base.OnTouchUp(e);
+        if (_disposed)
+        {
+            return;
+        }
+
         _ = ReleaseTouchCapture(e.TouchDevice);
         _ = Touch(_touch.Up(e.TouchDevice.Id), PointerEventKind.Up, e.GetTouchPoint(this).Position);
         e.Handled = true;
@@ -432,6 +469,11 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnManipulationStarting(ManipulationStartingEventArgs e)
     {
         base.OnManipulationStarting(e);
+        if (_disposed)
+        {
+            return;
+        }
+
         e.ManipulationContainer = this;
         e.Mode = ManipulationModes.Scale | ManipulationModes.Translate;
         e.Handled = true;
@@ -441,6 +483,11 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnManipulationDelta(ManipulationDeltaEventArgs e)
     {
         base.OnManipulationDelta(e);
+        if (_disposed)
+        {
+            return;
+        }
+
         Manipulate(e.ManipulationOrigin, e.DeltaManipulation.Scale, e.DeltaManipulation.Translation);
         e.Handled = true;
     }
@@ -449,6 +496,10 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnManipulationInertiaStarting(ManipulationInertiaStartingEventArgs e)
     {
         base.OnManipulationInertiaStarting(e);
+        if (_disposed)
+        {
+            return;
+        }
 
         // WPF's inertia, in DIPs per ms²: 10 inches/s² for a move and 0.1 inches/s² for a scale, the values of Microsoft Learn's
         // "Walkthrough: Creating Your First Touch Application".
@@ -461,14 +512,20 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        e.Handled = Key(KeyEventKind.Down, e);
+        if (!_disposed)
+        {
+            e.Handled = Key(KeyEventKind.Down, e);
+        }
     }
 
     /// <inheritdoc />
     protected override void OnKeyUp(KeyEventArgs e)
     {
         base.OnKeyUp(e);
-        e.Handled = Key(KeyEventKind.Up, e);
+        if (!_disposed)
+        {
+            e.Handled = Key(KeyEventKind.Up, e);
+        }
     }
 
     /// <summary>
@@ -579,12 +636,17 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
         _d3dImage.IsFrontBufferAvailableChanged += (_, _) => FrontBufferChanged();
         Loaded += (_, _) => OnLoaded();
         IsVisibleChanged += (_, _) => OnVisibleChanged();
-        Unloaded += (_, _) => OnUnloaded();
+        Unloaded += (_, _) => Detach();
         return engine;
     }
 
     private void OnSpecChanged(SpecNode? spec)
     {
+        if (_disposed)
+        {
+            return;
+        }
+
         switch (spec)
         {
             case PlotSpec plot:
@@ -609,6 +671,12 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
 
     private void OnLoaded()
     {
+        // A disposed view put in a window again hooks nothing.
+        if (_disposed)
+        {
+            return;
+        }
+
         _source = PresentationSource.FromVisual(this) as HwndSource;
         _source?.AddHook(WndProc);
         UpdateSize();
@@ -630,7 +698,8 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
         }
     }
 
-    private void OnUnloaded()
+    /// <summary>Lets go of WPF's tick, the summary's timer, and the window's hook: the view is unloaded or disposed.</summary>
+    private void Detach()
     {
         Unhook();
         StopSummary();
@@ -884,7 +953,10 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     /// <summary>The horizontal wheel (design §6.1): WPF raises no event for <c>WM_MOUSEHWHEEL</c>, so the window's hook reads it.</summary>
     private nint WndProc(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
     {
-        if (message != InputTranslator.WmMouseHWheel || !IsVisible)
+        // Dispose removes the hook, but the window calls the hooks it had when the message came, so a hook before this one
+        // that disposes the view still reaches it (read in dotnet/wpf's main, 2026-11-22: HwndWrapper.WndProc enumerates
+        // its WeakReferenceList, a CopyOnWriteList whose Remove copies the list it gave out).
+        if (_disposed || message != InputTranslator.WmMouseHWheel || !IsVisible)
         {
             return 0;
         }
