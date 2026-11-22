@@ -425,22 +425,23 @@ public sealed class IndexedPointTests
 
     /// <summary>
     /// The resident cells of a layer are limited over all its parts (design §5.5.2 "セルの表", the owner's decision of
-    /// 2026-11-22): each part takes ⌊limit × its rows ÷ the layer's rows⌋ before its index is built, a part within its share
-    /// is not stopped, and a part past it stops at an upper level.
+    /// 2026-11-22): each part takes 1 + ⌊(limit − parts) × its rows ÷ the layer's rows⌋ before its index is built, a part
+    /// within its share is not stopped, and a part past it stops at an upper level.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - 400,000 seeded points over [0, 100]² colored by a category whose rows take turns a, b, c, c: parts of 100,000,
     ///   100,000, and 200,000 rows. Uniform points, so that a part of 100,000 has 4 resident cells of level 1 (about 25,000
     ///   points each) and the part of 200,000 has 16 of level 2 (about 12,500 each), 24 together.
-    /// - A plan that waits for its indexes, whose limit of a layer's cells is 16: shares of 4, 4, and 8.
+    /// - A plan that waits for its indexes, whose limit of a layer's cells is 16: shares of 1 + ⌊13 ÷ 4⌋ = 4, 4, and
+    ///   1 + ⌊26 ÷ 4⌋ = 7.
     ///
     /// Steps:
     /// - Render, and read each part's resident cells.
     ///
     /// Expected:
     /// - 4, 4, and 4 cells: the parts of 100,000 are within their share of 4 exactly and keep their cells; the part of
-    ///   200,000 stops at level 1, its 4 cells of about 50,000 points, since level 2 has 16, past its 8. Together 12, no
+    ///   200,000 stops at level 1, its 4 cells of about 50,000 points, since level 2 has 16, past its 7. Together 12, no
     ///   more than 16; counted a part at a time, the part of 200,000 would keep its 16.
     /// - Each part's cells cover its copy in order.
     /// </remarks>
@@ -495,6 +496,50 @@ public sealed class IndexedPointTests
         }
 
         Assert.Equal([4, 4, 4], counts);
+    }
+
+    /// <summary>
+    /// Every part keeps its root cell and the shares together never pass the layer's limit (design §5.5.2 "セルの表", the
+    /// owner's decision of 2026-11-22): a part's share is 1 + ⌊(131,072 − parts) × its rows ÷ the layer's rows⌋.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One layer of 64 parts: one of 131,071,937 rows and 63 of 1 row, 131,072,000 rows together, under the limit of
+    ///   131,072 cells. Shared as ⌊131,072 × rows ÷ 131,072,000⌋, a part of 1 row would take 0 cells yet keep its root, and
+    ///   the large part 131,071: 131,134 cells together.
+    /// - A second layer of 3 parts of 1 row, with the layer counted first so that the rows of one layer do not count in
+    ///   the other's.
+    ///
+    /// Steps:
+    /// - Count the parts, and ask each part's share.
+    ///
+    /// Expected:
+    /// - The large part takes 1 + ⌊131,008 × 131,071,937 ÷ 131,072,000⌋ = 131,008 and each part of 1 row takes 1:
+    ///   131,071 together, no more than 131,072, and no share below 1.
+    /// - Each part of the second layer takes 1 + ⌊131,069 ÷ 3⌋ = 43,690: 131,070 together.
+    /// </remarks>
+    [Fact]
+    public void CellShares_KeepEveryRootAndNeverPassTheLimit()
+    {
+        const long Large = 131_071_937;
+        var indexing = new SpatialIndexing();
+        indexing.Enter(1, 1);
+        indexing.Enter(1, 1);
+        indexing.Enter(1, 1);
+        indexing.Enter(0, Large);
+        for (var i = 0; i < 63; i++)
+        {
+            indexing.Enter(0, 1);
+        }
+
+        Assert.Equal(0, (int)(SpatialSnapshot.MaxResidentCells * 1L / (Large + 63)));
+        var large = indexing.CellShare(0, Large);
+        var small = indexing.CellShare(0, 1);
+        Assert.Equal(131_008, large);
+        Assert.Equal(1, small);
+        Assert.InRange(large + (63 * small), 64, SpatialSnapshot.MaxResidentCells);
+        Assert.Equal(43_690, indexing.CellShare(1, 1));
+        Assert.InRange(3 * indexing.CellShare(1, 1), 3, SpatialSnapshot.MaxResidentCells);
     }
 
     /// <summary>

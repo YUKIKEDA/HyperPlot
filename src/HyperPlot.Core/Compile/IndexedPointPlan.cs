@@ -73,13 +73,20 @@ internal sealed class SpatialIndexing
 
     /// <summary>
     /// Returns a part's share of its layer's resident cells (design §5.5.2 "セルの表", the owner's decision of 2026-11-22):
-    /// ⌊<see cref="CellLimit"/> × the part's rows ÷ the rows of the layer's parts⌋, fixed before the part's index is built.
-    /// Every part of a layer is counted before the first build starts, since the parts are made with the layer.
+    /// 1 + ⌊(<see cref="CellLimit"/> − p) × the part's rows ÷ the rows of the layer's parts⌋, p being the layer's parts,
+    /// fixed before the part's index is built. Every part keeps its root cell, and the shares together never pass the
+    /// limit. Every part of a layer is counted before the first build starts, since the parts are made with the layer.
     /// </summary>
     public int CellShare(int layer, long rows)
     {
         var total = _rows.GetValueOrDefault(layer);
-        return total > 0 ? (int)((long)CellLimit * rows / total) : CellLimit;
+        if (total <= 0)
+        {
+            return CellLimit;
+        }
+
+        var spare = Math.Max(0, CellLimit - _parts.GetValueOrDefault(layer));
+        return 1 + (int)((long)spare * rows / total);
     }
 
     /// <summary>
