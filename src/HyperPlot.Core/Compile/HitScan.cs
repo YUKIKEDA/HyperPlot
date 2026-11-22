@@ -14,7 +14,8 @@ internal ref struct HitScan
     /// "散布の点が答える範囲"). The index path places a point in floats as the vertex shader does, so a point whose value lies
     /// on the view's end is drawn a few float steps off the edge, on either side (a step is 6.1 × 10^-5 of a pixel at 600
     /// pixels, 4.9 × 10^-4 at 7,680). A hundredth of a pixel holds those steps and is far below what a cursor tells apart.
-    /// Both paths take it, so that they give the same answers. The PR of Issue #569 proposes it for the owner to decide.
+    /// Both paths take it, so that they give the same answers (design §6.3 "散布の点が答える範囲", Issue #569 Decision,
+    /// 2026-11-22).
     /// </summary>
     public const double EdgeSlack = 0.01;
 
