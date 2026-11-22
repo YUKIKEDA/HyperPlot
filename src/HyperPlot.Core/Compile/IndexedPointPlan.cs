@@ -28,6 +28,14 @@ internal interface ISpatialColumn
 /// What the point layers of one making of a plan's layers share (design §5.5.2 "索引の保管庫"): the index being built, so
 /// that the parts' indexes are built one after another, and the number of parts each layer has on the index path.
 /// </summary>
+/// <remarks>
+/// It lives as long as the plans made with it: one making of the layers (the plan's, one off the frame, or one layer's
+/// alone), whose plans are released together. A layer's number is its position in the spec of that making. A new spec
+/// whose layer at a position names other columns (a reorder among them) makes every layer again with a new indexing, so
+/// no remembered drawing passes to another layer's points. Layers over the same columns at both positions keep their
+/// plans, each taking the new node as a change of looks: the drawing stays with the plan and its points, which are the
+/// same, and a new <see cref="PointLayerSpec.Draw"/> or threshold forgets it (<see cref="DensitySwitch.Choose"/>).
+/// </remarks>
 internal sealed class SpatialIndexing
 {
     /// <summary>The most parts of one layer on the index path: each index holds about 0.7 MB whatever its points.</summary>
@@ -173,6 +181,9 @@ internal sealed class IndexedPointPlan : LayerPlan
     /// whether or not the tiles had come. Tests only.
     /// </summary>
     internal double Estimate => _estimate;
+
+    /// <summary>Gets the positions of the resident cells the last scan found the view draws, in the copy's order. Tests only.</summary>
+    internal ReadOnlySpan<int> VisibleCells => _visible.AsSpan(0, _visibleCount);
 
     /// <summary>Gets the upper count of the view the scan of this frame found, on a full snapshot; 0 otherwise.</summary>
     internal long ScannedCount => _scanCount;
@@ -776,7 +787,11 @@ internal sealed class IndexedPointPlan : LayerPlan
         // the reach of the vertex shader's box, half the diameter and half a pixel, in units of each axis.
         var reach = (diameter / 2) + 0.5;
         var (reachX, reachY) = (x.UnitsOf(reach), y.UnitsOf(reach));
-        var (perArea, estimate, count) = (Math.Abs(x.PerUnit * y.PerUnit), 0.0, 0);
+
+        // A panel under a pixel wide or high is not scanned (PlotGuides.Empty: the plan records the background alone, and
+        // a figure's cells under a pixel draw nothing), so PerUnit is positive here; the estimate is still 0 rather than NaN
+        // or infinite for an area that is 0, NaN, or past a double (DensityMath.CellEstimate).
+        var (estimate, count) = (0.0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
@@ -787,7 +802,7 @@ internal sealed class IndexedPointPlan : LayerPlan
 
             if (x.Touches(cell.CornerX, cell.ExtentX) && y.Touches(cell.CornerY, cell.ExtentY))
             {
-                estimate = Math.Max(estimate, cell.Count / Math.Max(cell.ExtentX * cell.ExtentY * perArea, binArea));
+                estimate = Math.Max(estimate, DensityMath.CellEstimate(cell.Count, cell.ExtentX, cell.ExtentY, x.PerUnit, y.PerUnit, binArea));
             }
         }
 

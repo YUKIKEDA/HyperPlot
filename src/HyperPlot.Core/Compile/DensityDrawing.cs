@@ -47,7 +47,8 @@ internal sealed class DensitySwitch
     /// Chooses the drawing of the layer for a frame, once a frame (design §5.5.2 "`Auto` の切り替え", "入れ替わりを抑える"):
     /// for <see cref="PointDraw.Auto"/>, the drawing <see cref="Next"/> gives from the last one, the summed upper count, and
     /// the predicted times of the parts the frame scanned on a full snapshot; <see cref="PointDraw.Points"/> and
-    /// <see cref="PointDraw.Density"/> read nothing. A layer with no full snapshot predicts no time.
+    /// <see cref="PointDraw.Density"/> read nothing. A frame in which no part scanned a full snapshot predicts no time and
+    /// keeps the last drawing: raw points for a layer with no decision yet.
     /// </summary>
     /// <returns>Whether the layer draws a density this frame.</returns>
     public bool Choose(RecordContext context, PointLayerSpec point)
@@ -81,11 +82,17 @@ internal sealed class DensitySwitch
             }
         }
 
+        // A frame in which no part scanned a full snapshot reads no condition and keeps the drawing: a layer with no
+        // decision yet stays on raw points, and one that drew a density stays one (design §5.5.2 "入れ替わりを抑える").
+        if (!full)
+        {
+            (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins) = (0, 0, 0, 0);
+            return _density;
+        }
+
         // The markers' diameter in physical pixels, as the recording scales it.
         var diameter = point.Size * context.Scale;
-        var (time, timeAtFour) = full
-            ? (PredictedTime.Of(count, diameter, largest), PredictedTime.Of(count, diameter, PredictedTime.LevelJump * largest))
-            : (0, 0);
+        var (time, timeAtFour) = (PredictedTime.Of(count, diameter, largest), PredictedTime.Of(count, diameter, PredictedTime.LevelJump * largest));
         (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins) = (count, largest, time, timeAtFour);
         _density = Next(_density, count, point.DensityThreshold, time, timeAtFour);
         return _density;
@@ -96,7 +103,7 @@ internal sealed class DensitySwitch
     /// "入れ替わりを抑える", "水準が替わるところ"): from raw points, a density when the upper count passes the threshold or the
     /// predicted time reaches <see cref="PredictedTime.Threshold"/>; from a density, raw points only when the count is under
     /// 0.8 times the threshold, the time under 0.8 times its threshold, and the time with four times the largest bin under
-    /// its threshold. A layer with no drawing yet comes from raw points.
+    /// its threshold. A layer with no decision yet comes from raw points.
     /// </summary>
     /// <param name="density">Whether the layer drew a density in the last frame.</param>
     /// <param name="count">The upper count of the points in the view, summed over the parts.</param>
@@ -251,7 +258,21 @@ internal static class DensityMath
     /// <param name="perUnitX">The physical pixels of a unit along x, signed.</param>
     /// <param name="perUnitY">The physical pixels of a unit along y, signed.</param>
     public static double BinArea(double extentX, double extentY, double perUnitX, double perUnitY) =>
-        Math.Abs(extentX * perUnitX * extentY * perUnitY) / ((double)DensityTiles.Side * DensityTiles.Side);
+        Math.Abs(extentX * perUnitX * (extentY * perUnitY)) / ((double)DensityTiles.Side * DensityTiles.Side);
+
+    /// <summary>
+    /// Returns a resident cell's estimate of the largest bin (design §5.5.2 "密度タイルが付く前"): its count over its area on
+    /// the screen, or over a bin's area when the cell is smaller than a bin; 0 when neither area is positive, so that the
+    /// estimate is never NaN or infinite.
+    /// </summary>
+    /// <param name="count">The cell's points.</param>
+    /// <param name="extentX">The cell's extent along x, in units of the snapshot's scale space.</param>
+    /// <param name="extentY">The cell's extent along y.</param>
+    /// <param name="perUnitX">The physical pixels of a unit along x, signed.</param>
+    /// <param name="perUnitY">The physical pixels of a unit along y, signed.</param>
+    /// <param name="binArea">The area of a bin of the chosen level on the screen (<see cref="BinArea"/>).</param>
+    public static double CellEstimate(long count, double extentX, double extentY, double perUnitX, double perUnitY, double binArea) =>
+        Normalized(count, Math.Max(Math.Abs(extentX * perUnitX * (extentY * perUnitY)), binArea));
 
     /// <summary>
     /// Returns a count normalized to the points of a square physical pixel: the count over the area of its bin or cell on

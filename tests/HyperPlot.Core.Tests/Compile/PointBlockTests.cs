@@ -390,7 +390,8 @@ public sealed class PointBlockTests
 
     /// <summary>
     /// A cell outside the view by less than a marker's reach is drawn (design §5.5.2 "ページ"): its markers whose centers lie
-    /// just past the view's edge cover pixels inside it, as the CPU path draws them (Issue #583).
+    /// just past the view's edge cover pixels inside it, as the CPU path draws them (Issue #583); the scan before the
+    /// recording keeps it (design §5.5.2 "記録の前の走査").
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -406,6 +407,8 @@ public sealed class PointBlockTests
     /// - The runs are the joined blocks of the cells within a marker's reach of the view; every block of a point within the
     ///   radius is drawn, and some of those blocks hold no point of a cell whose box reaches into the view itself, on each
     ///   of the two edges.
+    /// - The cells the scan before the recording kept, whose blocks the recording draws, are exactly the cells within the
+    ///   reach, computed by the test from the cells' boxes, in their order; some of them lie outside the view itself.
     /// </remarks>
     [Fact]
     public void Recording_CellPastTheEdgeByLessThanAMarker_DrawsItsBlocks()
@@ -430,9 +433,19 @@ public sealed class PointBlockTests
         Assert.Equal(layer.Expected(engine, view.Item1, view.Item2, view.Item3, view.Item4, clampX: false, wholePages: false), runs);
         var needed = layer.AssertDrawsTheNeeded(engine, data, runs, view);
 
-        // The blocks of the cells whose box reaches into the view itself: the needed blocks past each edge are not all among them.
+        // The cells the scan kept for the recording are the cells within a marker's reach of the view, which the runs above
+        // are the blocks of; some lie past an edge by less than the reach, outside the view itself.
         var (x0, x1) = (view.Item1 - snapshot.XRange.Origin, view.Item2 - snapshot.XRange.Origin);
         var (y0, y1) = (view.Item3 - snapshot.YRange.Origin, view.Item4 - snapshot.YRange.Origin);
+        var (unitsX, unitsY) = PixelsPerUnit(engine, view.Item1, view.Item2, view.Item3, view.Item4);
+        var (reachX, reachY) = (Reach / unitsX, Reach / unitsY);
+        bool Reaches(ResidentCell c, double marginX, double marginY) =>
+            c.CornerX <= x1 + marginX && c.CornerX + c.ExtentX >= x0 - marginX && c.CornerY <= y1 + marginY && c.CornerY + c.ExtentY >= y0 - marginY;
+        var withinReach = Enumerable.Range(0, cells.Length).Where(c => Reaches(cells[c], reachX, reachY)).ToArray();
+        Assert.Equal(withinReach, Parts(engine.Plan!.Panels[0])[0].VisibleCells.ToArray());
+        Assert.Contains(withinReach, c => !Reaches(cells[c], 0, 0));
+
+        // The blocks of the cells whose box reaches into the view itself: the needed blocks past each edge are not all among them.
         var inside = new HashSet<long>();
         foreach (var cell in cells.Where(c => c.CornerX <= x1 && c.CornerX + c.ExtentX >= x0 && c.CornerY <= y1 && c.CornerY + c.ExtentY >= y0))
         {

@@ -82,8 +82,9 @@ public sealed class AutoSwitchTests
     /// - Each time is within 0.02 ms of the table's (the table rounds to 0.01 ms, and the rounded coefficients differ by
     ///   0.0103 ms at most); d6-uniform is 11.68 and d12-n1e7 24.49 to within that.
     /// - d4-s6.5 is 14.138 ms and d6-s10-p6 14.033 ms, to within 0.001 ms, on either side of 14.1.
-    /// - The 13 scenes that did not fit and the one split between rounds all reach 14.1 ms and draw a density; the 19 that
-    ///   stay raw points are all under 14.1 ms; 8 scenes that fit draw a density too, 22 densities in all.
+    /// - Each scene's drawing is the table's (a density from a table time of 14.14 ms up, raw points to 14.03 ms): the 13
+    ///   scenes that did not fit and the one split between rounds draw a density; 19 stay raw points; 8 scenes that fit
+    ///   draw a density too, 22 densities in all.
     /// </remarks>
     [Fact]
     public void PredictedTime_OfTheDesignsScenes_MatchesItsTable()
@@ -101,7 +102,6 @@ public sealed class AutoSwitchTests
                 PredictedTime.Of(scene.Points, scene.Diameter, 4 * scene.LargestBin)
             );
             Assert.Equal(scene.Density, density);
-            Assert.Equal(time >= PredictedTime.Threshold, density);
             switch (scene.Fit)
             {
                 case Fit.Out:
@@ -167,12 +167,14 @@ public sealed class AutoSwitchTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - A threshold of 10,000 points; the time's ends as the code computes them: 14.1 and 14.1 × 0.8.
+    /// - A threshold of 10,000 points; the time's ends as the design writes them, 14.1 ms and 11.28 ms, not from the
+    ///   product's constants. 14.1 is a double the code holds as it is; 14.1 × 0.8 in doubles is one unit in the last place
+    ///   above the double 11.28, so the back end is checked 1e-9 ms on each side of 11.28.
     ///
     /// Steps:
     /// - From raw points: a time of exactly 14.1 and one unit in the last place under it; a count of 10,000 and 10,001.
-    /// - From a density, with the other two conditions met: a time of exactly 14.1 × 0.8 and just under it; a time of four
-    ///   bins of exactly 14.1 and just under it; a count of 8,000 and 7,999. Then each condition alone left in its band.
+    /// - From a density, with the other two conditions met: a time of 11.28 + 1e-9 and 11.28 − 1e-9; a time of four bins of
+    ///   exactly 14.1 and just under it; a count of 8,000 and 7,999. Then each condition alone left in its band.
     ///
     /// Expected:
     /// - From raw points: density at 14.1 and above 10,000 points; raw points just under 14.1 and at 10,000.
@@ -182,20 +184,19 @@ public sealed class AutoSwitchTests
     public void Next_AtTheEndsOfEachBand_SwitchesOrHolds()
     {
         const long Threshold = 10_000;
-        var top = PredictedTime.Threshold;
-        var back = PredictedTime.Threshold * DensitySwitch.Back;
-        var under = Math.BitDecrement(top);
-        var underBack = Math.BitDecrement(back);
+        const double Top = 14.1;
+        var under = Math.BitDecrement(Top);
+        var (overBack, underBack) = (11.28 + 1e-9, 11.28 - 1e-9);
 
-        Assert.True(DensitySwitch.Next(false, 0, Threshold, top, top));
+        Assert.True(DensitySwitch.Next(false, 0, Threshold, Top, Top));
         Assert.False(DensitySwitch.Next(false, 0, Threshold, under, 100));
         Assert.False(DensitySwitch.Next(false, Threshold, Threshold, 0, 0));
         Assert.True(DensitySwitch.Next(false, Threshold + 1, Threshold, 0, 0));
 
         // From a density: the three conditions met, then each alone at its end.
         Assert.False(DensitySwitch.Next(true, 7_999, Threshold, underBack, under));
-        Assert.True(DensitySwitch.Next(true, 7_999, Threshold, back, under));
-        Assert.True(DensitySwitch.Next(true, 7_999, Threshold, underBack, top));
+        Assert.True(DensitySwitch.Next(true, 7_999, Threshold, overBack, under));
+        Assert.True(DensitySwitch.Next(true, 7_999, Threshold, underBack, Top));
         Assert.True(DensitySwitch.Next(true, 8_000, Threshold, underBack, under));
 
         // Each one alone left in its band, the others well under theirs.
@@ -235,7 +236,7 @@ public sealed class AutoSwitchTests
                 PredictedTime.Of(scene.Points, scene.Diameter, 4 * scene.LargestBin)
             );
             Assert.Equal(expectedTime, time, 0.02);
-            Assert.True(time < PredictedTime.Threshold * DensitySwitch.Back);
+            Assert.True(time < 11.28);
             if (!double.IsNaN(expectedAtFour))
             {
                 Assert.Equal(expectedAtFour, atFour, 0.02);
@@ -491,7 +492,7 @@ public sealed class AutoSwitchTests
                 Assert.Equal(parts[0].Panel.Top, choice.LastLargestBin);
             }
 
-            var band = choice.LastTime >= PredictedTime.Threshold * DensitySwitch.Back && choice.LastTime < PredictedTime.Threshold;
+            var band = choice.LastTime >= 11.28 && choice.LastTime < 14.1;
             (heldDensity, heldPoints) = (heldDensity || (band && density), heldPoints || (band && !density));
             last = density;
             drawn.Add(density);
@@ -747,6 +748,45 @@ public sealed class AutoSwitchTests
     }
 
     /// <summary>
+    /// A resident cell's estimate is its count over its area on the screen, or over a bin's area when the cell is smaller;
+    /// a collapsed axis, a count of 0, NaN, and areas past a double give 0, never NaN or infinity (design §5.5.2
+    /// "密度タイルが付く前").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A count of 1,000 points; pixels a unit of 10 along x and −20 along y (a y axis that points down).
+    ///
+    /// Steps:
+    /// - A cell of 2 × 3 units over a bin of 100 px²; one of 0.1 × 0.1 over a bin of 4 px².
+    /// - A width of 0 (0 pixels a unit along x, so a bin of 0 too); a count of 0 on that width and on a cell of positive area;
+    ///   NaN pixels a unit, a NaN extent, and a NaN bin; extents of 1e300 at 10 pixels a unit (an area past a double), and
+    ///   extents of 1e300 at 1e-300 pixels a unit (an area of 1 px², whose extents' product alone is past a double).
+    ///
+    /// Expected:
+    /// - 1,000 / 1,200 and 1,000 / 4 = 250.
+    /// - 0 for each of the others but the last, whose estimate is 1,000 / 4 over a bin of 4 px²; none is NaN or infinite.
+    /// </remarks>
+    [Fact]
+    public void CellEstimate_CollapsedNaNOrHugeArea_IsFinite()
+    {
+        Assert.Equal(1_000.0 / 1_200, DensityMath.CellEstimate(1_000, 2, 3, 10, -20, 100), 12);
+        Assert.Equal(250, DensityMath.CellEstimate(1_000, 0.1, 0.1, 10, 10, 4), 12);
+        double[] zeros =
+        [
+            DensityMath.CellEstimate(1_000, 2, 3, 0, -20, DensityMath.BinArea(2, 3, 0, -20)),
+            DensityMath.CellEstimate(0, 2, 3, 0, -20, 0),
+            DensityMath.CellEstimate(0, 2, 3, 10, -20, 100),
+            DensityMath.CellEstimate(1_000, 2, 3, double.NaN, -20, 100),
+            DensityMath.CellEstimate(1_000, double.NaN, 3, 10, -20, 100),
+            DensityMath.CellEstimate(1_000, 2, 3, 10, -20, double.NaN),
+            DensityMath.CellEstimate(1_000, 1e300, 1e300, 10, 10, 100),
+        ];
+        Assert.All(zeros, z => Assert.Equal(0.0, z));
+        Assert.Equal(0.0, DensityMath.BinArea(2, 3, 0, -20));
+        Assert.Equal(250, DensityMath.CellEstimate(1_000, 1e300, 1e300, 1e-300, 1e-300, 4), 9);
+    }
+
+    /// <summary>
     /// Points and Density layers read no condition, and a layer on its coarse snapshot predicts no time (design §5.5.2
     /// "`Auto` の切り替え", "スナップショットが確定する前").
     /// </summary>
@@ -758,11 +798,13 @@ public sealed class AutoSwitchTests
     /// Steps:
     /// - Points, waiting for the index: draw the whole view.
     /// - Density, waiting: draw a square of side 1 around (5, 5), where hardly a point lies.
-    /// - Auto, on a pool whose build stops after its coarse snapshot: draw until the coarse density is drawn.
+    /// - Auto, on a pool whose build stops after its coarse snapshot: draw until the coarse density is drawn. Let the build
+    ///   go, and draw until a full snapshot is scanned.
     ///
     /// Expected:
     /// - Points draws raw points and Density a density; the switch read no count and no time for either (0 both).
-    /// - The coarse frame draws the coarse density, scanned no full snapshot, and predicted no time.
+    /// - The coarse frame draws the coarse density, scanned no full snapshot, and predicted no time; the layer, with no
+    ///   decision yet, is on raw points. Its first full frame predicts 14.1 ms or more and draws a density.
     /// </remarks>
     [Fact]
     public void PointsDensityAndCoarse_ReadNoCondition()
@@ -818,6 +860,21 @@ public sealed class AutoSwitchTests
             var coarse = (IndexedPointPlan)coarseEngine.Plan!.Layers[0];
             Assert.True(coarse.DrewDensity);
             Assert.Equal((0L, 0.0, 0.0), (coarse.ScannedCount, coarse.Switch.LastTime, coarse.Switch.LastLargestBin));
+
+            // The layer has no decision yet: its drawing is raw points while the part draws the coarse density.
+            Assert.False(coarse.Switch.Density);
+
+            // Its first full frame decides from raw points by the conditions.
+            hold.Release();
+            while (coarse.Switch.LastTime == 0)
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "No full snapshot was scanned in 60 s.");
+                coarseBackend.Images.Sent();
+                coarseEngine.RenderFrame();
+            }
+
+            Assert.True(coarse.Switch.LastTime >= 14.1);
+            Assert.True(coarse.Switch.Density && coarse.DrewDensity);
         }
         finally
         {
@@ -930,6 +987,177 @@ public sealed class AutoSwitchTests
         Assert.True(Draw(band, PointDraw.Auto, 9_999_999));
         Assert.False(Draw(band, PointDraw.Points, 9_999_999));
         Assert.False(Draw(band, PointDraw.Auto, 9_999_999));
+    }
+
+    /// <summary>
+    /// A frame in which no part of the layer scanned a full snapshot reads no condition and keeps the layer's drawing: a
+    /// layer drawn as a density stays one, and comes back to the band's choice when a full snapshot is scanned again
+    /// (design §5.5.2 "入れ替わりを抑える", "スナップショットが確定する前").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, colored by 3 names, Auto; an engine of 640 × 360 that waits for its
+    ///   indexes. The sizes that predict 16 ms and 12.7 ms (in the band) at the whole view are set from a first frame.
+    /// - A part keeps its full snapshot until it is released, so the engine makes no such frame after the first full one;
+    ///   the test makes it by opening a frame of the plan's cache in which no part is scanned, and choosing then.
+    ///
+    /// Steps:
+    /// - Draw at 16 ms. Open a frame without a scan and choose the layer's drawing three times in a row, at the size of
+    ///   16 ms and then of 12.7 ms. Draw at 12.7 ms through the engine. Draw at 5 ms.
+    ///
+    /// Expected:
+    /// - A density at 16 ms. In the frames without a scan: still a density, and no count and no time read (0 both). At
+    ///   12.7 ms through the engine, still a density (the band holds it); at 5 ms, raw points.
+    /// - Before the fix the frame without a scan went back to raw points (the first assertion of those frames guards it).
+    /// </remarks>
+    [Fact]
+    public void FrameWithNoFullScan_KeepsTheDrawing()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 610);
+        var (table, categories) = (blob.Table, blob.Categories);
+        PointLayerSpec Point(float size) =>
+            new()
+            {
+                X = table.Col<double>("x"),
+                Y = table.Col<double>("y"),
+                ColorBy = categories,
+                Size = size,
+            };
+
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        engine.SetPlot(GeomTesting.Spec(table, Point(1)));
+        engine.RenderFrame();
+        IndexedPointPlan[] Parts() => [.. ((SplitPlan)engine.Plan!.Layers[0]).Parts.Cast<IndexedPointPlan>()];
+        var choice = Parts()[0].Switch;
+        var (count, bin) = (choice.LastCount, choice.LastLargestBin);
+        var (over, band, under) = (DiameterFor(16, count, bin), DiameterFor(12.7, count, bin), DiameterFor(5, count, bin));
+
+        bool Draw(float size)
+        {
+            engine.SetPlot(GeomTesting.Spec(table, Point(size)));
+            backend.Images.Sent();
+            engine.RenderFrame();
+            Assert.Same(choice, Parts()[0].Switch);
+            return Assert.Single(Parts().Select(p => p.DrewDensity).Distinct());
+        }
+
+        Assert.True(Draw(over));
+        Assert.Equal(16, choice.LastTime, 1e-4);
+
+        // Frames of the plan's cache in which no part is scanned: no part scanned a full snapshot in them.
+        var context = new RecordContext(
+            new PlotGuides(new TextEngine(new FakeTextBackend()), 1, 640, 360),
+            new M4Batch(),
+            new RenderList(),
+            new GeomFrame()
+        )
+        {
+            Images = engine.Plan!.Images,
+        };
+        foreach (var size in new[] { over, band, band })
+        {
+            context.Images.BeginFrame();
+            Assert.True(choice.Choose(context, Point(size)));
+            Assert.Equal((0L, 0.0), (choice.LastCount, choice.LastTime));
+        }
+
+        Assert.True(Draw(band));
+        Assert.Equal(12.7, choice.LastTime, 1e-4);
+        Assert.False(Draw(under));
+    }
+
+    /// <summary>
+    /// A new spec whose layers over other columns change places makes every layer again, so no layer takes the drawing
+    /// another remembered: both start from raw points in the band (design §5.5.2 "入れ替わりを抑える", "索引の保管庫").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two point layers of 300,000 seeded points each, Auto: A over (x, y), a normal blob of σ 12 around (50, 50), and B
+    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. Each layer's sizes that predict
+    ///   16 ms and 12.7 ms (in the band) at the whole view are set from a first frame.
+    ///
+    /// Steps:
+    /// - Draw [A at 16 ms, B at 12.7 ms], then [A at 12.7 ms, B at 12.7 ms]. Then swap them: [B at 12.7 ms, A at 12.7 ms].
+    ///
+    /// Expected:
+    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 12.7 ms, and B draws
+    ///   raw points at 12.7 ms.
+    /// - After it both positions hold new plans with new switches, and both draw raw points at 12.7 ms; position 0 does not
+    ///   take the density position 0 remembered.
+    /// </remarks>
+    [Fact]
+    public void Reorder_OfLayersOverOtherColumns_ForgetsTheirDrawings()
+    {
+        const int Count = 300_000;
+        var random = new Random(611);
+        var (x, y, u, v) = (new double[Count], new double[Count], new double[Count], new double[Count]);
+        for (var i = 0; i < Count; i++)
+        {
+            (x[i], y[i]) = Normal(random, 12);
+            (u[i], v[i]) = Normal(random, 10);
+        }
+
+        using var xs = Column.Wrap(x);
+        using var ys = Column.Wrap(y);
+        using var us = Column.Wrap(u);
+        using var vs = Column.Wrap(v);
+        var table = DataTable.Create().Add("x", xs).Add("y", ys).Add("u", us).Add("v", vs).Build();
+        PointLayerSpec A(float size) =>
+            new()
+            {
+                X = table.Col<double>("x"),
+                Y = table.Col<double>("y"),
+                Size = size,
+            };
+        PointLayerSpec B(float size) =>
+            new()
+            {
+                X = table.Col<double>("u"),
+                Y = table.Col<double>("v"),
+                Size = size,
+            };
+
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
+        IndexedPointPlan Layer(int at) => (IndexedPointPlan)engine.Plan!.Layers[at];
+        void Draw(PointLayerSpec first, PointLayerSpec second)
+        {
+            engine.SetPlot(GeomTesting.Spec(table, first, second));
+            backend.Images.Sent();
+            engine.RenderFrame();
+        }
+
+        Draw(A(1), B(1));
+        float Size(int at, double time) => DiameterFor(time, Layer(at).Switch.LastCount, Layer(at).Switch.LastLargestBin);
+        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 12.7), Size(1, 12.7));
+        var (planA, planB) = (Layer(0), Layer(1));
+
+        Draw(A(overA), B(bandB));
+        Assert.True(planA.DrewDensity);
+        Draw(A(bandA), B(bandB));
+        Assert.Same(planA, Layer(0));
+        Assert.Same(planB, Layer(1));
+        Assert.Equal(12.7, planA.Switch.LastTime, 1e-4);
+        Assert.Equal(12.7, planB.Switch.LastTime, 1e-4);
+        Assert.True(planA.DrewDensity);
+        Assert.False(planB.DrewDensity);
+
+        Draw(B(bandB), A(bandA));
+        var (first, second) = (Layer(0), Layer(1));
+        Assert.Same(us, ((PointLayerSpec)first.Spec).X.Column);
+        Assert.Same(xs, ((PointLayerSpec)second.Spec).X.Column);
+        Assert.NotSame(planB, first);
+        Assert.NotSame(planA, second);
+        Assert.NotSame(planA.Switch, first.Switch);
+        Assert.NotSame(planB.Switch, first.Switch);
+        Assert.NotSame(planA.Switch, second.Switch);
+        Assert.NotSame(planB.Switch, second.Switch);
+        Assert.Equal(12.7, first.Switch.LastTime, 1e-4);
+        Assert.Equal(12.7, second.Switch.LastTime, 1e-4);
+        Assert.False(first.DrewDensity);
+        Assert.False(second.DrewDensity);
     }
 
     /// <summary>
