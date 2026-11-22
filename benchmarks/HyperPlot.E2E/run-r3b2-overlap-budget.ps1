@@ -20,8 +20,8 @@
 #   cells   (Issue #603) 1e9 uniform and clustered points, a still view whose pages are all on the GPU, recorded and not
 #           drawn: the time and the bytes of the table of cells, against a baseline build that writes no table
 #           (-Baseline), alternated A, B, B, A
-#   cap     (Issue #603) 1e8 points in clusters with halos (past 131,072 resident cells), deep zooms into a cluster, with the
-#           limit of cells and without it, alternated
+#   cap     (Issue #603) 2e8 points in clusters with halos (-CapCount; past 131,072 resident cells), deep zooms into a
+#           cluster, with the limit of cells and without it, alternated
 #   The data files of reads, m4, cells, and cap go under .dev/r3b2p4-data and are deleted at the end.
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
@@ -31,7 +31,9 @@ param(
     [Parameter(Mandatory)] [string] $Out,
     [string[]] $Sets = @('path', 'zoom64', 'p4', 'record'),
     [int] $TimeoutSeconds = 300,
-    [string] $Baseline = ''
+    [string] $Baseline = '',
+    [int] $ReadsRuns = 3,
+    [string] $CapCount = '2e8'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -226,7 +228,7 @@ try {
 
     try {
         if ($Sets -contains 'reads') {
-            for ($round = 1; $round -le 3; $round++) {
+            for ($round = 1; $round -le $ReadsRuns; $round++) {
                 Invoke-Scene "reads 1e9 uniform, run $round" @('fill', $data4, '1e9', 'uniform') $exe 'reads'
             }
         }
@@ -256,7 +258,7 @@ try {
             $round = 0
             foreach ($limit in @('capped', 'free', 'free', 'capped')) {
                 $round++
-                Invoke-Scene "cap 1e8 $limit, run $round" @('cap', $data4, '1e8', $limit) $exe 'reads'
+                Invoke-Scene "cap $CapCount $limit, run $round" @('cap', $data4, $CapCount, $limit) $exe 'reads'
             }
         }
     }

@@ -243,7 +243,8 @@ internal static class ReadScene
             reads,
             plan.Images.Points.ScheduledThisFrame,
             engine.IsProvisional,
-            bytes
+            bytes,
+            plan.Images.Points.PagesInUse
         );
         var left = Period - Stopwatch.GetElapsedTime(start);
         if (left > TimeSpan.Zero)
@@ -434,6 +435,17 @@ internal static class ReadScene
             )
         );
 
+        // The frames that allocated, past a new tick label's 568 bytes: their bytes and the pages on the GPU after them.
+        foreach (var row in rows.Where(r => r.Allocated > 0 && r.Allocated % 568 != 0))
+        {
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"  {name} allocated {row.Allocated} bytes; pages on the GPU {row.Pages}, sent {row.Sent}"
+                )
+            );
+        }
+
         static string Stat(double[] values, double share) =>
             values.Length == 0 ? "-" : PointsScene.Percentile(values, share).ToString("F3", CultureInfo.InvariantCulture);
     }
@@ -494,6 +506,9 @@ internal static class ReadScene
         PointsScene.PrintCells(engine.Plan!);
         var part = (IndexedPointPlan)engine.Plan!.Layers[0];
         var snapshot = part.SpatialIndex!.Acquire();
+
+        // The wall clock of the measured views, to match the GPU clock log of nvidia-smi to them.
+        var from = DateTime.Now;
         try
         {
             foreach (var (name, at, width) in views)
@@ -519,6 +534,8 @@ internal static class ReadScene
                 _ = Frame(engine, null);
                 Offsets(engine, snapshot, view, name, width, gpu);
             }
+
+            Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"frames ran {from:HH:mm:ss.fff} to {DateTime.Now:HH:mm:ss.fff}"));
         }
         finally
         {
@@ -679,5 +696,14 @@ internal static class ReadScene
     }
 
     /// <summary>A frame's figures: its CPU time, its extraction, its scan, the reads in use when it began, the pages it sent, and whether it was provisional.</summary>
-    private readonly record struct FrameRow(double Cpu, double Extract, double Scan, int Reads, int Sent, bool Provisional, long Allocated);
+    private readonly record struct FrameRow(
+        double Cpu,
+        double Extract,
+        double Scan,
+        int Reads,
+        int Sent,
+        bool Provisional,
+        long Allocated,
+        int Pages
+    );
 }
