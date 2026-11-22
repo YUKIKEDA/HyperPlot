@@ -42,16 +42,27 @@ internal static class PointFiles
     /// standard deviations are 10 × 3000^u (10 to 30,000), and whose weights are 1 / (k + 1) for the cluster k; and a
     /// share <see cref="OutlierShare"/> of outliers uniform over (−<see cref="OutlierReach"/>, <see cref="OutlierReach"/>)².
     /// </description></item>
+    /// <item><description>
+    /// "lines": vertical lines (design §9 "要件 P-5 の `HitMode.X` の測り直し", Issue #569): the point i has the x
+    /// i mod <paramref name="lines"/>, so that each whole x from 0 below <paramref name="lines"/> holds as many points, and a
+    /// y uniform over [0, 1).
+    /// </description></item>
     /// </list>
     /// </summary>
-    internal static unsafe void Write(string prefix, long points, ulong seed, string distribution)
+    internal static unsafe void Write(string prefix, long points, ulong seed, string distribution, long lines = 0)
     {
         var clusters = distribution switch
         {
-            "uniform" => null,
+            "uniform" or "lines" => null,
             "clustered" => MakeClusters(seed),
-            _ => throw new ArgumentException($"Unknown distribution '{distribution}': write uniform or clustered."),
+            _ => throw new ArgumentException($"Unknown distribution '{distribution}': write uniform, clustered, or lines."),
         };
+        if (distribution == "lines" && lines < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(lines), lines, "Lines need at least one line.");
+        }
+
+        var lineCount = distribution == "lines" ? lines : 0;
         var (xPath, yPath) = Paths(prefix);
         var batchBytes = (long)BlockPoints * BlocksPerBatch * sizeof(float);
         var xs = (float*)NativeMemory.AlignedAlloc((nuint)batchBytes, Sector);
@@ -73,7 +84,14 @@ internal static class PointFiles
                         var block = batchStart + b;
                         var x = new Span<float>(xs + ((long)b * BlockPoints), BlockPoints);
                         var y = new Span<float>(ys + ((long)b * BlockPoints), BlockPoints);
-                        Fill(block, seed, clusters, x, y);
+                        if (lineCount > 0)
+                        {
+                            FillLines(block, seed, lineCount, x, y);
+                        }
+                        else
+                        {
+                            Fill(block, seed, clusters, x, y);
+                        }
                     }
                 );
 
@@ -149,6 +167,17 @@ internal static class PointFiles
             var cluster = clusters[k];
             x[i] = (float)(cluster.X + (cluster.Sigma * radius * Math.Cos(angle)));
             y[i] = (float)(cluster.Y + (cluster.Sigma * radius * Math.Sin(angle)));
+        }
+    }
+
+    private static void FillLines(long block, ulong seed, long lines, Span<float> x, Span<float> y)
+    {
+        var state = SplitMix(seed ^ SplitMix((ulong)block + 1));
+        var first = block * BlockPoints;
+        for (var i = 0; i < x.Length; i++)
+        {
+            x[i] = (first + i) % lines;
+            y[i] = (float)Unit(ref state);
         }
     }
 

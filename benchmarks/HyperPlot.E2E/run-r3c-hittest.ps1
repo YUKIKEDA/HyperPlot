@@ -4,7 +4,10 @@
 # whose cells are fills (a lasso over the panel) and over one whose cells have tiles (docs/benchmarks/r3c-hittest.md).
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3c-hittest.ps1 <output file> [-Pilot] [-Only <steps>]
 # -Pilot runs every step small (1e7 points, 60 frames, one round) to check the script before the machine is taken.
-# -Only runs the named steps alone (selection-points, hittest-uniform, hittest-clustered, selection-fills, selection-tiles).
+# -Only runs the named steps alone (selection-points, hittest-uniform, hittest-clustered, hittest-lines-1e6,
+# hittest-lines-1e3, points-uniform, points-clustered, selection-fills, selection-tiles). The lines and the points steps are
+# the re-measurement of Issue #569 (design §9 "要件 P-5 の `HitMode.X` の測り直し"): the vertical lines of 1e9 points, and
+# the CPU path's 131,072 points of row R3a's scene. -Tag names the queue's prefix and the folders (r3c526 by default).
 # The machine is shared and no run waits for it to be quiet (.cursor/rules/bench.mdc): each scene prints the cores the other
 # processes used. The machine log and the GPU clock log go next to the output file (<output>.machine.log,
 # <output>.clocks.csv). Each step's start, end, and exit code go to .dev/out/queue.log with the prefix r3c526; the first
@@ -13,7 +16,8 @@
 param(
     [Parameter(Mandatory)] [string] $Out,
     [switch] $Pilot,
-    [string[]] $Only = @()
+    [string[]] $Only = @(),
+    [string] $Tag = 'r3c526'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,8 +26,8 @@ $Only = @($Only | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 # The main checkout's .dev/, also from a worktree under it: the parent of the shared .git folder.
 $dev = Join-Path (Split-Path -Parent (Resolve-Path (git -C $repo rev-parse --path-format=absolute --git-common-dir))) '.dev'
-$data = Join-Path $dev 'r3c-data526'
-$publish = Join-Path $dev 'r3c-pub526'
+$data = Join-Path $dev "$Tag-data"
+$publish = Join-Path $dev "$Tag-pub"
 $queue = Join-Path $dev 'out\queue.log'
 $machineLog = "$Out.machine.log"
 $clockLog = "$Out.clocks.csv"
@@ -35,7 +39,7 @@ function Write-Out([string] $text) {
 }
 
 function Write-Queue([string] $text) {
-    "r3c526 $text $((Get-Date).ToString('HH:mm:ss'))" | Out-File -FilePath $queue -Append -Encoding utf8
+    "$Tag $text $((Get-Date).ToString('HH:mm:ss'))" | Out-File -FilePath $queue -Append -Encoding utf8
 }
 
 # One step: the scene with a time limit. A step that fails, or that is stopped at its limit (no result), stops the queue.
@@ -109,6 +113,10 @@ try {
     Invoke-Step 'selection-points' 10 @('selection', '1e7', 'points', $frames, $rounds)
     Invoke-Step 'hittest-uniform' 25 @('hittest', $data, $many, 'uniform')
     Invoke-Step 'hittest-clustered' 40 @('hittest', $data, $many, 'cluster', '6')
+    Invoke-Step 'hittest-lines-1e6' 25 @('hittest-lines', $data, $many, ($Pilot ? '1e4' : '1e6'))
+    Invoke-Step 'hittest-lines-1e3' 25 @('hittest-lines', $data, $many, ($Pilot ? '1e1' : '1e3'))
+    Invoke-Step 'points-uniform' 5 @('points', '131072', '6', '1', 'uniform', ($Pilot ? '60' : '600'))
+    Invoke-Step 'points-clustered' 5 @('points', '131072', '6', '0.6', 'cluster', ($Pilot ? '60' : '600'))
     Invoke-Step 'selection-fills' 5 @('selection', '200000', 'density', $frames, $rounds)
     Invoke-Step 'selection-tiles' 5 @('selection', '1000000', 'density', $frames, $rounds)
 }
