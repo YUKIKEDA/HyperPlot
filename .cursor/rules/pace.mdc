@@ -15,6 +15,8 @@ The owner's time is the scarce thing. A row is finished when its own work is don
 2. Add a roadmap row that names it (`.cursor/rules/defer.mdc`). Say whether it blocks the rows after it.
 3. Go on with the row. The PR body points to the Issue; it does not carry the investigation. An investigation of a failure that `main` also has does not go into the row's PR comments and commits, with the code it needs; it goes to its own Issue and PR.
 
+The Issue exists before the PR is opened, and the documents the PR changes (the record, the requirement's row) name it. A subagent whose brief keeps it from posting lists the finding as a proposed Issue, and whoever opens the PR files it first. PR #606 was opened with a CPU-path hit test 6 to 7 times slower at p50 than row R3a's record, on `main` too, written as "fits P-5" in the requirement and the record, and with the Issue left as a question in the PR body because posting was outside the agent's brief; the review asked for the Issue, and Issue #607 was filed after.
+
 The test is one question: would this be there if the row had never been written?
 
 Before filing an Issue for a failure, search the open Issues and the roadmap's rows (the rows that track open measurements above all) for the same symptom. When one exists, add the new figures to it, and offer options that start from the decisions recorded there: the owner may already have decided how failures of that kind are handled until they are explained.
