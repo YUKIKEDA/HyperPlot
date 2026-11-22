@@ -278,6 +278,37 @@ public sealed class PointPagesTests
     }
 
     /// <summary>
+    /// The wait of a render that waits says whether another round sends more (design §5.5.2 "ヘッドレス"): after reads in
+    /// flight, and while a page read is there that the frame has not refused; not once the page is staged and nothing is
+    /// missed.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The built index of 400,000 uniform points; a residency cache with no frame budget.
+    ///
+    /// Steps:
+    /// - Start a frame and ask for page 0. Wait for the reads; wait again, with the read ended before the wait. Start the
+    ///   next frame, as the next round does, ask for page 0 again, and wait.
+    ///
+    /// Expected:
+    /// - True, then true (a page read and not refused), then the page is staged and the wait is false.
+    /// </remarks>
+    [Fact]
+    public void AwaitReads_SaysWhetherAnotherRoundSendsMore()
+    {
+        var (xs, ys) = SpatialData.Uniform(400_000, seed: 115);
+        using var built = SpatialBuilt.Of(xs, ys);
+        var cache = new ResidencyCache { Unbounded = true };
+        cache.BeginFrame();
+        Assert.Equal(-1, cache.Points.Request(built.Snapshot, 0, PointPages.MaxBlockPoints));
+        Assert.True(cache.Points.AwaitReads());
+        Assert.True(cache.Points.AwaitReads());
+        cache.BeginFrame();
+        Assert.True(cache.Points.Request(built.Snapshot, 0, PointPages.MaxBlockPoints) >= 0);
+        Assert.False(cache.Points.AwaitReads());
+    }
+
+    /// <summary>
     /// The staging is made once, at the first request, as 20 pages of 786,432 bytes, and does not grow however many pages go
     /// through it (design §5.5.2 "同時に読む数とステージング").
     /// </summary>
