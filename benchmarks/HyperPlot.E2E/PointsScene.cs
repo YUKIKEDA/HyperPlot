@@ -157,6 +157,9 @@ internal static partial class PointsScene
         // frame it timed, and when it began, for a file of one row a frame (.cursor/rules/bench.mdc).
         var (inView, inDraw) = (new long[total], new long[total]);
         var (gpuOf, beganAt) = (new double[total], new double[total]);
+
+        // Row R3b2: the time of the layers' scan before the recording, the stage that chooses the drawing (design §5.5.2).
+        var (scan, dense, first) = (new double[total], new bool[total], FirstPart(engine.Plan!));
         Array.Fill(gpuOf, double.NaN);
         backend.Skips = recordOnly;
         var (busyFrom, ownFrom, clockFrom) = (MachineBusy(), Environment.CpuUsage.TotalTime, DateTime.Now);
@@ -173,6 +176,7 @@ internal static partial class PointsScene
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
             (runs[f], drawn[f], inDraw[f]) = (backend.Runs, backend.Points, backend.DrawBytes);
+            (scan[f], dense[f]) = (engine.Plan!.ScanTicks * 1000.0 / Stopwatch.Frequency, first is { DrewDensity: true });
             if (backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
                 lastTimed = time.Frame;
@@ -264,6 +268,13 @@ internal static partial class PointsScene
                 $"gpu_frame: frames={gpu.Count} p50={Percentile(gpuKept, 0.5):F3} p95={Percentile(gpuKept, 0.95):F3} p99={Percentile(gpuKept, 0.99):F3} max={gpuKept.Max():F3} ms"
             )
         );
+        var scanKept = scan.Skip(Warmup).ToArray();
+        Console.WriteLine(
+            string.Create(
+                CultureInfo.InvariantCulture,
+                $"scan: p50={Percentile(scanKept, 0.5):F4} p95={Percentile(scanKept, 0.95):F4} max={scanKept.Max():F4} ms; density frames {dense.Skip(Warmup).Count(d => d)} of {frames}"
+            )
+        );
         Console.WriteLine(
             string.Create(CultureInfo.InvariantCulture, $"allocated after warm-up: {allocated.Skip(Warmup).Sum()} bytes over {frames} frames")
         );
@@ -300,13 +311,13 @@ internal static partial class PointsScene
         if (csv is not null)
         {
             using var writer = new StreamWriter(csv);
-            writer.WriteLine("frame,began_ms,cpu_ms,gpu_ms,runs,points,allocated,view_bytes,draw_bytes");
+            writer.WriteLine("frame,began_ms,cpu_ms,gpu_ms,runs,points,allocated,view_bytes,draw_bytes,scan_ms");
             for (var f = 0; f < total; f++)
             {
                 writer.WriteLine(
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"{f},{beganAt[f]:F3},{cpu[f]:F4},{gpuOf[f]:F4},{runs[f]},{drawn[f]},{allocated[f]},{inView[f]},{inDraw[f]}"
+                        $"{f},{beganAt[f]:F3},{cpu[f]:F4},{gpuOf[f]:F4},{runs[f]},{drawn[f]},{allocated[f]},{inView[f]},{inDraw[f]},{scan[f]:F4}"
                     )
                 );
             }
@@ -319,7 +330,7 @@ internal static partial class PointsScene
     /// Prints the resident cells of the plot's first layer: their number over its parts on the index path, and the fewest
     /// and the most of a part, with the mean points of a cell (design §5.5.2 "セルの表").
     /// </summary>
-    private static void PrintCells(PlotPlan plan)
+    internal static void PrintCells(PlotPlan plan)
     {
         var layer = plan.Layers[0];
         IEnumerable<LayerPlan> parts = layer is SplitPlan split ? split.Parts : [layer];
@@ -351,6 +362,13 @@ internal static partial class PointsScene
                     $"resident_cells: {cells} over {indexed} parts, {least} to {most} a part, {(double)points / cells:F0} points a cell"
                 )
         );
+    }
+
+    /// <summary>Returns the first part of the plot's first layer on the index path, whose drawing is the layer's (row R3b2); null on the CPU path.</summary>
+    private static IndexedPointPlan? FirstPart(PlotPlan plan)
+    {
+        var layer = plan.Layers[0];
+        return (layer is SplitPlan split ? split.Parts.FirstOrDefault() : layer) as IndexedPointPlan;
     }
 
     [System.Runtime.InteropServices.LibraryImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
