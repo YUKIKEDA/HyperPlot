@@ -34,7 +34,7 @@ public sealed class PointBuilder
     /// <summary>Gets how the layer draws its points, set so far (row R3b1).</summary>
     internal PointDraw DrawValue { get; private set; } = PointDraw.Auto;
 
-    /// <summary>Gets the number of points in the view above which the layer draws a density, set so far (row R3b1).</summary>
+    /// <summary>Gets the most points in the view the layer draws as raw points, set so far (rows R3b1 and R3b2).</summary>
     internal long DensityThresholdValue { get; private set; } = 10_000_000;
 
     /// <summary>Gets how a density maps its counts to its colors, set so far (row R3b1).</summary>
@@ -158,7 +158,7 @@ public sealed class PointBuilder
     /// Sets how the layer draws its points on the index path, more than 131,072 rows (design §5.5.2 "行 R3b1 の密度と切り替え",
     /// row R3b1). A layer of at most 131,072 rows draws raw points whatever is set.
     /// </summary>
-    /// <param name="draw">Raw points, a density, or a switch by the number of points in the view.</param>
+    /// <param name="draw">Raw points, a density, or a switch by the points in the view and their predicted time.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="draw"/> is not a named value.</exception>
     public PointBuilder Draw(PointDraw draw)
@@ -174,11 +174,11 @@ public sealed class PointBuilder
 
     /// <summary>
     /// Sets how the layer draws a density (design §5.5.2 "行 R3b1 の密度と切り替え", row R3b1): the mapping of a bin's points
-    /// to its colors, the colors, and the number of points in the view above which <see cref="PointDraw.Auto"/> draws one.
+    /// to its colors, the colors, and the most points in the view <see cref="PointDraw.Auto"/> draws as raw points (row R3b2).
     /// </summary>
     /// <param name="norm">How a bin's points map to a place on the colors.</param>
     /// <param name="map">The colors from the emptiest bin to the fullest, or null for shades from transparent to the layer's color.</param>
-    /// <param name="threshold">The number of points in the view above which <see cref="PointDraw.Auto"/> draws a density: 1 or more.</param>
+    /// <param name="threshold">The most points in the view <see cref="PointDraw.Auto"/> draws as raw points, whatever the predicted time: 1 or more.</param>
     /// <returns>This builder.</returns>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="norm"/> is not a named value, or <paramref name="threshold"/> is less than 1.

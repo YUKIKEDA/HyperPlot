@@ -151,7 +151,14 @@ public sealed class PlotWorkerPool : IDisposable
     /// <exception cref="ObjectDisposedException">The pool was disposed before the call.</exception>
     internal SpatialIndex BuildSpatialIndex<TX, TY>(Column<TX> x, Column<TY> y, in SpatialIndexInput input)
         where TX : unmanaged, INumber<TX>
-        where TY : unmanaged, INumber<TY> => BuildSpatialIndex(x, y, input, SpatialIndexTuning.Default, SpatialCopyAllocator.Default);
+        where TY : unmanaged, INumber<TY> => BuildSpatialIndex(x, y, input, IndexTuning, SpatialCopyAllocator.Default);
+
+    /// <summary>
+    /// Gets or sets the constants the indexes the plans start are built with: <see cref="SpatialIndexTuning.Default"/>.
+    /// Tests only: they stop a plan's build after its full snapshot (<see cref="SpatialIndexTuning.JobEnded"/>), before its
+    /// density tiles, and get tiles with few points.
+    /// </summary>
+    internal SpatialIndexTuning IndexTuning { get; set; } = SpatialIndexTuning.Default;
 
     /// <summary>
     /// Starts building a spatial tile index with the constants and the allocator that the caller passes. The tests and the

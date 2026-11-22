@@ -277,8 +277,10 @@ public sealed record PointLayerSpec : LayerSpec
     public PointDraw Draw { get; init; } = PointDraw.Auto;
 
     /// <summary>
-    /// Gets the number of points in the view above which <see cref="PointDraw.Auto"/> draws a density: 10,000,000 by default,
-    /// and 1 or more. A value below 1 throws <see cref="ArgumentOutOfRangeException"/> when the plot is compiled.
+    /// Gets the most points in the view that <see cref="PointDraw.Auto"/> draws as raw points (design §5.5.2 "点の数の上限"):
+    /// above it, the layer draws a density whatever the predicted time; at or below it, the predicted time decides.
+    /// 10,000,000 by default, and 1 or more. A value below 1 throws <see cref="ArgumentOutOfRangeException"/> when the plot
+    /// is compiled.
     /// </summary>
     public long DensityThreshold { get; init; } = 10_000_000;
 

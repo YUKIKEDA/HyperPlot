@@ -28,13 +28,22 @@ internal interface ISpatialColumn
 /// What the point layers of one making of a plan's layers share (design §5.5.2 "索引の保管庫"): the index being built, so
 /// that the parts' indexes are built one after another, and the number of parts each layer has on the index path.
 /// </summary>
+/// <remarks>
+/// It lives as long as the plans made with it: one making of the layers (the plan's, one off the frame, or one layer's
+/// alone), whose plans are released together. A layer's number is its position in the spec of that making. A new spec
+/// whose layer at a position names other columns (a reorder among them) makes every layer again with a new indexing, so
+/// no remembered drawing passes to another layer's points. Layers over the same columns at both positions keep their
+/// plans, each taking the new node as a change of looks: the drawing stays with the plan and its points, which are the
+/// same, and a new <see cref="PointLayerSpec.Draw"/> or threshold forgets it (<see cref="DensitySwitch.Choose"/>).
+/// </remarks>
 internal sealed class SpatialIndexing
 {
     /// <summary>The most parts of one layer on the index path: each index holds about 0.7 MB whatever its points.</summary>
     internal const int MaxParts = 64;
 
     private readonly Dictionary<int, int> _parts = [];
-    private readonly Dictionary<(PlanBuild Build, int Layer), DensitySwitch> _switches = [];
+    private readonly Dictionary<int, DensitySwitch> _switches = [];
+    private readonly Dictionary<(PlanBuild Build, int Layer), DensityPanel> _panels = [];
 
     /// <summary>Gets or sets the index started last: the next starts when its build has ended.</summary>
     public SpatialIndex? Building { get; set; }
@@ -55,15 +64,30 @@ internal sealed class SpatialIndexing
     }
 
     /// <summary>
-    /// Returns the switch the parts of a layer share in a panel (design §5.5.2 "行 R3b1 の密度と切り替え"): one drawing a
-    /// layer, chosen from all its parts. A panel's build is made a panel, so the build and the layer name the panel's layer.
+    /// Returns the switch the parts of a layer share (design §5.5.2 "`Auto` の切り替え"): one drawing a layer, chosen from
+    /// all its parts, those of every facet panel too, since the makings of all panels pass one indexing.
     /// </summary>
-    public DensitySwitch SwitchOf(PlanBuild build, int layer)
+    public DensitySwitch SwitchOf(int layer)
     {
-        if (!_switches.TryGetValue((build, layer), out var shared))
+        if (!_switches.TryGetValue(layer, out var shared))
         {
             shared = new DensitySwitch();
-            _switches[(build, layer)] = shared;
+            _switches[layer] = shared;
+        }
+
+        return shared;
+    }
+
+    /// <summary>
+    /// Returns what the parts of a layer share in a panel (design §5.5.2 "ブロック", "濃さの上端 m"). A panel's build is made
+    /// a panel, so the build and the layer name the panel's layer.
+    /// </summary>
+    public DensityPanel PanelOf(PlanBuild build, int layer)
+    {
+        if (!_panels.TryGetValue((build, layer), out var shared))
+        {
+            shared = new DensityPanel();
+            _panels[(build, layer)] = shared;
         }
 
         return shared;
@@ -82,8 +106,9 @@ internal sealed class IndexedPointPlan : LayerPlan
     private readonly IScale? _yTransform;
     private readonly SpatialIndexing _indexing;
 
-    // The switch the layer's parts share (design §5.5.2 "行 R3b1 の密度と切り替え").
+    // The switch the layer's parts share, in every panel, and what they share in this panel (design §5.5.2 "`Auto` の切り替え").
     private readonly DensitySwitch _switch;
+    private readonly DensityPanel _panel;
     private SpatialIndex? _index;
     private SpatialSnapshot? _snapshot;
 
@@ -96,12 +121,24 @@ internal sealed class IndexedPointPlan : LayerPlan
     private ResidencyCache? _cache;
     private bool _missing;
 
-    // The density's pieces this frame (design §5.5.2 "水準の選び方"), planned by the switch before any part records.
+    // The density's pieces this frame (design §5.5.2 "水準の選び方") and their top, planned by the scan before any part records.
     private DensityPiece[] _pieces = new DensityPiece[64];
     private SpatialCell[] _cells = new SpatialCell[256];
     private int _pieceCount;
     private int _tileLevel;
+    private double _top;
     private bool _drawsDensity;
+
+    // What the scan before the recording found (design §5.5.2 "`Auto` の切り替え", Issue #472's decision of 2026-11-22): the
+    // frame it ran in, whether it read a full snapshot, the upper count of the view, the largest bin, and the positions of
+    // the resident cells whose points the view draws.
+    private long _scanFrame = -1;
+    private bool _scanFull;
+    private long _scanCount;
+    private double _largestBin;
+    private double _estimate;
+    private int[] _visible = new int[64];
+    private int _visibleCount;
 
     // The density's color table of the layer's own color, made again when the color changes.
     private ColorMap? _ramp;
@@ -121,15 +158,47 @@ internal sealed class IndexedPointPlan : LayerPlan
         SetColumns(spec.X.Column, spec.Y.Column);
         (_pool, _xTransform, _yTransform, _indexing) = (build.Pool, build.XTransform, build.YTransform, build.Indexing);
         _indexing.Enter(build.Layer);
-        _switch = _indexing.SwitchOf(build, build.Layer);
+        _switch = _indexing.SwitchOf(build.Layer);
         _switch.Add(this);
+        _panel = _indexing.PanelOf(build, build.Layer);
+        _panel.Add(this);
     }
 
     /// <summary>Gets a value indicating whether the last recording drew a density (row R3b1). Tests only.</summary>
     internal bool DrewDensity => _drawsDensity;
 
-    /// <summary>Gets the switch the layer's parts share (row R3b1). Tests only.</summary>
+    /// <summary>Gets the switch the layer's parts share, in every panel (row R3b2). Tests only.</summary>
     internal DensitySwitch Switch => _switch;
+
+    /// <summary>Gets what the layer's parts share in the part's panel (row R3b2). Tests only.</summary>
+    internal DensityPanel Panel => _panel;
+
+    /// <summary>Gets the top of the part's pieces the last scan planned, in points a square physical pixel (row R3b2). Tests only.</summary>
+    internal double PieceTop => _top;
+
+    /// <summary>
+    /// Gets the largest bin the last scan estimated from the resident cells in view (design §5.5.2 "密度タイルが付く前"),
+    /// whether or not the tiles had come. Tests only.
+    /// </summary>
+    internal double Estimate => _estimate;
+
+    /// <summary>Gets the positions of the resident cells the last scan found the view draws, in the copy's order. Tests only.</summary>
+    internal ReadOnlySpan<int> VisibleCells => _visible.AsSpan(0, _visibleCount);
+
+    /// <summary>Gets the upper count of the view the scan of this frame found, on a full snapshot; 0 otherwise.</summary>
+    internal long ScannedCount => _scanCount;
+
+    /// <summary>
+    /// Gets the largest bin the scan of this frame found (design §5.5.2 "最大のビン"): the top of the part's pieces once the
+    /// tiles have come, and before, the estimate from the resident cells in view.
+    /// </summary>
+    internal double ScannedLargestBin => _largestBin;
+
+    /// <summary>Returns whether the part was scanned in a frame on a full snapshot: only such a part predicts a time.</summary>
+    internal bool ScannedFull(long frame) => _scanFrame == frame && _scanFull;
+
+    /// <inheritdoc />
+    internal override bool Scans => true;
 
     /// <summary>Gets the level of the tiles the last recording chose (row R3b1). Tests only.</summary>
     internal int TileLevel => _tileLevel;
@@ -231,8 +300,9 @@ internal sealed class IndexedPointPlan : LayerPlan
         _cache = context.Images;
         _markerRadius = point.Size * context.Scale / 2;
 
-        // The layer's drawing, chosen once a frame for all its parts; a part on its coarse snapshot draws a density anyway.
-        _ = _switch.Prepare(context, point);
+        // The layer's drawing, chosen once a frame for all its parts from their scans; a part on its coarse snapshot draws a
+        // density anyway.
+        _panel.Prepare(context, _switch.Choose(context, point));
         if (_drawsDensity)
         {
             RecordDensity(context, point);
@@ -274,24 +344,21 @@ internal sealed class IndexedPointPlan : LayerPlan
         // The blocks of the part's pages, by the layer's parts in the panel (design §5.5.2 "ブロック"): the view does not
         // change them. The run being made is blocks of one page that follow one another, recorded when the next range does
         // not touch it (design §5.5.2 "見えるブロックだけを描く").
-        var block = PointPages.BlockPoints(_switch.PartCount);
+        var block = PointPages.BlockPoints(_panel.PartCount);
         var whole = pages.DrawsWholePages;
-
-        // A cell outside the view by less than a marker's reach has markers that cover pixels in it (design §5.5.2 "ページ"):
-        // the reach of the vertex shader's box, half the diameter and half a pixel, in units of each axis.
-        var reach = (style.Size / 2) + 0.5;
-        var (reachX, reachY) = (x.UnitsOf(reach), y.UnitsOf(reach));
-        var (runPage, slot, runFrom, runTo) = (-1L, -1, 0, 0);
         for (var c = 0; c < cells.Length; c++)
         {
             ref readonly var cell = ref cells[c];
             var (baseX, pixelX, scaleX) = x.Place(cell.CornerX, cell.ExtentX);
             var (baseY, pixelY, scaleY) = y.Place(cell.CornerY, cell.ExtentY);
             records[c] = new ResidentCellRecord(baseX, baseY, pixelX, pixelY, scaleX, scaleY);
-            if (!x.Sees(cell.CornerX, cell.ExtentX, reachX) || !y.Sees(cell.CornerY, cell.ExtentY, reachY))
-            {
-                continue;
-            }
+        }
+
+        // The cells whose points the view draws, found by the scan before the recording, in the copy's order.
+        var (runPage, slot, runFrom, runTo) = (-1L, -1, 0, 0);
+        foreach (var c in _visible.AsSpan(0, _visibleCount))
+        {
+            ref readonly var cell = ref cells[c];
 
             // The cell's points in each page they lie in, widened to the blocks' ends: a block's points are in steps, so
             // it is drawn whole. The cells come in the copy's order, so a range begins at or after the run's start.
@@ -533,7 +600,7 @@ internal sealed class IndexedPointPlan : LayerPlan
             return false;
         }
 
-        // The same walk as the recording's pieces (PlanDensity): the cell's own tile, or its deepest ancestor's.
+        // The same walk as the recording's pieces (PlanPieces): the cell's own tile, or its deepest ancestor's.
         var cell = one[0];
         var tiles = snapshot.Tiles;
         for (var at = Math.Min(cell.Level, DensityMath.DeepestLevel); at >= 0 && tiles is not null; at--)
@@ -650,62 +717,133 @@ internal sealed class IndexedPointPlan : LayerPlan
     }
 
     /// <summary>
-    /// Returns the upper count of the points of the view (design §5.5.2 "画面内の点の数"): <c>Inside + Touching</c> at the
-    /// level whose cells are about a physical pixel; 0 without a full snapshot.
+    /// Scans the part before any layer of the frame records (design §5.5.2 "`Auto` の切り替え", Issue #472's decision of
+    /// 2026-11-22), once a frame, in the panel's context: on a coarse snapshot, the coarse density's piece; on a full one,
+    /// the upper count of the view and the density's pieces and their top, for <see cref="PointDraw.Auto"/>, and one walk
+    /// over the resident cells, which finds the cells whose points the view draws and the estimate of the largest bin from
+    /// them. The largest bin is the pieces' top once the tiles have come, and the estimate before. A
+    /// <see cref="PointDraw.Points"/> layer plans no piece and a <see cref="PointDraw.Density"/> one walks no cell.
     /// </summary>
-    internal long UpperCount(RecordContext context)
+    internal override void Scan(RecordContext context)
     {
-        if (_snapshot is not { } snapshot)
+        var point = (PointLayerSpec)Spec;
+        (_scanFrame, _scanFull, _scanCount, _largestBin, _estimate) = (context.Images.Frame, false, 0, 0, 0);
+        (_pieceCount, _top, _visibleCount) = (0, 0, 0);
+        var snapshot = _snapshot ?? _coarse;
+        if (snapshot is null)
         {
-            return 0;
+            return;
         }
 
         var x = new AxisMap(context.X, context.Transform, ofX: true, snapshot.XRange.Origin);
         var y = new AxisMap(context.Y, context.Transform, ofX: false, snapshot.YRange.Origin);
         var (_, _, rangeX, rangeY) = snapshot.CellBox(0, 0);
-        var count = snapshot.Count(new SpatialRect(x.Low, x.High, y.Low, y.High), DensityMath.PixelLevel(rangeX * x.PerUnit, rangeY * y.PerUnit));
-        return count.Inside + count.Touching;
+        _tileLevel = DensityMath.TileLevel(rangeX * x.PerUnit, rangeY * y.PerUnit);
+        if (snapshot.Stage != SpatialStage.Full)
+        {
+            _top = PlanCoarse(snapshot, x, y, rangeX, rangeY);
+            return;
+        }
+
+        _scanFull = true;
+        var view = new SpatialRect(x.Low, x.High, y.Low, y.High);
+        if (point.Draw != PointDraw.Points)
+        {
+            _top = PlanPieces(snapshot, view, x, y);
+        }
+
+        if (point.Draw == PointDraw.Auto)
+        {
+            var count = snapshot.Count(view, DensityMath.PixelLevel(rangeX * x.PerUnit, rangeY * y.PerUnit));
+            _scanCount = count.Inside + count.Touching;
+        }
+
+        if (point.Draw != PointDraw.Density)
+        {
+            var binArea = DensityMath.BinArea(Math.ScaleB(rangeX, -_tileLevel), Math.ScaleB(rangeY, -_tileLevel), x.PerUnit, y.PerUnit);
+            ScanCells(snapshot.ResidentCells, x, y, point.Size * context.Scale, binArea);
+        }
+
+        _largestBin =
+            point.Draw != PointDraw.Auto ? 0
+            : snapshot.Tiles is null ? _estimate
+            : _top;
     }
 
     /// <summary>
-    /// Plans the part's density for the frame (design §5.5.2 "水準の選び方", "広さで正規化する"): the tile level whose bins are
-    /// at least a physical pixel, and a piece for each cell of the view at that level, from the cell's tile, its deepest
-    /// ancestor's, or one fill. Returns the largest normalized count of the pieces, for the top of the scale; 0 when the part
-    /// draws no density this frame.
+    /// Walks the resident cells once (design §5.5.2 "見えるブロックだけを描く", "密度タイルが付く前"): keeps the positions of
+    /// those that reach into the view widened by a marker's reach, whose points the recording draws, and takes the estimate
+    /// of the largest bin, the greatest "points over the area on the screen" of the cells that touch the view itself, a cell
+    /// smaller than a bin of the chosen level divided by the bin's area.
     /// </summary>
-    internal double PlanDensity(RecordContext context, bool density)
+    private void ScanCells(ReadOnlySpan<ResidentCell> cells, in AxisMap x, in AxisMap y, float diameter, double binArea)
     {
-        _pieceCount = 0;
-        var snapshot = _snapshot;
-        _drawsDensity = snapshot is null ? _coarse is not null : density;
-        if (!_drawsDensity)
+        if (_visible.Length < cells.Length)
         {
-            return 0;
+            _visible = new int[Math.Max(cells.Length, _visible.Length * 2)];
         }
 
-        snapshot ??= _coarse!;
-        var x = new AxisMap(context.X, context.Transform, ofX: true, snapshot.XRange.Origin);
-        var y = new AxisMap(context.Y, context.Transform, ofX: false, snapshot.YRange.Origin);
-        var (_, _, rangeX, rangeY) = snapshot.CellBox(0, 0);
-        var level = DensityMath.TileLevel(rangeX * x.PerUnit, rangeY * y.PerUnit);
-        _tileLevel = level;
-        var top = 0.0;
+        // A cell outside the view by less than a marker's reach has markers that cover pixels in it (design §5.5.2 "ページ"):
+        // the reach of the vertex shader's box, half the diameter and half a pixel, in units of each axis.
+        var reach = (diameter / 2) + 0.5;
+        var (reachX, reachY) = (x.UnitsOf(reach), y.UnitsOf(reach));
 
-        // A coarse snapshot has one grid: the level-8 counts, drawn as the root's tile (design §5.5.2 "索引ができるまで").
-        if (snapshot.Stage != SpatialStage.Full)
+        // A panel under a pixel wide or high is not scanned (PlotGuides.Empty: the plan records the background alone, and
+        // a figure's cells under a pixel draw nothing), so PerUnit is positive here; the estimate is still 0 rather than NaN
+        // or infinite for an area that is 0, NaN, or past a double (DensityMath.CellEstimate).
+        var (estimate, count) = (0.0, 0);
+        for (var c = 0; c < cells.Length; c++)
         {
-            Add(new DensityPiece(0, 0, 0, 0, 0));
-            var coarse = snapshot.CoarseDensity;
-            long largest = 0;
-            foreach (var bin in coarse)
+            ref readonly var cell = ref cells[c];
+            if (x.Sees(cell.CornerX, cell.ExtentX, reachX) && y.Sees(cell.CornerY, cell.ExtentY, reachY))
             {
-                largest = Math.Max(largest, bin);
+                _visible[count++] = c;
             }
 
-            return DensityMath.Normalized(largest, DensityMath.BinArea(rangeX, rangeY, x.PerUnit, y.PerUnit));
+            if (x.Touches(cell.CornerX, cell.ExtentX) && y.Touches(cell.CornerY, cell.ExtentY))
+            {
+                estimate = Math.Max(estimate, DensityMath.CellEstimate(cell.Count, cell.ExtentX, cell.ExtentY, x.PerUnit, y.PerUnit, binArea));
+            }
         }
 
-        var rect = new SpatialRect(x.Low, x.High, y.Low, y.High);
+        (_visibleCount, _estimate) = (count, estimate);
+    }
+
+    /// <summary>
+    /// Sets whether the part draws a density this frame, and returns the top of its pieces, for the top of the scale: 0
+    /// when it draws none. A part on its coarse snapshot draws the coarse density whatever the layer's drawing.
+    /// </summary>
+    internal double PlanDensity(bool density)
+    {
+        _drawsDensity = _snapshot is null ? _coarse is not null : density;
+        return _drawsDensity ? _top : 0;
+    }
+
+    /// <summary>
+    /// Plans the coarse snapshot's one piece (design §5.5.2 "索引ができるまで"): the level-8 counts, drawn as the root's tile.
+    /// Returns its largest normalized count.
+    /// </summary>
+    private double PlanCoarse(SpatialSnapshot snapshot, in AxisMap x, in AxisMap y, double rangeX, double rangeY)
+    {
+        Add(new DensityPiece(0, 0, 0, 0, 0));
+        long largest = 0;
+        foreach (var bin in snapshot.CoarseDensity)
+        {
+            largest = Math.Max(largest, bin);
+        }
+
+        return DensityMath.Normalized(largest, DensityMath.BinArea(rangeX, rangeY, x.PerUnit, y.PerUnit));
+    }
+
+    /// <summary>
+    /// Plans the part's density for the frame on a full snapshot (design §5.5.2 "水準の選び方", "広さで正規化する"): a piece
+    /// for each cell of the view at the chosen level, from the cell's tile, its deepest ancestor's, or one fill. Returns the
+    /// largest normalized count of the pieces.
+    /// </summary>
+    private double PlanPieces(SpatialSnapshot snapshot, in SpatialRect rect, in AxisMap x, in AxisMap y)
+    {
+        var level = _tileLevel;
+        var top = 0.0;
         var found = snapshot.GetCells(rect, level, _cells);
         if (found > _cells.Length)
         {
@@ -761,7 +899,7 @@ internal sealed class IndexedPointPlan : LayerPlan
     /// </summary>
     private void RecordDensity(RecordContext context, PointLayerSpec point)
     {
-        var top = _switch.Top;
+        var top = _panel.Top;
         if (_pieceCount == 0 || !(top > 0))
         {
             return;
@@ -995,6 +1133,14 @@ internal sealed class IndexedPointPlan : LayerPlan
         /// <param name="extent">The cell's extent on this axis.</param>
         /// <param name="reach">A marker's reach on this axis, in its units (<see cref="UnitsOf"/>).</param>
         public bool Sees(double corner, double extent, double reach) => _clamps || (corner <= _high + reach && corner + extent >= _low - reach);
+
+        /// <summary>
+        /// Returns whether a cell touches the view on this axis, whether or not the axis clamps (design §5.5.2 "密度タイルが付く前"):
+        /// the cells whose points the estimate of the largest bin reads, as the density reads only the points in the view.
+        /// </summary>
+        /// <param name="corner">The cell's lower corner on this axis, as a difference from the snapshot's origin.</param>
+        /// <param name="extent">The cell's extent on this axis.</param>
+        public bool Touches(double corner, double extent) => corner <= _high && corner + extent >= _low;
 
         /// <summary>
         /// Returns a cell's record on this axis (design §5.5.2 "セルの表"): the base, the view's lower end held in the cell,

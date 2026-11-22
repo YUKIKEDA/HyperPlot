@@ -1264,6 +1264,15 @@ internal abstract class LayerPlan
     /// <summary>Records the layer into the panel (design §5.5.3).</summary>
     public abstract void Record(RecordContext context);
 
+    /// <summary>
+    /// Scans the layer in its panel before any layer of the frame records (design §5.5.2 "`Auto` の切り替え"): what a point
+    /// layer on the index path chooses its drawing by, for all its parts, those of every facet panel too. Nothing for others.
+    /// </summary>
+    internal virtual void Scan(RecordContext context) { }
+
+    /// <summary>Gets a value indicating whether the layer has a scan before the recording (<see cref="Scan"/>): a point layer on the index path, or a split of one.</summary>
+    internal virtual bool Scans => false;
+
     /// <summary>Frees what the layer made for itself (a pyramid over its categories' extremes); the plan's pyramids stay with the plan.</summary>
     public virtual void Release() { }
 

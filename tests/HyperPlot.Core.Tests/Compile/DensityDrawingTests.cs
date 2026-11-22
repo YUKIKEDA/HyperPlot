@@ -281,10 +281,10 @@ public sealed class DensityDrawingTests
         var (dense, sparse, third) = Parts(plan);
         Assert.Same(dense.Switch, sparse.Switch);
         Assert.Same(dense.Switch, third.Switch);
-        Near(20.0 / 9, dense.Switch.Top);
+        Near(20.0 / 9, dense.Panel.Top);
 
         var fine = plan.Render(View(data, point, perUnit: 24, centerX: 128, centerY: 120));
-        Near(5.0 / 144, dense.Switch.Top);
+        Near(5.0 / 144, dense.Panel.Top);
         var color = ColorMaps.Viridis.Map(0.8);
         var rect = Assert.Single(fine.Rects.ToArray(), r => Near(r, 256, 0, 384, 384));
         Assert.InRange((rect.Color.X * 255) - color.R, -0.5, 0.5);
@@ -294,7 +294,40 @@ public sealed class DensityDrawingTests
         _ = plan.Render(View(data, point, perUnit: 24, centerX: 160, centerY: 100));
         Assert.All(dense.Pieces.ToArray(), p => Assert.Equal(0, p.TileLevel));
         Assert.NotEmpty(sparse.Pieces.ToArray());
-        Near(17.0 / 576, dense.Switch.Top);
+        Near(17.0 / 576, dense.Panel.Top);
+    }
+
+    /// <summary>
+    /// The largest bin an Auto layer's switch reads is the top a density would draw under, the largest normalized bin of
+    /// the chosen level's tiles, their ancestors', and the fills in view, the greatest of the parts', and it is read on frames
+    /// of raw points too (design §5.5.2 "最大のビン").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The lattice, drawn with Auto at 1 DIP (raw points: its predicted time is far under 14.1 ms), Linear over Viridis.
+    ///
+    /// Steps:
+    /// - Render 3 pixels a unit around (128, 128), 24 around (128, 120), and 24 around (160, 100).
+    ///
+    /// Expected:
+    /// - Raw points each time; the largest bin is 20/9, 5/144, and 17/576, the tops of
+    ///   <see cref="Top_IsTheLargestNormalizedBinDrawn_AndTheParts_ShareIt"/>, to within 1e-9 of each.
+    /// </remarks>
+    [Fact]
+    public void LargestBin_IsTheDensitysTop_OnRawFramesToo()
+    {
+        using var data = Lattice();
+        using var pool = new PlotWorkerPool(4);
+        using var plan = LatticePlan(pool);
+        var point = data.Point(DensityNorm.Linear, opacity: 1) with { Draw = PointDraw.Auto, Size = 1 };
+
+        foreach (var (perUnit, x, y, top) in new[] { (3.0, 128.0, 128.0, 20.0 / 9), (24, 128, 120, 5.0 / 144), (24, 160, 100, 17.0 / 576) })
+        {
+            _ = plan.Render(View(data, point, perUnit, x, y));
+            var (dense, _, _) = Parts(plan);
+            Assert.False(dense.DrewDensity);
+            Near(top, dense.Switch.LastLargestBin);
+        }
     }
 
     /// <summary>
