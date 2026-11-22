@@ -9,6 +9,16 @@ namespace HyperPlot;
 /// </summary>
 internal ref struct HitScan
 {
+    /// <summary>
+    /// How far past the panel's edge a center may be drawn and still count as on the edge, in physical pixels (design §6.3
+    /// "散布の点が答える範囲"). The index path places a point in floats as the vertex shader does, so a point whose value lies
+    /// on the view's end is drawn a few float steps off the edge, on either side (a step is 6.1 × 10^-5 of a pixel at 600
+    /// pixels, 4.9 × 10^-4 at 7,680). A hundredth of a pixel holds those steps and is far below what a cursor tells apart.
+    /// Both paths take it, so that they give the same answers (design §6.3 "散布の点が答える範囲", Issue #569 Decision,
+    /// 2026-11-22).
+    /// </summary>
+    public const double EdgeSlack = 0.01;
+
     // A range of rows this short is read row by row; a longer one is split by its extremes from the pyramid.
     private const int ScanRows = 64;
 
@@ -95,6 +105,14 @@ internal ref struct HitScan
 
     /// <summary>Gets a value indicating whether the scan sums statistics (row I4b) in place of finding hits.</summary>
     public readonly bool Summing => _summing;
+
+    /// <summary>
+    /// Gets the panel's rectangle in physical pixels, along the layer's x and across it, widened by <see cref="EdgeSlack"/>
+    /// on each side: a point layer answers only points whose center is drawn in it, its edges included (design §6.3
+    /// "散布の点が答える範囲", Issue #569).
+    /// </summary>
+    public readonly PixelBox PanelBox =>
+        new(X.Offset - EdgeSlack, X.Offset + X.Size + EdgeSlack, Y.Offset - EdgeSlack, Y.Offset + Y.Size + EdgeSlack);
 
     /// <summary>
     /// Adds a series' summary over the rows of [start, end) whose x lies in the scan's range (row I4b): the rows found by two
@@ -504,7 +522,8 @@ internal ref struct HitScan
     /// <see cref="HitMode.X"/> measures a point's distance along alone, within the radius; <see cref="HitMode.XY"/> measures
     /// it in both directions, within the radius and the marker's own. The least distance d is found first, and of the points
     /// within d + 0.5 pixels the least row answers (row R3c, Issue #471 Decision 16), so that the answer does not depend on
-    /// the order the points are compared in. The x and y are the point's, in data units.
+    /// the order the points are compared in. The x and y are the point's, in data units. A point whose pixel lies outside
+    /// the panel answers in neither mode, as one not drawn (design §6.3 "散布の点が答える範囲", Issue #569).
     /// </summary>
     /// <param name="xs">The points' pixels along: index 0 is row <paramref name="first"/>.</param>
     /// <param name="ys">The points' pixels across, as <paramref name="xs"/>.</param>
@@ -529,7 +548,7 @@ internal ref struct HitScan
         }
 
         // Plain comparisons: 131,072 points a call (design §9, P-5). A point that does not map (NaN) fails each test.
-        var (along, across, xMode, radius) = (Along, Across, Mode == HitMode.X, (double)Radius);
+        var (along, across, xMode, radius, panel) = (Along, Across, Mode == HitMode.X, (double)Radius, PanelBox);
         var reach = xMode ? radius : radius + markerRadius;
         var last = Math.Min(xs.Length, ys.Length);
         var least = double.PositiveInfinity;
@@ -555,20 +574,16 @@ internal ref struct HitScan
             }
         }
 
-        // A point's distance as the mode measures it, or ∞ when it lies outside the reach or does not map.
+        // A point's distance as the mode measures it, or ∞ when it lies outside the reach or the panel, or does not map.
         double PointDistance(double pointAlong, double pointAcross, int i, ReadOnlySpan<float> own)
         {
             var dx = Math.Abs(pointAlong - along);
-            if (!(dx <= reach))
+            if (!(dx <= reach) || !panel.Holds(pointAlong, pointAcross))
             {
                 return double.PositiveInfinity;
             }
 
             var dy = Math.Abs(pointAcross - across);
-            if (!(dy >= 0))
-            {
-                return double.PositiveInfinity;
-            }
 
             if (xMode)
             {

@@ -26,6 +26,8 @@ using HyperPlot.Samples;
 //   <dir>/HyperPlot.E2E.exe hittest <folder for the data files> <count> <uniform|cluster> [reference seconds a line]
 //     [places with 16-DIP markers forced to points]: the scene of the hit test of scatter of row R3c instead, over the
 //     same x and y files as the density scene (HitTestScene).
+//   <dir>/HyperPlot.E2E.exe hittest-lines <folder for the data files> <count> <lines> [reference seconds a line]: the scene
+//     of the hit test over vertical lines of Issue #569 instead, over x and y files it writes (HitTestScene.RunLines).
 //   <dir>/HyperPlot.E2E.exe selection <count> <points|density> [frames] [rounds]: the scene of the selection of scatter
 //     of row R3c instead, with no data file (SelectionScene).
 // The data files (4 GB each at 1e9 points) are made from a seed when missing and kept; delete them after.
@@ -62,6 +64,13 @@ if (args.Length > 0 && args[0] == "hittest")
     using var own = Process.GetCurrentProcess();
     own.PriorityClass = ProcessPriorityClass.High;
     return HyperPlot.E2E.HitTestScene.Run(args.AsSpan(1));
+}
+
+if (args.Length > 0 && args[0] == "hittest-lines")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.HitTestScene.RunLines(args.AsSpan(1));
 }
 
 if (args.Length > 0 && args[0] == "selection")

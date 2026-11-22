@@ -433,9 +433,16 @@ internal abstract unsafe class SpatialSnapshot
     /// same snapshot and cursor give the same point, which need not be the one of the least row (Issue #471 Decision 21).
     /// Distances are measured where <paramref name="screen"/> draws the points: on a unit of their resident cell, which may
     /// be a pixel or more from their value past the limit of design §5.5.2.
+    /// <para>
+    /// Only a point drawn inside the panel answers, its edges included (design §6.3 "散布の点が答える範囲", Issue #569): a
+    /// cell whose box misses the panel is not taken, and a point read whose drawn pixel lies outside it is passed over. A
+    /// cell answers by its first point only when its box lies inside the panel, so that the point stands for points that
+    /// may answer. On an axis that clamps, the screen holds every pixel inside the view, so every cell meets the panel there.
+    /// </para>
     /// </remarks>
     /// <typeparam name="TScreen">Where the frame draws the points.</typeparam>
     /// <param name="screen">Where the frame draws the points, in the pixels of the cursor.</param>
+    /// <param name="panel">The panel's rectangle in the same pixels, along and across.</param>
     /// <param name="along">The cursor's pixel along x.</param>
     /// <param name="across">The cursor's pixel across, along y.</param>
     /// <param name="radius">The radius in pixels: a point answers only when it is drawn nearer than this, plus the marker's radius in XY.</param>
@@ -446,6 +453,7 @@ internal abstract unsafe class SpatialSnapshot
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="radius"/> or <paramref name="markerRadius"/> is negative or NaN.</exception>
     public SpatialNearest Nearest<TScreen>(
         ref TScreen screen,
+        in PixelBox panel,
         double along,
         double across,
         double radius,
@@ -471,14 +479,14 @@ internal abstract unsafe class SpatialSnapshot
             return default;
         }
 
-        var search = new NearestSearch(along, across, mode == HitMode.X, mode == HitMode.XY ? radius + markerRadius : radius);
+        var search = new NearestSearch(along, across, mode == HitMode.X, mode == HitMode.XY ? radius + markerRadius : radius, panel);
         var (keys, cells, xs, ys) = (scratch.Keys, scratch.Cells, scratch.Xs, scratch.Ys);
         var size = 0;
         var overflowed = false;
         var visited = 0;
         long read = 0;
 
-        var rootKey = BoxDistance(ref screen, rows[0], search, out _);
+        var rootKey = BoxDistance(ref screen, rows[0], search, out _, out _);
         if (rootKey < search.Limit)
         {
             Push(keys, cells, ref size, rootKey, 0);
@@ -489,8 +497,8 @@ internal abstract unsafe class SpatialSnapshot
             var index = Pop(keys, cells, ref size);
             ref readonly var row = ref rows[index];
             visited++;
-            _ = BoxDistance(ref screen, row, search, out var boxAcross);
-            if (boxAcross <= NearestTolerance)
+            _ = BoxDistance(ref screen, row, search, out var boxAcross, out var inside);
+            if (boxAcross <= NearestTolerance && inside)
             {
                 // Every point of the cell is drawn within half a pixel of its first point, which answers for them.
                 var cell = ResidentCells[ResidentCellAt(row.First)];
@@ -512,7 +520,7 @@ internal abstract unsafe class SpatialSnapshot
                         continue;
                     }
 
-                    var key = BoxDistance(ref screen, child, search, out _);
+                    var key = BoxDistance(ref screen, child, search, out _, out _);
                     if (key >= search.Limit)
                     {
                         continue;
@@ -789,9 +797,10 @@ internal abstract unsafe class SpatialSnapshot
     /// Returns the distance in pixels from the cursor to the box a cell's points are drawn in, and the box's diagonal (its
     /// width alone along x). A point is drawn on a unit of its resident cell at or below its value, by less than a unit,
     /// so the box reaches a unit below the cell on each axis: the unit of the resident cell that holds the cell, or the
-    /// cell's own when the cell holds resident cells, which are no wider.
+    /// cell's own when the cell holds resident cells, which are no wider. A box that misses the panel is at an infinite
+    /// distance (Issue #569): no point of it is drawn inside.
     /// </summary>
-    private double BoxDistance<TScreen>(ref TScreen screen, in SpatialRow row, in NearestSearch search, out double across)
+    private double BoxDistance<TScreen>(ref TScreen screen, in SpatialRow row, in NearestSearch search, out double across, out bool inside)
         where TScreen : struct, ISpatialScreen
     {
         var shift = DeepestLevel - row.Level;
@@ -805,7 +814,7 @@ internal abstract unsafe class SpatialSnapshot
                 : (extentX / CellUnits, extentY / CellUnits);
         var (a0, a1) = (screen.Along(x0 - unitX), screen.Along(x0 + extentX));
         var (c0, c1) = (screen.Across(y0 - unitY), screen.Across(y0 + extentY));
-        return search.BoxDistance(Math.Min(a0, a1), Math.Max(a0, a1), Math.Min(c0, c1), Math.Max(c0, c1), out across);
+        return search.BoxDistance(Math.Min(a0, a1), Math.Max(a0, a1), Math.Min(c0, c1), Math.Max(c0, c1), out across, out inside);
     }
 
     /// <summary>
@@ -1009,17 +1018,18 @@ internal abstract unsafe class SpatialSnapshot
     /// <summary>
     /// The state of one query of <see cref="Nearest{TScreen}"/>: the cursor, the best point drawn so far, and the limit
     /// under which a cell is still taken, half a pixel below the best (design §6.3 "同じ距離"). In
-    /// <see cref="HitMode.X"/> a distance is along x alone.
+    /// <see cref="HitMode.X"/> a distance is along x alone. Only what is drawn inside the panel answers (Issue #569).
     /// </summary>
     private struct NearestSearch
     {
         private readonly double _along;
         private readonly double _across;
         private readonly bool _alongOnly;
+        private readonly PixelBox _panel;
 
-        public NearestSearch(double along, double across, bool alongOnly, double reach)
+        public NearestSearch(double along, double across, bool alongOnly, double reach, in PixelBox panel)
         {
-            (_along, _across, _alongOnly) = (along, across, alongOnly);
+            (_along, _across, _alongOnly, _panel) = (along, across, alongOnly, panel);
             (Best, Limit, Position) = (reach, reach, -1);
         }
 
@@ -1052,8 +1062,16 @@ internal abstract unsafe class SpatialSnapshot
             return Math.Sqrt((da * da) + (dc * dc));
         }
 
-        public readonly double BoxDistance(double alongLow, double alongHigh, double acrossLow, double acrossHigh, out double across)
+        public readonly double BoxDistance(double alongLow, double alongHigh, double acrossLow, double acrossHigh, out double across, out bool inside)
         {
+            // A box that misses the panel on either axis holds no point drawn inside it; one inside it on both holds only such points.
+            inside = _panel.Holds(alongLow, alongHigh, acrossLow, acrossHigh);
+            if (!_panel.Meets(alongLow, alongHigh, acrossLow, acrossHigh))
+            {
+                across = 0;
+                return double.PositiveInfinity;
+            }
+
             var da =
                 _along < alongLow ? alongLow - _along
                 : _along > alongHigh ? _along - alongHigh
@@ -1073,11 +1091,19 @@ internal abstract unsafe class SpatialSnapshot
             return Math.Sqrt((da * da) + (dc * dc));
         }
 
-        /// <summary>Takes a point of a resident cell the screen has entered: kept when it is drawn nearer than the best.</summary>
+        /// <summary>
+        /// Takes a point of a resident cell the screen has entered: kept when it is drawn inside the panel, its edges included,
+        /// and nearer than the best.
+        /// </summary>
         public void Consider<TScreen>(ref TScreen screen, in ResidentCell cell, double x, double y, long position)
             where TScreen : struct, ISpatialScreen
         {
             var (along, across) = screen.Place(UnitOf(x - cell.CornerX, cell.ExtentX), UnitOf(y - cell.CornerY, cell.ExtentY));
+            if (!_panel.Holds(along, across))
+            {
+                return;
+            }
+
             var distance = DistanceTo(along, across);
             if (distance < Best)
             {

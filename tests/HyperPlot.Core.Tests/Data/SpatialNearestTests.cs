@@ -19,6 +19,9 @@ public sealed class SpatialNearestTests
     // answer stays within half a pixel of the loop's least distance up to it.
     private const double Rounding = 1e-6;
 
+    // The panel of every query: 1,920 × 1,080 pixels from the top left. Only a point drawn in it answers (Issue #569).
+    private static readonly PixelBox Screen = new(0, 1920, 0, 1080);
+
     /// <summary>The shapes of data the search is compared on.</summary>
     public enum Shape
     {
@@ -36,8 +39,9 @@ public sealed class SpatialNearestTests
     }
 
     /// <summary>
-    /// Nearest answers within half a pixel of the least distance a loop finds over the points drawn, in both modes, at zooms
-    /// that differ on x and y, and finds nothing only when no point is drawn within the reach less half a pixel.
+    /// Nearest answers within half a pixel of the least distance a loop finds over the points drawn in the panel, in both
+    /// modes, at zooms that differ on x and y, and finds nothing only when no point is drawn in the panel within the reach
+    /// less half a pixel (Issue #569).
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -52,12 +56,13 @@ public sealed class SpatialNearestTests
     /// Steps:
     /// - For each query and each mode (XY and X), call Nearest.
     /// - Find by a loop the least distance from the cursor to the points where they are drawn (each point's unit of its
-    ///   resident cell, read with ReadBlock), over the first 16 points of each leaf, as the search reads them.
+    ///   resident cell, read with ReadBlock) inside the panel of 1,920 × 1,080 pixels, its edges included, over the first 16
+    ///   points of each leaf, as the search reads them.
     ///
     /// Expected:
     /// - Nothing overflows the queue.
-    /// - A found point is nearer than the reach (the radius, plus the marker's radius in XY) and no farther than the loop's
-    ///   least distance plus half a pixel; its row, values, drawn pixels, and distance are the copy's.
+    /// - A found point is drawn in the panel, nearer than the reach (the radius, plus the marker's radius in XY), and no
+    ///   farther than the loop's least distance plus half a pixel; its row, values, drawn pixels, and distance are the copy's.
     /// - Nothing is found only when the loop's least distance is not below the reach less half a pixel.
     /// - The same query again answers the same row.
     /// </remarks>
@@ -94,14 +99,18 @@ public sealed class SpatialNearestTests
             foreach (var q in MakeQueries(snapshot, drawn, seed: 80 + (int)shape))
             {
                 var screen = q.Screen;
-                var found = snapshot.Nearest(ref screen, q.Along, q.Across, Radius, markerRadius, mode, scratch);
+                var found = snapshot.Nearest(ref screen, Screen, q.Along, q.Across, Radius, markerRadius, mode, scratch);
                 var least = double.PositiveInfinity;
                 for (var i = 0; i < drawn.Readable.Length; i++)
                 {
                     if (drawn.Readable[i])
                     {
+                        // Only a point drawn in the panel, its edges included, answers (Issue #569).
                         var (a, c) = q.Screen.At(drawn, i);
-                        least = Math.Min(least, Distance(q, mode, a, c));
+                        if (a >= 0 && a <= 1920 && c >= 0 && c <= 1080)
+                        {
+                            least = Math.Min(least, Distance(q, mode, a, c));
+                        }
                     }
                 }
 
@@ -111,13 +120,14 @@ public sealed class SpatialNearestTests
                 {
                     var at = drawn.PositionOfRow[found.Row];
                     var (a, c) = q.Screen.At(drawn, at);
+                    Assert.True(a >= 0 && a <= 1920 && c >= 0 && c <= 1080, what);
                     Assert.True(found.Distance < reach, what);
                     Assert.True(found.Distance <= least + Tolerance + Rounding, what);
                     Assert.Equal((drawn.X[at], drawn.Y[at]), (found.X, found.Y));
                     Assert.Equal((a, c), (found.Along, found.Across));
                     Assert.Equal(Distance(q, mode, a, c), found.Distance, 9);
                     var again = q.Screen;
-                    Assert.Equal(found.Row, snapshot.Nearest(ref again, q.Along, q.Across, Radius, markerRadius, mode, scratch).Row);
+                    Assert.Equal(found.Row, snapshot.Nearest(ref again, Screen, q.Along, q.Across, Radius, markerRadius, mode, scratch).Row);
                 }
                 else
                 {
@@ -157,11 +167,63 @@ public sealed class SpatialNearestTests
         for (var k = 0; k < 50; k++)
         {
             var (a, c) = screen.At(drawn, random.Next(Points));
-            var found = snapshot.Nearest(ref screen, a, c, 2000, 0, HitMode.XY, scratch);
+            var found = snapshot.Nearest(ref screen, Screen, a, c, 2000, 0, HitMode.XY, scratch);
             Assert.True(found.Found);
             Assert.Equal(0.0, found.Distance);
             Assert.InRange(found.PointsRead, 1, 4 * tuning.LeafCapacity);
         }
+    }
+
+    /// <summary>
+    /// In X a search reads no more points than the first points of the leaves that meet both the cursor's column within the
+    /// reach and the view (design §6.3 "読む点の数（X のモード）", Issue #569): at a zoom where the column's leaves are sparse,
+    /// so that no point lies within half a pixel along, the leaves of the column above and below the view are not read.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 50,000 evenly spread points with leaves of 16 points. 100 seeded views of 10^-3 of the x range by 10^-2 of the y
+    ///   range around a seeded place, at 1,920 × 1,080 pixels, y downward; the cursor at the panel's middle.
+    ///
+    /// Steps:
+    /// - Call Nearest in X with a radius of 8 pixels.
+    /// - With GetCells, find the leaves that meet the cursor's x within the reach and a pixel by the view's y within a pixel,
+    ///   and the leaves that meet the same x over the whole y range; sum the first 16 points of each.
+    ///
+    /// Expected:
+    /// - Each search reads no more points than the leaves of its column in the view hold.
+    /// - Over the 100 searches, the leaves of the columns over the whole y hold more than 10 times the points read: the
+    ///   search did not read the column.
+    /// </remarks>
+    [Fact]
+    public void Nearest_InX_ReadsOnlyTheColumnsLeavesInTheView()
+    {
+        var (xs, ys) = Make(Shape.Uniform, seed: 79);
+        var tuning = new SpatialIndexTuning(LeafCapacity: 16, RowsPerUnit: 1 << 12, TableShare: 1e6, WideRows: 1L << 32);
+        using var built = SpatialBuilt.Of(xs, ys, tuning: tuning);
+        var snapshot = built.Snapshot;
+        var (xr, yr) = (snapshot.XRange, snapshot.YRange);
+        var (width, height) = (xr.Upper - xr.Lower, yr.Upper - yr.Lower);
+        var scratch = new SpatialNearestScratch(tuning.LeafCapacity);
+        var random = new Random(80);
+        var (read, column) = (0L, 0L);
+        for (var k = 0; k < 100; k++)
+        {
+            var (x, y) = (xr.Lower + (random.NextDouble() * width), yr.Lower + (random.NextDouble() * height));
+            var (spanX, spanY) = (width * 1e-3, height * 1e-2);
+            var screen = new LinearScreen(1920 / spanX, -1080 / spanY, x - (spanX / 2), y + (spanY / 2));
+            var found = snapshot.Nearest(ref screen, Screen, 960, 540, Radius, 0, HitMode.X, scratch);
+
+            var (reachX, pixelY) = ((Radius + 1) * spanX / 1920, spanY / 1080);
+            var inView = Held(new SpatialRect(x - reachX, x + reachX, y - (spanY / 2) - pixelY, y + (spanY / 2) + pixelY));
+            var whole = Held(new SpatialRect(x - reachX, x + reachX, yr.Lower, yr.Upper));
+            Assert.True(found.PointsRead <= inView, $"View {k}: {found.PointsRead} points read, the leaves in the view hold {inView}.");
+            (read, column) = (read + found.PointsRead, column + whole);
+        }
+
+        Assert.True(column > 10 * read, $"The columns hold {column} points; the searches read {read}.");
+
+        // The first 16 points of every leaf that meets a rectangle.
+        long Held(in SpatialRect rect) => SpatialReference.Cells(snapshot, rect, 32).Sum(cell => Math.Min(cell.Count, tuning.LeafCapacity));
     }
 
     /// <summary>
@@ -201,7 +263,7 @@ public sealed class SpatialNearestTests
         );
         var screen = new LinearScreen(1, 1, 0, 0);
 
-        var found = snapshot.Nearest(ref screen, 9.3, 10.1, 8, 0, HitMode.XY, new SpatialNearestScratch(1));
+        var found = snapshot.Nearest(ref screen, Screen, 9.3, 10.1, 8, 0, HitMode.XY, new SpatialNearestScratch(1));
 
         Assert.Equal(0, found.Row);
         Assert.Equal(0.8, found.Distance, 9);
@@ -245,14 +307,14 @@ public sealed class SpatialNearestTests
         var screen = new LinearScreen(1, 1, 0, 0);
         var scratch = new SpatialNearestScratch(tuning.LeafCapacity);
 
-        var hit = snapshot.Nearest(ref screen, 22, 10, 8, 6, HitMode.XY, scratch);
+        var hit = snapshot.Nearest(ref screen, Screen, 22, 10, 8, 6, HitMode.XY, scratch);
         Assert.True(hit.Found);
         Assert.Equal(0, hit.Row);
         Assert.Equal(12, hit.Distance, 9);
-        Assert.False(snapshot.Nearest(ref screen, 22, 10, 8, 3, HitMode.XY, scratch).Found);
-        Assert.False(snapshot.Nearest(ref screen, 22, 10, 8, 6, HitMode.X, scratch).Found);
-        Assert.False(snapshot.Nearest(ref screen, 22, 10, 0, 0, HitMode.XY, scratch).Found);
-        var along = snapshot.Nearest(ref screen, 22, 10, 10, 0, HitMode.X, scratch);
+        Assert.False(snapshot.Nearest(ref screen, Screen, 22, 10, 8, 3, HitMode.XY, scratch).Found);
+        Assert.False(snapshot.Nearest(ref screen, Screen, 22, 10, 8, 6, HitMode.X, scratch).Found);
+        Assert.False(snapshot.Nearest(ref screen, Screen, 22, 10, 0, 0, HitMode.XY, scratch).Found);
+        var along = snapshot.Nearest(ref screen, Screen, 22, 10, 10, 0, HitMode.X, scratch);
         Assert.Equal(2, along.Row);
         Assert.Equal(9, along.Distance, 9);
     }
@@ -283,7 +345,7 @@ public sealed class SpatialNearestTests
         Assert.Equal((SpatialCellKind.CappedLeaf, (long)Points), (root.Kind, root.Count));
         var screen = WholeView(snapshot);
 
-        var found = snapshot.Nearest(ref screen, 960.5, 540.5, 2000, 0, HitMode.XY, new SpatialNearestScratch());
+        var found = snapshot.Nearest(ref screen, Screen, 960.5, 540.5, 2000, 0, HitMode.XY, new SpatialNearestScratch());
 
         Assert.True(found.Found);
         Assert.Equal(tuning.LeafCapacity, found.PointsRead);
@@ -314,11 +376,20 @@ public sealed class SpatialNearestTests
         var snapshot = built.Snapshot;
         var screen = WholeView(snapshot);
 
-        var small = snapshot.Nearest(ref screen, 960.5, 540.5, 300, 0, HitMode.XY, new SpatialNearestScratch(tuning.LeafCapacity, queueCells: 4));
+        var small = snapshot.Nearest(
+            ref screen,
+            Screen,
+            960.5,
+            540.5,
+            300,
+            0,
+            HitMode.XY,
+            new SpatialNearestScratch(tuning.LeafCapacity, queueCells: 4)
+        );
         Assert.True(small.Overflowed);
         Assert.True(!small.Found || small.Distance < 300);
 
-        var whole = snapshot.Nearest(ref screen, 960.5, 540.5, 300, 0, HitMode.XY, new SpatialNearestScratch(tuning.LeafCapacity));
+        var whole = snapshot.Nearest(ref screen, Screen, 960.5, 540.5, 300, 0, HitMode.XY, new SpatialNearestScratch(tuning.LeafCapacity));
         Assert.False(whole.Overflowed);
         Assert.True(whole.Found);
         Assert.True(whole.PointsRead >= small.PointsRead);
@@ -352,8 +423,8 @@ public sealed class SpatialNearestTests
             foreach (var q in queries)
             {
                 var screen = q.Screen;
-                found += snapshot.Nearest(ref screen, q.Along, q.Across, Radius, 0, HitMode.XY, scratch).Found ? 1 : 0;
-                found += snapshot.Nearest(ref screen, q.Along, q.Across, Radius, 0, HitMode.X, scratch).Found ? 1 : 0;
+                found += snapshot.Nearest(ref screen, Screen, q.Along, q.Across, Radius, 0, HitMode.XY, scratch).Found ? 1 : 0;
+                found += snapshot.Nearest(ref screen, Screen, q.Along, q.Across, Radius, 0, HitMode.X, scratch).Found ? 1 : 0;
             }
         });
 

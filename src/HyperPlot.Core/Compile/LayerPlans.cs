@@ -2405,4 +2405,16 @@ internal enum PositionKind
 /// <param name="AlongHigh">The greater pixel along.</param>
 /// <param name="AcrossLow">The lesser pixel across.</param>
 /// <param name="AcrossHigh">The greater pixel across.</param>
-internal readonly record struct PixelBox(double AlongLow, double AlongHigh, double AcrossLow, double AcrossHigh);
+internal readonly record struct PixelBox(double AlongLow, double AlongHigh, double AcrossLow, double AcrossHigh)
+{
+    /// <summary>Returns whether a pixel lies in the box, its edges included: false for NaN.</summary>
+    public bool Holds(double along, double across) => along >= AlongLow && along <= AlongHigh && across >= AcrossLow && across <= AcrossHigh;
+
+    /// <summary>Returns whether a box given by its ends lies in this one, its edges included.</summary>
+    public bool Holds(double alongLow, double alongHigh, double acrossLow, double acrossHigh) =>
+        alongLow >= AlongLow && alongHigh <= AlongHigh && acrossLow >= AcrossLow && acrossHigh <= AcrossHigh;
+
+    /// <summary>Returns whether a box given by its ends shares a pixel with this one, an edge included.</summary>
+    public bool Meets(double alongLow, double alongHigh, double acrossLow, double acrossHigh) =>
+        alongHigh >= AlongLow && alongLow <= AlongHigh && acrossHigh >= AcrossLow && acrossLow <= AcrossHigh;
+}

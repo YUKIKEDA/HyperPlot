@@ -26,7 +26,8 @@ public sealed class IndexedPointHitTests
     ///
     /// Steps:
     /// - At 60 cursors over the panel, hit test with a radius of 20 pixels in XY and in X, twice each.
-    /// - Find by a loop over every point its pixel by the panel's linear map, and the least distance (along alone in X).
+    /// - Find by a loop over every point in the view its pixel by the panel's linear map, and the least distance (along alone
+    ///   in X): only a point drawn in the panel answers (Issue #569).
     ///
     /// Expected:
     /// - A hit is found when the loop's least distance is below the reach less half a pixel, and only within the reach.
@@ -63,8 +64,12 @@ public sealed class IndexedPointHitTests
                 var least = double.PositiveInfinity;
                 for (var i = 0; i < Over; i++)
                 {
-                    var (along, across) = (origin.X + ((xs[i] - 40) * perUnit.X), origin.Y + ((ys[i] - 40) * perUnit.Y));
-                    least = Math.Min(least, Measure(mode, cursor, along, across));
+                    // Only a point drawn in the panel, the view [40, 45]², answers (Issue #569).
+                    if (xs[i] >= 40 && xs[i] <= 45 && ys[i] >= 40 && ys[i] <= 45)
+                    {
+                        var (along, across) = (origin.X + ((xs[i] - 40) * perUnit.X), origin.Y + ((ys[i] - 40) * perUnit.Y));
+                        least = Math.Min(least, Measure(mode, cursor, along, across));
+                    }
                 }
 
                 var reach = mode == HitMode.XY ? Radius + marker : Radius;

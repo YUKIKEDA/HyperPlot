@@ -404,7 +404,8 @@ internal sealed class IndexedPointPlan : LayerPlan
 
     /// <summary>
     /// Answers a hit test with what the part draws (design §6.3 "散布の索引の道", row R3c, Issue #471): its raw points by the
-    /// search over its index, measured where the vertex shader draws them, or the density's bin under the cursor. The
+    /// search over its index, measured where the vertex shader draws them and only those drawn inside the panel (Issue
+    /// #569), or the density's bin under the cursor. The
     /// drawing is the one the last recording chose, the switch's band included (Decision 11). A part on its coarse snapshot
     /// answers with the coarse density's bin (Decision 5); a part that draws its last full snapshot while a new one is
     /// built answers from it, provisionally, as the readiness says (Decision 5). Allocates nothing once the plot's plan holds
@@ -433,7 +434,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         var y = new AxisMap(scan.Y, transform, ofX: false, snapshot.YRange.Origin);
         var screen = new DrawnScreen(x, y);
         var scratch = scan.Scratch ??= new SpatialNearestScratch();
-        var found = snapshot.Nearest(ref screen, scan.Along, scan.Across, scan.Radius, _markerRadius, scan.Mode, scratch);
+        var found = snapshot.Nearest(ref screen, scan.PanelBox, scan.Along, scan.Across, scan.Radius, _markerRadius, scan.Mode, scratch);
         if (!found.Found)
         {
             return;
