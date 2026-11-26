@@ -811,11 +811,10 @@ public sealed class IndexedPointHitTests
     private static void Show(PlotEngine engine, NullBackend backend, (double X0, double X1, double Y0, double Y1) view)
     {
         engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(view.X0, view.X1), ViewRange.FromValues(view.Y0, view.Y1)));
-        for (var i = 0; i < 200 && (i == 0 || engine.IsProvisional); i++)
-        {
-            backend.Images.Sent();
-            engine.RenderFrame();
-        }
+
+        // The workers read the pages (row R3b2), so a count of frames is not a time: a slow runner ends 200 frames before
+        // the reads (PR #614's Windows Debug CI). Draw until no frame is provisional, bounded in time.
+        Settle(engine, backend);
     }
 
     private static Vector2 Pixel(PlotEngine engine, double x, double y) =>
