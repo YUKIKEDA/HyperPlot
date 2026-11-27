@@ -13,7 +13,8 @@ namespace HyperPlot.E2E;
 /// CPU time (the view's change and <see cref="PlotEngine.RenderFrame"/>), its GPU time, and its allocations; then the time
 /// of a hit test at seeded pixels in both modes. A layer of at most 131,072 rows takes the CPU path, and a larger one the index path.
 /// Row R3b2 (design §9 "重なりと予算"): the runs and the points of the index path a frame, the blocks in view against whole
-/// pages, the frames without their drawing, and the cores the other processes used.
+/// pages, the frames without their drawing, and the cores the other processes used. Row R3c2 (design §6.4 "強調のない run の
+/// 描き方"): the same frames under a rectangle or a lasso selected before them.
 /// </summary>
 internal static partial class PointsScene
 {
@@ -21,7 +22,7 @@ internal static partial class PointsScene
     private const int Warmup = 120;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), and a file to write one row a frame to (its times and allocations).</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), a file to write one row a frame to (its times and allocations), and the selection the frames are drawn under: "none" (by default), "rectangle" ([25, 75]²), or "lasso" (a circle of radius 30 around (50, 50)).</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         // Row R3b2: a file of one row a frame, when named after the other arguments.
@@ -29,7 +30,7 @@ internal static partial class PointsScene
         if (args.Length < 4)
         {
             Console.Error.WriteLine(
-                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame]"
+                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame] [none|rectangle|lasso]"
             );
             return 2;
         }
@@ -49,6 +50,14 @@ internal static partial class PointsScene
         // Row R3b2: whole pages instead of the blocks in view, and frames that record without drawing.
         var pages = args.Length > 9 && args[9] == "pages";
         var recordOnly = args.Length > 10 && args[10] == "record";
+
+        // Row R3c2: a selection that the measured frames draw the highlight of.
+        var selected = args.Length > 12 ? args[12] : "none";
+        if (selected is not ("none" or "rectangle" or "lasso"))
+        {
+            Console.Error.WriteLine($"unknown selection {selected}: none, rectangle, or lasso");
+            return 2;
+        }
 
         // Seeded: uniform over [0, 100]², or a normal blob of a tenth of the side around the middle.
         var random = new Random(1);
@@ -126,6 +135,15 @@ internal static partial class PointsScene
         // The script: zoom in to a tenth of the side around a point that drifts, and out again, 300 frames a round. The
         // views are made before the frames: a view is an object of the scene's own.
         var panel = new PanelId(0, 0);
+        if (selected == "rectangle")
+        {
+            engine.Select(Selection2D.Rectangle(panel, ViewRange.FromValues(25.0, 75.0), ViewRange.FromValues(25.0, 75.0)));
+        }
+        else if (selected == "lasso")
+        {
+            engine.Select(SelectionScene.Lasso(30));
+        }
+
         var total = frames + Warmup;
         var views = new PanelView2D[total];
         for (var f = 0; f < total; f++)
@@ -241,7 +259,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"form={(pages ? "pages" : "blocks")} frames={(recordOnly ? "record" : "draw")} ran {Clock(clockFrom)} to {Clock(clockTo)} other_cores={others:F2}"
+                $"form={(pages ? "pages" : "blocks")} frames={(recordOnly ? "record" : "draw")} selection={selected} ran {Clock(clockFrom)} to {Clock(clockTo)} other_cores={others:F2}"
             )
         );
         Console.WriteLine(

@@ -165,7 +165,7 @@ internal static class SelectionScene
     }
 
     /// <summary>Returns a lasso of <see cref="LassoVertices"/> vertices on a circle around the middle of the data: a radius of 71 or more holds [0, 100]².</summary>
-    private static Selection2D Lasso(double radius)
+    internal static Selection2D Lasso(double radius)
     {
         var polygon = new Vector2[LassoVertices];
         for (var k = 0; k < polygon.Length; k++)
