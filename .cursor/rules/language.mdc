@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Language
 
-Reports and replies to the owner in chat are in Japanese: the end-of-turn report, answers to questions, and the questions put to the owner. Identifiers, file names, and quoted English text stay as they are. The owner asked for this after reports came in English and had to be asked for again.
+Reports and replies to the owner in chat are in Japanese: the end-of-turn report, answers to questions, and the questions put to the owner. Identifiers, file names, and quoted English text stay as they are. The owner asked for this after reports came in English and had to be asked for again. This holds after every report from a subagent, which comes in English: the report to the owner is rewritten in Japanese, never relayed in English. On 2026-11-27 reports came in English again, several times after the context had been summarised, and the owner had to ask once more (「何回同じこと言わせるの？」).
 
 ## English
 
