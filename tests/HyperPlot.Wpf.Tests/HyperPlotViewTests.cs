@@ -1081,10 +1081,17 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     ///   capture (read in dotnet/wpf's main, 2026-11-22: <c>HwndMouseInputProvider.ReportInput</c>), and a capture taken
     ///   with no button down does not take the machine's mouse from other windows (the comment on <c>WM_CAPTURECHANGED</c> in
     ///   the same file: Windows picks the queue without this capture).
+    /// - The window is topmost, and the window at the view's middle on the screen is the test window. When the mouse
+    ///   starts on a window, WPF finds the element under it with <c>WindowFromPoint</c> at that point on the screen (read in
+    ///   dotnet/wpf's main, 2026-11-27: <c>MouseDevice.GlobalHitTest</c>, from the <c>Synchronize</c> that follows the
+    ///   activation), so another window above the test window there leaves the mouse over nothing (Issue #604). In 40 runs
+    ///   of the WPF tests on the Windows runner of CI, the runner's terminal lay there in 15: the test failed in the 8 of
+    ///   them that ran without topmost and in none of the 7 that ran with it. Topmost, the test window is above every window
+    ///   that is not, and it is still not activated.
     ///
     /// Steps:
-    /// - Take the capture; send <c>WM_MOUSEMOVE</c>; release the capture. Take the view out of the grid; dispose it; pump
-    ///   the dispatcher.
+    /// - Make the window topmost. Take the capture; send <c>WM_MOUSEMOVE</c>; release the capture. Take the view out of the
+    ///   grid; dispose it; pump the dispatcher.
     ///
     /// Expected:
     /// - After the message the mouse is over the view. The pump throws nothing; the view got the mouse's leave after it
@@ -1110,6 +1117,8 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
                 .CompositionTarget.TransformToDevice.Transform(view.TranslatePoint(middle, scene.Window));
             var at = ((uint)(ushort)(short)Math.Round(client.Y) << 16) | (ushort)(short)Math.Round(client.X);
             var hwnd = (HWND)new WindowInteropHelper(scene.Window).Handle;
+            scene.Window.Topmost = true;
+            AssertOnTop(hwnd, client);
             Assert.Equal(HWND.NULL, SetCapture(hwnd));
             try
             {
@@ -1269,6 +1278,30 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
 
         Assert.False(view.Hooked, $"No copy was shown after {Polls} draws.");
         Assert.NotNull(view.Shown);
+    }
+
+    /// <summary>
+    /// Asserts that the window at a point of the window's client area, in physical pixels, is that window on the screen, and
+    /// names the window that is there when it is another.
+    /// </summary>
+    private static unsafe void AssertOnTop(HWND hwnd, Point client)
+    {
+        var at = new POINT { x = (int)Math.Round(client.X), y = (int)Math.Round(client.Y) };
+        Assert.True(ClientToScreen(hwnd, &at));
+        var hit = WindowFromPoint(at);
+        if (hit == hwnd)
+        {
+            return;
+        }
+
+        // A class name is at most 256 characters (WNDCLASS).
+        var name = stackalloc char[256];
+        var length = GetClassNameW(hit, name, 256);
+        uint process;
+        _ = GetWindowThreadProcessId(hit, &process);
+        Assert.Fail(
+            $"The window at {at.x},{at.y} on the screen is 0x{(nint)hit:X} ({new string(name, 0, length)}, process {process}), not the test window."
+        );
     }
 
     private static void Zoom(HyperPlotView view) =>
