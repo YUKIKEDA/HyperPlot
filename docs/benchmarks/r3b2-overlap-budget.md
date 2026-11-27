@@ -589,3 +589,12 @@ HyperPlot.E2E.exe reads cap <データのフォルダ> 2e8 capped
 どちらも `--auto` で `hello.png`（225,719 B）を書いて終了コード 0 だった。2 つの画像は SHA-256 が同じ（`39D2C1FE…5C569FA`）で、ヘッドレスの道の変更で画像は変わらない（`HelloPlot` は point の層を描かないので、ヘッドレスの `Render` は 1 回で終わる）。
 
 +2,560 B は、マップファイルの節の和の +2,084 B（1,394,617 B から 1,396,701 B）を 512 B の境に切り上げた大きさである。`ResidencyCache` を作るたびに `PointPages` の構築子が 10 個の読みの場所（`ReadSlot`）と読みの仕事の `List` を作るようになったので、その型（`ReadSlot` と `PageReader` の配列・`List`・列挙子・比較子）の型の情報が +1,132 B、総称の辞書が +376 B、メタデータが +105 B 増えた。メソッドは `Detach`（+168 B）、構築子（+87 B）、`Sent`（+75 B）などが増え、構築子が `ResidentPoint` の配列を作らなくなった（ステージングは最初の求めで作る）ので、`ResidentPoint` の配列と箱の型と `ToString`・`PrintMembers`・`Equals`（−376 B）が抜けた。メソッドの機械語の合計は −5 B である。
+
+3 本目（Issue #624）:
+
+| | 実行ファイル | 警告 |
+| --- | --- | --- |
+| `origin/main`（`84da090`） | 1,985,024 B | 0 |
+| この PR（`a4ac0f2`） | 1,985,024 B | 0 |
+
+どちらも `--auto` で `hello.png`（225,719 B）を書いて終了コード 0 だった。2 つの画像は SHA-256 が同じ（`39D2C1FE…5C569FA`）である。この PR は `PredictedTime` の定数を変えただけで、`HelloPlot` は point の層を描かないので、実行ファイルの大きさも画像も変わらない。
