@@ -77,6 +77,9 @@ internal sealed partial class PlotPlan : IDisposable
     private bool _pendingExtract;
     private bool _pendingRecord;
 
+    // The frame of the residency cache whose scan before the recording ran (design §5.5.2 "記録の前の走査").
+    private long _scannedFrame = -1;
+
     // A render that waits recorded pages not on the GPU yet: the next one records again (design §5.5.2 "ヘッドレス").
     private bool _recordAgain;
     private PanelDomains[] _views = [];
@@ -111,10 +114,20 @@ internal sealed partial class PlotPlan : IDisposable
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlotPlan"/> class for a plot of a figure (row G6c): the target's size, a
-    /// store of pyramids the figure's plots share, and the figure's residency cache, whose frame the figure starts. The plot
+    /// store of pyramids the figure's plots share, the figure's residency cache, whose frame the figure starts, and the
+    /// figure's budget of the point layers (design §5.5.2 "予算"), which the figure chooses before any plot records. The plot
     /// is laid out in the rectangle <see cref="Place"/> gives.
     /// </summary>
-    internal PlotPlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale, ResidencyCache? images, PyramidStore? store)
+    internal PlotPlan(
+        PlotWorkerPool pool,
+        int width,
+        int height,
+        TextEngine text,
+        float scale,
+        ResidencyCache? images,
+        PyramidStore? store,
+        PointBudget? budget = null
+    )
     {
         (_store, _ownStore, _inFigure) = (store ?? new PyramidStore(), store is null, store is not null);
         _pool = pool;
@@ -122,7 +135,11 @@ internal sealed partial class PlotPlan : IDisposable
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
         _text = text;
-        _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
+        _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame())
+        {
+            Images = images ?? new ResidencyCache(),
+            Budget = budget ?? new PointBudget(),
+        };
         _ownImages = images is null;
         GatherBatches();
 
@@ -158,6 +175,19 @@ internal sealed partial class PlotPlan : IDisposable
     /// <see cref="TimeProvider.System"/>: the stage the measurements of design §9 time on raw-point frames. Benchmarks only.
     /// </summary>
     internal long ScanTicks { get; private set; }
+
+    /// <summary>
+    /// Gets or sets the plot's number in its figure, 0 for a plot alone: the budget of the point layers breaks a tie by it
+    /// (design §5.5.2 "替える順").
+    /// </summary>
+    internal int Ordinal
+    {
+        get => _context.Plot;
+        set => _context.Plot = value;
+    }
+
+    /// <summary>Gets the budget of the point layers the plan's recordings choose by (design §5.5.2 "予算"). Tests only.</summary>
+    internal PointBudget Budget => _context.Budget;
 
     /// <summary>
     /// Gets the time the last Render's M4 extraction of every series took, in ticks of <see cref="TimeProvider.System"/>, or
@@ -2660,7 +2690,47 @@ internal sealed partial class PlotPlan : IDisposable
         _annotationHits.Clear();
 
         // The layers' scan before any records (design §5.5.2 "`Auto` の切り替え"): a point layer's drawing reads all its
-        // parts, those of the panels after this one too. Timed for the measurements of design §9.
+        // parts, those of the panels after this one too. A plot alone then chooses the drawings by the budget; a figure has
+        // scanned every plot and chosen before any records (design §5.5.2 "予算").
+        Scan(spec, flipped);
+        if (!_inFigure)
+        {
+            _context.Budget.Decide(_context.Images);
+        }
+
+        for (var p = 0; p < _panels.Length; p++)
+        {
+            RecordPanel(spec, p, _panels[p], _guides.PanelAt(p), flipped);
+        }
+
+        _guides.RecordOver(_list, spec);
+    }
+
+    /// <summary>
+    /// The scan of a figure's plot before any plot records (design §5.5.2 "予算"): the plot that records this frame scans its
+    /// layers, so that the figure's budget reads every plot's point layers.
+    /// </summary>
+    internal void ScanPending()
+    {
+        if (_pendingRecord && _whole is null)
+        {
+            Scan(_pendingSpec!, _pendingFlipped);
+        }
+    }
+
+    /// <summary>
+    /// Scans every panel's drawn layers before any records, once a frame of the residency cache (design §5.5.2 "記録の前の
+    /// 走査"). Timed for the measurements of design §9.
+    /// </summary>
+    private void Scan(PlotSpec spec, bool flipped)
+    {
+        var frame = _context.Images.Frame;
+        if (_scannedFrame == frame)
+        {
+            return;
+        }
+
+        _scannedFrame = frame;
         var scanned = TimeProvider.System.GetTimestamp();
         for (var p = 0; p < _panels.Length; p++)
         {
@@ -2668,12 +2738,6 @@ internal sealed partial class PlotPlan : IDisposable
         }
 
         ScanTicks = TimeProvider.System.GetTimestamp() - scanned;
-        for (var p = 0; p < _panels.Length; p++)
-        {
-            RecordPanel(spec, p, _panels[p], _guides.PanelAt(p), flipped);
-        }
-
-        _guides.RecordOver(_list, spec);
     }
 
     /// <summary>Returns the x scale's reverse, its clamp, and its band axis, if any.</summary>

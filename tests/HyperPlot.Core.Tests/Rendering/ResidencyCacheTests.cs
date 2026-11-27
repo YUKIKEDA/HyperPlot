@@ -240,6 +240,70 @@ public sealed class ResidencyCacheTests : IDisposable
     }
 
     /// <summary>
+    /// Pages of points, density tiles, and raster tiles share one least-recently-used order (design §5.5.2 "1 つの LRU"): a
+    /// page lets go of the tiles used longest ago, and a tile of the page used longest ago, of whatever kind, never one used
+    /// in this frame.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A residency cache of a budget of 64 faces (17,040,384 bytes, a texture array's) and no frame budget; a mipmap of a
+    ///   raster 300 × 300; a full snapshot of 140,000 points and a tile of 1-byte bins.
+    ///
+    /// Steps:
+    /// - Frame 1: request raster tile R. Frame 2: request density tiles D0 to D61. Frame 3: read page 0 (786,432 bytes, about
+    ///   2.95 faces) and stage it.
+    /// - Frame 4: request D1 to D61, then raster tile R2, then page 1.
+    ///
+    /// Expected:
+    /// - Frame 3: the page let go of R (frame 1) and then D0 (the first of frame 2), not a tile of a later frame: 61 slots
+    ///   in use, R not found, the page on the GPU, and the bytes in use within the budget.
+    /// - Frame 4: D1 to D61 find their slots; R2 lets go of page 0 (frame 3), the oldest before this frame; page 1 is −1, as
+    ///   every tile and page is this frame's, and no read is asked for it.
+    /// </remarks>
+    [Fact]
+    public void PagesAndTiles_ShareOneLeastRecentlyUsedOrder()
+    {
+        const long Budget = 64L * ResidencyCache.FaceBytes;
+        using var column = Column.Wrap(new float[300 * 300]);
+        using var mipmap = Raster.Of(column, 300).MakePyramid();
+        mipmap.Update(_pool, wait: true);
+        var (xs, ys) = SpatialData.Uniform(140_000, seed: 48);
+        using var built = SpatialBuilt.Of(xs, ys);
+        var bins = Bins(Counts(1), 1);
+        var cache = new ResidencyCache(Budget) { Unbounded = true };
+
+        cache.BeginFrame();
+        Assert.True(cache.Request(Key(mipmap, 1), mipmap) >= 0);
+        cache.Sent();
+        cache.BeginFrame();
+        for (var code = 0; code < 62; code++)
+        {
+            Assert.True(cache.RequestDensity(built.Snapshot, 2, (ulong)code, new DensityTile(bins, 1, 0)) >= 0);
+        }
+
+        cache.Sent();
+        Assert.Equal(63, cache.SlotsInUse);
+        cache.BeginFrame();
+        _ = cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints);
+        Assert.Equal((61, 1), (cache.SlotsInUse, cache.Points.PagesInUse));
+        Assert.Equal(-1, cache.Find(Key(mipmap, 1)));
+        Assert.InRange(cache.BytesInUse, 0, Budget);
+
+        cache.BeginFrame();
+        for (var code = 1; code < 62; code++)
+        {
+            Assert.True(cache.RequestDensity(built.Snapshot, 2, (ulong)code, new DensityTile(bins, 1, 0)) >= 0);
+        }
+
+        Assert.Equal(0, cache.Uploads.Length);
+        Assert.True(cache.Request(Key(mipmap, 2), mipmap) >= 0);
+        Assert.Equal((62, 0), (cache.SlotsInUse, cache.Points.PagesInUse));
+        Assert.Equal(-1, cache.Points.Request(built.Snapshot, 1, PointPages.MaxBlockPoints));
+        Assert.True(cache.FullThisFrame);
+        Assert.Equal(0, cache.Points.ReadsInUse);
+    }
+
+    /// <summary>
     /// ForgetDensity lets go of the density tiles and the coarse density of one snapshot only, and the slots it frees are
     /// taken again; a reset after a device loss forgets every face, and the next request stages the same face again.
     /// </summary>

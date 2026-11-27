@@ -7,26 +7,60 @@ namespace HyperPlot;
 /// <summary>
 /// The drawing of one point layer on the index path (design §5.5.2 "`Auto` の切り替え"): raw points or density, chosen once
 /// a frame for all its parts, those of every facet panel included, from what each part's scan before the recording found
-/// (<see cref="IndexedPointPlan.Scan"/>): the upper counts of the points in the view, summed, and the largest bin, the
-/// greatest of the parts'.
+/// (<see cref="IndexedPointPlan.Scan"/>): the upper counts of the points in the view, summed, the largest bin, the greatest
+/// of the parts', and the bytes the parts need as raw points, summed, which <see cref="PointBudget"/> sets against the
+/// budget with every other layer's.
 /// </summary>
 /// <remarks>One thread at a time: the frame's. After the parts' list has grown, a frame allocates nothing.</remarks>
-internal sealed class DensitySwitch
+/// <param name="layer">The layer's number in the spec of the plans' making: a tie of the budget is broken by it.</param>
+internal sealed class DensitySwitch(int layer)
 {
     /// <summary>
     /// The share of each threshold under which a layer drawn as a density goes back to raw points (design §5.5.2
-    /// "入れ替わりを抑える"): of <see cref="PointLayerSpec.DensityThreshold"/>, and of <see cref="PredictedTime.Threshold"/>.
+    /// "入れ替わりを抑える"): of <see cref="PointLayerSpec.DensityThreshold"/>, of <see cref="PredictedTime.Threshold"/>, and
+    /// of the budget.
     /// </summary>
     internal const double Back = 0.8;
 
     private readonly List<IndexedPointPlan> _parts = [];
     private long _frame = -1;
+    private long _entered = -1;
     private PointDraw _draw;
     private long _threshold = -1;
     private bool _density;
+    private PointLayerSpec? _point;
+    private float _scale;
+
+    /// <summary>How a layer takes part in the budget's sum of a frame (design §5.5.2 "予算").</summary>
+    internal enum Share
+    {
+        /// <summary>The layer draws no page: a density, or no full snapshot scanned.</summary>
+        None,
+
+        /// <summary>A <see cref="PointDraw.Points"/> layer: its bytes are in the sum, and the budget does not change it.</summary>
+        Counted,
+
+        /// <summary>An <see cref="PointDraw.Auto"/> layer that stays raw points by the time and the count: in the sum, and made a density when the sum is over the budget.</summary>
+        Raw,
+
+        /// <summary>An <see cref="PointDraw.Auto"/> layer drawn as a density that the time and the count let go back: it goes back only when the budget leaves room.</summary>
+        Returning,
+    }
+
+    /// <summary>Gets the layer's number in the spec of the plans' making.</summary>
+    public int Layer => layer;
+
+    /// <summary>Gets the number of the layer's plot in its figure, 0 for a plot alone, as the frame's scan entered it.</summary>
+    public int Plot { get; private set; }
 
     /// <summary>Gets a value indicating whether the layer draws a density this frame. Valid after <see cref="Choose"/>.</summary>
     public bool Density => _density;
+
+    /// <summary>
+    /// Gets the bytes the layer needs as raw points this frame (design §5.5.2 "予算"): the parts' that scanned a full
+    /// snapshot, summed, whatever the layer draws; 0 for a <see cref="PointDraw.Density"/> layer, whose scan walks no cell.
+    /// </summary>
+    public long Needed { get; private set; }
 
     /// <summary>Gets the upper count of the points in the view the last choice read, summed over the parts. Tests only.</summary>
     internal long LastCount { get; private set; }
@@ -44,66 +78,51 @@ internal sealed class DensitySwitch
     public void Add(IndexedPointPlan part) => _parts.Add(part);
 
     /// <summary>
-    /// Chooses the drawing of the layer for a frame, once a frame (design §5.5.2 "`Auto` の切り替え", "入れ替わりを抑える"):
-    /// for <see cref="PointDraw.Auto"/>, the drawing <see cref="Next"/> gives from the last one, the summed upper count, and
-    /// the predicted times of the parts the frame scanned on a full snapshot; <see cref="PointDraw.Points"/> and
-    /// <see cref="PointDraw.Density"/> read nothing. A frame in which no part scanned a full snapshot predicts no time and
-    /// keeps the last drawing: raw points for a layer with no decision yet.
+    /// Enters the layer into its frame's budget (<see cref="RecordContext.Budget"/>), once a frame, when a part is scanned:
+    /// with the spec and the scale its drawing is chosen by, and its plot's number.
+    /// </summary>
+    public void Enter(RecordContext context, PointLayerSpec point)
+    {
+        var frame = context.Images.Frame;
+        if (_entered == frame)
+        {
+            return;
+        }
+
+        (_entered, _point, _scale, Plot) = (frame, point, context.Scale, context.Plot);
+        context.Budget.Enter(this, frame);
+    }
+
+    /// <summary>
+    /// Returns the drawing of the layer for a frame (design §5.5.2 "`Auto` の切り替え", "予算"): the one the frame's budget
+    /// chose for every layer before any recorded, or, for a frame whose budget did not choose, the one the time and the
+    /// count give alone.
     /// </summary>
     /// <returns>Whether the layer draws a density this frame.</returns>
     public bool Choose(RecordContext context, PointLayerSpec point)
     {
         var frame = context.Images.Frame;
-        if (frame == _frame)
+        if (frame != _frame)
         {
-            return _density;
+            _ = Gather(frame, point, context.Scale);
         }
 
-        _frame = frame;
-
-        // A new drawing or threshold forgets the last frame's choice: the layer is counted again from raw points.
-        if (point.Draw != _draw || point.DensityThreshold != _threshold)
-        {
-            (_draw, _threshold, _density) = (point.Draw, point.DensityThreshold, false);
-        }
-
-        if (point.Draw != PointDraw.Auto)
-        {
-            _density = point.Draw == PointDraw.Density;
-            return _density;
-        }
-
-        var (count, largest, full) = (0L, 0.0, false);
-        foreach (var part in CollectionsMarshal.AsSpan(_parts))
-        {
-            if (part.ScannedFull(frame))
-            {
-                (count, largest, full) = (count + part.ScannedCount, Math.Max(largest, part.ScannedLargestBin), true);
-            }
-        }
-
-        // A frame in which no part scanned a full snapshot reads no condition and keeps the drawing: a layer with no
-        // decision yet stays on raw points, and one that drew a density stays one (design §5.5.2 "入れ替わりを抑える").
-        if (!full)
-        {
-            (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins) = (0, 0, 0, 0);
-            return _density;
-        }
-
-        // The markers' diameter in physical pixels, as the recording scales it.
-        var diameter = point.Size * context.Scale;
-        var (time, timeAtFour) = (PredictedTime.Of(count, diameter, largest), PredictedTime.Of(count, diameter, PredictedTime.LevelJump * largest));
-        (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins) = (count, largest, time, timeAtFour);
-        _density = Next(_density, count, point.DensityThreshold, time, timeAtFour);
         return _density;
     }
 
+    /// <summary>Chooses the drawing for the frame the layer was entered in, by the time and the count, from the spec and the scale entered with it.</summary>
+    internal Share Gather(long frame) => Gather(frame, _point!, _scale);
+
+    /// <summary>Makes the layer a density this frame: the budget's sum is over the budget, or leaves no room to go back.</summary>
+    internal void Hold() => _density = true;
+
     /// <summary>
-    /// Returns the drawing of an <see cref="PointDraw.Auto"/> layer after a frame (design §5.5.2 "`Auto` の切り替え",
-    /// "入れ替わりを抑える", "水準が替わるところ"): from raw points, a density when the upper count passes the threshold or the
-    /// predicted time reaches <see cref="PredictedTime.Threshold"/>; from a density, raw points only when the count is under
-    /// 0.8 times the threshold, the time under 0.8 times its threshold, and the time with four times the largest bin under
-    /// its threshold. A layer with no decision yet comes from raw points.
+    /// Returns the drawing of an <see cref="PointDraw.Auto"/> layer after a frame by the time and the count (design §5.5.2
+    /// "`Auto` の切り替え", "入れ替わりを抑える", "水準が替わるところ"): from raw points, a density when the upper count passes
+    /// the threshold or the predicted time reaches <see cref="PredictedTime.Threshold"/>; from a density, raw points only
+    /// when the count is under 0.8 times the threshold, the time under 0.8 times its threshold, and the time with four times
+    /// the largest bin under its threshold. A layer with no decision yet comes from raw points. The budget's condition comes
+    /// after (<see cref="PointBudget"/>).
     /// </summary>
     /// <param name="density">Whether the layer drew a density in the last frame.</param>
     /// <param name="count">The upper count of the points in the view, summed over the parts.</param>
@@ -114,6 +133,167 @@ internal sealed class DensitySwitch
         density
             ? !(count < threshold * Back && time < PredictedTime.Threshold * Back && timeAtFourBins < PredictedTime.Threshold)
             : count > threshold || time >= PredictedTime.Threshold;
+
+    /// <summary>
+    /// Chooses the drawing of the layer for a frame by the time and the count, once a frame (design §5.5.2 "`Auto` の切り替え",
+    /// "入れ替わりを抑える"): for <see cref="PointDraw.Auto"/>, the drawing <see cref="Next"/> gives from the last one, the
+    /// summed upper count, and the predicted times of the parts the frame scanned on a full snapshot;
+    /// <see cref="PointDraw.Points"/> and <see cref="PointDraw.Density"/> read nothing. A frame in which no part scanned a
+    /// full snapshot predicts no time and keeps the last drawing: raw points for a layer with no decision yet. Returns how
+    /// the layer takes part in the budget, which may still make it a density.
+    /// </summary>
+    private Share Gather(long frame, PointLayerSpec point, float scale)
+    {
+        _frame = frame;
+        Needed = 0;
+
+        // A new drawing or threshold forgets the last frame's choice: the layer is counted again from raw points.
+        if (point.Draw != _draw || point.DensityThreshold != _threshold)
+        {
+            (_draw, _threshold, _density) = (point.Draw, point.DensityThreshold, false);
+        }
+
+        var (count, largest, needed, full) = (0L, 0.0, 0L, false);
+        foreach (var part in CollectionsMarshal.AsSpan(_parts))
+        {
+            if (part.ScannedFull(frame))
+            {
+                (count, largest, needed, full) = (
+                    count + part.ScannedCount,
+                    Math.Max(largest, part.ScannedLargestBin),
+                    needed + part.NeededBytes,
+                    true
+                );
+            }
+        }
+
+        if (point.Draw != PointDraw.Auto)
+        {
+            (_density, Needed) = (point.Draw == PointDraw.Density, needed);
+            return _density || !full ? Share.None : Share.Counted;
+        }
+
+        // A frame in which no part scanned a full snapshot reads no condition and keeps the drawing: a layer with no
+        // decision yet stays on raw points, and one that drew a density stays one (design §5.5.2 "入れ替わりを抑える").
+        if (!full)
+        {
+            (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins) = (0, 0, 0, 0);
+            return Share.None;
+        }
+
+        // The markers' diameter in physical pixels, as the recording scales it.
+        var diameter = point.Size * scale;
+        var (time, timeAtFour) = (PredictedTime.Of(count, diameter, largest), PredictedTime.Of(count, diameter, PredictedTime.LevelJump * largest));
+        (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins, Needed) = (count, largest, time, timeAtFour, needed);
+        var last = _density;
+        _density = Next(last, count, point.DensityThreshold, time, timeAtFour);
+        return _density ? Share.None
+            : last ? Share.Returning
+            : Share.Raw;
+    }
+}
+
+/// <summary>
+/// The budget's condition over the point layers that draw with one residency cache in a frame (design §5.5.2 "予算", "替える
+/// 順", "入れ替わりを抑える"), chosen once before any layer records: the sum of the bytes of the density and raster tiles the
+/// last frame used and the bytes every layer that draws raw points needs, those of a figure's other plots too, against the
+/// cache's budget. Over it, the <see cref="PointDraw.Auto"/> layers on raw points become densities, the one that needs the
+/// most bytes first, until the sum is within it; a density that the time and the count let go back goes back, the one that
+/// needs the fewest bytes first, only while the sum with its bytes stays under 0.8 times the budget. One a plot alone, one a
+/// figure.
+/// </summary>
+/// <remarks>One thread at a time: the frame's. After its lists have grown, a frame allocates nothing.</remarks>
+internal sealed class PointBudget
+{
+    private readonly List<DensitySwitch> _entered = [];
+    private readonly List<DensitySwitch> _raw = [];
+    private readonly List<DensitySwitch> _returning = [];
+    private long _frame = -1;
+
+    /// <summary>Gets the sum of the bytes the last choice left against the budget. Tests only.</summary>
+    internal long LastSum { get; private set; }
+
+    /// <summary>Enters a layer scanned in a frame; the layers of an earlier frame are let go of.</summary>
+    public void Enter(DensitySwitch layer, long frame)
+    {
+        if (frame != _frame)
+        {
+            _entered.Clear();
+            _frame = frame;
+        }
+
+        _entered.Add(layer);
+    }
+
+    /// <summary>
+    /// Chooses the drawing of every layer entered in the cache's current frame, before any of them records: by the time and
+    /// the count each (<see cref="DensitySwitch"/>), then by the budget over all of them. A frame with no layer entered
+    /// chooses nothing.
+    /// </summary>
+    public void Decide(ResidencyCache cache)
+    {
+        var frame = cache.Frame;
+        if (frame != _frame)
+        {
+            return;
+        }
+
+        _raw.Clear();
+        _returning.Clear();
+        var sum = cache.TileBytesLastFrame;
+        foreach (var layer in CollectionsMarshal.AsSpan(_entered))
+        {
+            switch (layer.Gather(frame))
+            {
+                case DensitySwitch.Share.Counted:
+                    sum += layer.Needed;
+                    break;
+                case DensitySwitch.Share.Raw:
+                    sum += layer.Needed;
+                    _raw.Add(layer);
+                    break;
+                case DensitySwitch.Share.Returning:
+                    _returning.Add(layer);
+                    break;
+            }
+        }
+
+        // Over the budget: the Auto layers on raw points become densities, the most bytes first, ties by the plot's and the
+        // layer's numbers, until the sum is within it.
+        if (sum > cache.Budget)
+        {
+            var raw = CollectionsMarshal.AsSpan(_raw);
+            raw.Sort(static (a, b) => a.Needed != b.Needed ? b.Needed.CompareTo(a.Needed) : First(a, b));
+            foreach (var layer in raw)
+            {
+                sum -= layer.Needed;
+                layer.Hold();
+                if (sum <= cache.Budget)
+                {
+                    break;
+                }
+            }
+        }
+
+        // A density goes back, the fewest bytes first, while the sum with its bytes stays under 0.8 times the budget.
+        var returning = CollectionsMarshal.AsSpan(_returning);
+        returning.Sort(static (a, b) => a.Needed != b.Needed ? a.Needed.CompareTo(b.Needed) : First(a, b));
+        foreach (var layer in returning)
+        {
+            if (sum + layer.Needed < cache.Budget * DensitySwitch.Back)
+            {
+                sum += layer.Needed;
+            }
+            else
+            {
+                layer.Hold();
+            }
+        }
+
+        LastSum = sum;
+
+        static int First(DensitySwitch a, DensitySwitch b) => a.Plot != b.Plot ? a.Plot.CompareTo(b.Plot) : a.Layer.CompareTo(b.Layer);
+    }
 }
 
 /// <summary>

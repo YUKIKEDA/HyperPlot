@@ -33,7 +33,7 @@ internal sealed class NullBackend : IGpuBackend
 
     public TextEngine Text { get; } = new(new FakeTextBackend { RecordShapes = false });
 
-    public ResidencyCache Images { get; } = new();
+    public ResidencyCache Images { get; init; } = new();
 
     /// <summary>Gets the frames begun.</summary>
     public int Frames { get; private set; }

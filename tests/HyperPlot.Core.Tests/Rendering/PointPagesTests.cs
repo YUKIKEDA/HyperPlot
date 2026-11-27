@@ -795,8 +795,7 @@ public sealed class PointPagesTests
     /// <remarks>
     /// Preconditions:
     /// - A point layer of 23 pages of seeded rows over [0, 100]², drawn as points, by a headless renderer that waits, on
-    ///   the null backend. The backend's cache holds density tiles of 15 pages of faces, which a page of points does not let
-    ///   go of: the budget has room for 16 pages of points.
+    ///   the null backend, whose cache has a budget of 16 pages.
     ///
     /// Steps:
     /// - Render on another thread, for 30 s at most.
@@ -810,27 +809,11 @@ public sealed class PointPagesTests
     {
         const int Pages = 23;
         const int Count = Pages * PointPages.PagePoints;
-        const int Faces = 15 * ResidencyCache.PageSlots;
         var (xs, ys) = Values(Count, seed: 121);
         using var x = Column.Wrap(xs);
         using var y = Column.Wrap(ys);
-        var (otherX, otherY) = SpatialData.Uniform(2_000, seed: 123);
-        using var other = SpatialBuilt.Of(otherX, otherY);
-        var bins = new byte[DensityTiles.BinCount];
-        var backend = new NullBackend();
+        var backend = new NullBackend { Images = new ResidencyCache(16L * PointPages.PagePoints * PointPages.PointBytes) };
         var cache = backend.Images;
-        for (var face = 0; face < Faces; face++)
-        {
-            if (face % 15 == 0)
-            {
-                cache.Sent();
-                cache.BeginFrame();
-            }
-
-            Assert.True(cache.RequestDensity(other.Snapshot, 2, (ulong)face, new DensityTile(bins, 1, 0)) >= 0);
-        }
-
-        cache.Sent();
         var table = DataTable.Create().Add("x", x).Add("y", y).Build();
         var spec = Plot.Create(table)
             .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
@@ -861,7 +844,7 @@ public sealed class PointPagesTests
         Assert.True(render.Join(Watchdog), "The headless render over the budget did not return in 30 s.");
         Assert.Null(error);
         Assert.Equal(16, pages);
-        Assert.InRange(bytes, 0, ResidencyCache.DefaultBudget);
+        Assert.InRange(bytes, 0, cache.Budget);
         var runs = backend.LastList!.ResidentRuns.ToArray();
         Assert.Equal(Pages, runs.Length);
         Assert.Equal(16, runs.Count(run => run.Slot >= 0));
@@ -1053,6 +1036,64 @@ public sealed class PointPagesTests
         Assert.InRange(resident, 31, int.MaxValue);
         Assert.Contains((5L * PointPages.PagePoints * PointPages.PointBytes, resident), draws);
         Assert.All(draws, d => Assert.InRange(d.Bytes, 0, ResidencyCache.FrameUpload));
+    }
+
+    /// <summary>
+    /// A frame in which nothing can be let go of for a page sends no page more, and its requests for pages not on the GPU
+    /// return −1 without searching the reads or the slots, however many pages the view has (design §5.5.2 "予算が満ちたフレー
+    /// ム"); the next frame searches again.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A residency cache of a budget of 2 pages; the built index of 800,000 uniform points (13 pages); pages 0 and 1 on the
+    ///   GPU.
+    ///
+    /// Steps:
+    /// - For a view of 4 pages and one of 13: begin a frame, request pages 0 and 1, then the others.
+    /// - Begin a frame, request page 5 first; wait for the reads; request it again.
+    ///
+    /// Expected:
+    /// - Pages 0 and 1 keep their slots; every other request is −1; the frame is full; no request searched (0 for both
+    ///   views) and no read was asked for.
+    /// - In the next frame page 5 searches (1 search) and is asked for; once read, it lets go of page 0 or 1, which this
+    ///   frame has not used, and gets a slot.
+    /// - The count of searches guards the fix: without the check of a full frame, the views of 4 and 13 pages search 2 and
+    ///   11 times.
+    /// </remarks>
+    [Fact]
+    public void FullFrame_ReturnsWithoutSearchingAndSearchesTheNextFrame()
+    {
+        var (xs, ys) = SpatialData.Uniform(800_000, seed: 131);
+        using var built = SpatialBuilt.Of(xs, ys);
+        var snapshot = built.Snapshot;
+        var cache = new ResidencyCache(2L * PointPages.PagePoints * PointPages.PointBytes);
+        cache.BeginFrame();
+        var slots = (cache.Resident(snapshot, 0, PointPages.MaxBlockPoints), cache.Resident(snapshot, 1, PointPages.MaxBlockPoints));
+        foreach (var pages in new[] { 4, 13 })
+        {
+            cache.Sent();
+            cache.BeginFrame();
+            Assert.Equal(
+                slots,
+                (cache.Points.Request(snapshot, 0, PointPages.MaxBlockPoints), cache.Points.Request(snapshot, 1, PointPages.MaxBlockPoints))
+            );
+            for (var page = 2; page < pages; page++)
+            {
+                Assert.Equal(-1, cache.Points.Request(snapshot, page, PointPages.MaxBlockPoints));
+            }
+
+            Assert.True(cache.FullThisFrame);
+            Assert.Equal((0, 0), (cache.Points.SearchesThisFrame, cache.Points.ReadsInUse));
+        }
+
+        cache.Sent();
+        cache.BeginFrame();
+        Assert.Equal(-1, cache.Points.Request(snapshot, 5, PointPages.MaxBlockPoints));
+        Assert.Equal((1, 1), (cache.Points.SearchesThisFrame, cache.Points.ReadsInUse));
+        Assert.False(cache.FullThisFrame);
+        _ = cache.Points.AwaitReads();
+        Assert.True(cache.Points.Request(snapshot, 5, PointPages.MaxBlockPoints) >= 0);
+        Assert.Equal(2, cache.Points.PagesInUse);
     }
 
     // Reads and sends page 0 of an index of its own, forgets the snapshot, and disposes the index: a method of its own, so
