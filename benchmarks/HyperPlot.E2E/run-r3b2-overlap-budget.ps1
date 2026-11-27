@@ -23,6 +23,11 @@
 #   cap     (Issue #603) 2e8 points in clusters with halos (-CapCount; past 131,072 resident cells), deep zooms into a
 #           cluster, with the limit of cells and without it, alternated
 #   The data files of reads, m4, cells, and cap go under .dev/r3b2p4-data and are deleted at the end.
+#   refit   (Issue #624) the 41 scenes of the switch formula's prototype (Issue #552's sweep 8) and 3 it did not measure,
+#           drawn as raw points (Draw = Points), whole view, opacity 0.6; each run then prints what Auto reads over its
+#           views (the largest bin from the tiles and the estimate from the resident cells). Rounds -FirstRound to
+#           -Rounds (1 to 3 by default), the even rounds in the reverse order; -Only keeps the scenes whose names match a
+#           regular expression (.cursor/rules/pace.mdc: one round is read before the rest)
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -33,7 +38,10 @@ param(
     [int] $TimeoutSeconds = 300,
     [string] $Baseline = '',
     [int] $ReadsRuns = 3,
-    [string] $CapCount = '2e8'
+    [string] $CapCount = '2e8',
+    [int] $Rounds = 3,
+    [int] $FirstRound = 1,
+    [string] $Only = '.'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,7 +102,8 @@ function Invoke-Scene([string] $name, [string[]] $arguments, [string] $program =
     $stdout = "$Out.run.txt"
     # One row a frame, next to the output file: the frame's times, its runs and points, and its allocations by stage.
     $frames = "$Out.$($name -replace '[^A-Za-z0-9]+', '-').csv"
-    $process = Start-Process -FilePath $program -ArgumentList (@($scene) + $arguments + $(if ($scene -eq 'points') { @($frames) } else { @() })) -NoNewWindow -PassThru `
+    # The points scene takes the file after its first 11 arguments; a run that passes more names the file itself.
+    $process = Start-Process -FilePath $program -ArgumentList (@($scene) + $arguments + $(if ($scene -eq 'points' -and $arguments.Count -le 11) { @($frames) } else { @() })) -NoNewWindow -PassThru `
         -RedirectStandardOutput $stdout -RedirectStandardError "$Out.run.err.txt"
     $code = 'timeout'
     if ($process.WaitForExit($TimeoutSeconds * 1000)) {
@@ -265,6 +274,80 @@ try {
     finally {
         if (Test-Path $data4) {
             Remove-Item -LiteralPath $data4 -Recurse -Force
+        }
+    }
+
+    if ($Sets -contains 'refit') {
+        # name, points, diameter in DIPs, σ of the clump (0: uniform), categories, facet panels, how the rows fall into the
+        # categories. The first 41 are Issue #552's sweep 8, in the order of its table (design §5.5.2 "41 場面"); the last 3
+        # are the ones the prototype did not measure (Issue #624's Scope).
+        $scenes = @(
+            @('d1-uniform', 10000000, 1, 0, 0, 0, 'even'),
+            @('d1-s10-p6', 10000000, 1, 10, 6, 0, 'even'),
+            @('d1-s10', 10000000, 1, 10, 0, 0, 'even'),
+            @('d6-n5e6-s8.49', 5000000, 6, 8.49, 0, 0, 'even'),
+            @('d10-n5e6', 5000000, 10, 0, 0, 0, 'even'),
+            @('d6-uniform-p8', 10000000, 6, 0, 8, 0, 'even'),
+            @('d6-n5e6-s7', 5000000, 6, 7, 0, 0, 'even'),
+            @('d6-n5e6-s6', 5000000, 6, 6, 0, 0, 'even'),
+            @('d6-uniform', 10000000, 6, 0, 0, 0, 'even'),
+            @('d12-n5e6', 5000000, 12, 0, 0, 0, 'even'),
+            @('d6-n5e6-s5', 5000000, 6, 5, 0, 0, 'even'),
+            @('d6-uniform-facet6', 10000000, 6, 0, 0, 6, 'even'),
+            @('d4-s9', 10000000, 4, 9, 0, 0, 'even'),
+            @('d4-s8', 10000000, 4, 8, 0, 0, 'even'),
+            @('d6-s10-p8', 10000000, 6, 10, 8, 0, 'even'),
+            @('d4-s7.5', 10000000, 4, 7.5, 0, 0, 'even'),
+            @('d6-n7.5e6-s10', 7500000, 6, 10, 0, 0, 'even'),
+            @('d4-s7', 10000000, 4, 7, 0, 0, 'even'),
+            @('d6-s10-p6', 10000000, 6, 10, 6, 0, 'even'),
+            @('d4-s6.5', 10000000, 4, 6.5, 0, 0, 'even'),
+            @('d10-n7.5e6', 7500000, 10, 0, 0, 0, 'even'),
+            @('d6-s18', 10000000, 6, 18, 0, 0, 'even'),
+            @('d6-n7.5e6-s8', 7500000, 6, 8, 0, 0, 'even'),
+            @('d8-uniform', 10000000, 8, 0, 0, 0, 'even'),
+            @('d6-s16', 10000000, 6, 16, 0, 0, 'even'),
+            @('d8-s30', 10000000, 8, 30, 0, 0, 'even'),
+            @('d6-s14', 10000000, 6, 14, 0, 0, 'even'),
+            @('d6-s10-p2', 10000000, 6, 10, 2, 0, 'even'),
+            @('d6-s13', 10000000, 6, 13, 0, 0, 'even'),
+            @('d6-s12.5', 10000000, 6, 12.5, 0, 0, 'even'),
+            @('d8-s26', 10000000, 8, 26, 0, 0, 'even'),
+            @('d6-s12', 10000000, 6, 12, 0, 0, 'even'),
+            @('d6-s11', 10000000, 6, 11, 0, 0, 'even'),
+            @('d12-n7.5e6', 7500000, 12, 0, 0, 0, 'even'),
+            @('d6-s10', 10000000, 6, 10, 0, 0, 'even'),
+            @('d8-s22', 10000000, 8, 22, 0, 0, 'even'),
+            @('d10-n1e7', 10000000, 10, 0, 0, 0, 'even'),
+            @('d8-s20', 10000000, 8, 20, 0, 0, 'even'),
+            @('d8-s18', 10000000, 8, 18, 0, 0, 'even'),
+            @('d8-s16', 10000000, 8, 16, 0, 0, 'even'),
+            @('d12-n1e7', 10000000, 12, 0, 0, 0, 'even'),
+            @('d6-s10-p6-uneven', 10000000, 6, 10, 6, 0, 'uneven'),
+            @('d16-n5e6', 5000000, 16, 0, 0, 0, 'even'),
+            @('d12-n2.5e6-s5', 2500000, 12, 5, 0, 0, 'even')
+        )
+        # A list, not a pipeline: one scene left would come out of a pipeline as its own array of fields.
+        $kept = [System.Collections.Generic.List[object]]::new()
+        foreach ($s in $scenes) {
+            if ($s[0] -match $Only) {
+                $kept.Add($s)
+            }
+        }
+
+        $scenes = $kept
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $order = if ($round % 2) { 0..($scenes.Count - 1) } else { ($scenes.Count - 1)..0 }
+            foreach ($i in $order) {
+                $s = $scenes[$i]
+                $distribution = if ($s[3] -eq 0) { 'uniform' } else { 'cluster' }
+                $sigma = if ($s[3] -eq 0) { 10 } else { $s[3] }
+                [string[]] $arguments = @(
+                    "$($s[1])", "$($s[2])", '0.6', $distribution, '600', "$($s[4])", 'whole', 'color', 'Circle', 'blocks', 'draw',
+                    "$Out.refit-$($s[0] -replace '[^A-Za-z0-9]+', '-')-r$round.csv", 'none', "$sigma", "$($s[5])", 'points', $s[6]
+                )
+                Invoke-Scene "refit $($s[0]), round $round" $arguments
+            }
         }
     }
 
