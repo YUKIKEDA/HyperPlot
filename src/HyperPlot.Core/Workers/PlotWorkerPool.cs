@@ -610,6 +610,29 @@ public sealed class PlotWorkerPool : IDisposable
         }
     }
 
+    /// <summary>
+    /// Registers a work the pool's workers take turns of (design §8.1): false, and nothing registered, once the pool's
+    /// disposal has begun. A registration makes the array of works again, so it is made once a work, never a frame.
+    /// </summary>
+    internal bool Register(PoolWork work)
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+
+            _works = [.. _works, work];
+        }
+
+        Wake();
+        return true;
+    }
+
+    /// <summary>Gets the number of works registered. Tests only.</summary>
+    internal int WorkCount => Volatile.Read(ref _works).Length;
+
     internal void Unregister(PoolWork work)
     {
         lock (_gate)

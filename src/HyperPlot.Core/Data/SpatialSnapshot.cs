@@ -27,6 +27,12 @@ internal abstract unsafe class SpatialSnapshot
     /// </summary>
     internal const int CellCapacity = 32_768;
 
+    /// <summary>
+    /// The most resident cells of a layer, over all its parts (design §5.5.2 "セルの表", row R3b2): a layer's table of cells
+    /// is at most 131,072 × 24 B = 3,145,728 B a frame. An index of one part takes all of it.
+    /// </summary>
+    internal const int MaxResidentCells = 131_072;
+
     /// <summary>The units a resident cell's extent is cut into on each axis: a resident point's position is one of them.</summary>
     internal const double CellUnits = 4294967296.0;
 
@@ -39,6 +45,10 @@ internal abstract unsafe class SpatialSnapshot
     // A walk pops one cell and pushes its four children, so the stack grows by three a level: 1 + 3 × 32 cells.
     private const int StackLength = 1 + (3 * DeepestLevel);
     private const int CoarseStackLength = 1 + (3 * CoarseLevel);
+
+    // The calls of ReadBlock on each thread: the tests count the frame's thread's (design §10 R3b2 row "読み出し").
+    [ThreadStatic]
+    private static int _readsOnThread;
 
     private readonly SpatialIndex _owner;
     private readonly SpatialAxis _xAxis;
@@ -116,7 +126,7 @@ internal abstract unsafe class SpatialSnapshot
         _rows = builder.TakeTable(out _rowCount);
         try
         {
-            _cells = MakeResidentCells();
+            _cells = MakeResidentCells(owner.Input.CellLimit ?? MaxResidentCells);
         }
         catch
         {
@@ -171,6 +181,12 @@ internal abstract unsafe class SpatialSnapshot
     /// <see cref="SpatialStage.Full"/> has none.
     /// </summary>
     public ReadOnlySpan<ResidentCell> ResidentCells => _cells;
+
+    /// <summary>Gets the number of times this thread called <see cref="ReadBlock"/>. Tests only: the frame's thread reads no copy (row R3b2).</summary>
+    internal static int ReadsOnThisThread => _readsOnThread;
+
+    /// <summary>Gets the index that made the snapshot: its pool reads the snapshot's pages (design §5.5.2 "プール").</summary>
+    internal SpatialIndex Index => _owner;
 
     /// <summary>Gets a value indicating whether the index found the range of x itself: no point of the copy lies outside it (design §3.4 "範囲で切る").</summary>
     internal bool FoundXRange => _clipsX;
@@ -381,6 +397,7 @@ internal abstract unsafe class SpatialSnapshot
     /// <exception cref="ArgumentOutOfRangeException">The points to read are not all among the <see cref="PointCount"/> points.</exception>
     public void ReadBlock(long first, Span<ResidentPoint> points)
     {
+        _readsOnThread++;
         if (Stage != SpatialStage.Full)
         {
             ThrowHelper.ThrowSpatialSnapshotNotFull();
@@ -854,8 +871,10 @@ internal abstract unsafe class SpatialSnapshot
     }
 
     // Walks the table from the root and stops at each cell with at most CellCapacity points, or at a leaf with more: the
-    // cells come in the order of their codes, as GetCells gives them.
-    private ResidentCell[] MakeResidentCells()
+    // cells come in the order of their codes, as GetCells gives them. More cells than the limit stop at an upper level
+    // (design §5.5.2 "セルの表"): the deepest level at which the cells, every deeper one taken at its ancestor of that
+    // level, are no more than the limit. The root alone is one cell, so a limit below 1 still gives it.
+    private ResidentCell[] MakeResidentCells(int limit)
     {
         var rows = Rows;
         if (rows.IsEmpty)
@@ -863,6 +882,7 @@ internal abstract unsafe class SpatialSnapshot
             return [];
         }
 
+        var cut = CutLevel(rows, limit);
         var cells = new List<ResidentCell>();
         Span<int> stack = stackalloc int[StackLength];
         var top = 0;
@@ -875,7 +895,7 @@ internal abstract unsafe class SpatialSnapshot
                 continue;
             }
 
-            if (row.Count > CellCapacity && row.FirstChild >= 0)
+            if (row.Count > CellCapacity && row.FirstChild >= 0 && row.Level < cut)
             {
                 for (var child = 3; child >= 0; child--)
                 {
@@ -899,6 +919,60 @@ internal abstract unsafe class SpatialSnapshot
         }
 
         return [.. cells];
+    }
+
+    // The level the resident cells stop at, at the deepest: 32 when the cells are within the limit. With the cells taken at
+    // their ancestors of a level L, they are the cells that end at L or above and the rows of L that would split, a number
+    // that does not fall as L grows: a row that splits has a child with points.
+    private static int CutLevel(ReadOnlySpan<SpatialRow> rows, int limit)
+    {
+        Span<long> ends = stackalloc long[DeepestLevel + 1];
+        Span<long> splits = stackalloc long[DeepestLevel + 1];
+        Span<int> stack = stackalloc int[StackLength];
+        var top = 0;
+        stack[top++] = 0;
+        long total = 0;
+        while (top > 0)
+        {
+            ref readonly var row = ref rows[stack[--top]];
+            if (row.Count == 0)
+            {
+                continue;
+            }
+
+            if (row.Count > CellCapacity && row.FirstChild >= 0)
+            {
+                splits[row.Level]++;
+                for (var child = 3; child >= 0; child--)
+                {
+                    stack[top++] = row.FirstChild + child;
+                }
+
+                continue;
+            }
+
+            ends[row.Level]++;
+            total++;
+        }
+
+        if (total <= limit)
+        {
+            return DeepestLevel;
+        }
+
+        var (cut, above) = (0, 0L);
+        for (var level = 0; level <= DeepestLevel; level++)
+        {
+            above += ends[level];
+            if (above + splits[level] > limit)
+            {
+                break;
+            }
+
+            cut = level;
+        }
+
+        return cut;
     }
 
     private SpatialCount CountRows(in GridRect grid, int maxLevel)

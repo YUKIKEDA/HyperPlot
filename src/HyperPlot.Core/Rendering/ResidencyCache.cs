@@ -18,7 +18,7 @@ public sealed class ResidencyCache
     /// <summary>The bytes of GPU memory the tiles take at most: 256 MB.</summary>
     public const long DefaultBudget = 256L << 20;
 
-    /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs.</summary>
+    /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs, its pages of points ten at a time.</summary>
     public const int FrameUpload = 4 << 20;
 
     /// <summary>The side of a slot's face: a tile of 256 texels and a border of a texel copied from its neighbors.</summary>
@@ -75,7 +75,10 @@ public sealed class ResidencyCache
         Rgba = 1,
     }
 
-    /// <summary>Gets or sets a value indicating whether a frame sends every tile it asks for, past <see cref="FrameUpload"/>: a headless render.</summary>
+    /// <summary>
+    /// Gets or sets a value indicating whether a frame sends every tile it asks for, and every page of points the workers have
+    /// read, past <see cref="FrameUpload"/>: a headless render.
+    /// </summary>
     internal bool Unbounded { get; set; }
 
     /// <summary>Gets the tiles to send before the frame draws.</summary>
@@ -96,8 +99,22 @@ public sealed class ResidencyCache
     /// <summary>Returns the staged texels of an upload: a face of 258 × 258.</summary>
     internal ReadOnlySpan<uint> Face(in Upload upload) => _staging.AsSpan(upload.Offset, FaceTexels);
 
-    /// <summary>Starts a frame: tiles asked for from now on are this frame's, and are not let go of for another.</summary>
-    internal void BeginFrame() => _frame++;
+    /// <summary>
+    /// Starts a frame: tiles asked for from now on are this frame's, and are not let go of for another. The reads of pages
+    /// the last frame did not ask for are withdrawn (design §5.5.2 "要らなくなった読み").
+    /// </summary>
+    internal void BeginFrame()
+    {
+        _frame++;
+        Points.BeginFrame();
+    }
+
+    /// <summary>
+    /// Lets the cache go (design §5.5.2 "ページの読み出し"): its page readers leave their pools, so that no worker reads for
+    /// it again and a pool's works do not grow by a cache that is gone. The owner calls it when it is disposed; waits for no
+    /// read.
+    /// </summary>
+    internal void Detach() => Points.Detach();
 
     /// <summary>Says that the backend sent the uploads: the staging is free again.</summary>
     internal void Sent()

@@ -393,7 +393,7 @@ internal static partial class PointsScene
     /// The backend of the scene: the hardware's, with the resident runs and their points of each drawn list counted, and the
     /// drawing left out when asked, so that a frame's CPU time is what the engine does before it draws.
     /// </summary>
-    private sealed class CountingBackend(D3D11Backend inner) : IGpuBackend
+    internal sealed class CountingBackend(D3D11Backend inner) : IGpuBackend
     {
         public bool Skips { get; set; }
 

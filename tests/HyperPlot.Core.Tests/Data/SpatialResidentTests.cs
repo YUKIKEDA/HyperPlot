@@ -56,6 +56,94 @@ public sealed class SpatialResidentTests
     }
 
     /// <summary>
+    /// More resident cells than the snapshot's limit stop at an upper level (design §5.5.2 "セルの表", row R3b2): the
+    /// deepest level at which the cells, every deeper one taken at its ancestor of that level, are within the limit. A
+    /// snapshot whose cells are the limit exactly is not stopped, and the cells still cover the copy in its order.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 200,000 double points in nested clusters, whose resident cells lie at several levels: the full snapshot with no
+    ///   limit has N cells.
+    ///
+    /// Steps:
+    /// - Build the same points with the limits N, N − 1, N / 3, 4, 1, and 0.
+    /// - The reference, apart from the code's walk: each cell of no limit is put at a level ℓ (the root's extent over its
+    ///   extent) and an index on each axis (its corner over its extent); its ancestor at a level L ≤ ℓ is the index shifted
+    ///   by ℓ − L. For each L, the groups are the cells at or above L alone and the cells below L by their ancestor; the
+    ///   level taken is the deepest whose groups are within the limit.
+    ///
+    /// Expected:
+    /// - With N the cells are those of no limit. With each other limit the cells are the reference's groups, as (first,
+    ///   count), in the copy's order, no more than the limit or 1: they cover the copy without a gap or an overlap.
+    /// - With N − 1 some cell holds more than 32,768 points and is not a leaf of the table; with 0 the one cell is the root.
+    /// </remarks>
+    [Fact]
+    public void ResidentCells_PastTheLimit_StopAtAnUpperLevel()
+    {
+        var (xs, ys) = SpatialData.Nested(200_000, seed: 7);
+        using var free = SpatialBuilt.Of(xs, ys);
+        var natural = free.Snapshot.ResidentCells.ToArray();
+        var (rootX, rootY, rootExtentX, _) = free.Snapshot.CellBox(0, 0);
+        var count = natural.Length;
+        Assert.True(count > 12, $"{count} cells: too few for the limits.");
+        var levels = natural.Select(c => (int)Math.Round(Math.Log2(rootExtentX / c.ExtentX))).ToArray();
+        Assert.True(levels.Distinct().Count() > 2, "The cells do not lie at several levels.");
+        var leaves = SpatialReference.Cells(free.Snapshot, SpatialReference.Everything, 32).ToDictionary(c => c.First, c => c.Count);
+
+        foreach (var limit in new[] { count, count - 1, count / 3, 4, 1, 0 })
+        {
+            using var limited = SpatialBuilt.Of(xs, ys, new SpatialIndexInput { Rows = RowRange.All, CellLimit = limit });
+            var cells = limited.Snapshot.ResidentCells.ToArray().Select(c => (c.First, c.Count)).ToArray();
+            Assert.Equal(Expected(limit), cells);
+            Assert.InRange(cells.Length, 1, Math.Max(1, limit));
+            if (limit == count - 1)
+            {
+                Assert.Contains(cells, c => c.Count > SpatialSnapshot.CellCapacity && !(leaves.TryGetValue(c.First, out var n) && n == c.Count));
+            }
+        }
+
+        // The groups of the reference at the deepest level within the limit: the cells of no limit at that level or above,
+        // and those below by their ancestor there, in the copy's order.
+        (long First, long Count)[] Expected(int limit)
+        {
+            for (var level = 32; level >= 0; level--)
+            {
+                var groups = Groups(level);
+                if (groups.Length <= limit || level == 0)
+                {
+                    return groups;
+                }
+            }
+
+            return [];
+        }
+
+        (long First, long Count)[] Groups(int level)
+        {
+            var groups = new List<(long First, long Count)>();
+            (int, long, long)? last = null;
+            for (var c = 0; c < natural.Length; c++)
+            {
+                var cell = natural[c];
+                var at = levels[c];
+                var (ix, iy) = ((long)Math.Round((cell.CornerX - rootX) / cell.ExtentX), (long)Math.Round((cell.CornerY - rootY) / cell.ExtentY));
+                var key = at <= level ? (at, ix, iy) : (level, ix >> (at - level), iy >> (at - level));
+                if (key == last)
+                {
+                    groups[^1] = (groups[^1].First, groups[^1].Count + cell.Count);
+                }
+                else
+                {
+                    groups.Add((cell.First, cell.Count));
+                    last = key;
+                }
+            }
+
+            return [.. groups];
+        }
+    }
+
+    /// <summary>
     /// A page staged for the GPU holds every point of its part of the copy once, each block in steps of 104,729 through
     /// the copy's order (design §5.5.2 "常駐のセルとページ", "ブロック"): two points that follow each other in the copy are
     /// not drawn one after the other. The block is part of what names a page.
@@ -66,10 +154,10 @@ public sealed class SpatialResidentTests
     /// - A residency cache with no frame budget.
     ///
     /// Steps:
-    /// - Request both pages with blocks of 32,768 points, the block of a layer of one part, and read what was staged for
-    ///   each. Read the same parts of the copy with ReadBlock.
-    /// - Request page 0 with blocks of 512 points, and with blocks of 32,768 again. Forget the snapshot. Request page 0
-    ///   with a block of 0 points.
+    /// - Request both pages with blocks of 32,768 points, the block of a layer of one part, wait for the workers' reads, and
+    ///   request them again; read what was staged for each. Read the same parts of the copy with ReadBlock.
+    /// - Request page 0 with blocks of 512 points (and again once read), and with blocks of 32,768 again. Forget the
+    ///   snapshot. Request page 0 with a block of 0 points.
     ///
     /// Expected:
     /// - Point k of a block of a staged page is point k × 104,729 modulo the block's count of the same block of the copy:
@@ -87,7 +175,7 @@ public sealed class SpatialResidentTests
         using var built = SpatialBuilt.Of(xs, ys);
         var cache = new ResidencyCache { Unbounded = true };
         cache.BeginFrame();
-        Assert.Equal((0, 1), (cache.Points.Request(built.Snapshot, 0, Block), cache.Points.Request(built.Snapshot, 1, Block)));
+        Assert.Equal((0, 1), (cache.Points.Read(built.Snapshot, 0, Block), cache.Points.Read(built.Snapshot, 1, Block)));
         var uploads = cache.Points.Uploads.ToArray();
         Assert.Equal([PointPages.PagePoints, 100_000 - PointPages.PagePoints], uploads.Select(u => u.Count));
         for (var page = 0; page < 2; page++)
@@ -103,7 +191,7 @@ public sealed class SpatialResidentTests
         );
         Assert.Equal(6_425, 104_729 % Block);
 
-        Assert.Equal(2, cache.Points.Request(built.Snapshot, 0, 512));
+        Assert.Equal(2, cache.Points.Read(built.Snapshot, 0, 512));
         Assert.Equal(0, cache.Points.Request(built.Snapshot, 0, Block));
         Assert.Equal((3, 3), (cache.Points.Uploads.Length, cache.Points.PagesInUse));
         Check(0, 512, cache.Points.Staged(cache.Points.Uploads[2]));

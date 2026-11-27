@@ -45,6 +45,7 @@ internal abstract class SpatialIndex : IDisposable
     private Exception? _fault;
     private Exception? _lastFailure;
     private ObjectDisposedException? _poolGone;
+    private Exception? _readFault;
     private long _failedX;
     private long _failedY;
     private TaskCompletionSource? _waiter;
@@ -115,6 +116,12 @@ internal abstract class SpatialIndex : IDisposable
     /// <see langword="null"/>. It is not cleared: the snapshot of the last build that ended stays in use.
     /// </summary>
     public Exception? Fault => Volatile.Read(ref _fault);
+
+    /// <summary>
+    /// Gets the first exception a worker's read of a page of the index's snapshots threw (design §5.5.2 "読みの例外", row
+    /// R3b2), or <see langword="null"/>: the layer that draws the index fails, as for a build's <see cref="Fault"/>.
+    /// </summary>
+    internal Exception? ReadFault => Volatile.Read(ref _readFault);
 
     /// <summary>Gets the state of the index (design §3.4 "状態"). The tests follow the moves of the state with it.</summary>
     internal SpatialIndexState State => (SpatialIndexState)KindOf(Volatile.Read(ref _state));
@@ -631,6 +638,9 @@ internal abstract class SpatialIndex : IDisposable
         replaced.Release();
         return true;
     }
+
+    /// <summary>Records the exception a worker's read of a page threw (design §5.5.2 "読みの例外"): the first one stays.</summary>
+    internal void FailRead(Exception exception) => Interlocked.CompareExchange(ref _readFault, exception, null);
 
     private void Fail(SpatialBuild? build, Exception exception)
     {

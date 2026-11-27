@@ -26,4 +26,11 @@ internal readonly record struct SpatialIndexInput
     /// <see cref="Path.GetTempPath"/>.
     /// </summary>
     public string? TempFolder { get; init; }
+
+    /// <summary>
+    /// Gets the most resident cells of a full snapshot (design §5.5.2 "セルの表"), or <see langword="null"/> for
+    /// <see cref="SpatialSnapshot.MaxResidentCells"/>: a part of a layer takes its share of the layer's 131,072 by its
+    /// rows. More cells stop at an upper level.
+    /// </summary>
+    public int? CellLimit { get; init; }
 }

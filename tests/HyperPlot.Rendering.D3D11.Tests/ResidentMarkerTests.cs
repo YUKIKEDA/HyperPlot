@@ -477,7 +477,14 @@ public sealed class ResidentMarkerTests
         var pages = (int)((snapshot.PointCount + PointPages.PagePoints - 1) / PointPages.PagePoints);
         for (var page = 0; page < pages; page++)
         {
+            // A worker reads the page (row R3b2): asked for, waited for, and staged when asked for again.
             var slot = backend.Images.Points.Request(snapshot, page, PointPages.MaxBlockPoints);
+            if (slot < 0)
+            {
+                _ = backend.Images.Points.AwaitReads();
+                slot = backend.Images.Points.Request(snapshot, page, PointPages.MaxBlockPoints);
+            }
+
             Assert.True(slot >= 0);
             list.DrawResidentMarkers(
                 new ResidentMarkerRun(

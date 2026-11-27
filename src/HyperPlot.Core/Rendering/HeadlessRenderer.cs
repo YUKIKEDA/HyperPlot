@@ -100,7 +100,8 @@ public sealed class HeadlessRenderer : IDisposable
     /// A learned domain has an end that is not finite, in data units or once the scale maps it (a log scale over a value at
     /// or below 0, design §4.2), or an X column, or a rule's column, decreases or holds NaN. A segment or a rect layer has
     /// more than 131,072 elements (design §5.5.3). A failure to read a column while building its
-    /// indexes is thrown again as it was, and nothing is drawn. While ticks are chosen (the theme shows axes or a grid): a
+    /// indexes, or a worker's failure to read a page of a point layer's points (design §5.5.2), is thrown again as it was,
+    /// and nothing is drawn. While ticks are chosen (the theme shows axes or a grid): a
     /// time scale's domain reaches outside the years 1 to 9999, a <see cref="TickFormatter"/> or
     /// <see cref="TimeTickFormatter"/> returns false or a length outside 0 to 64, or a default label does not fit 64
     /// characters (design §4.6). Shaping a text failed, or the texts' glyphs need more than 8 atlas pages (design §5.6). An
@@ -130,6 +131,24 @@ public sealed class HeadlessRenderer : IDisposable
             using var frame = _backend.BeginFrame();
             _target.Clear(plot.Theme.Background);
             _backend.Draw(_target, list);
+
+            // A render that waits sends what the workers read, ten pages at most a round, until the view's pages are on
+            // the GPU (design §5.5.2 "ヘッドレス"): the calling thread reads no copy.
+            while (Waits && _backend.Images.Points.AwaitReads())
+            {
+                var recordings = _plan.Recordings;
+                list = _plan.Render(plot);
+                if (_plan.Recordings == recordings)
+                {
+                    // The safety valve (design §5.5.2 "ヘッドレス", Issue #603's decision of 2026-11-27): a round that records
+                    // nothing asks for no page and sends none, so the image drawn is the last; the render returns.
+                    break;
+                }
+
+                _target.Clear(plot.Theme.Background);
+                _backend.Draw(_target, list);
+            }
+
             if (overlay is { Commands.Length: > 0 })
             {
                 _backend.Draw(_target, overlay);
@@ -306,11 +325,20 @@ public sealed class HeadlessRenderer : IDisposable
         {
             _figure.Render(figure, views);
             using var frame = _backend.BeginFrame();
-            _target.Clear(figure.Theme.Background);
-            _backend.Draw(_target, _figure.List);
-            for (var i = 0; i < _figure.Drawn; i++)
+            DrawFigure(figure);
+
+            // As for a plot (design §5.5.2 "ヘッドレス"): the plots share the cache's ten reads.
+            while (Waits && _backend.Images.Points.AwaitReads())
             {
-                _backend.Draw(_target, _figure.Plans[i].List);
+                var recordings = Recordings(_figure);
+                _figure.Render(figure, views);
+                if (Recordings(_figure) == recordings)
+                {
+                    // The safety valve, as for a plot: no plot recorded, so the image drawn is the last.
+                    break;
+                }
+
+                DrawFigure(figure);
             }
 
             if (overlay is { Commands.Length: > 0 })
@@ -321,6 +349,27 @@ public sealed class HeadlessRenderer : IDisposable
         finally
         {
             _backend.Images.Unbounded = false;
+        }
+    }
+
+    private static int Recordings(FigurePlan figure)
+    {
+        var (plans, count) = (figure.Plans, 0);
+        for (var i = 0; i < plans.Count; i++)
+        {
+            count += plans[i].Recordings;
+        }
+
+        return count;
+    }
+
+    private void DrawFigure(FigureSpec figure)
+    {
+        _target.Clear(figure.Theme.Background);
+        _backend.Draw(_target, _figure!.List);
+        for (var i = 0; i < _figure.Drawn; i++)
+        {
+            _backend.Draw(_target, _figure.Plans[i].List);
         }
     }
 

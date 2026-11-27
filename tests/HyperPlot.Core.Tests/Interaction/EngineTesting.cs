@@ -60,10 +60,28 @@ internal sealed class NullBackend : IGpuBackend
         return new(this, ++_frame);
     }
 
+    /// <summary>Gets the pages of points the draws sent, as a backend sends them (row R3b2): their reads are free again after.</summary>
+    public int PagesSent { get; private set; }
+
+    /// <summary>Gets the pages of points the last draw sent.</summary>
+    public int PagesInDraw { get; private set; }
+
+    /// <summary>
+    /// Gets or sets a hook a draw calls with the cache before it sends the pages, so that a test reads what is staged.
+    /// </summary>
+    public Action<ResidencyCache>? Sending { get; set; }
+
     public void Draw(IRenderTarget target, RenderList list)
     {
         DrawsInFrame++;
         LastList = list;
+
+        // A backend sends the staged pages in its draw, which frees their reads (design §5.5.2 "ページの読み出し"); the
+        // tiles' staging is left to the tests, which count it.
+        Sending?.Invoke(Images);
+        PagesInDraw = Images.Points.Uploads.Length;
+        PagesSent += PagesInDraw;
+        Images.Points.Sent();
     }
 
     public void Copy(IRenderTarget source, IRenderTarget destination) => CopiesInFrame++;

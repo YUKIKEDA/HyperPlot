@@ -28,18 +28,21 @@ public sealed class PointBlockTests
     /// Preconditions:
     /// - 150,000 seeded points over [0, 100]², colored by a category of <paramref name="parts"/> names that take turns row
     ///   by row (no color for one part): every part has more points than a block and a page that ends in a shorter block.
-    /// - An engine that waits for its indexes, which sends every page in the frame that asks for it, on the null backend.
+    /// - An engine that waits for its indexes and for the workers' reads of the pages, on the null backend, which keeps
+    ///   what each draw sent by slot.
     ///
     /// Steps:
     /// - Render the whole view. For every page of every part's snapshot, request the page with <paramref name="block"/>
-    ///   and read what the frame staged for its slot; read the same part of the copy with ReadBlock.
-    /// - Request a page with half and with twice the block.
+    ///   and take what the frame sent for its slot; read the same part of the copy with ReadBlock.
+    /// - Request a page with half and with twice the block, wait for the reads, and request them again.
     ///
     /// Expected:
-    /// - No request with <paramref name="block"/> stages a page: the layer asked for the pages with that block.
-    /// - Point k of each block of a staged page is point k × 104,729 modulo the block's count of the same block of the
-    ///   copy, and the steps take each point of the block once; the last block of a page has the page's rest.
-    /// - Some page of the layer has more points than the block. Half and twice the block each stage a page of their own.
+    /// - Every request with <paramref name="block"/> finds its page on the GPU and stages none: the layer asked for the
+    ///   pages with that block.
+    /// - Point k of each block of a sent page is point k × 104,729 modulo the block's count of the same block of the copy,
+    ///   and the steps take each point of the block once; the last block of a page has the page's rest.
+    /// - Some page of the layer has more points than the block. Half and twice the block each take a read and then a slot
+    ///   of their own.
     /// </remarks>
     /// <param name="parts">The parts of the layer.</param>
     /// <param name="block">The points of a block the design gives for the parts.</param>
@@ -60,16 +63,15 @@ public sealed class PointBlockTests
         const int Count = 150_000;
         using var data = new Data(Count, seed: 41, parts);
         var backend = new NullBackend();
+        var sent = Capture(backend);
         using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
         engine.SetPlot(data.Spec());
         engine.RenderFrame();
         Assert.False(engine.IsProvisional);
 
         var pages = backend.Images.Points;
-        backend.Images.Unbounded = true;
         var plans = Parts(engine.Plan!.Panels[0]);
         Assert.Equal(parts, plans.Length);
-        var staged = pages.Uploads.Length;
         var longest = 0;
         long points = 0;
         foreach (var plan in plans)
@@ -81,17 +83,20 @@ public sealed class PointBlockTests
                 for (var page = 0; (long)page * PointPages.PagePoints < snapshot.PointCount; page++)
                 {
                     var slot = pages.Request(snapshot, page, block);
-                    Assert.Equal(staged, pages.Uploads.Length);
-                    var upload = Assert.Single(pages.Uploads.ToArray(), u => u.Slot == slot);
-                    Assert.Equal(PointPages.PointsOf(snapshot, page), upload.Count);
-                    longest = Math.Max(longest, upload.Count);
-                    AssertInSteps(snapshot, page, block, pages.Staged(upload));
+                    Assert.True(slot >= 0);
+                    Assert.Equal(0, pages.Uploads.Length);
+                    Assert.Equal(PointPages.PointsOf(snapshot, page), sent[slot].Length);
+                    longest = Math.Max(longest, sent[slot].Length);
+                    AssertInSteps(snapshot, page, block, sent[slot]);
                 }
 
                 if (ReferenceEquals(plan, plans[0]))
                 {
-                    Assert.NotEqual(pages.Request(snapshot, 0, block / 2), pages.Request(snapshot, 0, block * 2));
-                    Assert.Equal(staged += 2, pages.Uploads.Length);
+                    Assert.Equal((-1, -1), (pages.Request(snapshot, 0, block / 2), pages.Request(snapshot, 0, block * 2)));
+                    Assert.Equal(2, pages.ReadsInUse);
+                    Assert.NotEqual(pages.Read(snapshot, 0, block / 2), pages.Read(snapshot, 0, block * 2));
+                    Assert.Equal(2, pages.Uploads.Length);
+                    pages.Sent();
                 }
             }
             finally
@@ -130,14 +135,16 @@ public sealed class PointBlockTests
     /// - 480,000 seeded points over [0, 100]², colored by a category of 8 names (row modulo 8) and wrapped by a category of
     ///   6 names (row / 8 modulo 6): 48 parts of 10,000 points, two whole blocks of 4,096 and a block of 1,808 each. With
     ///   the panels counted the block would be 1,024.
-    /// - An engine that waits for its indexes, which sends every page in the frame that asks for it, on the null backend.
+    /// - An engine that waits for its indexes and for the workers' reads of the pages, on the null backend, which keeps
+    ///   what each draw sent by slot.
     ///
     /// Steps:
     /// - Render the whole view with the facet. For every page of every part of every panel, request the page with a block
-    ///   of 4,096 and read what the frame staged.
+    ///   of 4,096 and take what the frame sent for its slot.
     ///
     /// Expected:
-    /// - 6 panels of 8 parts. No request stages a page, and every staged page is in steps within blocks of 4,096.
+    /// - 48 pages sent, 6 panels of 8 parts. Every request finds its page on the GPU and stages none, and every sent page
+    ///   is in steps within blocks of 4,096.
     /// </remarks>
     [Fact]
     public void Blocks_FacetPanels_AreNotCountedAsParts()
@@ -146,15 +153,14 @@ public sealed class PointBlockTests
         const int Block = 4_096;
         using var data = new Data(Count, seed: 43, parts: 8, panels: 6);
         var backend = new NullBackend();
+        var sent = Capture(backend);
         using var engine = new PlotEngine(backend, 960, 640) { WaitsForIndexes = true };
         engine.SetPlot(data.Spec());
         engine.RenderFrame();
         Assert.False(engine.IsProvisional);
 
         var pages = backend.Images.Points;
-        backend.Images.Unbounded = true;
-        var staged = pages.Uploads.Length;
-        Assert.Equal(48, staged);
+        Assert.Equal(48, backend.PagesSent);
         Assert.Equal(6, engine.Plan!.Panels.Count);
         foreach (var panel in engine.Plan.Panels)
         {
@@ -167,8 +173,9 @@ public sealed class PointBlockTests
                 {
                     Assert.Equal(10_000, snapshot.PointCount);
                     var slot = pages.Request(snapshot, 0, Block);
-                    Assert.Equal(staged, pages.Uploads.Length);
-                    AssertInSteps(snapshot, 0, Block, pages.Staged(Assert.Single(pages.Uploads.ToArray(), u => u.Slot == slot)));
+                    Assert.True(slot >= 0);
+                    Assert.Equal(0, pages.Uploads.Length);
+                    AssertInSteps(snapshot, 0, Block, sent[slot]);
                 }
                 finally
                 {
@@ -187,14 +194,15 @@ public sealed class PointBlockTests
     /// - 150,000 seeded points over [0, 100]², colored by a category of 4 names that take turns row by row; the x of every
     ///   row of the fourth name is NaN, so that its index holds no point. The other parts hold 37,500 points each, more
     ///   than two blocks of either size.
-    /// - An engine that waits for its indexes, which sends every page in the frame that asks for it, on the null backend.
+    /// - An engine that waits for its indexes and for the workers' reads of the pages, on the null backend, which keeps
+    ///   what each draw sent by slot.
     ///
     /// Steps:
     /// - Render the whole view. For the page of each part that holds points, request the page with a block of 8,192.
     ///
     /// Expected:
-    /// - The layer has 4 parts, one of no point. No request stages a page, and each staged page is in steps within blocks
-    ///   of 8,192.
+    /// - 3 pages sent; the layer has 4 parts, one of no point. Every request finds its page on the GPU and stages none,
+    ///   and each sent page is in steps within blocks of 8,192.
     /// </remarks>
     [Fact]
     public void Blocks_PartOfNoPoint_IsCounted()
@@ -217,14 +225,13 @@ public sealed class PointBlockTests
             ColorBy = table.Cat("c").ToColumnRef(),
         };
         var backend = new NullBackend();
+        var sent = Capture(backend);
         using var engine = new PlotEngine(backend, 640, 360) { WaitsForIndexes = true };
         engine.SetPlot(GeomTesting.Spec(table, point) with { ScaleColor = Scale.Ordinal() });
         engine.RenderFrame();
 
         var pages = backend.Images.Points;
-        backend.Images.Unbounded = true;
-        var staged = pages.Uploads.Length;
-        Assert.Equal(3, staged);
+        Assert.Equal(3, backend.PagesSent);
         var plans = Parts(engine.Plan!.Panels[0]);
         Assert.Equal(4, plans.Length);
         var empty = 0;
@@ -241,8 +248,9 @@ public sealed class PointBlockTests
 
                 Assert.Equal(37_500, snapshot.PointCount);
                 var slot = pages.Request(snapshot, 0, Block);
-                Assert.Equal(staged, pages.Uploads.Length);
-                AssertInSteps(snapshot, 0, Block, pages.Staged(Assert.Single(pages.Uploads.ToArray(), u => u.Slot == slot)));
+                Assert.True(slot >= 0);
+                Assert.Equal(0, pages.Uploads.Length);
+                AssertInSteps(snapshot, 0, Block, sent[slot]);
             }
             finally
             {
@@ -261,7 +269,8 @@ public sealed class PointBlockTests
     /// <remarks>
     /// Preconditions:
     /// - <paramref name="count"/> seeded points over [0, 100]² in <paramref name="parts"/> parts (blocks of
-    ///   <paramref name="block"/> points), in an engine that waits for its indexes, which sends every page in the frame that asks for it, on the null backend.
+    ///   <paramref name="block"/> points), in an engine that waits for its indexes and for the workers' reads of the pages,
+    ///   on the null backend.
     ///
     /// Steps:
     /// - Render the whole view, and say that its pages were sent. Then render each of five views: a tall strip at the left,
@@ -274,7 +283,7 @@ public sealed class PointBlockTests
     ///
     /// Expected:
     /// - The whole view records one run a page, from 0, of the page's points.
-    /// - Each view records exactly the joined blocks, as (part, page, first, count), and stages no page. Every block of a
+    /// - Each view records exactly the joined blocks, as (part, page, first, count), and sends no page. Every block of a
     ///   point within the radius is in a run, each run is whole blocks of one page, and no two runs of a page touch.
     /// - Over the views, some run begins after its page's first block, and each view draws fewer points than the whole
     ///   view. Some page of the 8 parts (16 blocks a page) has two runs or more; no page of the one part (2 blocks) has.
@@ -320,7 +329,7 @@ public sealed class PointBlockTests
             var runs = layer.Runs(backend.LastList!);
             Assert.Equal(layer.Expected(engine, x0, x1, y0, y1, clampX: false, wholePages: false), runs);
             Assert.NotEmpty(layer.AssertDrawsTheNeeded(engine, data, runs, (x0, x1, y0, y1)));
-            Assert.Equal(0, pages.Uploads.Length);
+            Assert.Equal(0, backend.PagesInDraw);
             Assert.InRange(runs.Sum(r => r.Count), 1, count - 1);
             split |= runs.GroupBy(r => (r.Part, r.Page)).Any(g => g.Count() > 1);
             late |= runs.Any(r => r.First > 0);
@@ -706,6 +715,20 @@ public sealed class PointBlockTests
         return (Math.Abs(high.X - low.X) / (x1 - x0), Math.Abs(high.Y - low.Y) / (y1 - y0));
     }
 
+    /// <summary>Keeps, by slot, the points of each page a draw of the backend sends.</summary>
+    private static Dictionary<int, ResidentPoint[]> Capture(NullBackend backend)
+    {
+        var sent = new Dictionary<int, ResidentPoint[]>();
+        backend.Sending = cache =>
+        {
+            foreach (var upload in cache.Points.Uploads)
+            {
+                sent[upload.Slot] = cache.Points.Staged(upload).ToArray();
+            }
+        };
+        return sent;
+    }
+
     /// <summary>Returns the parts of a panel's first layer on the index path.</summary>
     private static IndexedPointPlan[] Parts(PlotPanel panel) =>
         panel.Layers[0] is SplitPlan split ? [.. split.Parts.Cast<IndexedPointPlan>()] : [(IndexedPointPlan)panel.Layers[0]];
@@ -800,8 +823,8 @@ public sealed class PointBlockTests
 
     /// <summary>
     /// The parts of an engine's first layer with their snapshots, and the slot of each of their pages: asked for right after
-    /// a frame, with the layer's block, which stages nothing after a frame of the whole view when the layer asked with the
-    /// same block.
+    /// a frame, with the layer's block, which finds every page on the GPU after a frame of the whole view when the layer
+    /// asked with the same block; a page that is not there is read and sent first.
     /// </summary>
     private sealed class Layer : IDisposable
     {
@@ -811,22 +834,19 @@ public sealed class PointBlockTests
 
         public Layer(PlotEngine engine, ResidencyCache cache, int block, bool resident = true)
         {
-            // The frame's own requests were without a frame budget, as a frame that waits; these are too.
             var pages = cache.Points;
-            cache.Unbounded = true;
             _block = block;
             _snapshots = [.. Parts(engine.Plan!.Panels[0]).Select(p => p.SpatialIndex!.Acquire())];
-            var staged = pages.Uploads.Length;
             for (var part = 0; part < _snapshots.Length; part++)
             {
                 for (var page = 0; (long)page * PointPages.PagePoints < _snapshots[part].PointCount; page++)
                 {
-                    _slots.Add(pages.Request(_snapshots[part], page, block), (part, page));
+                    // After a frame of the whole view every page is there, when the layer asked with the same block.
+                    var slot = pages.Request(_snapshots[part], page, block);
+                    Assert.True(!resident || slot >= 0);
+                    _slots.Add(slot >= 0 ? slot : cache.Resident(_snapshots[part], page, block), (part, page));
                 }
             }
-
-            // After a frame of the whole view every page is there, when the layer asked with the same block.
-            Assert.True(!resident || staged == pages.Uploads.Length);
         }
 
         public int PointsOf(int part, int page) => PointPages.PointsOf(_snapshots[part], page);
