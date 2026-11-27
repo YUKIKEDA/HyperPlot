@@ -127,6 +127,10 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         Release(ref _highlightPixelShader);
         Release(ref _pixelShader);
         Release(ref _vertexShader);
+
+        // The bound shader is one of the two released above: a draw after Make that did not pass Bind would otherwise
+        // compare against a freed address, which a new shader may take.
+        _boundPixelShader = null;
         _cellCapacity = 0;
     }
 
