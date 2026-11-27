@@ -397,8 +397,7 @@ internal sealed class PointPages
             Interlocked.Decrement(ref _waiters);
         }
 
-        // A frame known full sends a page read in none of the rounds after it, which use the same pages.
-        return waited || (!_owner.FullThisFrame && Ready()) || (ScheduledThisFrame > 0 && MissedThisFrame > 0);
+        return waited || Ready() || (ScheduledThisFrame > 0 && MissedThisFrame > 0);
     }
 
     /// <summary>
