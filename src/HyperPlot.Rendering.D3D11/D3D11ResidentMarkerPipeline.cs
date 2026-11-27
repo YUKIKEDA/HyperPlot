@@ -8,13 +8,19 @@ namespace HyperPlot.Rendering.D3D11;
 /// <summary>
 /// The GPU objects of the resident markers (design §5.1 "常駐の点", §5.5.2, row R3a): the shaders, the states, the constant
 /// buffer of a run, the dynamic buffer of the frame's cells, and a structured buffer for each page of points the residency
-/// cache keeps. Made with the device and made again after a loss; the pages are sent again from Core then.
+/// cache keeps. Made with the device and made again after a loss; the pages are sent again from Core then. A run with no
+/// highlight is drawn by a pixel shader that reads no depth, a run with one by the shader that multiplies the share the depth
+/// carries (design §6.4 "強調のない run の描き方", row R3c2).
 /// </summary>
 internal sealed unsafe class D3D11ResidentMarkerPipeline
 {
     private readonly D3D11Backend _backend;
     private ID3D11VertexShader* _vertexShader;
     private ID3D11PixelShader* _pixelShader;
+    private ID3D11PixelShader* _highlightPixelShader;
+
+    // The pixel shader the last run bound since Bind, null before the first: another step binds its own between.
+    private ID3D11PixelShader* _boundPixelShader;
     private ID3D11BlendState* _overBlend;
     private ID3D11RasterizerState* _rasterizer;
     private ID3D11Buffer* _constants;
@@ -32,6 +38,15 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
     /// <summary>Gets the number of pages that have a buffer. Tests only.</summary>
     internal int PageCount => _pages.Count(p => p != 0);
 
+    /// <summary>Gets the number of times a run bound its pixel shader. Tests only.</summary>
+    internal int PixelShaderBinds { get; private set; }
+
+    /// <summary>
+    /// Gets or sets what is called after each run is drawn, with the pixel shader the context held at the draw, read back from
+    /// it. Tests only.
+    /// </summary>
+    internal Action<ResidentPixelShader>? Drew { get; set; }
+
     internal void Make()
     {
         var device = _backend.Device;
@@ -47,6 +62,13 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
             ID3D11PixelShader* shader;
             _backend.Check(device->CreatePixelShader(code, (nuint)Shaders.ResidentMarkerPS.Length, null, &shader), "CreatePixelShader");
             _pixelShader = shader;
+        }
+
+        fixed (byte* code = Shaders.ResidentHighlightPS)
+        {
+            ID3D11PixelShader* shader;
+            _backend.Check(device->CreatePixelShader(code, (nuint)Shaders.ResidentHighlightPS.Length, null, &shader), "CreatePixelShader");
+            _highlightPixelShader = shader;
         }
 
         // Color over the target, premultiplied, as the other markers (design §5.3).
@@ -102,6 +124,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         Release(ref _constants);
         Release(ref _rasterizer);
         Release(ref _overBlend);
+        Release(ref _highlightPixelShader);
         Release(ref _pixelShader);
         Release(ref _vertexShader);
         _cellCapacity = 0;
@@ -215,7 +238,9 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         _backend.Context->Unmap((ID3D11Resource*)_cells, 0);
     }
 
-    /// <summary>Sets what every run shares: after a step of another kind, which binds its own.</summary>
+    /// <summary>
+    /// Sets what every run shares: after a step of another kind, which binds its own. The pixel shader is left to the runs.
+    /// </summary>
     internal void Bind(D3D11RenderTarget target)
     {
         var context = _backend.Context;
@@ -243,7 +268,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         var masks = _backend.Highlights.Masks;
         context->VSSetShaderResources(4, 1, &masks);
         context->VSSetShader(_vertexShader, null, 0);
-        context->PSSetShader(_pixelShader, null, 0);
+        _boundPixelShader = null;
         context->OMSetBlendState(_overBlend, null, 0xFFFFFFFF);
         var view = target.View;
         context->OMSetRenderTargets(1, &view, null);
@@ -251,7 +276,7 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
 
     /// <summary>
     /// Draws one run: the points of one page from the run's first, under one clip, in one call. A run whose page has no
-    /// buffer draws nothing.
+    /// buffer draws nothing. The run binds the pixel shader of its highlight when the run before took the other one.
     /// </summary>
     internal void Draw(D3D11RenderTarget target, in ResidentMarkerRun run)
     {
@@ -269,6 +294,16 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
             (int)Math.Clamp(run.Clip.Bottom, 0, height)
         );
         var context = _backend.Context;
+
+        // The runs of a panel share their highlight, so a list switches at most once a panel (design §6.4).
+        var pixelShader = run.Highlight == 0 ? _pixelShader : _highlightPixelShader;
+        if (pixelShader != _boundPixelShader)
+        {
+            context->PSSetShader(pixelShader, null, 0);
+            _boundPixelShader = pixelShader;
+            PixelShaderBinds++;
+        }
+
         context->RSSetScissorRects(1, &scissor);
         var pageView = (ID3D11ShaderResourceView*)_pageViews[run.Slot];
         context->VSSetShaderResources(1, 1, &pageView);
@@ -290,6 +325,10 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         *(RunConstants*)mapped.pData = values;
         context->Unmap((ID3D11Resource*)_constants, 0);
         context->DrawInstanced(4, (uint)run.Count, 0, 0);
+        if (Drew is { } drew)
+        {
+            drew(BoundPixelShader());
+        }
     }
 
     /// <summary>Leaves nothing bound, so that a readback or a clear finds the target free.</summary>
@@ -302,6 +341,24 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         context->VSSetShaderResources(3, 1, &noView);
         context->VSSetShaderResources(4, 1, &noView);
         context->OMSetRenderTargets(0, null, null);
+    }
+
+    // The pixel shader the context holds, as a test reads it: not the one this pipeline means to have bound.
+    private ResidentPixelShader BoundPixelShader()
+    {
+        ID3D11PixelShader* bound;
+        uint instances = 0;
+        _backend.Context->PSGetShader(&bound, null, &instances);
+        var kind =
+            bound == _pixelShader ? ResidentPixelShader.Plain
+            : bound == _highlightPixelShader ? ResidentPixelShader.Highlight
+            : ResidentPixelShader.Other;
+        if (bound != null)
+        {
+            _ = bound->Release();
+        }
+
+        return kind;
     }
 
     private static void Release<T>(ref T* pointer)
@@ -344,4 +401,17 @@ internal sealed unsafe class D3D11ResidentMarkerPipeline
         public Vector2 ClampLow;
         public Vector2 ClampHigh;
     }
+}
+
+/// <summary>The pixel shader a resident run was drawn with, as a test reads it (row R3c2).</summary>
+internal enum ResidentPixelShader
+{
+    /// <summary>Neither of the resident markers' shaders.</summary>
+    Other,
+
+    /// <summary>The shader of a run with no highlight, which reads no depth.</summary>
+    Plain,
+
+    /// <summary>The shader of a run with a highlight, which multiplies the share the depth carries.</summary>
+    Highlight,
 }

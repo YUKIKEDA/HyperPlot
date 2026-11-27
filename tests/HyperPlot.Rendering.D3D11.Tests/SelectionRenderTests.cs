@@ -23,7 +23,7 @@ public sealed class SelectionRenderTests
     /// <summary>The kinds of predicate a test selects with.</summary>
     public enum Predicate
     {
-        /// <summary>A rectangle: four constants.</summary>
+        /// <summary>A rectangle: a box of the target's pixels.</summary>
         Rectangle,
 
         /// <summary>A lasso: the panel's mask.</summary>
