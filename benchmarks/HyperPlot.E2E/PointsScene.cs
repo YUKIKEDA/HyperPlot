@@ -22,7 +22,7 @@ internal static partial class PointsScene
     private const int Warmup = 120;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), a file to write one row a frame to (its times and allocations), the selection the frames are drawn under: "none" (by default), "rectangle" ([25, 75]²), or "lasso" (a circle of radius 30 around (50, 50)); then (Issue #624) the clump's σ (10 by default), the panels of a facet that wraps the rows (0 by default: no facet), the layer's drawing ("auto" by default, or "points"), and how the rows fall into the categories ("even" by default, or "uneven": nine rows in ten in the first).</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), a file to write one row a frame to (its times and allocations), the selection the frames are drawn under: "none" (by default), "rectangle" ([25, 75]²), or "lasso" (a circle of radius 30 around (50, 50)); then (Issue #624) the clump's σ (10 by default), the panels of a facet that wraps the rows (0 by default: no facet), the layer's drawing ("auto" by default, or "points"), and how the rows fall into the categories ("even" by default, or "uneven": nine rows in ten in the first); then (Issue #563) a second layer of the same count over the first in the same panel: "none" (by default), "uniform", or "cluster", with the first's diameter, opacity, and drawing.</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         // Row R3b2: a file of one row a frame, when named after the other arguments.
@@ -30,7 +30,7 @@ internal static partial class PointsScene
         if (args.Length < 4)
         {
             Console.Error.WriteLine(
-                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame] [none|rectangle|lasso] [sigma] [panels] [auto|points] [even|uneven]"
+                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame] [none|rectangle|lasso] [sigma] [panels] [auto|points] [even|uneven] [none|uniform|cluster]"
             );
             return 2;
         }
@@ -65,27 +65,51 @@ internal static partial class PointsScene
         var draw = args.Length > 15 && args[15] == "points" ? PointDraw.Points : PointDraw.Auto;
         var uneven = args.Length > 16 && args[16] == "uneven";
 
-        // Seeded: uniform over [0, 100]², or a normal blob of σ (a tenth of the side by default) around the middle.
-        var random = new Random(1);
-        var (xs, ys) = (new double[count], new double[count]);
-        for (var i = 0; i < count; i++)
+        // Issue #563: a second layer over the first in the same panel, of its own seeded points.
+        var second = args.Length > 17 ? args[17] : "none";
+        if (second is not ("none" or "uniform" or "cluster"))
         {
-            if (cluster)
-            {
-                var r = sigma * Math.Sqrt(-2 * Math.Log(1 - random.NextDouble()));
-                var a = 2 * Math.PI * random.NextDouble();
-                (xs[i], ys[i]) = (50 + (r * Math.Cos(a)), 50 + (r * Math.Sin(a)));
-            }
-            else
-            {
-                (xs[i], ys[i]) = (random.NextDouble() * 100, random.NextDouble() * 100);
-            }
+            Console.Error.WriteLine($"unknown second layer {second}: none, uniform, or cluster");
+            return 2;
         }
 
-        using var x = Column.Wrap(xs);
-        using var y = Column.Wrap(ys);
+        // Seeded: uniform over [0, 100]², or a normal blob of σ (a tenth of the side by default) around the middle.
+        var random = new Random(1);
+        (double[] Xs, double[] Ys) Points(Random seeded, bool clumped)
+        {
+            var (xs, ys) = (new double[count], new double[count]);
+            for (var i = 0; i < count; i++)
+            {
+                if (clumped)
+                {
+                    var r = sigma * Math.Sqrt(-2 * Math.Log(1 - seeded.NextDouble()));
+                    var a = 2 * Math.PI * seeded.NextDouble();
+                    (xs[i], ys[i]) = (50 + (r * Math.Cos(a)), 50 + (r * Math.Sin(a)));
+                }
+                else
+                {
+                    (xs[i], ys[i]) = (seeded.NextDouble() * 100, seeded.NextDouble() * 100);
+                }
+            }
+
+            return (xs, ys);
+        }
+
+        var (firstXs, firstYs) = Points(random, cluster);
+        using var x = Column.Wrap(firstXs);
+        using var y = Column.Wrap(firstYs);
         using var size = Column.Wrap(Enumerable.Range(0, count).Select(i => (double)(i % 101)).ToArray());
         var builder = DataTable.Create().Add("x", x).Add("y", y).Add("s", size);
+
+        // The second layer's points come from another seed, so that two uniform layers do not draw the same points.
+        var (secondXs, secondYs) = second == "none" ? (Array.Empty<double>(), Array.Empty<double>()) : Points(new Random(2), second == "cluster");
+        using var x2 = Column.Wrap(secondXs);
+        using var y2 = Column.Wrap(secondYs);
+        if (second != "none")
+        {
+            builder = builder.Add("x2", x2).Add("y2", y2);
+        }
+
         if (categories > 0)
         {
             var names = Enumerable.Range(0, categories).Select(i => $"k{i:D3}").ToArray();
@@ -113,20 +137,17 @@ internal static partial class PointsScene
         var table = builder.Build();
         PlotSpec Make(PointDraw drawing)
         {
-            var made = Plot.Create(table)
-                .Point(
-                    table.Col<double>("x"),
-                    table.Col<double>("y"),
-                    p =>
-                    {
-                        _ = p.Size(diameter).Opacity(opacity).Shape(shape).Draw(drawing);
-                        _ = categories > 0 && channel is "color" or "both" ? p.ColorBy(table.Cat("c")) : p;
-                        _ = categories > 0 && channel is "shape" or "both" or "shapesize" ? p.ShapeBy(table.Cat("c")) : p;
-                        _ = channel is "size" or "shapesize" ? p.SizeBy(table.Col<double>("s")) : p;
-                    }
-                )
-                .ScaleX(Scale.Linear().WithDomain(0, 100))
-                .ScaleY(Scale.Linear().WithDomain(0, 100));
+            void Style(PointBuilder p)
+            {
+                _ = p.Size(diameter).Opacity(opacity).Shape(shape).Draw(drawing);
+                _ = categories > 0 && channel is "color" or "both" ? p.ColorBy(table.Cat("c")) : p;
+                _ = categories > 0 && channel is "shape" or "both" or "shapesize" ? p.ShapeBy(table.Cat("c")) : p;
+                _ = channel is "size" or "shapesize" ? p.SizeBy(table.Col<double>("s")) : p;
+            }
+
+            var made = Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y"), Style);
+            made = second == "none" ? made : made.Point(table.Col<double>("x2"), table.Col<double>("y2"), Style);
+            made = made.ScaleX(Scale.Linear().WithDomain(0, 100)).ScaleY(Scale.Linear().WithDomain(0, 100));
             return (panels > 0 ? made.FacetWrap(table.Cat("f")) : made).Build();
         }
 
@@ -159,7 +180,10 @@ internal static partial class PointsScene
                 $"first display: {shown.Elapsed.TotalSeconds:F3} s over {waited} frames; first pages at {firstRuns:F3} s; frames that sent pages: {pageFrames}; pages on the GPU: {backend.Images.Points.PagesInUse} ({backend.Images.Points.BytesInUse} bytes)"
             )
         );
-        PrintCells(engine.Plan!);
+        for (var layer = 0; layer < engine.Plan!.Layers.Count; layer++)
+        {
+            PrintCells(engine.Plan!, layer);
+        }
 
         // The script: zoom in to a tenth of the side around a point that drifts, and out again, 300 frames a round. The
         // views are made before the frames: a view is an object of the scene's own.
@@ -300,7 +324,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} second={second} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(
@@ -396,46 +420,77 @@ internal static partial class PointsScene
         }
 
         var came = TilesCame(engine.Plan!);
-        var (count, bin, estimate, time, timeOfEstimate, timeAtFour, densities, sampled) = (
-            new MinMax(),
-            new MinMax(),
-            new MinMax(),
-            new MinMax(),
-            new MinMax(),
-            new MinMax(),
-            0,
-            0
+        var layers = engine.Plan!.Layers.Count;
+        var (count, bin, estimate, time, timeOfEstimate, timeAtFour, densities) = (
+            new MinMax[layers],
+            new MinMax[layers],
+            new MinMax[layers],
+            new MinMax[layers],
+            new MinMax[layers],
+            new MinMax[layers],
+            new int[layers]
         );
+        for (var layer = 0; layer < layers; layer++)
+        {
+            (count[layer], bin[layer], estimate[layer], time[layer], timeOfEstimate[layer], timeAtFour[layer]) = (
+                new MinMax(),
+                new MinMax(),
+                new MinMax(),
+                new MinMax(),
+                new MinMax(),
+                new MinMax()
+            );
+        }
+
+        // Issue #563: the panel's sum of the layers' predicted times, the fixed term counted once.
+        var (sum, sampled) = (new MinMax(), 0);
         var physical = diameter * engine.Scale;
         for (var f = 0; f < Math.Min(views.Length, 300); f += 30)
         {
             engine.Views.SetView(panel, views[f]);
             engine.RenderFrame();
-            var parts = Parts(engine.Plan!).ToArray();
-            var choice = parts[0].Switch;
-            var cells = parts.Max(p => p.Estimate);
-            count.Add(choice.LastCount);
-            bin.Add(choice.LastLargestBin);
-            estimate.Add(cells);
-            time.Add(choice.LastTime);
-            timeOfEstimate.Add(PredictedTime.Of(choice.LastCount, physical, cells));
-            timeAtFour.Add(choice.LastTimeAtFourBins);
-            densities += choice.Density ? 1 : 0;
+            var summed = PredictedTime.Fixed;
+            for (var layer = 0; layer < layers; layer++)
+            {
+                var parts = Parts(engine.Plan!, layer).ToArray();
+                var choice = parts[0].Switch;
+                var cells = parts.Max(p => p.Estimate);
+                count[layer].Add(choice.LastCount);
+                bin[layer].Add(choice.LastLargestBin);
+                estimate[layer].Add(cells);
+                time[layer].Add(choice.LastTime);
+                timeOfEstimate[layer].Add(PredictedTime.Of(choice.LastCount, physical, cells));
+                timeAtFour[layer].Add(choice.LastTimeAtFourBins);
+                densities[layer] += choice.Density ? 1 : 0;
+                summed += choice.LastTime - PredictedTime.Fixed;
+            }
+
+            sum.Add(summed);
             sampled++;
         }
 
-        Console.WriteLine(
-            string.Create(
-                CultureInfo.InvariantCulture,
-                $"largest_bin: tiles_came={came} after {waited.Elapsed.TotalSeconds:F2} s; views={sampled} diameter_px={physical:F2}; count={count}; tiles={bin}; estimate={estimate}; time_tiles={time}; time_estimate={timeOfEstimate}; time_four_bins={timeAtFour}; density_views={densities}"
-            )
-        );
+        for (var layer = 0; layer < layers; layer++)
+        {
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"largest_bin{(layers > 1 ? $" layer {layer}" : string.Empty)}: tiles_came={came} after {waited.Elapsed.TotalSeconds:F2} s; views={sampled} diameter_px={physical:F2}; count={count[layer]}; tiles={bin[layer]}; estimate={estimate[layer]}; time_tiles={time[layer]}; time_estimate={timeOfEstimate[layer]}; time_four_bins={timeAtFour[layer]}; density_views={densities[layer]}"
+                )
+            );
+        }
+
+        if (layers > 1)
+        {
+            Console.WriteLine(
+                string.Create(CultureInfo.InvariantCulture, $"panel_time_tiles (the layers' sum, the fixed term once): {sum} ms over {sampled} views")
+            );
+        }
     }
 
     // Whether every part of the plot's layers on the index path, in every panel, has a full snapshot with its density tiles.
     private static bool TilesCame(PlotPlan plan)
     {
-        foreach (var part in Parts(plan))
+        foreach (var part in Enumerable.Range(0, plan.Layers.Count).SelectMany(layer => Parts(plan, layer)))
         {
             if (part.SpatialIndex is not { } index)
             {
@@ -454,9 +509,9 @@ internal static partial class PointsScene
         return true;
     }
 
-    // The parts of the plot's first layer on the index path, in every panel.
-    private static IEnumerable<IndexedPointPlan> Parts(PlotPlan plan) =>
-        plan.Panels.SelectMany(p => p.Layers[0] is SplitPlan split ? split.Parts : [p.Layers[0]]).OfType<IndexedPointPlan>();
+    // The parts of one of the plot's layers on the index path, in every panel.
+    private static IEnumerable<IndexedPointPlan> Parts(PlotPlan plan, int layer) =>
+        plan.Panels.SelectMany(p => p.Layers[layer] is SplitPlan split ? split.Parts : [p.Layers[layer]]).OfType<IndexedPointPlan>();
 
     // The least and the most of a value over the views, written "min..max" to four places.
     private sealed class MinMax
@@ -470,12 +525,12 @@ internal static partial class PointsScene
     }
 
     /// <summary>
-    /// Prints the resident cells of the plot's first layer: their number over its parts on the index path, and the fewest
-    /// and the most of a part, with the mean points of a cell (design §5.5.2 "セルの表").
+    /// Prints the resident cells of one of the plot's layers (the first by default): their number over its parts on the
+    /// index path, and the fewest and the most of a part, with the mean points of a cell (design §5.5.2 "セルの表").
     /// </summary>
-    internal static void PrintCells(PlotPlan plan)
+    internal static void PrintCells(PlotPlan plan, int which = 0)
     {
-        var layer = plan.Layers[0];
+        var layer = plan.Layers[which];
         IEnumerable<LayerPlan> parts = layer is SplitPlan split ? split.Parts : [layer];
         var (cells, least, most, points, indexed) = (0L, int.MaxValue, 0, 0L, 0);
         foreach (var part in parts)
@@ -502,7 +557,7 @@ internal static partial class PointsScene
                 ? "resident_cells: none (the CPU path)"
                 : string.Create(
                     CultureInfo.InvariantCulture,
-                    $"resident_cells: {cells} over {indexed} parts, {least} to {most} a part, {(double)points / cells:F0} points a cell"
+                    $"resident_cells{(which > 0 ? $" layer {which}" : string.Empty)}: {cells} over {indexed} parts, {least} to {most} a part, {(double)points / cells:F0} points a cell"
                 )
         );
     }

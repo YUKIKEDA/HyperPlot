@@ -28,6 +28,10 @@
 #           views (the largest bin from the tiles and the estimate from the resident cells). Rounds -FirstRound to
 #           -Rounds (1 to 3 by default), the even rounds in the reverse order; -Only keeps the scenes whose names match a
 #           regular expression (.cursor/rules/pace.mdc: one round is read before the rest)
+#   pair    (Issue #563) two Auto-eligible layers of 8e6 points drawn as raw points (Draw = Points) over one another in one
+#           panel: both uniform, both clustered (σ 10), one of each; and each layer alone; 6 DIPs, opacity 0.6, the whole
+#           view; each run then prints what Auto reads of each layer and the panel's sum of the predicted times. Rounds
+#           -FirstRound to -Rounds, the even rounds in the reverse order; -Only as for refit
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -41,14 +45,16 @@ param(
     [string] $CapCount = '2e8',
     [int] $Rounds = 3,
     [int] $FirstRound = 1,
-    [string] $Only = '.'
+    [string] $Only = '.',
+    # The folder under .dev/ the build is published to: runs from two worktrees name their own.
+    [string] $PublishName = 'r3b2-pub577'
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 # The main checkout's .dev/, also from a worktree under it: the parent of the shared .git folder.
 $dev = Join-Path (Split-Path -Parent (Resolve-Path (git -C $repo rev-parse --path-format=absolute --git-common-dir))) '.dev'
-$publish = Join-Path $dev 'r3b2-pub577'
+$publish = Join-Path $dev $PublishName
 $machineLog = "$Out.machine.log"
 $clockLog = "$Out.clocks.csv"
 $exe = Join-Path $publish 'HyperPlot.E2E.exe'
@@ -347,6 +353,36 @@ try {
                     "$Out.refit-$($s[0] -replace '[^A-Za-z0-9]+', '-')-r$round.csv", 'none', "$sigma", "$($s[5])", 'points', $s[6]
                 )
                 Invoke-Scene "refit $($s[0]), round $round" $arguments
+            }
+        }
+    }
+
+    if ($Sets -contains 'pair') {
+        # name, the first layer's distribution, the second's ("none": the first alone).
+        $scenes = @(
+            @('alone-uniform', 'uniform', 'none'),
+            @('alone-cluster', 'cluster', 'none'),
+            @('pair-uniform-uniform', 'uniform', 'uniform'),
+            @('pair-cluster-cluster', 'cluster', 'cluster'),
+            @('pair-uniform-cluster', 'uniform', 'cluster')
+        )
+        $kept = [System.Collections.Generic.List[object]]::new()
+        foreach ($s in $scenes) {
+            if ($s[0] -match $Only) {
+                $kept.Add($s)
+            }
+        }
+
+        $scenes = $kept
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $order = if ($round % 2) { 0..($scenes.Count - 1) } else { ($scenes.Count - 1)..0 }
+            foreach ($i in $order) {
+                $s = $scenes[$i]
+                [string[]] $arguments = @(
+                    '8000000', '6', '0.6', $s[1], '600', '0', 'whole', 'color', 'Circle', 'blocks', 'draw',
+                    "$Out.pair-$($s[0])-r$round.csv", 'none', '10', '0', 'points', 'even', $s[2]
+                )
+                Invoke-Scene "pair $($s[0]), round $round" $arguments
             }
         }
     }
