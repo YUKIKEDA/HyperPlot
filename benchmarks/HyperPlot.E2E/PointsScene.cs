@@ -169,7 +169,7 @@ internal static partial class PointsScene
 
         // A wait of a few milliseconds needs the timer's finer step: by default a sleep ends on a 15.6 ms tick (.cursor/rules/bench.mdc).
         _ = TimeBeginPeriod(1);
-        var (runs, drawn) = (new int[total], new long[total]);
+        var (runs, drawn, highlighted) = (new int[total], new long[total], new int[total]);
 
         // Each frame's allocations by stage (the view's change, the drawing, the rest of the frame), its GPU time put on the
         // frame it timed, and when it began, for a file of one row a frame (.cursor/rules/bench.mdc).
@@ -193,7 +193,7 @@ internal static partial class PointsScene
             engine.RenderFrame();
             cpu[f] = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             allocated[f] = GC.GetAllocatedBytesForCurrentThread() - bytes;
-            (runs[f], drawn[f], inDraw[f]) = (backend.Runs, backend.Points, backend.DrawBytes);
+            (runs[f], drawn[f], highlighted[f], inDraw[f]) = (backend.Runs, backend.Points, backend.Highlighted, backend.DrawBytes);
             (scan[f], dense[f]) = (engine.Plan!.ScanTicks * 1000.0 / Stopwatch.Frequency, first is { DrewDensity: true });
             if (backend.LastFrameTime is { } time && time.Frame > lastTimed)
             {
@@ -265,7 +265,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"resident_runs: mean={keptRuns.Average():F1} max={keptRuns.Max()} a frame; resident_points: mean={keptDrawn.Average():F0} max={keptDrawn.Max()} a frame"
+                $"resident_runs: mean={keptRuns.Average():F1} max={keptRuns.Max()} a frame, highlighted mean={highlighted.Skip(Warmup).Average():F1}; resident_points: mean={keptDrawn.Average():F0} max={keptDrawn.Max()} a frame"
             )
         );
         Console.WriteLine(
@@ -408,8 +408,9 @@ internal static partial class PointsScene
         string.Create(CultureInfo.InvariantCulture, $"{time.Hour:D2}:{time.Minute:D2}:{time.Second:D2}.{time.Millisecond:D3}");
 
     /// <summary>
-    /// The backend of the scene: the hardware's, with the resident runs and their points of each drawn list counted, and the
-    /// drawing left out when asked, so that a frame's CPU time is what the engine does before it draws.
+    /// The backend of the scene: the hardware's, with the resident runs and their points of the lists a frame draws counted
+    /// (the retained data layer's and the frame's own under a selection, row R3c2), and the drawing left out when asked, so
+    /// that a frame's CPU time is what the engine does before it draws.
     /// </summary>
     internal sealed class CountingBackend(D3D11Backend inner) : IGpuBackend
     {
@@ -418,6 +419,9 @@ internal static partial class PointsScene
         public int Runs { get; private set; }
 
         public long Points { get; private set; }
+
+        // The runs with a selection's highlight (row R3c2).
+        public int Highlighted { get; private set; }
 
         public bool IsWarp => inner.IsWarp;
 
@@ -442,7 +446,11 @@ internal static partial class PointsScene
 
         public FrameScope BeginFrame()
         {
-            Frames += _open.Count == 0 ? 1 : 0;
+            if (_open.Count == 0)
+            {
+                (Frames, Runs, Points, Highlighted) = (Frames + 1, 0, 0, 0);
+            }
+
             _open.Push(inner.BeginFrame());
             return new FrameScope(this, _open.Count);
         }
@@ -463,12 +471,14 @@ internal static partial class PointsScene
         {
             var runs = list.ResidentRuns;
             long points = 0;
+            var highlighted = 0;
             foreach (ref readonly var run in runs)
             {
                 points += run.Count;
+                highlighted += run.Highlight != 0 ? 1 : 0;
             }
 
-            (Runs, Points) = (runs.Length, points);
+            (Runs, Points, Highlighted) = (Runs + runs.Length, Points + points, Highlighted + highlighted);
         }
 
         public void Copy(IRenderTarget source, IRenderTarget destination) => inner.Copy(source, destination);
