@@ -868,8 +868,9 @@ public sealed class PointPagesTests
     }
 
     /// <summary>
-    /// The wait of a headless render has a safety valve (design §5.5.2 "ヘッドレス"): a round that records nothing, while the
-    /// reads say to go on, fails rather than draw the same frame without end.
+    /// The wait of a headless render has a safety valve (design §5.5.2 "ヘッドレス", Issue #603's decision of 2026-11-27): a
+    /// round that records nothing, while the reads say to go on, ends the render, rather than draw the same frame without
+    /// end.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -880,11 +881,11 @@ public sealed class PointPagesTests
     /// - Render on another thread, for 30 s at most.
     ///
     /// Expected:
-    /// - The render returns with an <see cref="InvalidOperationException"/> that says the round recorded nothing: the page
-    ///   read is ready, and the plot, which drew all of itself, records nothing again.
+    /// - The render returns with no exception, the plot recorded once: the page read is ready, and the plot, which drew all
+    ///   of itself, records nothing again.
     /// </remarks>
     [Fact]
-    public void HeadlessRender_RoundThatRecordsNothing_Fails()
+    public void HeadlessRender_RoundThatRecordsNothing_Returns()
     {
         var (xs, ys) = SpatialData.Uniform(400_000, seed: 125);
         using var built = SpatialBuilt.Of(xs, ys);
@@ -896,12 +897,14 @@ public sealed class PointPagesTests
         Assert.Equal(-1, backend.Images.Points.Request(built.Snapshot, 0, PointPages.MaxBlockPoints));
         using var pool = new PlotWorkerPool(2);
         Exception? error = null;
+        var recordings = 0;
         var render = new Thread(() =>
         {
             try
             {
                 using var renderer = new HeadlessRenderer(backend, 640, 360, pool);
                 renderer.Render(Spec(x, y));
+                recordings = renderer.Plan!.Recordings;
             }
             catch (Exception e)
             {
@@ -913,7 +916,8 @@ public sealed class PointPagesTests
         };
         render.Start();
         Assert.True(render.Join(Watchdog), "The headless render did not return in 30 s.");
-        Assert.Contains("recorded nothing", Assert.IsType<InvalidOperationException>(error).Message, StringComparison.Ordinal);
+        Assert.Null(error);
+        Assert.Equal(1, recordings);
     }
 
     /// <summary>
