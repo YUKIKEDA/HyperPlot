@@ -82,7 +82,6 @@ internal static class BudgetScene
             var nudge = PointFiles.Side * 1e-6;
             var other = new PanelView2D(ViewRange.FromValues(nudge, PointFiles.Side + nudge), ViewRange.FromValues(0, PointFiles.Side));
             engine.SetPlot(plot);
-            engine.Views.SetView(Panel, view);
             var shown = Stopwatch.StartNew();
             var pages = backend.Images.Points;
 
