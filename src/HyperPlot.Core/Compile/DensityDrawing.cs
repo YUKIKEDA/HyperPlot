@@ -163,24 +163,25 @@ internal sealed class DensityPanel
 }
 
 /// <summary>
-/// The predicted GPU time of drawing a point layer as raw points (design §5.5.2 "予測時間"): T̂ = 1.95 + 5.46 n + 0.0612 n
-/// A ρ^0.40 ms, with n the points in the view over 1e7, A the area of a disc of the markers' diameter in square physical
+/// The predicted GPU time of drawing a point layer as raw points (design §5.5.2 "予測時間"): T̂ = 1.56 + 6.11 n + 0.0690 n
+/// A ρ^0.37 ms, with n the points in the view over 1e7, A the area of a disc of the markers' diameter in square physical
 /// pixels, and ρ the largest bin in points a physical pixel. The coefficients and the threshold are the reference machine's
-/// (an RTX 3060 Ti, a JIT build); another machine is not promised to fit 16.7 ms under the threshold.
+/// (an RTX 3060 Ti, the product's NativeAOT build, Issue #624); another machine is not promised to fit 16.7 ms under the
+/// threshold.
 /// </summary>
 internal static class PredictedTime
 {
     /// <summary>The fixed term, in ms.</summary>
-    internal const double Fixed = 1.95;
+    internal const double Fixed = 1.56;
 
     /// <summary>The term of the points, in ms a unit of <see cref="PointsUnit"/> points.</summary>
-    internal const double PerPoints = 5.46;
+    internal const double PerPoints = 6.11;
 
     /// <summary>The coefficient of the overlap term: n · A · ρ^<see cref="Exponent"/>, A in square physical pixels, ρ in points a physical pixel.</summary>
-    internal const double Overlap = 0.0612;
+    internal const double Overlap = 0.0690;
 
     /// <summary>The exponent of the largest bin in the overlap term.</summary>
-    internal const double Exponent = 0.40;
+    internal const double Exponent = 0.37;
 
     /// <summary>The points of one unit of n.</summary>
     internal const double PointsUnit = 1e7;

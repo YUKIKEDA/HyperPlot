@@ -16,84 +16,103 @@ public sealed class AutoSwitchTests
     private static readonly string[] Three = ["a", "b", "c"];
     private static readonly string[] Two = ["p", "q"];
 
-    /// <summary>The 41 scenes of design §5.5.2 "41 場面", in its order.</summary>
+    /// <summary>The 41 scenes of design §5.5.2 "製品の計測", the prototype's sweep 8 measured again on the product's NativeAOT build (Issue #624), in its order.</summary>
     private static readonly DesignScene[] Scenes =
     [
-        new("d1-uniform", 10_000_000, 1, 9.49, 7.53, Fit.In, false),
-        new("d1-s10-p6", 10_000_000, 1, 28.48, 7.59, Fit.In, false),
-        new("d1-s10", 10_000_000, 1, 109.24, 7.73, Fit.In, false),
-        new("d6-n5e6-s8.49", 5_000_000, 6, 68.73, 9.38, Fit.In, false),
-        new("d10-n5e6", 5_000_000, 10, 5.92, 9.57, Fit.In, false),
-        new("d6-uniform-p8", 10_000_000, 6, 2.76, 10.01, Fit.In, false),
-        new("d6-n5e6-s7", 5_000_000, 6, 101.11, 10.16, Fit.In, false),
-        new("d6-n5e6-s6", 5_000_000, 6, 137.62, 10.88, Fit.In, false),
-        new("d6-uniform", 10_000_000, 6, 9.58, 11.68, Fit.In, false),
-        new("d12-n5e6", 5_000_000, 12, 5.92, 11.72, Fit.In, false),
-        new("d6-n5e6-s5", 5_000_000, 6, 198.17, 11.85, Fit.In, false),
-        new("d6-uniform-facet6", 10_000_000, 6, 12.03, 12.09, Fit.In, false),
-        new("d4-s9", 10_000_000, 4, 118.07, 12.60, Fit.In, false),
-        new("d4-s8", 10_000_000, 4, 149.44, 13.11, Fit.In, false),
-        new("d6-s10-p8", 10_000_000, 6, 21.62, 13.32, Fit.In, false),
-        new("d4-s7.5", 10_000_000, 4, 170.02, 13.41, Fit.In, false),
-        new("d6-n7.5e6-s10", 7_500_000, 6, 83.62, 13.66, Fit.In, false),
-        new("d4-s7", 10_000_000, 4, 195.18, 13.75, Fit.In, false),
-        new("d6-s10-p6", 10_000_000, 6, 28.66, 14.03, Fit.In, false),
-        new("d4-s6.5", 10_000_000, 4, 226.36, 14.14, Fit.Out, true),
-        new("d10-n7.5e6", 7_500_000, 10, 8.03, 14.34, Fit.In, true),
-        new("d6-s18", 9_994_240, 6, 33.92, 14.48, Fit.In, true),
-        new("d6-n7.5e6-s8", 7_500_000, 6, 112.54, 14.63, Fit.In, true),
-        new("d8-uniform", 10_000_000, 8, 9.58, 15.00, Fit.In, true),
-        new("d6-s16", 10_000_000, 6, 42.93, 15.19, Fit.In, true),
-        new("d8-s30", 9_535_488, 8, 14.86, 15.79, Fit.In, true),
-        new("d6-s14", 10_000_000, 6, 56.07, 16.07, Fit.In, true),
-        new("d6-s10-p2", 10_000_000, 6, 61.63, 16.40, Fit.Out, true),
-        new("d6-s13", 10_000_000, 6, 65.03, 16.60, Fit.Split, true),
-        new("d6-s12.5", 10_000_000, 6, 70.33, 16.89, Fit.Out, true),
-        new("d8-s26", 9_751_538, 8, 19.79, 17.17, Fit.In, true),
-        new("d6-s12", 10_000_000, 6, 76.31, 17.20, Fit.Out, true),
-        new("d6-s11", 10_000_000, 6, 90.82, 17.91, Fit.Out, true),
-        new("d12-n7.5e6", 7_500_000, 12, 8.03, 17.98, Fit.Out, true),
-        new("d6-s10", 10_000_000, 6, 109.89, 18.74, Fit.Out, true),
-        new("d8-s22", 9_918_000, 8, 27.63, 18.87, Fit.Out, true),
-        new("d10-n1e7", 10_000_000, 10, 9.58, 19.27, Fit.Out, true),
-        new("d8-s20", 9_994_240, 8, 33.44, 19.92, Fit.Out, true),
-        new("d8-s18", 9_994_240, 8, 33.91, 19.99, Fit.Out, true),
-        new("d8-s16", 10_000_000, 8, 42.92, 21.25, Fit.Out, true),
-        new("d12-n1e7", 10_000_000, 12, 9.58, 24.49, Fit.Out, true),
+        new("d1-uniform", 10_000_000, 1, 9.58, 7.80, Fit.In, false),
+        new("d1-s10-p6", 10_000_000, 1, 28.65, 7.86, Fit.In, false),
+        new("d1-s10", 10_000_000, 1, 109.88, 7.98, Fit.In, false),
+        new("d6-n5e6-s8.49", 5_000_000, 6, 68.72, 9.28, Fit.In, false),
+        new("d10-n5e6", 5_000_000, 10, 5.92, 9.85, Fit.In, false),
+        new("d6-n5e6-s7", 5_000_000, 6, 101.09, 10.00, Fit.In, false),
+        new("d6-uniform-p8", 10_000_000, 6, 2.76, 10.51, Fit.In, false),
+        new("d6-n5e6-s6", 5_000_000, 6, 137.60, 10.65, Fit.In, false),
+        new("d6-n5e6-s5", 5_000_000, 6, 198.14, 11.52, Fit.In, false),
+        new("d12-n5e6", 5_000_000, 12, 5.92, 12.15, Fit.In, false),
+        new("d6-uniform", 10_000_000, 6, 9.58, 12.17, Fit.In, false),
+        new("d6-uniform-facet6", 10_000_000, 6, 12.03, 12.57, Fit.In, false),
+        new("d4-s9", 10_000_000, 4, 118.10, 12.74, Fit.In, false),
+        new("d4-s8", 10_000_000, 4, 149.48, 13.20, Fit.In, false),
+        new("d4-s7.5", 10_000_000, 4, 170.07, 13.47, Fit.In, false),
+        new("d6-n7.5e6-s10", 7_500_000, 6, 83.60, 13.67, Fit.In, false),
+        new("d6-s10-p8", 10_000_000, 6, 21.61, 13.75, Fit.In, false),
+        new("d4-s7", 10_000_000, 4, 195.23, 13.77, Fit.In, false),
+        new("d4-s6.5", 10_000_000, 4, 226.43, 14.12, Fit.Out, true),
+        new("d6-s10-p6", 10_000_000, 6, 28.65, 14.42, Fit.In, true),
+        new("d6-n7.5e6-s8", 7_500_000, 6, 112.53, 14.54, Fit.In, true),
+        new("d8-s30", 8_516_667, 8, 14.86, 14.78, Fit.In, true),
+        new("d6-s18", 9_953_765, 6, 33.91, 14.79, Fit.In, true),
+        new("d10-n7.5e6", 7_500_000, 10, 8.03, 14.93, Fit.In, true),
+        new("d6-s16", 9_996_464, 6, 42.92, 15.51, Fit.In, true),
+        new("d8-uniform", 10_000_000, 8, 9.58, 15.67, Fit.In, true),
+        new("d6-s14", 9_997_646, 6, 56.06, 16.32, Fit.In, true),
+        new("d6-s10-p2", 10_000_000, 6, 61.63, 16.63, Fit.Out, true),
+        new("d8-s26", 9_156_178, 8, 19.79, 16.74, Fit.In, true),
+        new("d6-s13", 9_999_893, 6, 65.02, 16.81, Fit.In, true),
+        new("d6-s12.5", 9_999_893, 6, 70.32, 17.08, Fit.Split, true),
+        new("d6-s12", 9_999_957, 6, 76.30, 17.37, Fit.Out, true),
+        new("d6-s11", 10_000_000, 6, 90.81, 18.02, Fit.Out, true),
+        new("d6-s10", 10_000_000, 6, 109.88, 18.77, Fit.Out, true),
+        new("d12-n7.5e6", 7_500_000, 12, 8.03, 18.79, Fit.Out, true),
+        new("d8-s22", 9_703_151, 8, 27.64, 18.98, Fit.Out, true),
+        new("d8-s20", 9_865_447, 8, 33.44, 20.13, Fit.Out, true),
+        new("d10-n1e7", 10_000_000, 10, 9.58, 20.17, Fit.Out, true),
+        new("d8-s18", 9_953_765, 8, 33.91, 20.36, Fit.Out, true),
+        new("d8-s16", 9_996_464, 8, 42.92, 21.60, Fit.Out, true),
+        new("d12-n1e7", 10_000_000, 12, 9.58, 25.67, Fit.Out, true),
+    ];
+
+    /// <summary>The 3 scenes of the same table that the fit did not use (Issue #624): uneven parts, 16 DIP, and 2.5e6 points.</summary>
+    private static readonly DesignScene[] Added =
+    [
+        new("d12-n2.5e6-s5", 2_500_000, 12, 104.83, 14.00, Fit.In, false),
+        new("d16-n5e6", 5_000_000, 16, 5.92, 18.00, Fit.Out, true),
+        new("d6-s10-p6-uneven", 10_000_000, 6, 100.08, 18.39, Fit.Out, true),
     ];
 
     private static double _sink;
 
     /// <summary>
-    /// The predicted time of each of the 41 scenes that set the formula equals the design's table to within 0.02 ms, and
-    /// the threshold puts every scene that did not fit 16.7 ms on the density side (design §5.5.2 "予測時間", "境目", "41 場面").
+    /// The predicted time of each of the 41 scenes that set the formula equals the design's table to within 0.01 ms, and
+    /// the threshold puts every scene that did not fit 16.7 ms on the density side, the 3 scenes the fit did not use
+    /// included (design §5.5.2 "予測時間", "境目", "製品の計測").
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The design's table of the 41 scenes, as it writes them: the points drawn, the markers' diameter in pixels (DIPs at
-    ///   the scale 1), the largest bin, the predicted time from the coefficients before rounding, and whether the scene fit
-    ///   16.7 ms (in, out, or split between rounds). The facet's scene draws 1e7 points over its six panels.
+    /// - The design's table of the product's measurement, as it writes it: the upper count of the points in view, the
+    ///   markers' diameter in pixels (DIPs at the scale 1), the largest bin of the tiles, the predicted time from the
+    ///   written coefficients to 0.01 ms, and whether the scene fit 16.7 ms (in, out, or split between rounds). The facet's
+    ///   scene draws 1e7 points over its six panels.
     ///
     /// Steps:
-    /// - Compute the product's predicted time of each scene from its points, diameter, and largest bin, and the drawing an
+    /// - Compute the product's predicted time of each scene from its count, diameter, and largest bin, and the drawing an
     ///   Auto layer of the default threshold takes from raw points.
     ///
     /// Expected:
-    /// - Each time is within 0.02 ms of the table's (the table rounds to 0.01 ms, and the rounded coefficients differ by
-    ///   0.0103 ms at most); d6-uniform is 11.68 and d12-n1e7 24.49 to within that.
-    /// - d4-s6.5 is 14.138 ms and d6-s10-p6 14.033 ms, to within 0.001 ms, on either side of 14.1.
-    /// - Each scene's drawing is the table's (a density from a table time of 14.14 ms up, raw points to 14.03 ms): the 13
-    ///   scenes that did not fit and the one split between rounds draw a density; 19 stay raw points; 8 scenes that fit
-    ///   draw a density too, 22 densities in all.
+    /// - Each time is within 0.01 ms of the table's (the table rounds to 0.01 ms); d6-uniform is 12.17 and d12-n1e7 25.67.
+    /// - d4-s6.5 is 14.117 ms and d4-s7 13.773 ms, to within 0.001 ms, on either side of 14.1.
+    /// - Each scene's drawing is the table's (a density from 14.12 ms up, raw points to 13.77 ms): the 12 scenes that did
+    ///   not fit and the one split between rounds draw a density; 18 stay raw points; 10 scenes that fit draw a density
+    ///   too, 23 densities in all.
+    /// - Of the 3 scenes the fit did not use, the 2 that did not fit (16 DIP, and 9 points in 10 in one of 6 parts) draw a
+    ///   density and the one that fit (2.5e6 points of 12 DIP) stays raw points.
     /// </remarks>
     [Fact]
     public void PredictedTime_OfTheDesignsScenes_MatchesItsTable()
     {
         var (raw, outside, split, fitting) = (0, 0, 0, 0);
+        foreach (var scene in Added)
+        {
+            var time = PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            Assert.True(Math.Abs(time - scene.Time) <= 0.01, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
+            Assert.Equal(scene.Fit != Fit.In, scene.Density);
+            Assert.Equal(scene.Density, DensitySwitch.Next(false, scene.Points, 10_000_000, time, time));
+        }
+
         foreach (var scene in Scenes)
         {
             var time = PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
-            Assert.True(Math.Abs(time - scene.Time) <= 0.02, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
+            Assert.True(Math.Abs(time - scene.Time) <= 0.01, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
             var density = DensitySwitch.Next(
                 density: false,
                 scene.Points,
@@ -121,11 +140,11 @@ public sealed class AutoSwitchTests
             }
         }
 
-        Assert.Equal((19, 13, 1, 8), (raw, outside, split, fitting));
-        Assert.Equal(14.138, Time("d4-s6.5"), 0.001);
-        Assert.Equal(14.033, Time("d6-s10-p6"), 0.001);
-        Assert.Equal(11.68, Time("d6-uniform"), 0.02);
-        Assert.Equal(24.49, Time("d12-n1e7"), 0.02);
+        Assert.Equal((18, 12, 1, 10), (raw, outside, split, fitting));
+        Assert.Equal(14.117, Time("d4-s6.5"), 0.001);
+        Assert.Equal(13.773, Time("d4-s7"), 0.001);
+        Assert.Equal(12.17, Time("d6-uniform"), 0.01);
+        Assert.Equal(25.67, Time("d12-n1e7"), 0.01);
 
         static double Time(string name)
         {
@@ -136,7 +155,7 @@ public sealed class AutoSwitchTests
 
     /// <summary>
     /// The predicted time's third term is 0 for a layer of no point or of a largest bin of 0, and it grows with the
-    /// largest bin to the power 0.40 (design §5.5.2 "予測時間").
+    /// largest bin to the power 0.37 (design §5.5.2 "予測時間").
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -144,20 +163,20 @@ public sealed class AutoSwitchTests
     ///
     /// Steps:
     /// - Compute the time of 0 points (6 px, a largest bin of 100), of 5e6 points with a largest bin of 0, and of 1e7 points
-    ///   of 6 px with largest bins of 1 and 32.
+    ///   of 6 px with largest bins of 1 and 100.
     ///
     /// Expected:
-    /// - 1.95 and 1.95 + 2.73 exactly. 1.95 + 5.46 + 0.0612 × 9π and the same with 32^0.4 = 4 times the term, to within
-    ///   1e-12.
+    /// - 1.56 and 1.56 + 3.055 exactly. 1.56 + 6.11 + 0.0690 × 9π and the same with 100^0.37 = 5.4954 times the term (to
+    ///   within 1e-4 of the factor), to within 1e-12 for the first and 1e-3 for the second.
     /// </remarks>
     [Fact]
     public void PredictedTime_NoPointOrNoBin_HasNoOverlapTerm()
     {
-        Assert.Equal(1.95, PredictedTime.Of(0, 6, 100));
-        Assert.Equal(1.95 + 2.73, PredictedTime.Of(5_000_000, 6, 0), 12);
-        var term = 0.0612 * 9 * Math.PI;
-        Assert.Equal(1.95 + 5.46 + term, PredictedTime.Of(10_000_000, 6, 1), 12);
-        Assert.Equal(1.95 + 5.46 + (4 * term), PredictedTime.Of(10_000_000, 6, 32), 12);
+        Assert.Equal(1.56, PredictedTime.Of(0, 6, 100));
+        Assert.Equal(1.56 + 3.055, PredictedTime.Of(5_000_000, 6, 0), 12);
+        var term = 0.0690 * 9 * Math.PI;
+        Assert.Equal(1.56 + 6.11 + term, PredictedTime.Of(10_000_000, 6, 1), 12);
+        Assert.Equal(1.56 + 6.11 + (5.4954 * term), PredictedTime.Of(10_000_000, 6, 100), 1e-3);
     }
 
     /// <summary>
@@ -208,22 +227,23 @@ public sealed class AutoSwitchTests
 
     /// <summary>
     /// A layer drawn as a density whose time falls under 11.28 ms stays a density while the time of four times its
-    /// largest bin is 14.1 ms or more (design §5.5.2 "水準が替わるところ"): the scenes d6-n5e6-s7 and d6-n5e6-s6 stay, and
-    /// d6-n5e6-s8.49 goes back.
+    /// largest bin is 14.1 ms or more (design §5.5.2 "水準が替わるところ"): the scene d6-n5e6-s6 stays, and d6-n5e6-s7 and
+    /// d6-n5e6-s8.49 go back.
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The three scenes of 5e6 points and 6 px from the design's table, with their largest bins 101.11, 137.62, and 68.73;
+    /// - The three scenes of 5e6 points and 6 px from the design's table, with their largest bins 101.09, 137.60, and 68.72;
     ///   the default threshold, whose 0.8 times is above 5e6 points.
     ///
     /// Steps:
     /// - From a density, compute the drawing of each.
-    /// - The design's example: 5e6 points whose third term is 6.6 ms, 11.28 ms and 16.17 ms with four times the bin.
+    /// - The design's example: 5e6 points whose third term is 6.665 ms, 11.28 ms and 15.75 ms with four times the bin.
     ///
     /// Expected:
-    /// - The times 10.16, 10.88, and 9.38 ms are all under 11.28; four times the bin gives 14.23, 15.48, and under 14.1 ms.
-    /// - d6-n5e6-s7 and d6-n5e6-s6 stay a density; d6-n5e6-s8.49 goes back to raw points.
-    /// - The example's 1.95 + 2.73 + 6.6 × 4^0.4 is 16.17 ms to within 0.01 ms, and it stays a density.
+    /// - The times 10.00, 10.65, and 9.28 ms are all under 11.28; four times the bin gives 13.60 (under 14.1), 14.69, and
+    ///   under 14.1 ms.
+    /// - d6-n5e6-s6 stays a density; d6-n5e6-s7 and d6-n5e6-s8.49 go back to raw points.
+    /// - The example's 1.56 + 3.055 + 6.665 × 4^0.37 is 15.75 ms to within 0.01 ms, and it stays a density.
     /// </remarks>
     [Fact]
     public void Next_FromADensity_HoldsWhileFourTimesTheBinReachesTheThreshold()
@@ -245,11 +265,11 @@ public sealed class AutoSwitchTests
             return !DensitySwitch.Next(true, scene.Points, 10_000_000, time, atFour);
         }
 
-        Assert.False(Back("d6-n5e6-s7", 10.16, 14.23));
-        Assert.False(Back("d6-n5e6-s6", 10.88, 15.48));
-        Assert.True(Back("d6-n5e6-s8.49", 9.38, double.NaN));
-        var example = 1.95 + 2.73 + (6.6 * Math.Pow(4, 0.4));
-        Assert.Equal(16.17, example, 0.01);
+        Assert.True(Back("d6-n5e6-s7", 10.00, 13.60));
+        Assert.False(Back("d6-n5e6-s6", 10.65, 14.69));
+        Assert.True(Back("d6-n5e6-s8.49", 9.28, double.NaN));
+        var example = 1.56 + 3.055 + (6.665 * Math.Pow(4, 0.37));
+        Assert.Equal(15.75, example, 0.01);
         Assert.True(DensitySwitch.Next(true, 5_000_000, 10_000_000, 11.28, example));
     }
 
@@ -405,7 +425,7 @@ public sealed class AutoSwitchTests
         Assert.Equal(PredictedTime.Of(Count, 6, tops.Max()), choice.LastTime);
         Assert.All(parts, p => Assert.False(p.DrewDensity));
 
-        // The diameter whose summed count predicts 15 ms: the third term is 15 − 1.95 − 5.46 n.
+        // The diameter whose summed count predicts 15 ms: the third term is 15 − 1.56 − 6.11 n.
         var n = Count / PredictedTime.PointsUnit;
         var term = 15 - PredictedTime.Fixed - (PredictedTime.PerPoints * n);
         var area = term / (PredictedTime.Overlap * n * Math.Pow(choice.LastLargestBin, PredictedTime.Exponent));
