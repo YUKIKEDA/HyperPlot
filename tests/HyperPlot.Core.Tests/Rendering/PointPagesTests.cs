@@ -272,7 +272,8 @@ public sealed class PointPagesTests
         var idle = other.WorkCount;
         var plan = TestPlans.Create(other, 640, 360);
         _ = plan.Render(Spec(x, y));
-        Assert.True(plan.Images.Points.ReaderCount == 1 && other.WorkCount > idle);
+        Assert.Equal(1, plan.Images.Points.ReaderCount);
+        Assert.True(other.WorkCount > idle);
         plan.Dispose();
         Assert.Equal(idle, other.WorkCount);
     }
@@ -614,7 +615,7 @@ public sealed class PointPagesTests
 
     /// <summary>
     /// The pool's disposal waits for the reads in flight, one page a worker (design §5.5.2 "待ち", invariant 7), and a
-    /// read asked for that no worker took ends with the pool's exception.
+    /// read asked for that no worker took is freed (design §5.5.2 "読みの例外", Issue #603's decision of 2026-11-27).
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -666,11 +667,253 @@ public sealed class PointPagesTests
         Assert.True(disposer.Join(Watchdog), "The disposal did not return in 30 s.");
         Assert.True(endedAtReturn);
 
-        // The read no worker took ends with the pool's exception: the wait for the reads returns.
+        // The read no worker took is freed: the wait for the reads returns.
         var waiter = new Thread(() => pages.AwaitReads()) { IsBackground = true };
         waiter.Start();
         Assert.True(waiter.Join(Watchdog), "A read asked for of the disposed pool did not end.");
         Assert.Equal([0], read.ToArray());
+
+        // Page 1's read was freed, not ended as a read: page 0's, read and not sent, is the one read in use, and the layer
+        // has no read fault.
+        Assert.Equal(1, pages.ReadsInUse);
+        Assert.Null(built.Snapshot.Index.ReadFault);
+    }
+
+    /// <summary>
+    /// A page of an index whose pool was disposed is not asked for (design §5.5.2 "読みの例外", Issue #603's decision of
+    /// 2026-11-27): the pool's reader is still registered, yet the request takes no read, so that no read is left asked
+    /// for with no worker to read it, and a wait for the reads returns. It is no failure of the layer.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The built index of 400,000 uniform points on a pool of 1 worker; a residency cache with no frame budget, whose
+    ///   reader is registered with the pool by page 0, read and sent.
+    ///
+    /// Steps:
+    /// - Dispose the pool. Start a frame and ask for page 1. Wait for the reads on another thread, for 30 s at most.
+    ///
+    /// Expected:
+    /// - The request is −1 and no read is in use; the index has no read fault; the wait returns, and says that another
+    ///   round sends nothing.
+    /// </remarks>
+    [Fact]
+    public void Request_AfterThePoolsDisposal_LeavesNoReadAsked()
+    {
+        var (xs, ys) = SpatialData.Uniform(400_000, seed: 117);
+        using var built = SpatialBuilt.Of(xs, ys, workers: 1);
+        var pool = built.Snapshot.Index.Pool;
+        var cache = new ResidencyCache { Unbounded = true };
+        var pages = cache.Points;
+        cache.BeginFrame();
+        _ = cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints);
+        Assert.Equal(1, pages.ReaderCount);
+        pool.Dispose();
+
+        cache.BeginFrame();
+        Assert.Equal(-1, pages.Request(built.Snapshot, 1, PointPages.MaxBlockPoints));
+        Assert.Equal(0, pages.ReadsInUse);
+        Assert.Null(built.Snapshot.Index.ReadFault);
+        var more = true;
+        var waiter = new Thread(() => more = pages.AwaitReads()) { IsBackground = true };
+        waiter.Start();
+        Assert.True(waiter.Join(Watchdog), "The wait for the reads did not return in 30 s.");
+        Assert.False(more);
+    }
+
+    /// <summary>
+    /// A read let go of holds neither its snapshot nor its pool (design §5.5.2 "読みの場所"): once a snapshot's pages are
+    /// sent and forgotten, nothing in the cache keeps the snapshot from being collected.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A residency cache with no frame budget, which outlives the index: the built index of 70,000 uniform points (2
+    ///   pages) on a pool of 1 worker, made and disposed in a method of its own, which reads and sends page 0, forgets the
+    ///   snapshot, and keeps only a weak reference to it.
+    ///
+    /// Steps:
+    /// - Collect, wait for the finalizers, and collect again.
+    ///
+    /// Expected:
+    /// - The snapshot is collected.
+    /// </remarks>
+    [Fact]
+    public void Release_LetsTheReadsSnapshotGo()
+    {
+        var cache = new ResidencyCache { Unbounded = true };
+        var snapshot = ReadAndForget(cache);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+        Assert.False(snapshot.IsAlive);
+        Assert.Equal(0, cache.Points.ReadsInUse);
+    }
+
+    /// <summary>
+    /// A detached cache leaves no read asked for (design §5.5.2 "ページの読み出し"): its readers are off their pools, so a
+    /// read no worker took is withdrawn, and a wait for the reads returns once the read in flight ends.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The built index of 400,000 uniform points on a pool of 1 worker; a residency cache with no frame budget, whose hook
+    ///   holds each read.
+    ///
+    /// Steps:
+    /// - Ask for pages 0 and 1, and wait until page 0's read is held. Detach the cache, and count the reads in use. Let the
+    ///   read go, and wait for the reads on another thread, for 30 s at most.
+    ///
+    /// Expected:
+    /// - One read in use after the detach, page 0's; the wait returns.
+    /// </remarks>
+    [Fact]
+    public void AwaitReads_AfterDetach_Returns()
+    {
+        var (xs, ys) = SpatialData.Uniform(400_000, seed: 119);
+        using var built = SpatialBuilt.Of(xs, ys, workers: 1);
+        var cache = new ResidencyCache { Unbounded = true };
+        var pages = cache.Points;
+        using var hold = new Hold();
+        pages.TestRead = hold.Hook;
+        cache.BeginFrame();
+        Assert.Equal(
+            (-1, -1),
+            (pages.Request(built.Snapshot, 0, PointPages.MaxBlockPoints), pages.Request(built.Snapshot, 1, PointPages.MaxBlockPoints))
+        );
+        hold.WaitEntered(1);
+        cache.Detach();
+        Assert.Equal(1, pages.ReadsInUse);
+        hold.Release();
+        var waiter = new Thread(() => pages.AwaitReads()) { IsBackground = true };
+        waiter.Start();
+        Assert.True(waiter.Join(Watchdog), "The wait for the reads of a detached cache did not return in 30 s.");
+    }
+
+    /// <summary>
+    /// A headless render whose view needs more pages than the budget holds sends the pages that fit and returns (design
+    /// §5.5.2 "ヘッドレス"): a page read that would need a page the frame already used is refused, and the wait then says
+    /// that another round sends nothing.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A point layer of 23 pages of seeded rows over [0, 100]², drawn as points, by a headless renderer that waits, on
+    ///   the null backend. The backend's cache holds density tiles of 15 pages of faces, which a page of points does not let
+    ///   go of: the budget has room for 16 pages of points.
+    ///
+    /// Steps:
+    /// - Render on another thread, for 30 s at most.
+    ///
+    /// Expected:
+    /// - The render returns with no exception. 16 pages are on the GPU, within the budget, and the last list draws 23 runs,
+    ///   16 of them from pages on the GPU.
+    /// </remarks>
+    [Fact]
+    public void HeadlessRender_OverTheBudget_SendsThePagesThatFitAndReturns()
+    {
+        const int Pages = 23;
+        const int Count = Pages * PointPages.PagePoints;
+        const int Faces = 15 * ResidencyCache.PageSlots;
+        var (xs, ys) = Values(Count, seed: 121);
+        using var x = Column.Wrap(xs);
+        using var y = Column.Wrap(ys);
+        var (otherX, otherY) = SpatialData.Uniform(2_000, seed: 123);
+        using var other = SpatialBuilt.Of(otherX, otherY);
+        var bins = new byte[DensityTiles.BinCount];
+        var backend = new NullBackend();
+        var cache = backend.Images;
+        for (var face = 0; face < Faces; face++)
+        {
+            if (face % 15 == 0)
+            {
+                cache.Sent();
+                cache.BeginFrame();
+            }
+
+            Assert.True(cache.RequestDensity(other.Snapshot, 2, (ulong)face, new DensityTile(bins, 1, 0)) >= 0);
+        }
+
+        cache.Sent();
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        var spec = Plot.Create(table)
+            .Point(table.Col<double>("x"), table.Col<double>("y"), p => p.Draw(PointDraw.Points))
+            .ScaleX(Scale.Linear().WithDomain(0, 100))
+            .ScaleY(Scale.Linear().WithDomain(0, 100))
+            .Build();
+        using var pool = new PlotWorkerPool(3);
+        Exception? error = null;
+        var (pages, bytes) = (0, 0L);
+        var render = new Thread(() =>
+        {
+            try
+            {
+                // Read before the renderer's disposal, which lets its plan's pages go.
+                using var renderer = new HeadlessRenderer(backend, 640, 360, pool);
+                renderer.Render(spec);
+                (pages, bytes) = (cache.Points.PagesInUse, cache.BytesInUse);
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        render.Start();
+        Assert.True(render.Join(Watchdog), "The headless render over the budget did not return in 30 s.");
+        Assert.Null(error);
+        Assert.Equal(16, pages);
+        Assert.InRange(bytes, 0, ResidencyCache.DefaultBudget);
+        var runs = backend.LastList!.ResidentRuns.ToArray();
+        Assert.Equal(Pages, runs.Length);
+        Assert.Equal(16, runs.Count(run => run.Slot >= 0));
+    }
+
+    /// <summary>
+    /// The wait of a headless render has a safety valve (design §5.5.2 "ヘッドレス"): a round that records nothing, while the
+    /// reads say to go on, fails rather than draw the same frame without end.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The null backend's cache asked for page 0 of the built index of 400,000 uniform points, which no plot of the
+    ///   renderer draws. A headless renderer that waits, on that backend, and a plot of 1,000 seeded points on the CPU path.
+    ///
+    /// Steps:
+    /// - Render on another thread, for 30 s at most.
+    ///
+    /// Expected:
+    /// - The render returns with an <see cref="InvalidOperationException"/> that says the round recorded nothing: the page
+    ///   read is ready, and the plot, which drew all of itself, records nothing again.
+    /// </remarks>
+    [Fact]
+    public void HeadlessRender_RoundThatRecordsNothing_Fails()
+    {
+        var (xs, ys) = SpatialData.Uniform(400_000, seed: 125);
+        using var built = SpatialBuilt.Of(xs, ys);
+        var (px, py) = Values(1_000, seed: 127);
+        using var x = Column.Wrap(px);
+        using var y = Column.Wrap(py);
+        var backend = new NullBackend();
+        backend.Images.BeginFrame();
+        Assert.Equal(-1, backend.Images.Points.Request(built.Snapshot, 0, PointPages.MaxBlockPoints));
+        using var pool = new PlotWorkerPool(2);
+        Exception? error = null;
+        var render = new Thread(() =>
+        {
+            try
+            {
+                using var renderer = new HeadlessRenderer(backend, 640, 360, pool);
+                renderer.Render(Spec(x, y));
+            }
+            catch (Exception e)
+            {
+                error = e;
+            }
+        })
+        {
+            IsBackground = true,
+        };
+        render.Start();
+        Assert.True(render.Join(Watchdog), "The headless render did not return in 30 s.");
+        Assert.Contains("recorded nothing", Assert.IsType<InvalidOperationException>(error).Message, StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -752,8 +995,10 @@ public sealed class PointPagesTests
                 engine.Views.SetView(new PanelId(0, 0), views[run++ % 2]);
                 frames = 0;
                 var drawing = true;
+                var start = Stopwatch.GetTimestamp();
                 while (drawing)
                 {
+                    Assert.True(Stopwatch.GetElapsedTime(start) < Watchdog, "The pages did not come in 30 s.");
                     backend.Images.Sent();
                     engine.RenderFrame();
                     _ = backend.Images.Points.AwaitReads();
@@ -804,6 +1049,20 @@ public sealed class PointPagesTests
         Assert.InRange(resident, 31, int.MaxValue);
         Assert.Contains((5L * PointPages.PagePoints * PointPages.PointBytes, resident), draws);
         Assert.All(draws, d => Assert.InRange(d.Bytes, 0, ResidencyCache.FrameUpload));
+    }
+
+    // Reads and sends page 0 of an index of its own, forgets the snapshot, and disposes the index: a method of its own, so
+    // that no local of the caller holds the snapshot.
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static WeakReference ReadAndForget(ResidencyCache cache)
+    {
+        var (xs, ys) = SpatialData.Uniform(70_000, seed: 129);
+        using var built = SpatialBuilt.Of(xs, ys, workers: 1);
+        cache.BeginFrame();
+        _ = cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints);
+        cache.Points.Forget(built.Snapshot);
+        cache.Sent();
+        return new WeakReference(built.Snapshot);
     }
 
     /// <summary>Renders frames until one is not provisional, waiting for the reads after a frame that records runs.</summary>
