@@ -75,6 +75,8 @@ internal sealed class PointPages
     private ResidentPoint[]? _staging;
     private int _staged;
     private int _waiters;
+
+    // Written by the frame's thread, read by the workers: volatile reads and writes.
     private bool _detached;
 
     internal PointPages(ResidencyCache owner)
@@ -284,7 +286,7 @@ internal sealed class PointPages
             var state = Volatile.Read(ref read.State);
             if (state == Asked && read.Wanted < last)
             {
-                read.Withdraw();
+                _ = read.Withdraw();
             }
             else if (
                 state == Read
@@ -385,17 +387,25 @@ internal sealed class PointPages
 
     /// <summary>
     /// Takes the readers off their pools once the cache is let go of (design §5.5.2 "ページの読み出し"): no worker reads for
-    /// it again. A read in flight ends into the staging, which nothing sends. Waits for no read.
+    /// it again. A read asked for and not taken is withdrawn, so that a wait for the reads does not wait for it; a read in
+    /// flight ends into the staging, which nothing sends. Waits for no read.
     /// </summary>
     internal void Detach()
     {
-        _detached = true;
+        Volatile.Write(ref _detached, true);
         foreach (var reader in _readers)
         {
             reader.Pool.Unregister(reader);
         }
 
         _readers.Clear();
+        foreach (var read in _reads)
+        {
+            if (read.Withdraw())
+            {
+                Woken();
+            }
+        }
     }
 
     // Where a read's points go: the page it reads into first, and the page it sends from after it.
@@ -409,7 +419,7 @@ internal sealed class PointPages
         var state = Volatile.Read(ref read.State);
         if (state == Asked)
         {
-            read.Withdraw();
+            _ = read.Withdraw();
         }
         else if (state == Read)
         {
@@ -476,26 +486,35 @@ internal sealed class PointPages
         (free.Key, free.Pool, free.Count, free.Wanted) = (key, pool, PointsOf(key.Snapshot, key.Page), frame);
         (free.AskedGeneration, free.Failure, free.Lost) = (free.Generation, null, false);
 
-        // The fields are written before the state: a worker that sees the request sees them.
-        Volatile.Write(ref free.State, Asked);
+        // The fields are written before the state: a worker that sees the request sees them. The exchange is a full barrier
+        // before the pool's flag is read, as the pool's disposal writes the flag before it abandons the reads: if the
+        // disposal began meanwhile, either it sees the request, or this sees the flag and abandons the request itself.
+        _ = Interlocked.Exchange(ref free.State, Asked);
+        if (pool.IsDisposed)
+        {
+            Abandon(pool);
+            return;
+        }
+
         pool.Wake();
     }
 
     // The pool's reader, registered the first time a page of its snapshots is asked for (design §5.5.2 "プール"): once a
-    // pool, since a registration makes the pool's array of works again. False for a pool disposed, which reads nothing.
+    // pool, since a registration makes the pool's array of works again. False for a pool disposed, whose reader is
+    // registered or not, and for a cache let go of: neither reads anything.
     private bool Readies(PlotWorkerPool pool)
     {
+        if (Volatile.Read(ref _detached) || pool.IsDisposed)
+        {
+            return false;
+        }
+
         foreach (var reader in _readers)
         {
             if (reader.Pool == pool)
             {
                 return true;
             }
-        }
-
-        if (_detached || pool.IsDisposed)
-        {
-            return false;
         }
 
         var made = new PageReader(this, pool);
@@ -539,7 +558,7 @@ internal sealed class PointPages
     // A worker's turn: the first read asked for of a snapshot of its pool, taken by the exchange from Asked to Reading.
     private int Take(PlotWorkerPool pool)
     {
-        if (_detached)
+        if (Volatile.Read(ref _detached))
         {
             return -1;
         }
@@ -558,13 +577,16 @@ internal sealed class PointPages
             }
 
             // The frame may have withdrawn the request and asked for another of another pool before the exchange: the
-            // fields are read again now that they cannot change.
-            if (read.Pool == pool)
+            // fields are read again now that they cannot change. Put back, the request's pool is woken, since its workers
+            // may have passed the read over while this one held it.
+            var owner = read.Pool;
+            if (owner == pool)
             {
                 return r;
             }
 
             Volatile.Write(ref read.State, Asked);
+            owner?.Wake();
         }
 
         return -1;
@@ -609,24 +631,30 @@ internal sealed class PointPages
         Ended(read);
     }
 
-    // The pool was disposed: a read asked for of it is read by no worker, and ends as failed with the pool's exception.
+    // The pool was disposed: a read asked for of it is read by no worker, and is freed (design §5.5.2 "読みの例外", Issue
+    // #603's decision of 2026-11-27). It is no read's failure: the layer does not fail, and its page is not asked for again,
+    // since a disposed pool takes no request. Called by the pool's disposal, and by a request that saw the disposal begin.
     private void Abandon(PlotWorkerPool pool)
     {
         foreach (var read in _reads)
         {
-            if (read.Pool == pool && Interlocked.CompareExchange(ref read.State, Reading, Asked) == Asked)
+            if (read.Pool == pool && Interlocked.CompareExchange(ref read.State, Free, Asked) == Asked)
             {
-                read.Failure = new ObjectDisposedException(nameof(PlotWorkerPool));
-                Ended(read);
+                Woken();
             }
         }
     }
 
     private void Ended(ReadSlot read)
     {
-        // The state is written with a full barrier before the count of waiters is read, as the waiter writes the count
-        // before it reads the states: one of the two sees the other.
         _ = Interlocked.Exchange(ref read.State, Read);
+        Woken();
+    }
+
+    // A read left flight: a wait for the reads is woken. The state was written with a full barrier before the count of
+    // waiters is read, as the waiter writes the count before it reads the states: one of the two sees the other.
+    private void Woken()
+    {
         if (Volatile.Read(ref _waiters) > 0)
         {
             lock (_readGate)
@@ -686,13 +714,23 @@ internal sealed class PointPages
         public bool Lost;
         public Exception? Failure;
 
-        // The frame's thread withdraws a request a worker has not taken; one taken is read to the end.
-        public void Withdraw() => _ = Interlocked.CompareExchange(ref State, Free, Asked);
+        // The frame's thread withdraws a request a worker has not taken; one taken is read to the end. True when withdrawn:
+        // the read is the frame's again, and holds neither the snapshot nor the pool.
+        public bool Withdraw()
+        {
+            if (Interlocked.CompareExchange(ref State, Free, Asked) != Asked)
+            {
+                return false;
+            }
 
+            (Key, Pool) = (default, null);
+            return true;
+        }
+
+        // The frame's thread lets a read go once no worker writes it: it holds neither the snapshot nor the pool.
         public void Release()
         {
-            Scheduled = false;
-            Failure = null;
+            (Scheduled, Failure, Key, Pool) = (false, null, default, null);
             Volatile.Write(ref State, Free);
         }
     }
