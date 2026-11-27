@@ -196,7 +196,8 @@ float UnitsFrom(uint position, uint base)
 // A run has one look, so the size, the shape, and the color reach the pixel shader from the run's constants, not through
 // every vertex: a frame of 1e7 points has 4 × 10^7 vertices, and with the look carried by each vertex its GPU time was
 // 12.8 ms where it is 7.3 ms without (discs of 2 pixels, the whole view; Issue #438). The one thing a marker has of its own,
-// the share of its opacity a selection's highlight leaves it (row R3c), rides in the depth, which nothing else reads.
+// the share of its opacity a selection's highlight leaves it (row R3c), rides in the depth, which only the pixel shader of a
+// run with a highlight reads.
 struct ResidentVertex
 {
     float4 Position : SV_Position;
@@ -223,13 +224,26 @@ ResidentVertex ResidentMarkerVS(uint vertex : SV_VertexID, uint instance : SV_In
     return output;
 }
 
-float4 ResidentMarkerPS(ResidentVertex input) : SV_Target
+// The share of a pixel the run's shape covers.
+float ResidentCoverage(ResidentVertex input)
 {
-    float coverage = ShapeCoverage(
+    return ShapeCoverage(
         ResidentKind & 0xFF,
         input.Position.xy,
         input.Center,
         ResidentSize * 0.5,
         (ResidentKind >> 8) * (0.5 / 16.0));
-    return ResidentColor * (coverage * input.Position.z);
+}
+
+// A run with no highlight (ResidentHighlight 0), whose every share is 1: the depth is not read. With the read, 1e7 discs of
+// 6 DIP over the whole view took 0.89 to 0.99 ms more GPU time (Issue #592; design §6.4 "強調のない run の描き方").
+float4 ResidentMarkerPS(ResidentVertex input) : SV_Target
+{
+    return ResidentColor * ResidentCoverage(input);
+}
+
+// A run with a highlight: the color times the share the vertex shader judged at the center (row R3c).
+float4 ResidentHighlightPS(ResidentVertex input) : SV_Target
+{
+    return ResidentColor * (ResidentCoverage(input) * input.Position.z);
 }

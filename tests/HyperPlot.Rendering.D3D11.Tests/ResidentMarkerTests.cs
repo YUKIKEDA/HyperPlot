@@ -179,6 +179,112 @@ public sealed class ResidentMarkerTests
     }
 
     /// <summary>
+    /// Each run is drawn by the pixel shader of its highlight, chosen run by run: a run with no highlight by the shader that
+    /// reads no depth, a run with one by the shader that multiplies the share; a shader is bound only when it changes from the
+    /// run before, and again after a step of another kind (design §6.4 "強調のない run の描き方", §10 R3c2 row).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The snapshot and the target of the first test; a list with a region that holds every center and the cells' records of
+    ///   the first test.
+    ///
+    /// Steps:
+    /// - Draw the runs of page 0 and page 1 with no highlight, the same two with the region, page 0 with no highlight, a
+    ///   rectangle, and page 1 with no highlight; read the shader the context held at each run's draw.
+    ///
+    /// Expected:
+    /// - The shaders are plain, plain, highlight, highlight, plain, plain; the runs bound a shader 4 times.
+    /// </remarks>
+    [Fact]
+    public void Runs_TakeThePixelShaderOfTheirHighlight()
+    {
+        using var built = new Built();
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(Size, Size));
+        var runs = Resident(backend, built.Snapshot, swap: false);
+        var list = new RenderList();
+        var offset = list.AddResidentCells(runs.ResidentCells.Length, out var records);
+        runs.ResidentCells.CopyTo(records);
+        var region = list.AddHighlight(-1e30f, -1e30f, 1e30f, 1e30f);
+        var (page0, page1) = (runs.ResidentRuns[0] with { Cells = offset }, runs.ResidentRuns[1] with { Cells = offset });
+        list.DrawResidentMarkers(page0);
+        list.DrawResidentMarkers(page1);
+        list.DrawResidentMarkers(page0 with { Highlight = region });
+        list.DrawResidentMarkers(page1 with { Highlight = region });
+        list.DrawResidentMarkers(page0);
+        list.DrawRect(1, 1, 2, 2, new Color(0, 0, 0, 255));
+        list.DrawResidentMarkers(page1);
+
+        var drawn = new List<ResidentPixelShader>();
+        backend.ResidentMarkers.Drew = drawn.Add;
+        var binds = backend.ResidentMarkers.PixelShaderBinds;
+        _ = Read(backend, target, list);
+        backend.ResidentMarkers.Drew = null;
+
+        Assert.Equal(
+            [
+                ResidentPixelShader.Plain,
+                ResidentPixelShader.Plain,
+                ResidentPixelShader.Highlight,
+                ResidentPixelShader.Highlight,
+                ResidentPixelShader.Plain,
+                ResidentPixelShader.Plain,
+            ],
+            drawn
+        );
+        Assert.Equal(4, backend.ResidentMarkers.PixelShaderBinds - binds);
+    }
+
+    /// <summary>
+    /// Runs with no highlight, drawn by the shader that reads no depth, draw the same pixels as the shader of a highlight
+    /// draws them with every share 1, the shader every run took before row R3c2 (design §6.4 "強調のない run の描き方").
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The snapshot and the target of the first test; squares of 3 pixels and discs of 7 pixels, at alpha 160.
+    ///
+    /// Steps:
+    /// - For each look: draw a run over each whole page with no highlight, then the same runs with a region that holds every
+    ///   center; read the shader the context held at each run's draw.
+    ///
+    /// Expected:
+    /// - The two pictures are the same, byte for byte, and not only background; the first was drawn by the plain shader
+    ///   alone, the second by the shader of a highlight alone.
+    /// </remarks>
+    [Fact]
+    public void RunsWithoutAHighlight_DrawThePixelsOfTheShaderBefore()
+    {
+        using var built = new Built();
+        using var backend = D3D11Backend.Create(useWarp: true);
+        using var target = backend.CreateRenderTarget(new RenderTargetDescription(Size, Size));
+        foreach (var style in new[] { Style, Style with { Size = 7, Shape = MarkerShape.Circle } })
+        {
+            var plain = Resident(backend, built.Snapshot, swap: false, style);
+            var held = new RenderList();
+            var offset = held.AddResidentCells(plain.ResidentCells.Length, out var records);
+            plain.ResidentCells.CopyTo(records);
+            var region = held.AddHighlight(-1e30f, -1e30f, 1e30f, 1e30f);
+            foreach (ref readonly var run in plain.ResidentRuns)
+            {
+                held.DrawResidentMarkers(run with { Cells = offset, Highlight = region });
+            }
+
+            var drawn = new List<ResidentPixelShader>();
+            backend.ResidentMarkers.Drew = drawn.Add;
+            var withoutHighlight = Read(backend, target, plain);
+            var shadersWithout = drawn.ToArray();
+            drawn.Clear();
+            var withHighlight = Read(backend, target, held);
+            backend.ResidentMarkers.Drew = null;
+
+            Assert.Contains(withoutHighlight.Chunk(4), p => p[2] != Background.B);
+            Assert.True(withoutHighlight.AsSpan().SequenceEqual(withHighlight), $"The {style.Shape} runs differ with and without a highlight.");
+            Assert.Equal([ResidentPixelShader.Plain, ResidentPixelShader.Plain], shadersWithout);
+            Assert.Equal([ResidentPixelShader.Highlight, ResidentPixelShader.Highlight], drawn);
+        }
+    }
+
+    /// <summary>
     /// A zoomed view drawn from the blocks in view alone has the same pixels as the view drawn from every block of the same
     /// pages (design §5.5.2 "見えるブロックだけを描く", §10 R3b2 row): the blocks left out hold no point that reaches the plot
     /// area.
