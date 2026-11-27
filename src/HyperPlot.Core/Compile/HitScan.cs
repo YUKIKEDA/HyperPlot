@@ -548,16 +548,15 @@ internal ref struct HitScan
         }
 
         // Plain comparisons: 131,072 points a call (design §9, P-5). A point that does not map (NaN) fails each test.
-        var (along, across, xMode, radius) = (Along, Across, Mode == HitMode.X, (double)Radius);
+        var (along, across, xMode, radius, panel) = (Along, Across, Mode == HitMode.X, (double)Radius, PanelBox);
         var reach = xMode ? radius : radius + markerRadius;
-        var probe = new PointProbe(along, across, reach, xMode, PanelBox);
         var last = Math.Min(xs.Length, ys.Length);
         xs = xs[..last];
         ys = ys[..last];
 
-        // Most points lie farther along than the reach: that one test, on locals the call does not capture, comes before the
-        // call for the rest. With every point of both passes through a call that was not inlined, and the least kept by
-        // Math.Min, the scan of 131,072 points took 0.47 to 0.60 ms at p50 against row R3a's 0.06 to 0.08 ms (Issue #607).
+        // Most points lie farther along than the reach: that one test comes before the call for the rest. With every point of
+        // both passes through the call, which NativeAOT does not inline, and the least kept by Math.Min, the scan of 131,072
+        // points took 0.47 to 0.63 ms at p50, where row R3a's code took 0.07 to 0.14 ms in alternated runs (Issue #607).
         var (least, nearest) = (double.PositiveInfinity, -1);
         for (var i = 0; i < xs.Length; i++)
         {
@@ -566,7 +565,7 @@ internal ref struct HitScan
                 continue;
             }
 
-            var distance = probe.Distance(xs[i], ys[i], radii.IsEmpty ? reach : radius + radii[i]);
+            var distance = PointDistance(xs[i], ys[i], i, radii);
             if (distance < least)
             {
                 (least, nearest) = (distance, i);
@@ -583,7 +582,7 @@ internal ref struct HitScan
         var answer = nearest;
         for (var i = 0; i < nearest; i++)
         {
-            if (Math.Abs(xs[i] - along) <= reach && probe.Distance(xs[i], ys[i], radii.IsEmpty ? reach : radius + radii[i]) <= bound)
+            if (Math.Abs(xs[i] - along) <= reach && PointDistance(xs[i], ys[i], i, radii) <= bound)
             {
                 answer = i;
                 break;
@@ -593,33 +592,25 @@ internal ref struct HitScan
         var row = first + answer;
         var (dx, dy) = (xs[answer] - along, ys[answer] - across);
         Add(0, row, ValueOf(X, x, row), y.DifferenceAt(row, 0), Math.Sqrt((dx * dx) + (dy * dy)), derived: false, provisional: false);
-    }
 
-    /// <summary>The cursor and the reach of <see cref="Points"/>'s test of one point.</summary>
-    private readonly record struct PointProbe(double Along, double Across, double Reach, bool XMode, PixelBox Panel)
-    {
-        /// <summary>
-        /// Returns a point's distance as the mode measures it, or ∞ when it lies outside the reach or the panel, or does not map.
-        /// A point with a radius of its own (row R3f) is within reach in XY by that radius, not by the largest.
-        /// </summary>
-        /// <param name="pointAlong">The point's pixel along.</param>
-        /// <param name="pointAcross">The point's pixel across.</param>
-        /// <param name="within">The reach of XY for this point: the radius and the point's own radius.</param>
-        /// <returns>The distance, or ∞.</returns>
-        public double Distance(double pointAlong, double pointAcross, double within)
+        // A point's distance as the mode measures it, or ∞ when it lies outside the reach or the panel, or does not map.
+        double PointDistance(double pointAlong, double pointAcross, int i, ReadOnlySpan<float> own)
         {
-            var dx = Math.Abs(pointAlong - Along);
-            if (!(dx <= Reach) || !Panel.Holds(pointAlong, pointAcross))
+            var dx = Math.Abs(pointAlong - along);
+            if (!(dx <= reach) || !panel.Holds(pointAlong, pointAcross))
             {
                 return double.PositiveInfinity;
             }
 
-            if (XMode)
+            var dy = Math.Abs(pointAcross - across);
+
+            if (xMode)
             {
                 return dx;
             }
 
-            var dy = Math.Abs(pointAcross - Across);
+            // A point with a radius of its own (row R3f) is within reach by that radius, not by the largest.
+            var within = own.IsEmpty ? reach : radius + own[i];
             var squared = (dx * dx) + (dy * dy);
             return squared <= within * within ? Math.Sqrt(squared) : double.PositiveInfinity;
         }
