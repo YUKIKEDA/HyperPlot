@@ -176,6 +176,9 @@ internal sealed partial class PlotPlan : IDisposable
     /// </summary>
     internal long ScanTicks { get; private set; }
 
+    /// <summary>Gets the timestamp ticks the last recording of the panels' layers took, after the scan. Measurements only.</summary>
+    internal long RecordTicks { get; private set; }
+
     /// <summary>
     /// Gets or sets the plot's number in its figure, 0 for a plot alone: the budget of the point layers breaks a tie by it
     /// (design §5.5.2 "替える順").
@@ -2698,10 +2701,14 @@ internal sealed partial class PlotPlan : IDisposable
             _context.Budget.Decide(_context.Images);
         }
 
+        // Timed for the measurements of design §9 ("予算が満ちたフレーム": the time of Record).
+        var recorded = TimeProvider.System.GetTimestamp();
         for (var p = 0; p < _panels.Length; p++)
         {
             RecordPanel(spec, p, _panels[p], _guides.PanelAt(p), flipped);
         }
+
+        RecordTicks = TimeProvider.System.GetTimestamp() - recorded;
 
         _guides.RecordOver(_list, spec);
     }

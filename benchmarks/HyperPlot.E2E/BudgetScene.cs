@@ -25,7 +25,7 @@ internal static class BudgetScene
     private static readonly PanelId Panel = new(0, 0);
 
     /// <summary>Runs a scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">"full", the folder of the data files, and the count; or "two".</param>
+    /// <param name="args">"full", the folder of the data files, the count, and a file for one row a measured frame, if any; or "two".</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         const string Usage = "budget full <dir> <count> | budget two";
@@ -34,7 +34,11 @@ internal static class BudgetScene
         {
             return args.Length switch
             {
-                >= 3 when args[0] == "full" => Full(args[1], (long)double.Parse(args[2], CultureInfo.InvariantCulture)),
+                >= 3 when args[0] == "full" => Full(
+                    args[1],
+                    (long)double.Parse(args[2], CultureInfo.InvariantCulture),
+                    args.Length > 3 ? args[3] : null
+                ),
                 >= 1 when args[0] == "two" => Two(),
                 _ => Fail(Usage),
             };
@@ -52,7 +56,7 @@ internal static class BudgetScene
     }
 
     /// <summary>The full-budget frame (design §9 "予算が満ちたフレーム"): the frames of a Points layer past the budget, recorded and not drawn.</summary>
-    private static int Full(string directory, long count)
+    private static int Full(string directory, long count, string? frameFile)
     {
         _ = Directory.CreateDirectory(directory);
         var made = Stopwatch.StartNew();
@@ -112,14 +116,28 @@ internal static class BudgetScene
             var load = MachineLoad.Now();
             var (cpu, scan, searches, missed) = (new List<double>(), new List<double>(), new List<int>(), new List<int>());
             var (fullFrames, allocated) = (0, 0L);
+            var rows = new List<string>(Measured);
             backend.Skips = true;
             for (var f = 0; f < Warmup + Measured; f++)
             {
+                var collections = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+                var at = DateTime.Now;
                 var (time, bytes) = Frame(engine, f % 2 == 0 ? other : view);
                 if (f < Warmup)
                 {
                     continue;
                 }
+
+                // One row a frame: its time of day, its CPU time, the scan, the recording of the layers, the extraction,
+                // the rest of the frame, the collections of each generation during it, and its bytes.
+                var plan = engine.Plan!;
+                var (scanMs, recordMs, extractMs) = (Ms(plan.ScanTicks), Ms(plan.RecordTicks), Ms(plan.ExtractTicks));
+                rows.Add(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{f - Warmup},{at:HH:mm:ss.fff},{time:F3},{scanMs:F3},{recordMs:F3},{extractMs:F3},{time - scanMs - recordMs - extractMs:F3},{GC.CollectionCount(0) - collections.Item1},{GC.CollectionCount(1) - collections.Item2},{GC.CollectionCount(2) - collections.Item3},{bytes}"
+                    )
+                );
 
                 cpu.Add(time);
                 scan.Add(engine.Plan!.ScanTicks * 1000.0 / Stopwatch.Frequency);
@@ -131,11 +149,17 @@ internal static class BudgetScene
 
             backend.Skips = false;
             var (others, own) = MachineLoad.CoresSince(load);
+            if (frameFile is not null)
+            {
+                File.WriteAllLines(frameFile, ["frame,time,cpu_ms,scan_ms,record_ms,extract_ms,rest_ms,gen0,gen1,gen2,bytes", .. rows]);
+            }
+
+            var records = rows.Select(r => double.Parse(r.Split(',')[4], CultureInfo.InvariantCulture)).ToArray();
             var times = cpu.ToArray();
             Console.WriteLine(
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"full frames: frames={times.Length} cpu p50={PointsScene.Percentile(times, 0.5):F3} p95={PointsScene.Percentile(times, 0.95):F3} max={times.Max():F3} ms; scan p50={PointsScene.Percentile([.. scan], 0.5):F3} ms; requests that missed a page p50={PointsScene.Percentile([.. missed.Select(m => (double)m)], 0.5):F0}; searches a frame p50={PointsScene.Percentile([.. searches.Select(s => (double)s)], 0.5):F0} max={searches.Max()}; frames known full {fullFrames}; allocated {allocated} bytes; pages {pages.PagesInUse}; other processes' cores {others:F2}, this process's {own:F2}"
+                    $"full frames: frames={times.Length} cpu p50={PointsScene.Percentile(times, 0.5):F3} p95={PointsScene.Percentile(times, 0.95):F3} max={times.Max():F3} ms; scan p50={PointsScene.Percentile([.. scan], 0.5):F3} ms; record p50={PointsScene.Percentile(records, 0.5):F3} p95={PointsScene.Percentile(records, 0.95):F3} max={records.Max():F3} ms; requests that missed a page p50={PointsScene.Percentile([.. missed.Select(m => (double)m)], 0.5):F0}; searches a frame p50={PointsScene.Percentile([.. searches.Select(s => (double)s)], 0.5):F0} max={searches.Max()}; frames known full {fullFrames}; allocated {allocated} bytes; pages {pages.PagesInUse}; other processes' cores {others:F2}, this process's {own:F2}"
                 )
             );
             return 0;
@@ -222,6 +246,8 @@ internal static class BudgetScene
             }
         }
     }
+
+    private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
 
     /// <summary>Draws one frame, at a view if one is given, and paces it to the period; returns its CPU time in ms and its bytes.</summary>
     private static (double Cpu, long Bytes) Frame(PlotEngine engine, PanelView2D? view)

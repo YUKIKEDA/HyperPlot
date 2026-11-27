@@ -295,7 +295,7 @@ try {
             foreach ($side in @('head', 'base', 'base', 'head', 'head', 'base')) {
                 $round++
                 $program = if ($side -eq 'head') { $exe } else { $Baseline }
-                Invoke-Scene "full 1e9 uniform $side, run $round" @('full', $data5, '1e9') $program 'budget'
+                Invoke-Scene "full 1e9 uniform $side, run $round" @('full', $data5, '1e9', "$Out.full-$side-r$round.csv") $program 'budget'
             }
         }
         finally {
