@@ -104,8 +104,10 @@ public sealed class HeadlessRenderer : IDisposable
     /// and nothing is drawn. While ticks are chosen (the theme shows axes or a grid): a
     /// time scale's domain reaches outside the years 1 to 9999, a <see cref="TickFormatter"/> or
     /// <see cref="TimeTickFormatter"/> returns false or a length outside 0 to 64, or a default label does not fit 64
-    /// characters (design §4.6). Shaping a text failed, or the texts' glyphs need more than 8 atlas pages (design §5.6). An
-    /// exception that a user's <see cref="IScale"/>, tick format, or <see cref="IGeom"/> throws comes out as it is.
+    /// characters (design §4.6). Shaping a text failed, or the texts' glyphs need more than 8 atlas pages (design §5.6). A
+    /// round of the wait for the workers' reads recorded nothing although the reads said to go on (design §5.5.2
+    /// "ヘッドレス"): the render fails rather than draw the same frame again without end. An exception that a user's
+    /// <see cref="IScale"/>, tick format, or <see cref="IGeom"/> throws comes out as it is.
     /// </exception>
     /// <exception cref="GpuDeviceLostException">The device was lost; the next frame makes it again, and the image is gone.</exception>
     /// <exception cref="ObjectDisposedException">The renderer, its backend, or its pool was disposed.</exception>
@@ -136,7 +138,9 @@ public sealed class HeadlessRenderer : IDisposable
             // the GPU (design §5.5.2 "ヘッドレス"): the calling thread reads no copy.
             while (Waits && _backend.Images.Points.AwaitReads())
             {
+                var recordings = _plan.Recordings;
                 list = _plan.Render(plot);
+                Progressed(recordings, _plan.Recordings);
                 _target.Clear(plot.Theme.Background);
                 _backend.Draw(_target, list);
             }
@@ -322,7 +326,9 @@ public sealed class HeadlessRenderer : IDisposable
             // As for a plot (design §5.5.2 "ヘッドレス"): the plots share the cache's ten reads.
             while (Waits && _backend.Images.Points.AwaitReads())
             {
+                var recordings = Recordings(_figure);
                 _figure.Render(figure, views);
+                Progressed(recordings, Recordings(_figure));
                 DrawFigure(figure);
             }
 
@@ -335,6 +341,29 @@ public sealed class HeadlessRenderer : IDisposable
         {
             _backend.Images.Unbounded = false;
         }
+    }
+
+    // The safety valve of the wait (design §5.5.2 "ヘッドレス"): a round that recorded nothing asked for no page and sent
+    // none, so that every round after it would be the same.
+    private static void Progressed(int before, int after)
+    {
+        if (after == before)
+        {
+            throw new InvalidOperationException(
+                "A headless render waited for the workers' reads of pages, and the next round recorded nothing: the render stops rather than draw the same frame again without end (design §5.5.2)."
+            );
+        }
+    }
+
+    private static int Recordings(FigurePlan figure)
+    {
+        var (plans, count) = (figure.Plans, 0);
+        for (var i = 0; i < plans.Count; i++)
+        {
+            count += plans[i].Recordings;
+        }
+
+        return count;
     }
 
     private void DrawFigure(FigureSpec figure)

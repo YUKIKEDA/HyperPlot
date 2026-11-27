@@ -79,6 +79,8 @@ internal sealed class SpatialIndexing
     /// </summary>
     public int CellShare(int layer, long rows)
     {
+        // A column's length never changes (a new length is a new column, and a new plan), so the rows counted at Enter are
+        // the rows each part asks its share for, and the shares together stay within the limit.
         var total = _rows.GetValueOrDefault(layer);
         if (total <= 0)
         {
@@ -339,6 +341,13 @@ internal sealed class IndexedPointPlan : LayerPlan
         var point = (PointLayerSpec)Spec;
         _cache = context.Images;
         _markerRadius = point.Size * context.Scale / 2;
+
+        // The drawing and the cells' records come from the scan before the recording (design §5.5.2 "記録の前の走査"),
+        // which every recording runs first, the plot's, the annotations', and a figure's alike.
+        if (_scanFrame != context.Images.Frame)
+        {
+            throw new InvalidOperationException("A point layer on the index path was recorded without the scan of its frame (design §5.5.2).");
+        }
 
         // The layer's drawing, chosen once a frame for all its parts from their scans; a part on its coarse snapshot draws a
         // density anyway.
