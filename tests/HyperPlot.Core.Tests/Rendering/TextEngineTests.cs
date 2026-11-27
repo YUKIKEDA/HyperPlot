@@ -587,6 +587,56 @@ public sealed class TextEngineTests
     }
 
     /// <summary>
+    /// A glyph new to the atlas, placed on a shelf that has room, allocates nothing (invariant 3, Issue #532): a wheel frame
+    /// under a still hover drew a tooltip whose digits came at new phases, and the atlas's table of glyphs and its shelf's
+    /// list of glyphs grew.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine over the fake backend whose glyphs are 5 × 8 pixels, so that every glyph goes on one shelf (341 cells of
+    ///   6 pixels); 100 texts of one character each, codes 0x100 to 0x163, shaped first, so that a draw shapes nothing.
+    ///
+    /// Steps:
+    /// - With <c>PerformanceAssert.DoesNotAllocate</c> (1 run to warm, a collection, 1 run counted), each run prepares 50 of
+    ///   the texts, one a draw, each a glyph the atlas has not held, and clears the written rectangles as a backend does:
+    ///   texts 0 to 49 warm, texts 50 to 99 are counted. The counted run takes the atlas past the 89 glyphs where its table
+    ///   grew, and its shelf past the 64 where the shelf's list grew.
+    ///
+    /// Expected:
+    /// - 0 bytes; 100 glyphs rasterized, on one page.
+    /// </remarks>
+    [Fact]
+    public void Atlas_NewGlyphsOnAShelfWithRoom_AllocateNothing()
+    {
+        var fake = new FakeTextBackend { Box = static (_, _) => new GlyphBox(0, -8, 5, 8) };
+        fake.Rasterized.Capacity = 128;
+        var engine = new TextEngine(fake);
+        var texts = Enumerable.Range(0, 100).Select(i => ((char)(0x100 + i)).ToString()).ToArray();
+        foreach (var text in texts)
+        {
+            _ = engine.Shape(text, Style);
+        }
+
+        var list = new RenderList();
+        list.DrawText(texts[0], new Vector2(20, 100), Style);
+        list.Clear();
+        var next = 0;
+        PerformanceAssert.DoesNotAllocate(() =>
+        {
+            for (var i = 0; i < 50; i++)
+            {
+                list.Clear();
+                list.DrawText(texts[next++], new Vector2(20, 100), Style);
+                engine.Prepare(list, 640, 480);
+                engine.Atlas.ClearDirty();
+            }
+        });
+
+        Assert.Equal(100, fake.Rasterized.Count);
+        Assert.Equal(1, engine.Atlas.PageCount);
+    }
+
+    /// <summary>
     /// A glyph outside the clip within the target is not recorded, but placed; one more than a page from the clip, or
     /// under an empty clip, is not even placed (design §5.6).
     /// </summary>
