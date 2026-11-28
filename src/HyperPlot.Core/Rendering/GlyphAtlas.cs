@@ -13,7 +13,9 @@ namespace HyperPlot.Rendering;
 /// place. When no such shelf is left, it adds a page, up to <see cref="MaxPages"/>. The thread that draws owns it.
 /// A new glyph on a shelf that has room allocates nothing while the atlas holds at most <see cref="GlyphCapacity"/> glyphs
 /// (Issue #532): the table of glyphs has that room from the start, and a shelf finds its glyphs through the table's slots,
-/// not a list of its own.
+/// not a list of its own. Past that number the table grows only when it holds more glyphs than ever before, since it
+/// reuses the slots of the glyphs that emptied shelves removed. It allocates otherwise for a new shelf or page, a page's <c>Dirty</c> list on a <c>Draw</c> that writes more rectangles than ever, and the raster scratch
+/// for a glyph larger than any before.
 /// </remarks>
 internal sealed class GlyphAtlas
 {
