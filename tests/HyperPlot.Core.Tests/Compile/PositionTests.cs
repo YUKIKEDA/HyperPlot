@@ -1171,14 +1171,16 @@ public sealed class PositionTests
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - The stack test's bars split by 3 groups; 4 bars over a numeric x colored by 4 numbers through viridis; a polar
-    ///   system on a 100 × 100 target without guides.
+    /// - The stack test's bars split by 3 groups; 4 bars at x = 10, 30, 50, 70, 10 wide, of heights 40, 60, 50, 70, colored
+    ///   by 0, 1, 2, 3 through viridis; a polar system on a 100 × 100 target without guides.
     ///
     /// Steps:
-    /// - Render each; read the colors of the sector calls of the data (the panel's own calls first).
+    /// - Render each; read the colors and the sizes of the sector calls of the data (the panel's own calls first).
     ///
     /// Expected:
-    /// - The three groups' palette colors among the stacked calls; more than one color among the colored bars' calls.
+    /// - The three groups' palette colors among the stacked calls. The colored bars: one call a bar in x's order, colored
+    ///   viridis at t = 0, 1 / 3, 2 / 3, and 1, each of 4 sectors (a bar spans 0.2π, cut in pieces of at most π / 16):
+    ///   16 in all.
     /// </remarks>
     [Fact]
     public void Polar_GivesEachColorItsOwnShape()
@@ -1220,7 +1222,7 @@ public sealed class PositionTests
                 new BarLayerSpec
                 {
                     X = n.Col<double>("x"),
-                    Y = n.Col<double>("v"),
+                    Y = n.Col<double>("h"),
                     Width = 10,
                     ColorBy = n.Col<double>("v"),
                 }
@@ -1230,8 +1232,13 @@ public sealed class PositionTests
                 ScaleColor = Scale.Sequential(ColorMaps.Viridis, Scale.Linear()),
             }
         );
-        var barColors = bars.SectorCalls.ToArray().Select(c => c.Color).Where(c => c != Premultiplied(TestPlans.Bare.PanelBackground)).ToHashSet();
-        Assert.True(barColors.Count > 1, $"{barColors.Count} colors");
+        var barCalls = bars
+            .SectorCalls.ToArray()
+            .Where(c => c.Color != Premultiplied(TestPlans.Bare.PanelBackground))
+            .Select(c => (c.Color, c.Count))
+            .ToArray();
+        Assert.Equal([.. Enumerable.Range(0, 4).Select(k => (Premultiplied(ColorMaps.Viridis.Map(k / 3.0)), 4))], barCalls);
+        Assert.Equal(16, barCalls.Sum(c => c.Count));
     }
 
     /// <summary>
