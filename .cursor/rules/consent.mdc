@@ -12,7 +12,7 @@ These are questions, not orders. Do not create, edit, close, or retitle Issues o
 - "Is it required?" "Should it be X?"
 - Any yes/no about scope, a milestone, or whether a roadmap row exists.
 
-For such a question, list the options, give a recommendation, and state each option's advantage and disadvantage. Then stop and wait.
+For such a question, list the options, give a recommendation, and state each option's advantage and disadvantage. Then stop and wait. An effect that several options share is written under each of them, not only as a disadvantage of one: written under one alone, it reads as a difference. Issue #361's question gave option A the disadvantage that stacks of one sign change their numbers; option C changed them too, the owner chose C on that reading, and the question had to be asked again.
 
 The reason for a recommendation is the library's goal and its functional and non-functional requirements (`docs/requirements.ja.md`, `docs/design.ja.md` §0, §11). Implementation effort, volume, or ease is not a reason (`.cursor/rules/scope.mdc`), and neither is how soon it can be built.
 
