@@ -62,7 +62,7 @@ public sealed partial class PlotEngine : IDisposable
     private bool _quietLinks;
 
     // The last zoom (design §6.2, Issue #633): its panel, pixel, and shares of the primary and the secondary scales, and the
-    // view it left. A zoom at that pixel over that view takes those shares again; a resize drops them.
+    // view it left. A zoom at that pixel over that view takes those shares again; a resize or a new spec drops them.
     private bool _zoomPinned;
     private PanelId _zoomPanel;
     private Vector2 _zoomPixel;
@@ -245,6 +245,7 @@ public sealed partial class PlotEngine : IDisposable
 
         (_plot, _figure) = (plot, null);
         _kept = false;
+        _zoomPinned = false;
         RequestFrame();
     }
 
@@ -270,6 +271,7 @@ public sealed partial class PlotEngine : IDisposable
 
         (_plot, _figure) = (null, figure);
         _kept = false;
+        _zoomPinned = false;
         RequestFrame();
     }
 

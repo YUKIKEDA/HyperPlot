@@ -331,34 +331,51 @@ public sealed class ViewOperationTests
     }
 
     /// <summary>
-    /// A zoom reads the pixel's share from the panel drawn now when the pixel, the view, or the target's size changed after
-    /// the zoom before (design §6.2, Issue #633): the value under the pixel stays under it in that panel.
+    /// A zoom reads the pixel's share from the panel drawn now when the pixel, the view, the target's size, or the spec
+    /// changed after the zoom before (design §6.2, Issue #633): the value under the pixel stays under it in that panel.
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - The fixture's line with y fixed to [0, 100], whose panel moves between the full view and a view zoomed in by a
-    ///   notch; animations off.
+    ///   notch, as a plot, or as a figure of that plot alone in the last case; animations off.
     ///
     /// Steps:
     /// - Zoom in by 1.2 at the middle of the panel and draw. Then one of: nothing more, and zoom again a pixel to the right;
-    ///   pan by 3 pixels and draw; resize the target to 700 × 360 and draw. Read the values under the pixel of the next zoom,
-    ///   zoom by 1.2 there (at the first pixel in the last two cases), and read them again.
+    ///   pan by 3 pixels and draw; resize the target to 700 × 360 and draw; set the plot again with a title, which keeps
+    ///   the view, and draw; set the figure again with the titled plot, which keeps the view, and draw. Read the values under
+    ///   the pixel of the next zoom, zoom by 1.2 there (at the first pixel in all cases but the first), and read them again.
     ///
     /// Expected:
-    /// - The panel at the next zoom is not the panel at the first; the values under the pixel unchanged within 1e-9.
+    /// - The view before the next zoom is the first zoom's; the panel at the next zoom is not the panel at the first; the
+    ///   values under the pixel unchanged within 1e-9.
     /// </remarks>
-    /// <param name="change">0 another pixel, 1 a pan, 2 a resize.</param>
+    /// <param name="change">0 another pixel, 1 a pan, 2 a resize, 3 a new plot, 4 a new figure.</param>
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
     [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
     public void ZoomAt_AfterAChange_ReadsTheShareFromThePanelNow(int change)
     {
         using var f = new EngineFixture(b => b.ScaleY(Scale.Linear().WithDomain(0, 100)));
         f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
-        var (first, at) = (f.Rect, f.Middle);
+        var titled = Plot.Create(f.Table)
+            .Line(f.Table.Col<double>("x"), f.Table.Col<float>("y"))
+            .ScaleY(Scale.Linear().WithDomain(0, 100))
+            .Title("A title")
+            .Build();
+        if (change == 4)
+        {
+            f.Engine.SetFigure(Figure.HConcat(f.Spec));
+            f.Engine.RenderFrame();
+        }
+
+        var first = f.Engine.PanelRectangle(EngineFixture.Panel);
+        var at = new Vector2(first.Left + (first.Width / 2f), first.Top + (first.Height / 2f));
         f.Engine.Views.ZoomAt(EngineFixture.Panel, at, 1.2);
         f.Engine.RenderFrame();
+        var zoomed = f.Engine.CurrentView(EngineFixture.Panel);
         switch (change)
         {
             case 0:
@@ -367,14 +384,25 @@ public sealed class ViewOperationTests
             case 1:
                 f.Engine.Views.Pan(EngineFixture.Panel, new Vector2(3, 0));
                 f.Engine.RenderFrame();
+                zoomed = f.Engine.CurrentView(EngineFixture.Panel);
+                break;
+            case 2:
+                f.Engine.Resize(700, EngineFixture.Height, 1);
+                f.Engine.RenderFrame();
+                break;
+            case 3:
+                f.Engine.SetPlot(titled);
+                f.Engine.RenderFrame();
                 break;
             default:
-                f.Engine.Resize(700, EngineFixture.Height, 1);
+                f.Engine.SetFigure(Figure.HConcat(titled));
                 f.Engine.RenderFrame();
                 break;
         }
 
-        Assert.NotEqual(first, f.Rect);
+        var (now, before) = ((PanelView2D)f.Engine.CurrentView(EngineFixture.Panel), (PanelView2D)zoomed);
+        Assert.Equal((before.X, before.Y), (now.X, now.Y));
+        Assert.NotEqual(first, f.Engine.PanelRectangle(EngineFixture.Panel));
         var (x, y) = f.Engine.PixelToView(EngineFixture.Panel, at);
         f.Engine.Views.ZoomAt(EngineFixture.Panel, at, 1.2);
         var (zoomedX, zoomedY) = f.Engine.PixelToView(EngineFixture.Panel, at);
