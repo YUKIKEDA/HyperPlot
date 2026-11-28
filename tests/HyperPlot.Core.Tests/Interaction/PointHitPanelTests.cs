@@ -183,6 +183,8 @@ public sealed class PointHitPanelTests
             using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
             engine.SetPlot(builder.ScaleX(Scale.Linear().WithDomain(0, 100)).ScaleY(Scale.Linear().WithDomain(0, 100)).Build());
             engine.RenderFrame();
+
+            // Not an allocation test: the message is built on every run, a pass included.
             Assert.False(engine.IsProvisional, $"bars {bars}: the first frame has its indexes.");
             engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(40.0, 60.0), ViewRange.FromValues(40.0, 60.0)));
             engine.RenderFrame();

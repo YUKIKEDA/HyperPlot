@@ -37,6 +37,8 @@ public sealed class HitScanTests
     public void Points_AnswerAsTheBruteForce()
     {
         using var store = new PyramidStore();
+
+        // The scan reads the columns only for the answer's data values (ValueOf, DifferenceAt); this test checks the answered row.
         using var xColumn = Column.Wrap(new double[300]);
         using var yColumn = Column.Wrap(new double[300]);
         var random = new Random(643);
