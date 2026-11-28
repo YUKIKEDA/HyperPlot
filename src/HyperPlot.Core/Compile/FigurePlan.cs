@@ -55,6 +55,23 @@ internal sealed class FigurePlan : IDisposable
         }
     } = true;
 
+    /// <summary>
+    /// Gets or sets the machine's scale of the predicted GPU time (design §5.5.2 "ほかの機械"), checked by the caller: set on
+    /// every plot's plan, each of which records again at the next Render when it changes.
+    /// </summary>
+    internal double GpuTimeScale
+    {
+        get;
+        set
+        {
+            field = value;
+            foreach (var plan in _plans)
+            {
+                plan.GpuTimeScale = value;
+            }
+        }
+    } = 1;
+
     /// <summary>Gets the figure's own list: the cells' backgrounds and the title, drawn before the plots' lists.</summary>
     internal RenderList List => _list;
 
@@ -303,7 +320,12 @@ internal sealed class FigurePlan : IDisposable
                 plans[i] =
                     i < _plans.Length
                         ? _plans[i]
-                        : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store, _budget) { Waits = Waits, Ordinal = i };
+                        : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store, _budget)
+                        {
+                            Waits = Waits,
+                            Ordinal = i,
+                            GpuTimeScale = GpuTimeScale,
+                        };
             }
             else
             {
