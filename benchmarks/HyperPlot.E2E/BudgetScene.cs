@@ -28,7 +28,8 @@ internal static class BudgetScene
     /// <param name="args">"full", the folder of the data files, the count, and a file for one row a measured frame, if any; or "two".</param>
     public static int Run(ReadOnlySpan<string> args)
     {
-        const string Usage = "budget full <dir> <count> | budget two";
+        const string Usage =
+            "budget full <dir> <count> | budget two | budget figure <raw|dense> <dir> [frame file] [count of dense, 1e8 by default] [plots, 4 by default]";
         _ = PointsScene.TimeBeginPeriod(1);
         try
         {
@@ -40,6 +41,13 @@ internal static class BudgetScene
                     args.Length > 3 ? args[3] : null
                 ),
                 >= 1 when args[0] == "two" => Two(),
+                >= 3 when args[0] == "figure" && args[1] is "raw" or "dense" => FigureFrames(
+                    args[1] == "dense",
+                    args[2],
+                    args.Length > 3 && args[3].Length > 0 ? args[3] : null,
+                    args.Length > 4 ? (long)double.Parse(args[4], CultureInfo.InvariantCulture) : 100_000_000,
+                    args.Length > 5 ? int.Parse(args[5], CultureInfo.InvariantCulture) : 4
+                ),
                 _ => Fail(Usage),
             };
         }
@@ -236,6 +244,170 @@ internal static class BudgetScene
                 )
             );
             return settled < 0 ? 1 : 0;
+        }
+        finally
+        {
+            pool.Dispose();
+            foreach (var column in columns)
+            {
+                column.Dispose();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The frames of a figure whose plots but one do not change (Issue #636, design §9 "変わらないプロットの記録し直し"): a
+    /// 2 × 2 figure of four plots, each a point layer; plot 0's view moves a millionth of its side each frame, so that each
+    /// frame records it, and the other three do not change. "raw": four Points layers of 4,000,000 seeded uniform points of
+    /// their own (62 pages each, within the budget together). "dense": four Auto layers over the same uniform points of the
+    /// density scene's files (1e8 by default), which draw densities. Once every index is complete and the frames are not provisional for
+    /// 60 frames, 600 frames are recorded and not drawn; the CPU time of a frame, and the scan and the recording of plot 0 and
+    /// of the three others, those of the frames they recorded.
+    /// </summary>
+    private static int FigureFrames(bool dense, string directory, string? frameFile, long denseCount, int plotCount)
+    {
+        var columns = new List<IDisposable>();
+        var plots = new PlotSpec[plotCount];
+        double side;
+        if (dense)
+        {
+            _ = Directory.CreateDirectory(directory);
+            var (xPath, yPath, written) = DensityScene.Ensure(directory, denseCount, "uniform");
+            Console.WriteLine($"files: {xPath} and {yPath}, {(written ? "written now" : "kept")}");
+            var (x, y) = (Column.MapFile<float>(xPath), Column.MapFile<float>(yPath));
+            columns.Add(x);
+            columns.Add(y);
+            var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+            side = PointFiles.Side;
+            for (var k = 0; k < plots.Length; k++)
+            {
+                plots[k] = Plot.Create(table)
+                    .Point(table.Col<float>("x"), table.Col<float>("y"))
+                    .ScaleX(Scale.Linear().WithDomain(0, side))
+                    .ScaleY(Scale.Linear().WithDomain(0, side))
+                    .Build();
+            }
+        }
+        else
+        {
+            const int Count = 4_000_000;
+            side = 1;
+            for (var k = 0; k < plots.Length; k++)
+            {
+                var random = new Random(636 + k);
+                var (xs, ys) = (new float[Count], new float[Count]);
+                for (var i = 0; i < Count; i++)
+                {
+                    (xs[i], ys[i]) = ((float)random.NextDouble(), (float)random.NextDouble());
+                }
+
+                var (x, y) = (Column.Wrap(xs), Column.Wrap(ys));
+                columns.Add(x);
+                columns.Add(y);
+                var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+                plots[k] = Plot.Create(table)
+                    .Point(table.Col<float>("x"), table.Col<float>("y"), p => p.Draw(PointDraw.Points))
+                    .ScaleX(Scale.Linear().WithDomain(0, 1))
+                    .ScaleY(Scale.Linear().WithDomain(0, 1))
+                    .Build();
+            }
+        }
+
+        using var inner = D3D11Backend.Create();
+        var backend = new PointsScene.CountingBackend(inner);
+        var pool = new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1));
+        try
+        {
+            _ = DensityScene.Warm(inner);
+            using var engine = new PlotEngine(backend, 1920, 1080, 1, pool);
+            engine.SetFigure(Figure.Concat(Math.Min(2, plotCount), plots));
+            var view = new PanelView2D(ViewRange.FromValues(0, side), ViewRange.FromValues(0, side));
+            var nudge = side * 1e-6;
+            var other = new PanelView2D(ViewRange.FromValues(nudge, side + nudge), ViewRange.FromValues(0, side));
+            var shown = Stopwatch.StartNew();
+            var (steady, frames) = (0, 0);
+            while (steady < 60)
+            {
+                if (shown.Elapsed > Deadline)
+                {
+                    Console.Error.WriteLine("figure: the frames did not settle before the deadline");
+                    return 1;
+                }
+
+                _ = Frame(engine, null);
+                frames++;
+                var plans = engine.Figure!.Plans;
+                var complete = plans.All(plan =>
+                    plan.Layers is { Count: > 0 } layers && layers[0] is IndexedPointPlan { SpatialIndex.IsComplete: true }
+                );
+                steady = complete && !engine.IsProvisional ? steady + 1 : 0;
+            }
+
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"settled: {shown.Elapsed.TotalSeconds:F1} s, {frames} frames; pages {backend.Images.Points.PagesInUse}, tiles' slots {backend.Images.SlotsInUse}, bytes {backend.Images.BytesInUse} of {backend.Images.Budget}"
+                )
+            );
+            var load = MachineLoad.Now();
+            var (cpu, first, rest, recorded, allocated) = (new List<double>(), new List<double>(), new List<double>(), 0, 0L);
+            var rows = new List<string>(Measured);
+            var figurePlans = engine.Figure!.Plans;
+            var counts = new int[figurePlans.Count];
+            backend.Skips = true;
+            for (var f = 0; f < Warmup + Measured; f++)
+            {
+                for (var k = 0; k < counts.Length; k++)
+                {
+                    counts[k] = figurePlans[k].Recordings;
+                }
+
+                var at = DateTime.Now;
+                engine.Views.SetView(Panel, f % 2 == 0 ? other : view);
+                var (time, bytes) = Frame(engine, null);
+                if (f < Warmup)
+                {
+                    continue;
+                }
+
+                // Plot 0's scan and recording, and those of the plots that do not change, summed over the ones that recorded.
+                var plan = figurePlans[0];
+                var own = Ms(plan.ScanTicks) + Ms(plan.RecordTicks);
+                var (others, again) = (0.0, 0);
+                for (var k = 1; k < counts.Length; k++)
+                {
+                    if (figurePlans[k].Recordings != counts[k])
+                    {
+                        others += Ms(figurePlans[k].ScanTicks) + Ms(figurePlans[k].RecordTicks);
+                        again++;
+                    }
+                }
+
+                rows.Add(
+                    string.Create(CultureInfo.InvariantCulture, $"{f - Warmup},{at:HH:mm:ss.fff},{time:F3},{own:F3},{others:F3},{again},{bytes}")
+                );
+                cpu.Add(time);
+                first.Add(own);
+                rest.Add(others);
+                recorded += again;
+                allocated += bytes;
+            }
+
+            backend.Skips = false;
+            var (otherCores, ownCores) = MachineLoad.CoresSince(load);
+            if (frameFile is not null)
+            {
+                File.WriteAllLines(frameFile, ["frame,time,cpu_ms,plot0_scan_record_ms,others_scan_record_ms,others_recorded,bytes", .. rows]);
+            }
+
+            var times = cpu.ToArray();
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"figure {(dense ? "dense" : "raw")}: frames={times.Length} cpu p50={PointsScene.Percentile(times, 0.5):F3} p95={PointsScene.Percentile(times, 0.95):F3} max={times.Max():F3} ms; plot 0 scan+record p50={PointsScene.Percentile([.. first], 0.5):F3} ms; the other plots' scan+record a frame p50={PointsScene.Percentile([.. rest], 0.5):F3} p95={PointsScene.Percentile([.. rest], 0.95):F3} ms; recordings of the other plots {recorded} in {times.Length} frames; allocated {allocated} bytes; other processes' cores {otherCores:F2}, this process's {ownCores:F2}"
+                )
+            );
+            return 0;
         }
         finally
         {

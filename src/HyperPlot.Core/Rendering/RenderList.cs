@@ -1356,6 +1356,9 @@ internal struct ImageInstance
     /// <summary>The bit of <see cref="Flags"/> that leaves a number read as exactly 0 transparent (row R3b1).</summary>
     internal const uint ZeroTransparent = 64;
 
+    /// <summary>The bit of <see cref="Flags"/> of an RGBA tile, which reads no color table.</summary>
+    internal const uint Rgba = 2;
+
     /// <summary>The target point of the tile's texel corner (0, 0), in physical pixels.</summary>
     public Vector2 Origin;
 

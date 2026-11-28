@@ -1270,6 +1270,19 @@ internal abstract class LayerPlan
     /// </summary>
     internal virtual void Scan(RecordContext context) { }
 
+    /// <summary>
+    /// Takes the last frame's scan as this frame's, for a plot that does not change and keeps its list (design §5.5.2 "予算",
+    /// Issue #636): the view, the spec, and the snapshot are the last scan's, so its findings stand, and the layer enters the
+    /// frame's budget with them. Nothing for a layer that does not scan.
+    /// </summary>
+    internal virtual void Carry(RecordContext context) { }
+
+    /// <summary>
+    /// Returns whether the frame's budget chose another drawing than the one the layer's last recording drew (design §5.5.2
+    /// "予算"): a kept list is then recorded again. Valid after the budget chose; false for a layer that does not scan.
+    /// </summary>
+    internal virtual bool DrawingChanged(RecordContext context) => false;
+
     /// <summary>Gets a value indicating whether the layer has a scan before the recording (<see cref="Scan"/>): a point layer on the index path, or a split of one.</summary>
     internal virtual bool Scans => false;
 
