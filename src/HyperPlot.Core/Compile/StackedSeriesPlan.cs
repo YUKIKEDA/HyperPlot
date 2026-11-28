@@ -13,6 +13,12 @@ internal sealed class StackedSeriesPlan : LayerPlan
     /// <summary>The series a group of the stack is numbered by in a hit test: its positive side's and its negative side's.</summary>
     private const int GroupWidth = 2;
 
+    /// <summary>The series a group's positive side answers as, within its group's two.</summary>
+    private const int PositiveSide = 0;
+
+    /// <summary>The series a group's negative side answers as, within its group's two.</summary>
+    private const int NegativeSide = 1;
+
     private readonly List<Part> _parts = [];
     private readonly SeriesStack _stack;
     private readonly long[] _built;
@@ -209,7 +215,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
             }
 
             // A band's inner edge is the outer edge of the group next to 0, which answers for it (Issue #361).
-            scan.Side(part.Up ? 0 : 1, _stack.X, part.Outer!, part.Inner, RowRange.All);
+            scan.Side(part.Up ? PositiveSide : NegativeSide, _stack.X, part.Outer!, part.Inner, RowRange.All);
         }
 
         (scan.SeriesBase, scan.SeriesWidth, scan.Derived) = (base0, width, derived);
@@ -397,7 +403,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
     /// 2 · group and the negative one 2 · group + 1.
     /// </summary>
     private static bool Answers(in Part part, int series) =>
-        part.Plan is not LinePlan && Math.Max(part.Category, 0) == series / GroupWidth && part.Up == (series % GroupWidth == 0);
+        part.Plan is not LinePlan && Math.Max(part.Category, 0) == series / GroupWidth && part.Up == (series % GroupWidth == PositiveSide);
 }
 
 /// <summary>
