@@ -19,7 +19,10 @@ public sealed class ResidencyCache
     /// <summary>The bytes of GPU memory the tiles and the pages of points take at most together: 268,435,456 B (256 MiB).</summary>
     public const long DefaultBudget = 256L << 20;
 
-    /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs, its pages of points ten at a time.</summary>
+    /// <summary>
+    /// The bytes a frame of the cache sends at most, every plan's that drew in it together (design §5.5.2 "1 tick に送る量"): 4
+    /// MB. A headless render sends all it needs, its pages of points ten at a time.
+    /// </summary>
     public const int FrameUpload = 4 << 20;
 
     /// <summary>The side of a slot's face: a tile of 256 texels and a border of a texel copied from its neighbors.</summary>
@@ -54,9 +57,17 @@ public sealed class ResidencyCache
     // The release (Releases) at which each table row last took a map, which a kept list checks (design §5.5.2 "予算").
     private readonly long[] _tableWritten = new long[MaxColorTables];
     private readonly List<Upload> _uploads = [];
+
+    // The plans that draw with the cache (design §5.5.2 "キャッシュを分け合う計画"), in the order they registered.
+    private readonly List<SharingPlan> _plans = [];
     private uint[] _staging = new uint[FrameUpload / 4];
     private int _stagingFaces;
     private long _frame;
+    private long _lastPlan;
+
+    // The bytes of tiles and pages staged in the current frame, every plan's (design §5.5.2 "1 tick に送る量"): set to 0 when
+    // the frame moves on, and not when the backend has sent them.
+    private long _staged;
 
     // The frame in which the cache found that nothing could be let go of (design §5.5.2 "予算が満ちたフレーム").
     private long _fullFrame = -1;
@@ -76,13 +87,25 @@ public sealed class ResidencyCache
         Points = new PointPages(this);
     }
 
+    /// <summary>
+    /// Gets the choice of the point layers' drawings (design §5.5.2 "予算", "キャッシュを分け合う計画"): one for the cache,
+    /// which every plan that draws with it chooses by in turn.
+    /// </summary>
+    internal PointBudget PointBudget { get; } = new();
+
+    /// <summary>Gets the plans registered with the cache, in the order they registered (design §5.5.2 "計画の登録と外し").</summary>
+    internal ReadOnlySpan<SharingPlan> Plans => CollectionsMarshal.AsSpan(_plans);
+
     /// <summary>Gets the bytes the tiles and the pages of points take at most together: <see cref="DefaultBudget"/>, or less for a test.</summary>
     internal long Budget { get; }
 
     /// <summary>Gets the pages of points (row R3a), which share the budget, its least-recently-used order, and a frame's upload with the tiles.</summary>
     internal PointPages Points { get; }
 
-    /// <summary>Gets the number of the current frame: what is asked for in it is not let go of for another in it.</summary>
+    /// <summary>
+    /// Gets the number of the current frame: a tick of the plans that draw with the cache (design §5.5.2 "tick の数え方").
+    /// What is asked for in it is not let go of for another in it, whichever plan asked.
+    /// </summary>
     internal long Frame => _frame;
 
     /// <summary>
@@ -137,8 +160,15 @@ public sealed class ResidencyCache
     /// <summary>Gets the color tables to send before the frame draws.</summary>
     internal ReadOnlySpan<(int Row, ColorMap Map)> TableUploads => CollectionsMarshal.AsSpan(_tableUploads);
 
-    /// <summary>Gets the number of bytes the current frame sends: its tiles and its pages of points.</summary>
+    /// <summary>Gets the number of bytes staged since the backend last sent: tiles and pages of points. Tests only: the frame's upload is bounded by <see cref="BytesThisTick"/>.</summary>
     internal long BytesThisFrame => ((long)_stagingFaces * FaceBytes) + Points.BytesThisFrame;
+
+    /// <summary>
+    /// Gets the number of bytes the current frame has staged to send, every plan's that drew in it (design §5.5.2 "1 tick に
+    /// 送る量"): what <see cref="FrameUpload"/> bounds. A send (<see cref="Sent"/>) does not take it back; the next frame
+    /// starts it at 0.
+    /// </summary>
+    internal long BytesThisTick => _staged;
 
     /// <summary>Gets the number of slots in use over both formats. Tests only.</summary>
     internal int SlotsInUse => _pools[0].InUse + _pools[1].InUse;
@@ -150,17 +180,64 @@ public sealed class ResidencyCache
     internal ReadOnlySpan<uint> Face(in Upload upload) => _staging.AsSpan(upload.Offset, FaceTexels);
 
     /// <summary>
-    /// Starts a frame: tiles asked for from now on are this frame's, and are not let go of for another. The reads of pages
-    /// the last frame did not ask for are withdrawn (design §5.5.2 "要らなくなった読み").
+    /// Registers a plan that draws with the cache (design §5.5.2 "計画の登録と外し"): a plot's plan alone or a figure's, when
+    /// it is made. Its number counts from 1 in the order of the registrations and is never used again. Off the frame path:
+    /// it allocates the plan's entry.
+    /// </summary>
+    /// <remarks>
+    /// The plans of a cache draw on one thread, the backend's (design §5.2), and the registrations and the frames read the
+    /// list of plans on that thread too; the cache does not check the thread. A plan made or disposed on another thread
+    /// while a frame reads the list makes the frame's sum wrong, or its read of the list throw.
+    /// </remarks>
+    internal SharingPlan Register()
+    {
+        var plan = new SharingPlan(++_lastPlan);
+        _plans.Add(plan);
+        return plan;
+    }
+
+    /// <summary>Takes a plan off the cache when it is disposed (design §5.5.2 "計画の登録と外し"): no later choice counts it.</summary>
+    internal void Unregister(SharingPlan plan) => _ = _plans.Remove(plan);
+
+    /// <summary>
+    /// Starts a plan's frame (design §5.5.2 "tick の数え方"): the plan joins the current frame of the cache, or, when it is in
+    /// that frame already, the cache moves on to the next frame first (<see cref="BeginFrame()"/>), so that the plans drawn
+    /// in turn on the same ticks share one frame a tick. The choice of the point layers begins the plan's (<see
+    /// cref="PointBudget"/>). Searches nothing.
+    /// </summary>
+    internal void BeginFrame(SharingPlan plan)
+    {
+        // A plan starts in frame 0, so the cache's first frame moves on too, from the frame 0 every slot and read starts in.
+        if (plan.Frame == _frame)
+        {
+            BeginFrame();
+        }
+
+        (plan.Frame, plan.Raw) = (_frame, 0);
+        PointBudget.Begin(plan, _frame);
+    }
+
+    /// <summary>
+    /// Moves the cache to the next frame: tiles asked for from now on are this frame's, and are not let go of for another.
+    /// The reads of pages the last frame did not ask for are withdrawn (design §5.5.2 "要らなくなった読み"), and the frame's
+    /// upload starts at 0 (design §5.5.2 "1 tick に送る量"). A plan's frame begins with <see cref="BeginFrame(SharingPlan)"/>;
+    /// a test of the cache alone calls this one.
     /// </summary>
     internal void BeginFrame()
     {
         _tilesUsedLastFrame = _pools[0].Used + _pools[1].Used;
         _pools[0].Used = 0;
         _pools[1].Used = 0;
+        _staged = 0;
         _frame++;
         Points.BeginFrame();
     }
+
+    /// <summary>
+    /// Counts the bytes of a page of points staged in the current frame (<see cref="BytesThisTick"/>). A page staged and let
+    /// go of before it was sent stays counted: the frame's upload never grows past <see cref="FrameUpload"/> by it.
+    /// </summary>
+    internal void Stage(long bytes) => _staged += bytes;
 
     /// <summary>
     /// Returns whether no room can be made in this frame for the given bytes (design §5.5.2 "予算が満ちたフレーム"): the
@@ -501,12 +578,12 @@ public sealed class ResidencyCache
 
     /// <summary>
     /// Returns a slot of a format for a face to send, and where the face's texels go in the staging; −1 when the frame's
-    /// upload or the budget has no room for it.
+    /// upload, every plan's of the frame (design §5.5.2 "1 tick に送る量"), or the budget has no room for it.
     /// </summary>
     private int Take(Format format, out int offset)
     {
         offset = 0;
-        if (!Unbounded && BytesThisFrame + FaceBytes > FrameUpload)
+        if (!Unbounded && _staged + FaceBytes > FrameUpload)
         {
             return -1;
         }
@@ -551,6 +628,7 @@ public sealed class ResidencyCache
     private void Staged(Format format, int slot, int offset)
     {
         _stagingFaces++;
+        _staged += FaceBytes;
         _uploads.Add(new Upload(format, slot, offset));
     }
 
@@ -566,6 +644,31 @@ public sealed class ResidencyCache
 
     /// <summary>A tile to send: its format, its slot, and its texels' offset in the staging.</summary>
     internal readonly record struct Upload(Format Format, int Slot, int Offset);
+
+    /// <summary>
+    /// A plan that draws with the cache (design §5.5.2 "キャッシュを分け合う計画"): a plot's plan alone or a figure's. The
+    /// cache keeps the frame it last joined, and the plan the bytes its last choice drew as raw points, which the choices of
+    /// the other plans count while that frame is the current one or the one before.
+    /// </summary>
+    /// <param name="number">The number of the registration, from 1 (<see cref="Register"/>).</param>
+    internal sealed class SharingPlan(long number)
+    {
+        /// <summary>
+        /// Gets the number of the plan's registration, from 1, never used again: the first key of the budget's order (design
+        /// §5.5.2 "同じ値のときの順"). The budget's list holds the drawing plan's layers alone, so the number keeps two plans'
+        /// layers apart by that, and orders none of them. Tests read it.
+        /// </summary>
+        public long Number => number;
+
+        /// <summary>Gets or sets the frame of the cache the plan last joined; 0 before it joins one, the frame the cache starts in.</summary>
+        public long Frame { get; set; }
+
+        /// <summary>
+        /// Gets or sets the bytes the plan's last choice drew as raw points (design §5.5.2 "ほかの計画の最後の値"): its
+        /// <see cref="PointDraw.Points"/> layers and its Auto layers on raw points, in <see cref="Frame"/>.
+        /// </summary>
+        public long Raw { get; set; }
+    }
 
     /// <summary>The slots of one format: a slot holds a raster tile or, in the <see cref="Format.Float"/> pool, a density tile.</summary>
     private sealed class Pool(ResidencyCache owner)

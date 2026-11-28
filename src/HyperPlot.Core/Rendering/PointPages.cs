@@ -96,7 +96,7 @@ internal sealed class PointPages
     /// <summary>Gets the bytes of the pages that are on the GPU or staged for it.</summary>
     internal long BytesInUse { get; private set; }
 
-    /// <summary>Gets the bytes the current frame sends.</summary>
+    /// <summary>Gets the bytes of the pages staged since the backend last sent (<see cref="ResidencyCache.BytesThisFrame"/>). Tests only.</summary>
     internal long BytesThisFrame => (long)_staged * PointBytes;
 
     /// <summary>Gets the pages to send before the frame draws: the backend makes a buffer for each slot.</summary>
@@ -248,8 +248,9 @@ internal sealed class PointPages
             return -1;
         }
 
+        // The frame's upload is every plan's of the frame (design §5.5.2 "1 tick に送る量").
         var bytes = (long)read.Count * PointBytes;
-        if (!_owner.Unbounded && _owner.BytesThisFrame + bytes > ResidencyCache.FrameUpload)
+        if (!_owner.Unbounded && _owner.BytesThisTick + bytes > ResidencyCache.FrameUpload)
         {
             read.Refused = frame;
             return -1;
@@ -280,6 +281,7 @@ internal sealed class PointPages
         MissedThisFrame--;
         _uploads.Add(new PointUpload(slot, DestinationOf(r), read.Count));
         _staged += read.Count;
+        _owner.Stage(bytes);
         (_keys[slot], _lastUsed[slot], _counts[slot]) = (key, frame, read.Count);
         _slots.Add(key, slot);
         BytesInUse += bytes;

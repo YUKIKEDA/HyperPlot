@@ -19,8 +19,9 @@ internal sealed class FigurePlan : IDisposable
     private readonly bool _ownImages;
     private readonly PyramidStore _store = new();
 
-    // The budget of the point layers of every plot (design §5.5.2 "予算"): chosen once a frame, before any plot records.
-    private readonly PointBudget _budget = new();
+    // The figure's registration with its cache (design §5.5.2 "キャッシュを分け合う計画"): all its plots are one plan, whose
+    // frame the figure joins and whose point layers the cache's budget chooses once a frame, before any plot records.
+    private readonly ResidencyCache.SharingPlan _sharing;
     private readonly RenderList _list = new();
     private float _scale;
     private int _width;
@@ -37,6 +38,7 @@ internal sealed class FigurePlan : IDisposable
     {
         (_pool, _width, _height, _text, _scale) = (pool, width, height, text, scale);
         (_images, _ownImages) = (images ?? new ResidencyCache(), images is null);
+        _sharing = _images.Register();
     }
 
     /// <summary>
@@ -128,13 +130,14 @@ internal sealed class FigurePlan : IDisposable
             return;
         }
 
-        // The residency cache's frame is the figure's: its budget holds for all the plots (design §4.5).
+        // The figure joins the residency cache's frame as one plan: the cache's budget holds for all the plots (design §4.5,
+        // §5.5.2 "キャッシュを分け合う計画").
         if (_ownImages)
         {
             _images.Sent();
         }
 
-        _images.BeginFrame();
+        _images.BeginFrame(_sharing);
         var total = 0;
         for (var i = 0; i < count; i++)
         {
@@ -158,7 +161,7 @@ internal sealed class FigurePlan : IDisposable
             _plans[i].ScanPending();
         }
 
-        _budget.Decide(_images);
+        _images.PointBudget.Decide(_images);
         for (var i = 0; i < count; i++)
         {
             _plans[i].Finish();
@@ -193,6 +196,7 @@ internal sealed class FigurePlan : IDisposable
 
         _plans = [];
         _store.Dispose();
+        _images.Unregister(_sharing);
 
         // The cache the figure made for itself lets its page readers go (design §5.5.2 "ページの読み出し").
         if (_ownImages)
@@ -323,7 +327,7 @@ internal sealed class FigurePlan : IDisposable
                 plans[i] =
                     i < _plans.Length
                         ? _plans[i]
-                        : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store, _budget)
+                        : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store)
                         {
                             Waits = Waits,
                             Ordinal = i,

@@ -33,6 +33,10 @@ internal sealed partial class PlotPlan : IDisposable
     // In a figure, the figure starts and sends the residency cache's frame once for all its plots (row G6c).
     private readonly bool _inFigure;
 
+    // A plot alone's registration with its cache (design §5.5.2 "キャッシュを分け合う計画"), whose frame it joins once a
+    // Render; null for a figure's plot, whose figure joins.
+    private readonly ResidencyCache.SharingPlan? _sharing;
+
     private readonly RenderList _list = new();
     private readonly RecordContext _context;
     private readonly RangeSink _sink = new();
@@ -91,6 +95,9 @@ internal sealed partial class PlotPlan : IDisposable
     // A render that waits recorded pages not on the GPU yet: the next one records again (design §5.5.2 "ヘッドレス").
     private bool _recordAgain;
 
+    // Whether this Render of a plot alone chose the drawings already, as a kept list does before it records again.
+    private bool _chosen;
+
     // The machine's time scale changed since the last recording, which then records again (design §5.5.2 "ほかの機械").
     private bool _timeScaleChanged;
     private PanelDomains[] _views = [];
@@ -125,20 +132,12 @@ internal sealed partial class PlotPlan : IDisposable
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PlotPlan"/> class for a plot of a figure (row G6c): the target's size, a
-    /// store of pyramids the figure's plots share, the figure's residency cache, whose frame the figure starts, and the
-    /// figure's budget of the point layers (design §5.5.2 "予算"), which the figure chooses before any plot records. The plot
-    /// is laid out in the rectangle <see cref="Place"/> gives.
+    /// store of pyramids the figure's plots share, and the figure's residency cache, whose frame and budget of the point
+    /// layers (design §5.5.2 "予算") the figure begins, choosing before any plot records. The plot is laid out in the
+    /// rectangle <see cref="Place"/> gives. A plot alone (no store) registers with its cache as a plan that draws with it
+    /// (design §5.5.2 "計画の登録と外し"); a figure's plot does not, the figure does.
     /// </summary>
-    internal PlotPlan(
-        PlotWorkerPool pool,
-        int width,
-        int height,
-        TextEngine text,
-        float scale,
-        ResidencyCache? images,
-        PyramidStore? store,
-        PointBudget? budget = null
-    )
+    internal PlotPlan(PlotWorkerPool pool, int width, int height, TextEngine text, float scale, ResidencyCache? images, PyramidStore? store)
     {
         (_store, _ownStore, _inFigure) = (store ?? new PyramidStore(), store is null, store is not null);
         _pool = pool;
@@ -146,12 +145,9 @@ internal sealed partial class PlotPlan : IDisposable
         _scale = scale;
         _guides = new PlotGuides(text, scale, width, height);
         _text = text;
-        _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame())
-        {
-            Images = images ?? new ResidencyCache(),
-            Budget = budget ?? new PointBudget(),
-        };
+        _context = new RecordContext(_guides, new M4Batch(), _list, new GeomFrame()) { Images = images ?? new ResidencyCache() };
         _ownImages = images is null;
+        _sharing = _inFigure ? null : _context.Images.Register();
         GatherBatches();
 
         // The panel is never wider or taller than the target; flipped, M4 runs over its height (row G10), and polar over the
@@ -189,6 +185,13 @@ internal sealed partial class PlotPlan : IDisposable
 
     /// <summary>Gets the timestamp ticks the last recording of the panels' layers took, after the scan. Measurements only.</summary>
     internal long RecordTicks { get; private set; }
+
+    /// <summary>
+    /// Gets the timestamp ticks the last Render of a plot alone took to keep its list (design §5.5.2 "キャッシュを分け合う計画"):
+    /// the check and the mark of its items, the carry of its scan, and the budget's choice; 0 for a Render that did not keep.
+    /// Measurements only.
+    /// </summary>
+    internal long KeepTicks { get; private set; }
 
     /// <summary>
     /// Gets or sets the plot's number in its figure, 0 for a plot alone: the budget of the point layers breaks a tie by it
@@ -1007,9 +1010,9 @@ internal sealed partial class PlotPlan : IDisposable
         }
         else
         {
-            // A list that draws tiles or pages of the cache is kept only while they are there; a figure's plot also marks
-            // them this frame's and enters its layers into the budget, those that draw nothing yet included (design §5.5.2
-            // "予算", Issue #636).
+            // A list that draws tiles or pages of the cache is kept only while they are there, marked this frame's, and its
+            // layers enter the budget, those that draw nothing yet included (design §5.5.2 "予算", Issue #636; a plot alone
+            // too, design §5.5.2 "キャッシュを分け合う計画").
             _pendingKeep = !_guides.Empty && (HoldsCacheItems() || ScansALayer());
         }
 
@@ -1022,6 +1025,7 @@ internal sealed partial class PlotPlan : IDisposable
     /// </summary>
     internal void Finish()
     {
+        (_chosen, KeepTicks) = (false, 0);
         if (_pendingExtract)
         {
             Extractions++;
@@ -1044,9 +1048,22 @@ internal sealed partial class PlotPlan : IDisposable
             IsProvisional = Provisional();
         }
 
+        // A plot alone joins its cache's frame once a Render, whether it records or draws its last list (design §5.5.2 "tick
+        // の数え方"); a figure's plot is in its figure's.
+        if (!_inFigure)
+        {
+            Join();
+        }
+
         // A kept list is recorded again when an item it draws was let go of since (a plot alone, whose cache other plans may
-        // share), or when the figure's budget chose another drawing for a layer (design §5.5.2 "予算", Issue #636).
-        if (_pendingKeep && (_inFigure ? DrawingChanged() : !Keep(mark: false)))
+        // share), or when the frame's budget chose another drawing for a layer (design §5.5.2 "予算", Issue #636). A plot
+        // alone that keeps marks its items this frame's, so that a plan drawn after it in the frame lets go of none, and its
+        // layers enter the cache's budget with their last scan (design §5.5.2 "キャッシュを分け合う計画").
+        if (_pendingKeep && !_inFigure)
+        {
+            KeepAlone();
+        }
+        else if (_pendingKeep && DrawingChanged())
         {
             _pendingRecord = true;
         }
@@ -1112,7 +1129,13 @@ internal sealed partial class PlotPlan : IDisposable
         _facet = null;
         _spec = null;
 
-        // The cache the plan made for itself lets its page readers go (design §5.5.2 "ページの読み出し").
+        // A plot alone leaves its cache's plans (design §5.5.2 "計画の登録と外し"), and the cache the plan made for itself lets
+        // its page readers go (design §5.5.2 "ページの読み出し").
+        if (_sharing is not null)
+        {
+            _context.Images.Unregister(_sharing);
+        }
+
         if (_ownImages)
         {
             _context.Images.Detach();
@@ -2744,26 +2767,16 @@ internal sealed partial class PlotPlan : IDisposable
         _list.Clear();
         (_selectionChanged, _timeScaleChanged) = (false, false);
         _context.Theme = spec.Theme;
-        if (_ownImages && !_inFigure)
-        {
-            // No backend sends the plan's own cache: what the last frame staged counts as sent.
-            _context.Images.Sent();
-        }
-
-        if (!_inFigure)
-        {
-            _context.Images.BeginFrame();
-        }
-
         _guides.RecordBehind(_list, spec);
         LayersRecorded = 0;
         _annotationHits.Clear();
 
         // The layers' scan before any records (design §5.5.2 "`Auto` の切り替え"): a point layer's drawing reads all its
-        // parts, those of the panels after this one too. A plot alone then chooses the drawings by the budget; a figure has
-        // scanned every plot and chosen before any records (design §5.5.2 "予算").
+        // parts, those of the panels after this one too. A plot alone then chooses the drawings by the budget, unless its
+        // kept list chose them in this frame already; a figure has scanned every plot and chosen before any records (design
+        // §5.5.2 "予算").
         Scan(spec, flipped);
-        if (!_inFigure)
+        if (!_inFigure && !_chosen)
         {
             _context.Budget.Decide(_context.Images);
         }
@@ -2806,6 +2819,45 @@ internal sealed partial class PlotPlan : IDisposable
         {
             Scan(_pendingSpec!, _pendingFlipped);
         }
+    }
+
+    /// <summary>
+    /// Joins the residency cache's frame once a Render of a plot alone (design §5.5.2 "tick の数え方"): the cache moves on
+    /// when the plan is in its current frame already, and the cache's budget begins the plan's choice. A cache of the plan's
+    /// own counts what the last frame staged as sent, since no backend sends it.
+    /// </summary>
+    private void Join()
+    {
+        if (_ownImages)
+        {
+            _context.Images.Sent();
+        }
+
+        _context.Images.BeginFrame(_sharing!);
+    }
+
+    /// <summary>
+    /// The kept list of a plot alone (design §5.5.2 "キャッシュを分け合う計画", Issue #636): when every item it draws is still
+    /// there, marks them this frame's, carries the last scan into the cache's budget, and chooses the drawings, recording
+    /// again only when the choice differs from what the list draws; otherwise records again. Timed (<see cref="KeepTicks"/>).
+    /// </summary>
+    private void KeepAlone()
+    {
+        var started = TimeProvider.System.GetTimestamp();
+        if (Keep(mark: true))
+        {
+            (_keptRelease, _keptResets) = (_context.Images.Releases, _context.Images.Resets);
+            Carry(_pendingSpec!, _pendingFlipped);
+            _context.Budget.Decide(_context.Images);
+            _chosen = true;
+            _pendingRecord = DrawingChanged();
+        }
+        else
+        {
+            _pendingRecord = true;
+        }
+
+        KeepTicks = TimeProvider.System.GetTimestamp() - started;
     }
 
     /// <summary>
