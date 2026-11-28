@@ -533,6 +533,137 @@ public sealed class OverlapSumTests
     }
 
     /// <summary>
+    /// The sums at the bounds themselves (design §5.5.2 "時間の和", "戻り"): a times' sum of exactly 14.1 ms makes a density,
+    /// and a density does not go back when its sums with it are exactly 11.28 ms, exactly 14.1 ms with four times the bins,
+    /// or a count of exactly 0.8 times the threshold; just under each, it does.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two Auto layers' sums set as a full scan leaves them (<see cref="DensitySwitch.SetSums"/>), with terms chosen so
+    ///   that 1.56 plus the terms, added in the order the panel adds them, is the bound to the last bit (checked).
+    ///
+    /// Steps:
+    /// - Raise a panel of two raw layers whose times' sum is 14.1 ms, and one whose sum is a step under it.
+    /// - Qualify a panel of a raw layer and a density at each bound of the way back, and 1e-12 ms under it (a step of a
+    ///   term's last bit can round away in the sum).
+    ///
+    /// Expected:
+    /// - At 14.1 ms the longer layer becomes a density and the other stays raw; a step under, both stay raw.
+    /// - At each bound of the way back the density may not go back; a step under all three, it may.
+    /// </remarks>
+    [Fact]
+    public void Sums_AtTheBounds_SwitchAndHold()
+    {
+        const double Bound = PredictedTime.Threshold;
+        var back = PredictedTime.Threshold * DensitySwitch.Back;
+        var (first, second) = (new DensitySwitch(0), new DensitySwitch(1));
+        var rest = Bound - (PredictedTime.Fixed + 7);
+        Assert.Equal(Bound, PredictedTime.Fixed + 7 + rest);
+        Assert.True(rest < 7);
+        first.SetSums(1_000, 10_000_000, 7, 7, density: false, wasDensity: false);
+        second.SetSums(1_000, 10_000_000, rest, rest, density: false, wasDensity: false);
+        PointBudget.Raise([first, second]);
+        Assert.Equal((true, false), (first.Density, second.Density));
+
+        first.SetSums(1_000, 10_000_000, 7, 7, density: false, wasDensity: false);
+        second.SetSums(1_000, 10_000_000, Math.BitDecrement(rest), Math.BitDecrement(rest), density: false, wasDensity: false);
+        Assert.True(PredictedTime.Fixed + 7 + Math.BitDecrement(rest) < Bound);
+        PointBudget.Raise([first, second]);
+        Assert.Equal((false, false), (first.Density, second.Density));
+
+        // The way back: the raw layer's terms 5 ms, the density's the rest of each bound.
+        bool MayReturn(long count, double terms, double termsAtFour)
+        {
+            var (raw, density) = (new DensitySwitch(0), new DensitySwitch(1));
+            raw.SetSums(0, 1_000_000, 5, 5, density: false, wasDensity: false);
+            density.SetSums(count, 1_000_000, terms, termsAtFour, density: true, wasDensity: true);
+            PointBudget.Qualify([raw, density]);
+            return density.MayReturn;
+        }
+
+        var (atBack, atBound) = (back - (PredictedTime.Fixed + 5), Bound - (PredictedTime.Fixed + 5));
+        Assert.Equal(back, PredictedTime.Fixed + 5 + atBack);
+        Assert.Equal(Bound, PredictedTime.Fixed + 5 + atBound);
+        Assert.Equal(800_000, 1_000_000 * DensitySwitch.Back);
+        var (under, underBound) = (atBack - 1e-12, atBound - 1e-12);
+        Assert.True(PredictedTime.Fixed + 5 + under < back && PredictedTime.Fixed + 5 + underBound < Bound);
+        Assert.False(MayReturn(1_000, atBack, underBound));
+        Assert.False(MayReturn(1_000, under, atBound));
+        Assert.False(MayReturn(800_000, under, underBound));
+        Assert.True(MayReturn(799_999, under, underBound));
+    }
+
+    /// <summary>
+    /// A layer in several panels goes back only when every one of its panels' sums lets it (design §5.5.2 "細部"), whichever
+    /// panel is read first.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A density C drawn as one in the last frame, of terms 1 ms; panel A holds C and a raw layer of terms 9 ms (the
+    ///   times' sum with C 11.56 ms), panel B holds C alone (2.56 ms). Sums set with <see cref="DensitySwitch.SetSums"/>.
+    ///
+    /// Steps:
+    /// - Read panel A's way back, then B's. Set the sums again and read B's, then A's.
+    ///
+    /// Expected:
+    /// - Panel B alone would let C back; after both panels, in either order, C may not go back.
+    /// </remarks>
+    [Fact]
+    public void Back_EveryPanelOfTheLayer_MustLetIt()
+    {
+        var (raw, candidate) = (new DensitySwitch(0), new DensitySwitch(1));
+        void Set()
+        {
+            raw.SetSums(1_000, 10_000_000, 9, 9, density: false, wasDensity: false);
+            candidate.SetSums(1_000, 10_000_000, 1, 1, density: true, wasDensity: true);
+        }
+
+        Set();
+        PointBudget.Qualify([candidate]);
+        Assert.True(candidate.MayReturn);
+        PointBudget.Qualify([raw, candidate]);
+        Assert.False(candidate.MayReturn);
+
+        Set();
+        PointBudget.Qualify([raw, candidate]);
+        PointBudget.Qualify([candidate]);
+        Assert.False(candidate.MayReturn);
+    }
+
+    /// <summary>
+    /// The machine's time scale multiplies a panel's whole sum, the fixed term too (design §5.5.2 "ほかの機械"): two layers
+    /// whose sum is 7.14 ms, at or over half of 14.1 ms, and whose times alone at the scale are under 14.1 ms, switch one of
+    /// them at a scale of 2 and none at 1.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two Auto layers of 300,000 points each, at 4.5 ms (layer 0) and 4.2 ms (layer 1) at the reference machine's speed.
+    ///
+    /// Steps:
+    /// - Draw at the default scale of 1. Set the engine's <see cref="PlotEngine.GpuTimeScale"/> to 2 and draw.
+    ///
+    /// Expected:
+    /// - At 1 the sum is 7.14 ms and both draw raw points. At 2 the layers' times read 9 ms and 8.4 ms, each under 14.1, and
+    ///   the scaled sum 14.28 ms makes layer 0, the longer, a density; layer 1 stays raw points.
+    /// </remarks>
+    [Fact]
+    public void TimeScale_MultipliesTheWholeSum()
+    {
+        using var data = new Layers(300_000, 300_000);
+        using var scene = new Scene(data);
+        scene.Draw(scene.Auto(0, 1), scene.Auto(1, 1));
+        var (a, b) = (scene.SizeFor(0, 4.5), scene.SizeFor(1, 4.2));
+        scene.Draw(scene.Auto(0, a), scene.Auto(1, b));
+        Assert.Equal(7.14, PredictedTime.Fixed + scene.Switch(0).Terms + scene.Switch(1).Terms, 1e-3);
+        Assert.Equal((false, false), (scene.Density(0), scene.Density(1)));
+
+        scene.Engine.GpuTimeScale = 2;
+        scene.Draw(scene.Auto(0, a), scene.Auto(1, b));
+        Assert.Equal((9.0, 8.4), (Math.Round(scene.Switch(0).LastTime, 4), Math.Round(scene.Switch(1).LastTime, 4)));
+        Assert.Equal((true, false), (scene.Density(0), scene.Density(1)));
+    }
+
+    /// <summary>
     /// A panel that let a density back lets no other back in the same frame, though another panel, whose layers differ while
     /// a part's index is still pending there, nominates another layer of it.
     /// </summary>

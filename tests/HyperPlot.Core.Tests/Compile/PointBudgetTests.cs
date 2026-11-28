@@ -61,6 +61,40 @@ public sealed class PointBudgetTests : IDisposable
     }
 
     /// <summary>
+    /// The machine's time scale does not reach the budget's condition (design §5.5.2 "ほかの機械"): at 0.5 and at 2 the same
+    /// layer goes as at 1, and the sum left is the same.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages. Two Auto layers: A of 5 pages, B of 4. A renderer of the time scale given.
+    ///
+    /// Steps:
+    /// - Render once headless.
+    ///
+    /// Expected:
+    /// - The predicted times are the scale times the reference's, under 0.8 times the threshold. A draws a density and B raw
+    ///   points; the sum left is B's 4 pages.
+    /// </remarks>
+    [Theory]
+    [InlineData(0.5)]
+    [InlineData(2.0)]
+    public void Sum_TakesNoTimeScale(double scale)
+    {
+        var table = Table(5, 4);
+        using var renderer = new HeadlessRenderer(new NullBackend { Images = new ResidencyCache(7 * Page) }, 640, 360, _pool)
+        {
+            GpuTimeScale = scale,
+        };
+        renderer.Render(Spec(table, Auto(0), Auto(1)));
+        var (a, b) = (Layer(renderer, 0), Layer(renderer, 1));
+        var reference = Of(b.Switch.LastCount, 1, b.Switch.LastLargestBin);
+        Assert.Equal(scale * reference, b.Switch.LastTime, 1e-9);
+        Assert.True(b.Switch.LastTime < PredictedTime.Threshold * DensitySwitch.Back);
+        Assert.Equal((true, false), (a.DrewDensity, b.DrewDensity));
+        Assert.Equal(4 * Page, renderer.Plan!.Budget.LastSum);
+    }
+
+    /// <summary>
     /// The layers are made densities one at a time, the most bytes first, and the next one stays raw once the sum is within
     /// the budget (design §5.5.2 "替える順").
     /// </summary>
@@ -394,6 +428,10 @@ public sealed class PointBudgetTests : IDisposable
         Assert.Equal((true, true), (Layer(engine, 1).DrewDensity, Layer(engine, 2).DrewDensity));
         Assert.Equal((0, true), (searches, full));
     }
+
+    /// <summary>Returns a layer's predicted time alone, as the switch reads it at the reference machine's speed: the fixed term and the others.</summary>
+    private static double Of(long points, double diameter, double largestBin) =>
+        PredictedTime.Fixed + PredictedTime.Terms(points, diameter, largestBin);
 
     /// <summary>Returns the markers' diameter, in pixels, that makes a count and a largest bin predict a time.</summary>
     private static float Diameter(double time, long count, double largestBin)

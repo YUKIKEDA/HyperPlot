@@ -406,13 +406,13 @@ internal static partial class PointsScene
         if (csv is not null)
         {
             using var writer = new StreamWriter(csv);
-            writer.WriteLine("frame,began_ms,cpu_ms,gpu_ms,runs,points,allocated,view_bytes,draw_bytes,scan_ms");
+            writer.WriteLine("frame,began_ms,cpu_ms,gpu_ms,runs,points,allocated,view_bytes,draw_bytes,scan_ms,decide_ms");
             for (var f = 0; f < total; f++)
             {
                 writer.WriteLine(
                     string.Create(
                         CultureInfo.InvariantCulture,
-                        $"{f},{beganAt[f]:F3},{cpu[f]:F4},{gpuOf[f]:F4},{runs[f]},{drawn[f]},{allocated[f]},{inView[f]},{inDraw[f]},{scan[f]:F4}"
+                        $"{f},{beganAt[f]:F3},{cpu[f]:F4},{gpuOf[f]:F4},{runs[f]},{drawn[f]},{allocated[f]},{inView[f]},{inDraw[f]},{scan[f]:F4},{decide[f]:F4}"
                     )
                 );
             }
@@ -483,7 +483,7 @@ internal static partial class PointsScene
                 bin[layer].Add(choice.LastLargestBin);
                 estimate[layer].Add(cells);
                 time[layer].Add(choice.LastTime);
-                timeOfEstimate[layer].Add(PredictedTime.Of(choice.LastCount, physical, cells));
+                timeOfEstimate[layer].Add(PredictedTime.Fixed + PredictedTime.Terms(choice.LastCount, physical, cells));
                 timeAtFour[layer].Add(choice.LastTimeAtFourBins);
                 densities[layer] += choice.Density ? 1 : 0;
                 summed += choice.LastTime - PredictedTime.Fixed;

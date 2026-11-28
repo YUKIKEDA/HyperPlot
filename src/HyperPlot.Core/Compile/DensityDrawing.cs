@@ -31,6 +31,7 @@ internal sealed class DensitySwitch(int layer)
     private bool _density;
     private PointLayerSpec? _point;
     private float _scale;
+    private double _timeScale = 1;
 
     // What the panels' sums read of the layer this frame (design §5.5.2 "重なる層の和"): its two terms of the predicted
     // time, with the largest bin and with four times it, whether it drew a density in the last frame, and whether every
@@ -83,17 +84,26 @@ internal sealed class DensitySwitch(int layer)
     /// <summary>Gets the largest bin the last choice read, the greatest of the parts', in points a physical pixel. Tests only.</summary>
     internal double LastLargestBin { get; private set; }
 
-    /// <summary>Gets the predicted time of drawing the layer as raw points the last choice read, in ms; 0 when it read none.</summary>
+    /// <summary>
+    /// Gets the predicted time of drawing the layer as raw points the last choice read, in ms, times the machine's
+    /// <see cref="RecordContext.GpuTimeScale"/>; 0 when it read none.
+    /// </summary>
     internal double LastTime { get; private set; }
 
-    /// <summary>Gets the predicted time the last choice read with four times the largest bin, in ms. Tests only.</summary>
+    /// <summary>Gets the predicted time the last choice read with four times the largest bin, in ms, times the machine's scale. Tests only.</summary>
     internal double LastTimeAtFourBins { get; private set; }
 
-    /// <summary>Gets the terms of <see cref="LastTime"/> past the fixed one, which a panel's sum adds (<see cref="PredictedTime.Terms"/>).</summary>
+    /// <summary>
+    /// Gets the terms of the predicted time past the fixed one, at the reference machine's speed (not times the time scale),
+    /// which a panel's sum adds (<see cref="PredictedTime.Terms"/>).
+    /// </summary>
     internal double Terms => _terms;
 
-    /// <summary>Gets the terms of <see cref="LastTimeAtFourBins"/> past the fixed one.</summary>
+    /// <summary>Gets the same terms with four times the largest bin.</summary>
     internal double TermsAtFour => _termsAtFour;
+
+    /// <summary>Gets the machine's time scale the layer was entered with, which its panels' sums take (design §5.5.2 "ほかの機械").</summary>
+    internal double TimeScale => _timeScale;
 
     /// <summary>
     /// Gets a value indicating whether a <see cref="Share.Summed"/> layer drew a density in the last frame and so may go
@@ -109,15 +119,15 @@ internal sealed class DensitySwitch(int layer)
 
     /// <summary>
     /// Enters the layer into its frame's budget (<see cref="RecordContext.Budget"/>) when a part is scanned: once a frame,
-    /// with the spec and the scale its drawing is chosen by and its plot's number, and once a panel, the panel being scanned
-    /// (<see cref="RecordContext.PanelNumber"/>), whose sums it takes part in.
+    /// with the spec, the scale, and the machine's time scale its drawing is chosen by and its plot's number, and once a
+    /// panel, the panel being scanned (<see cref="RecordContext.PanelNumber"/>), whose sums it takes part in.
     /// </summary>
     public void Enter(RecordContext context, PointLayerSpec point)
     {
         var frame = context.Images.Frame;
         if (_entered != frame)
         {
-            (_entered, _point, _scale, Plot) = (frame, point, context.Scale, context.Plot);
+            (_entered, _point, _scale, _timeScale, Plot) = (frame, point, context.Scale, context.GpuTimeScale, context.Plot);
             context.Budget.Enter(this, frame);
         }
 
@@ -133,7 +143,7 @@ internal sealed class DensitySwitch(int layer)
     public bool Choose(RecordContext context, PointLayerSpec point)
     {
         var frame = context.Images.Frame;
-        if (frame != _frame && Gather(frame, point, context.Scale) == Share.Summed)
+        if (frame != _frame && Gather(frame, point, context.Scale, context.GpuTimeScale) == Share.Summed)
         {
             _density = Next(_wasDensity, LastCount, _threshold, LastTime, LastTimeAtFourBins);
         }
@@ -142,10 +152,10 @@ internal sealed class DensitySwitch(int layer)
     }
 
     /// <summary>
-    /// Reads the layer's conditions for the frame it was entered in, from the spec and the scale entered with it; a
+    /// Reads the layer's conditions for the frame it was entered in, from the spec and the scales entered with it; a
     /// <see cref="Share.Summed"/> layer keeps the last frame's drawing until its panels and the budget choose.
     /// </summary>
-    internal Share Gather(long frame) => Gather(frame, _point!, _scale);
+    internal Share Gather(long frame) => Gather(frame, _point!, _scale, _timeScale);
 
     /// <summary>Makes the layer a density this frame: a panel's sum, or the budget's, is over its threshold, or leaves no room to go back.</summary>
     internal void Hold() => _density = true;
@@ -166,10 +176,11 @@ internal sealed class DensitySwitch(int layer)
     /// <param name="termsAtFour">The same with four times the largest bin.</param>
     /// <param name="density">Whether the layer draws a density in the frame so far.</param>
     /// <param name="wasDensity">Whether the layer drew a density in the last frame.</param>
-    internal void SetSums(long count, long threshold, double terms, double termsAtFour, bool density, bool wasDensity)
+    /// <param name="timeScale">The machine's time scale.</param>
+    internal void SetSums(long count, long threshold, double terms, double termsAtFour, bool density, bool wasDensity, double timeScale = 1)
     {
-        (Role, LastCount, _threshold, _terms, _termsAtFour) = (Share.Summed, count, threshold, terms, termsAtFour);
-        (LastTime, LastTimeAtFourBins) = (PredictedTime.Fixed + terms, PredictedTime.Fixed + termsAtFour);
+        (Role, LastCount, _threshold, _terms, _termsAtFour, _timeScale) = (Share.Summed, count, threshold, terms, termsAtFour, timeScale);
+        (LastTime, LastTimeAtFourBins) = (timeScale * (PredictedTime.Fixed + terms), timeScale * (PredictedTime.Fixed + termsAtFour));
         (_density, _wasDensity, _mayReturn) = (density, wasDensity, true);
     }
 
@@ -184,8 +195,8 @@ internal sealed class DensitySwitch(int layer)
     /// <param name="density">Whether the layer drew a density in the last frame.</param>
     /// <param name="count">The upper count of the points in the view, summed over the parts.</param>
     /// <param name="threshold">The layer's <see cref="PointLayerSpec.DensityThreshold"/>.</param>
-    /// <param name="time">The predicted time, in ms (<see cref="PredictedTime.Of"/>).</param>
-    /// <param name="timeAtFourBins">The predicted time with four times the largest bin, in ms.</param>
+    /// <param name="time">The predicted time, in ms (<see cref="PredictedTime.Fixed"/> plus <see cref="PredictedTime.Terms"/>), times the machine's time scale.</param>
+    /// <param name="timeAtFourBins">The predicted time with four times the largest bin, in ms, times the machine's time scale.</param>
     internal static bool Next(bool density, long count, long threshold, double time, double timeAtFourBins) =>
         density ? !Lowers(count, threshold, time, timeAtFourBins) : Raises(count, threshold, time);
 
@@ -212,10 +223,14 @@ internal sealed class DensitySwitch(int layer)
     /// for a layer with no decision yet. Returns how the layer takes part in the frame's choice, which <see cref="Role"/>
     /// keeps.
     /// </summary>
-    private Share Gather(long frame, PointLayerSpec point, float scale) => Role = Read(frame, point, scale);
+    /// <param name="frame">The cache's frame.</param>
+    /// <param name="point">The layer's spec.</param>
+    /// <param name="scale">The scale from DIPs to physical pixels, which the markers' diameter takes.</param>
+    /// <param name="timeScale">The machine's time scale (<see cref="RecordContext.GpuTimeScale"/>), which the times and the panels' sums take.</param>
+    private Share Gather(long frame, PointLayerSpec point, float scale, double timeScale) => Role = Read(frame, point, scale, timeScale);
 
-    /// <summary>Reads the layer's conditions for a frame: the work of <see cref="Gather(long, PointLayerSpec, float)"/>.</summary>
-    private Share Read(long frame, PointLayerSpec point, float scale)
+    /// <summary>Reads the layer's conditions for a frame: the work of <see cref="Gather(long, PointLayerSpec, float, double)"/>.</summary>
+    private Share Read(long frame, PointLayerSpec point, float scale, double timeScale)
     {
         _frame = frame;
         Needed = 0;
@@ -254,7 +269,8 @@ internal sealed class DensitySwitch(int layer)
             return Share.None;
         }
 
-        // The markers' diameter in physical pixels, as the recording scales it.
+        // The markers' diameter in physical pixels, as the recording scales it. Both times are this machine's: the reference
+        // machine's times the scale (design §5.5.2 "ほかの機械"); the count and the budget take no scale.
         var diameter = point.Size * scale;
         (_terms, _termsAtFour) = (
             PredictedTime.Terms(count, diameter, largest),
@@ -263,8 +279,8 @@ internal sealed class DensitySwitch(int layer)
         (LastCount, LastLargestBin, LastTime, LastTimeAtFourBins, Needed) = (
             count,
             largest,
-            PredictedTime.Fixed + _terms,
-            PredictedTime.Fixed + _termsAtFour,
+            timeScale * (PredictedTime.Fixed + _terms),
+            timeScale * (PredictedTime.Fixed + _termsAtFour),
             needed
         );
         (_wasDensity, _mayReturn) = (_density, true);
@@ -282,7 +298,8 @@ internal sealed class DensitySwitch(int layer)
 /// plots too, against the cache's budget; over it, the Auto layers on raw points become densities, the one that needs the
 /// most bytes first, until the sum is within it. Last the way back: a panel lets back at most one density a frame, the
 /// shortest time first whose panels' sums with it as raw points let it and whose bytes leave the budget's sum under 0.8
-/// times the budget; the panels' candidates go back the fewest bytes first. One a plot alone, one a figure.
+/// times the budget; the panels' candidates go back the fewest bytes first. A plot alone has a budget of its own, and a
+/// figure one for all its plots.
 /// </summary>
 /// <remarks>One thread at a time: the frame's. After its lists have grown, a frame allocates nothing.</remarks>
 internal sealed class PointBudget
@@ -445,8 +462,15 @@ internal sealed class PointBudget
     /// first; then the times' sum of the layers left, the fixed term once, the longest time first; ties in the layers'
     /// order. A layer alone in its panel compares its own count and time.
     /// </summary>
-    private static void Raise(ReadOnlySpan<DensitySwitch> members)
+    internal static void Raise(ReadOnlySpan<DensitySwitch> members)
     {
+        // The layers of one engine share its time scale.
+        if (members.IsEmpty)
+        {
+            return;
+        }
+
+        var scale = members[0].TimeScale;
         while (true)
         {
             var (count, limit, most) = (0L, long.MaxValue, (DensitySwitch?)null);
@@ -479,7 +503,8 @@ internal sealed class PointBudget
                 }
             }
 
-            if (longest is null || !PredictedTime.Reaches(time))
+            // The machine's time scale multiplies the whole sum, the fixed term too (design §5.5.2 "ほかの機械").
+            if (longest is null || !PredictedTime.Reaches(scale * time))
             {
                 break;
             }
@@ -517,8 +542,8 @@ internal sealed class PointBudget
                 && !DensitySwitch.Lowers(
                     count + layer.LastCount,
                     Math.Min(limit, layer.Threshold),
-                    PredictedTime.Fixed + terms + layer.Terms,
-                    PredictedTime.Fixed + termsAtFour + layer.TermsAtFour
+                    layer.TimeScale * (PredictedTime.Fixed + terms + layer.Terms),
+                    layer.TimeScale * (PredictedTime.Fixed + termsAtFour + layer.TermsAtFour)
                 )
             )
             {
@@ -660,7 +685,7 @@ internal sealed class DensityPanel
 /// A ρ^0.37 ms, with n the points in the view over 1e7, A the area of a disc of the markers' diameter in square physical
 /// pixels, and ρ the largest bin in points a physical pixel. The coefficients and the threshold are the reference machine's
 /// (an RTX 3060 Ti, the product's NativeAOT build, Issue #624); another machine is not promised to fit 16.7 ms under the
-/// threshold.
+/// threshold. A machine's <c>GpuTimeScale</c> multiplies the time before it is compared (design §5.5.2 "ほかの機械").
 /// </summary>
 internal static class PredictedTime
 {
@@ -688,11 +713,18 @@ internal static class PredictedTime
     /// </summary>
     internal const double LevelJump = 4;
 
-    /// <summary>Returns the predicted time, in ms, in doubles, not rounded: <see cref="Fixed"/> plus <see cref="Terms"/>. Allocates nothing.</summary>
-    /// <param name="points">The upper count of the points in the view, summed over the layer's parts.</param>
-    /// <param name="diameter">The markers' diameter in physical pixels, whatever their shape.</param>
-    /// <param name="largestBin">The largest bin, in points a physical pixel.</param>
-    public static double Of(long points, double diameter, double largestBin) => Fixed + Terms(points, diameter, largestBin);
+    /// <summary>
+    /// Throws unless the value a property setter took as a machine's time scale is finite and above 0 (design §5.5.2
+    /// "ほかの機械").
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is 0, below 0, NaN, or infinite.</exception>
+    public static void CheckScale(double value)
+    {
+        if (!double.IsFinite(value) || value <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(value), value, "The GPU time scale is finite and above 0.");
+        }
+    }
 
     /// <summary>
     /// Returns the terms of the predicted time past the fixed one, in ms: those of the points and of the overlap, which a
