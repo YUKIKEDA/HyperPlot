@@ -103,7 +103,7 @@ public sealed class AutoSwitchTests
         var (raw, outside, split, fitting) = (0, 0, 0, 0);
         foreach (var scene in Added)
         {
-            var time = PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            var time = Of(scene.Points, scene.Diameter, scene.LargestBin);
             Assert.True(Math.Abs(time - scene.Time) <= 0.01, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
             Assert.Equal(scene.Fit != Fit.In, scene.Density);
             Assert.Equal(scene.Density, DensitySwitch.Next(false, scene.Points, 10_000_000, time, time));
@@ -111,15 +111,9 @@ public sealed class AutoSwitchTests
 
         foreach (var scene in Scenes)
         {
-            var time = PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            var time = Of(scene.Points, scene.Diameter, scene.LargestBin);
             Assert.True(Math.Abs(time - scene.Time) <= 0.01, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
-            var density = DensitySwitch.Next(
-                density: false,
-                scene.Points,
-                10_000_000,
-                time,
-                PredictedTime.Of(scene.Points, scene.Diameter, 4 * scene.LargestBin)
-            );
+            var density = DensitySwitch.Next(density: false, scene.Points, 10_000_000, time, Of(scene.Points, scene.Diameter, 4 * scene.LargestBin));
             Assert.Equal(scene.Density, density);
             switch (scene.Fit)
             {
@@ -149,7 +143,7 @@ public sealed class AutoSwitchTests
         static double Time(string name)
         {
             var scene = Scenes.Single(s => s.Name == name);
-            return PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            return Of(scene.Points, scene.Diameter, scene.LargestBin);
         }
     }
 
@@ -172,11 +166,11 @@ public sealed class AutoSwitchTests
     [Fact]
     public void PredictedTime_NoPointOrNoBin_HasNoOverlapTerm()
     {
-        Assert.Equal(1.56, PredictedTime.Of(0, 6, 100));
-        Assert.Equal(1.56 + 3.055, PredictedTime.Of(5_000_000, 6, 0), 12);
+        Assert.Equal(1.56, Of(0, 6, 100));
+        Assert.Equal(1.56 + 3.055, Of(5_000_000, 6, 0), 12);
         var term = 0.0690 * 9 * Math.PI;
-        Assert.Equal(1.56 + 6.11 + term, PredictedTime.Of(10_000_000, 6, 1), 12);
-        Assert.Equal(1.56 + 6.11 + (5.4954 * term), PredictedTime.Of(10_000_000, 6, 100), 1e-3);
+        Assert.Equal(1.56 + 6.11 + term, Of(10_000_000, 6, 1), 12);
+        Assert.Equal(1.56 + 6.11 + (5.4954 * term), Of(10_000_000, 6, 100), 1e-3);
     }
 
     /// <summary>
@@ -251,10 +245,7 @@ public sealed class AutoSwitchTests
         bool Back(string name, double expectedTime, double expectedAtFour)
         {
             var scene = Scenes.Single(s => s.Name == name);
-            var (time, atFour) = (
-                PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin),
-                PredictedTime.Of(scene.Points, scene.Diameter, 4 * scene.LargestBin)
-            );
+            var (time, atFour) = (Of(scene.Points, scene.Diameter, scene.LargestBin), Of(scene.Points, scene.Diameter, 4 * scene.LargestBin));
             Assert.Equal(expectedTime, time, 0.02);
             Assert.True(time < 11.28);
             if (!double.IsNaN(expectedAtFour))
@@ -310,8 +301,8 @@ public sealed class AutoSwitchTests
                                     density,
                                     count,
                                     10_000_000,
-                                    PredictedTime.Of(count, diameter, bin),
-                                    PredictedTime.Of(count, diameter, PredictedTime.LevelJump * bin)
+                                    Of(count, diameter, bin),
+                                    Of(count, diameter, PredictedTime.LevelJump * bin)
                                 );
                                 changes += next != density ? 1 : 0;
                                 density = next;
@@ -348,7 +339,7 @@ public sealed class AutoSwitchTests
         {
             for (var i = 0; i < 1_000; i++)
             {
-                var time = PredictedTime.Of(1_000_000 + i, 6, 10 + i);
+                var time = Of(1_000_000 + i, 6, 10 + i);
                 _sink += time + (DensitySwitch.Next(i % 2 == 0, i, 10_000_000, time, time) ? 1 : 0);
             }
         });
@@ -422,7 +413,7 @@ public sealed class AutoSwitchTests
         Assert.All(tops, t => Assert.True(t > 0));
         Assert.Equal(tops.Max(), choice.LastLargestBin);
         Assert.True(choice.LastLargestBin < tops.Sum());
-        Assert.Equal(PredictedTime.Of(Count, 6, tops.Max()), choice.LastTime);
+        Assert.Equal(Of(Count, 6, tops.Max()), choice.LastTime);
         Assert.All(parts, p => Assert.False(p.DrewDensity));
 
         // The diameter whose summed count predicts 15 ms: the third term is 15 − 1.56 − 6.11 n.
@@ -434,7 +425,7 @@ public sealed class AutoSwitchTests
         engine.RenderFrame();
         Assert.Equal((long)Count, choice.LastCount);
         Assert.Equal(15, choice.LastTime, 1e-4);
-        Assert.True(PredictedTime.Of(Count / 2, diameter, choice.LastLargestBin) < PredictedTime.Threshold);
+        Assert.True(Of(Count / 2, diameter, choice.LastLargestBin) < PredictedTime.Threshold);
         Assert.All(parts, p => Assert.True(p.DrewDensity));
     }
 
@@ -504,8 +495,8 @@ public sealed class AutoSwitchTests
             choice = parts[0].Switch;
             Assert.True(choice.LastCount <= 9_999_999);
             Assert.Equal(DensitySwitch.Next(last, choice.LastCount, 9_999_999, choice.LastTime, choice.LastTimeAtFourBins), density);
-            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, choice.LastLargestBin), choice.LastTime);
-            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins);
+            Assert.Equal(Of(choice.LastCount, diameter, choice.LastLargestBin), choice.LastTime);
+            Assert.Equal(Of(choice.LastCount, diameter, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins);
             Assert.Equal(parts.Max(p => p.PieceTop), choice.LastLargestBin);
             if (density)
             {
@@ -602,7 +593,7 @@ public sealed class AutoSwitchTests
             engine.RenderFrame();
             Assert.Same(plan, engine.Plan!.Layers[0]);
             Assert.Equal(16, choice.LastTime, 1e-4);
-            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, 4 * plan.Estimate), choice.LastTimeAtFourBins);
+            Assert.Equal(Of(choice.LastCount, diameter, 4 * plan.Estimate), choice.LastTimeAtFourBins);
             Assert.True(choice.LastCount <= 10_000_000);
             Assert.True(plan.DrewDensity);
 
@@ -945,8 +936,8 @@ public sealed class AutoSwitchTests
 
         var (count, bin, time) = Assert.Single(times.Distinct());
         Assert.True(count > 0 && bin > 0);
-        Assert.Equal(PredictedTime.Of(count, 12, bin), time);
-        Assert.NotEqual(PredictedTime.Of(count, 8, bin), time);
+        Assert.Equal(Of(count, 12, bin), time);
+        Assert.NotEqual(Of(count, 8, bin), time);
     }
 
     /// <summary>
@@ -1090,22 +1081,24 @@ public sealed class AutoSwitchTests
 
     /// <summary>
     /// A new spec whose layers over other columns change places makes every layer again, so no layer takes the drawing
-    /// another remembered: both start from raw points in the band (design §5.5.2 "入れ替わりを抑える", "索引の保管庫").
+    /// another remembered: both start from raw points with the panel's sum in the band (design §5.5.2 "入れ替わりを抑える",
+    /// "重なる層の和", "索引の保管庫").
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - Two point layers of 300,000 seeded points each, Auto: A over (x, y), a normal blob of σ 12 around (50, 50), and B
-    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. Each layer's sizes that predict
-    ///   16 ms and 12.7 ms (in the band) at the whole view are set from a first frame.
+    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. A's sizes that predict 16 ms and
+    ///   6 ms and B's that predicts 8 ms at the whole view are set from a first frame; the panel's sum of A at 6 ms and B is
+    ///   12.44 ms, in the band.
     ///
     /// Steps:
-    /// - Draw [A at 16 ms, B at 12.7 ms], then [A at 12.7 ms, B at 12.7 ms]. Then swap them: [B at 12.7 ms, A at 12.7 ms].
+    /// - Draw [A at 16 ms, B at 8 ms], then [A at 6 ms, B at 8 ms]. Then swap them: [B at 8 ms, A at 6 ms].
     ///
     /// Expected:
-    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 12.7 ms, and B draws
-    ///   raw points at 12.7 ms.
-    /// - After it both positions hold new plans with new switches, and both draw raw points at 12.7 ms; position 0 does not
-    ///   take the density position 0 remembered.
+    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 6 ms (the sum with
+    ///   it as raw points is in the band), and B draws raw points.
+    /// - After it both positions hold new plans with new switches, and both draw raw points; position 0 does not take the
+    ///   density position 0 remembered.
     /// </remarks>
     [Fact]
     public void Reorder_OfLayersOverOtherColumns_ForgetsTheirDrawings()
@@ -1151,7 +1144,7 @@ public sealed class AutoSwitchTests
 
         Draw(A(1), B(1));
         float Size(int at, double time) => DiameterFor(time, Layer(at).Switch.LastCount, Layer(at).Switch.LastLargestBin);
-        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 12.7), Size(1, 12.7));
+        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 6), Size(1, 8));
         var (planA, planB) = (Layer(0), Layer(1));
 
         Draw(A(overA), B(bandB));
@@ -1159,8 +1152,9 @@ public sealed class AutoSwitchTests
         Draw(A(bandA), B(bandB));
         Assert.Same(planA, Layer(0));
         Assert.Same(planB, Layer(1));
-        Assert.Equal(12.7, planA.Switch.LastTime, 1e-4);
-        Assert.Equal(12.7, planB.Switch.LastTime, 1e-4);
+        Assert.Equal(6, planA.Switch.LastTime, 1e-4);
+        Assert.Equal(8, planB.Switch.LastTime, 1e-4);
+        Assert.InRange(PredictedTime.Fixed + planA.Switch.Terms + planB.Switch.Terms, 11.28, 14.09);
         Assert.True(planA.DrewDensity);
         Assert.False(planB.DrewDensity);
 
@@ -1174,8 +1168,8 @@ public sealed class AutoSwitchTests
         Assert.NotSame(planB.Switch, first.Switch);
         Assert.NotSame(planA.Switch, second.Switch);
         Assert.NotSame(planB.Switch, second.Switch);
-        Assert.Equal(12.7, first.Switch.LastTime, 1e-4);
-        Assert.Equal(12.7, second.Switch.LastTime, 1e-4);
+        Assert.Equal(8, first.Switch.LastTime, 1e-4);
+        Assert.Equal(6, second.Switch.LastTime, 1e-4);
         Assert.False(first.DrewDensity);
         Assert.False(second.DrewDensity);
     }
@@ -1334,7 +1328,7 @@ public sealed class AutoSwitchTests
         Assert.Equal(recordings + 1, engine.Plan!.Recordings);
         Assert.True(Layer().DrewDensity);
         Assert.Equal(14.4, choice.LastTime, 1e-4);
-        Assert.Equal(2 * PredictedTime.Of(choice.LastCount, over, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins, 1e-9);
+        Assert.Equal(2 * Of(choice.LastCount, over, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins, 1e-9);
 
         engine.GpuTimeScale = 2;
         Draw();
@@ -1390,7 +1384,7 @@ public sealed class AutoSwitchTests
         IndexedPointPlan Layer() => (IndexedPointPlan)engine.Plan!.Layers[0];
         var (count, bin) = (Layer().Switch.LastCount, Layer().Switch.LastLargestBin);
         float Size(double time) => DiameterFor(time, count, bin);
-        double AtFour(double time) => PredictedTime.Of(count, Size(time), 4 * bin);
+        double AtFour(double time) => Of(count, Size(time), 4 * bin);
         bool Draw(PlotSpec? spec = null)
         {
             if (spec is not null)
@@ -1464,7 +1458,7 @@ public sealed class AutoSwitchTests
         var layer = (IndexedPointPlan)engine.Plan!.Layers[0];
         var choice = layer.Switch;
         Assert.False(layer.DrewDensity);
-        Assert.Equal(0.5 * PredictedTime.Of(choice.LastCount, 1, choice.LastLargestBin), choice.LastTime, 1e-9);
+        Assert.Equal(0.5 * Of(choice.LastCount, 1, choice.LastLargestBin), choice.LastTime, 1e-9);
 
         engine.SetPlot(Spec(choice.LastCount - 1));
         backend.Images.Sent();
@@ -1581,6 +1575,10 @@ public sealed class AutoSwitchTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => engine.GpuTimeScale = value);
         Assert.Equal((1.5, 1.5), (renderer.GpuTimeScale, engine.GpuTimeScale));
     }
+
+    /// <summary>Returns a layer's predicted time alone, as the switch reads it at the reference machine's speed: the fixed term and the others.</summary>
+    private static double Of(long points, double diameter, double largestBin) =>
+        PredictedTime.Fixed + PredictedTime.Terms(points, diameter, largestBin);
 
     /// <summary>The tuning that makes density tiles from 2,048 points, so that a few hundred thousand points have deep tiles.</summary>
     private static SpatialIndexTuning SmallTiles => SpatialIndexTuning.Default with { DensitySplit = 2_048, TotalShare = 10 };

@@ -87,7 +87,7 @@ public sealed class PointBudgetTests : IDisposable
         };
         renderer.Render(Spec(table, Auto(0), Auto(1)));
         var (a, b) = (Layer(renderer, 0), Layer(renderer, 1));
-        var reference = PredictedTime.Of(b.Switch.LastCount, 1, b.Switch.LastLargestBin);
+        var reference = Of(b.Switch.LastCount, 1, b.Switch.LastLargestBin);
         Assert.Equal(scale * reference, b.Switch.LastTime, 1e-9);
         Assert.True(b.Switch.LastTime < PredictedTime.Threshold * DensitySwitch.Back);
         Assert.Equal((true, false), (a.DrewDensity, b.DrewDensity));
@@ -219,8 +219,9 @@ public sealed class PointBudgetTests : IDisposable
     }
 
     /// <summary>
-    /// A layer the budget made a density goes back to raw points, the fewest bytes first, only while the sum with its bytes
-    /// stays under 0.8 times the budget (design §5.5.2 "入れ替わりを抑える").
+    /// A layer the budget made a density goes back to raw points only while the sum with its bytes stays under 0.8 times
+    /// the budget (design §5.5.2 "入れ替わりを抑える"); of two in one panel, the shorter time, here also the fewer bytes, is
+    /// the panel's candidate (design §5.5.2 "重なる層の和" "戻り").
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -260,6 +261,40 @@ public sealed class PointBudgetTests : IDisposable
         }
 
         Assert.Equal(0, changes);
+    }
+
+    /// <summary>
+    /// The panels' candidates to go back go back the fewest bytes first while the sum with their bytes stays under 0.8
+    /// times the budget: of a figure's two plots, the plot of the fewer bytes, though its number is the higher.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 12 pages (0.8 times is 9.6 pages). Plot 0: a Points layer P of 7 pages and an Auto layer L of 4. Plot 1:
+    ///   a Points layer Q of 3 pages and an Auto layer S of 3. 17 pages, so L and then S become densities.
+    ///
+    /// Steps:
+    /// - Render the figure headless. Render it again with P drawn as a density, so that the raw layers need 3 pages (Q's).
+    ///
+    /// Expected:
+    /// - First: L and S draw densities. Then each plot's panel has one candidate, each within the room alone (3 + 4 and 3 + 3
+    ///   pages under 9.6); S, of the fewer bytes, goes back first, and L stays a density (6 + 4 = 10 pages is not under 9.6);
+    ///   the sum left is 6 pages.
+    /// </remarks>
+    [Fact]
+    public void Back_PanelsCandidates_FewestBytesFirst()
+    {
+        var table = Table(7, 4, 3, 3);
+        var backend = new NullBackend { Images = new ResidencyCache(12 * Page) };
+        using var renderer = new HeadlessRenderer(backend, 1280, 360, _pool);
+        FigureSpec Figure(PointLayerSpec p) => HyperPlot.Figure.HConcat(Spec(table, p, Auto(1)), Spec(table, Points(2), Auto(3)));
+        IndexedPointPlan Of(int plot, int layer) => (IndexedPointPlan)renderer.Figure!.Plans[plot].Panels[0].Layers[layer];
+        renderer.Render(Figure(Points(0)));
+        Assert.Equal((true, true), (Of(0, 1).DrewDensity, Of(1, 1).DrewDensity));
+
+        renderer.Render(Figure(Points(0) with { Draw = PointDraw.Density }));
+        Assert.Equal((4 * Page, 3 * Page), (Of(0, 1).Switch.Needed, Of(1, 1).Switch.Needed));
+        Assert.Equal((true, false), (Of(0, 1).DrewDensity, Of(1, 1).DrewDensity));
+        Assert.Equal(6 * Page, renderer.Figure!.Plans[0].Budget.LastSum);
     }
 
     /// <summary>
@@ -393,6 +428,10 @@ public sealed class PointBudgetTests : IDisposable
         Assert.Equal((true, true), (Layer(engine, 1).DrewDensity, Layer(engine, 2).DrewDensity));
         Assert.Equal((0, true), (searches, full));
     }
+
+    /// <summary>Returns a layer's predicted time alone, as the switch reads it at the reference machine's speed: the fixed term and the others.</summary>
+    private static double Of(long points, double diameter, double largestBin) =>
+        PredictedTime.Fixed + PredictedTime.Terms(points, diameter, largestBin);
 
     /// <summary>Returns the markers' diameter, in pixels, that makes a count and a largest bin predict a time.</summary>
     private static float Diameter(double time, long count, double largestBin)

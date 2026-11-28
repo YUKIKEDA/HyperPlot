@@ -34,6 +34,17 @@
 #           and are deleted at the end
 #   two     (Issue #627) two Auto layers of 150 MiB each, whose sum passes the budget: the switch of one of them to a
 #           density and the end of the provisional frames; 3 runs
+#   pairraw (Issue #563) two Auto-eligible layers of 8e6 points drawn as raw points (Draw = Points) over one another in one
+#           panel: both uniform, both clustered (σ 10), one of each; and each layer alone; 6 DIPs, opacity 0.6, the whole
+#           view; each run then prints what Auto reads of each layer and the panel's sum of the predicted times. Rounds
+#           -FirstRound to -Rounds, the even rounds in the reverse order; -Only as for refit
+#   pair    (Issue #650) the same three pairs drawn with Auto, against a baseline build (-Baseline, an executable of main with
+#           this scene, which compares each layer alone), alternated head, main in the odd rounds and main, head in the
+#           even ones; -Rounds and -Only as above
+#   decide  (Issue #650) the time of the choice over the layers (PointBudget.Decide) on the uniform pair and on 8 uniform
+#           layers of 1e6 points over a facet of 6 panels, drawn with Auto; rounds -FirstRound to -Rounds, in turn
+#   pairtime (Issue #650) the uniform pair with a DensityThreshold of 2e7, so that the counts' sum (1.6e7) stays under it and
+#           the times' sum alone decides, against -Baseline in the same order
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -47,14 +58,16 @@ param(
     [string] $CapCount = '2e8',
     [int] $Rounds = 3,
     [int] $FirstRound = 1,
-    [string] $Only = '.'
+    [string] $Only = '.',
+    # The folder under .dev/ the build is published to: runs from two worktrees name their own.
+    [string] $PublishName = 'r3b2-pub577'
 )
 
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..\..')
 # The main checkout's .dev/, also from a worktree under it: the parent of the shared .git folder.
 $dev = Join-Path (Split-Path -Parent (Resolve-Path (git -C $repo rev-parse --path-format=absolute --git-common-dir))) '.dev'
-$publish = Join-Path $dev 'r3b2-pub577'
+$publish = Join-Path $dev $PublishName
 $machineLog = "$Out.machine.log"
 $clockLog = "$Out.clocks.csv"
 $exe = Join-Path $publish 'HyperPlot.E2E.exe'
@@ -135,7 +148,7 @@ function Get-Arguments([string] $distribution, [int] $categories, [string] $view
     @('10000000', '6', '0.6', $distribution, '600', "$categories", $view, $channel, 'Circle', $form, $frames)
 }
 
-Set-Content -Path $Out -Value "# r3b2 run (Issues #577, #600, #603, #624, and #627), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
+Set-Content -Path $Out -Value "# r3b2 run (Issues #577, #600, #603, #624, #627, #563, and #650), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
 $watcher = $null
 $clocks = $null
 try {
@@ -379,6 +392,92 @@ try {
                     "$Out.refit-$($s[0] -replace '[^A-Za-z0-9]+', '-')-r$round.csv", 'none', "$sigma", "$($s[5])", 'points', $s[6]
                 )
                 Invoke-Scene "refit $($s[0]), round $round" $arguments
+            }
+        }
+    }
+
+    # Issue #563 and #650: name, the first layer's distribution, the second's ("none": the first alone).
+    $pairs = @(
+        @('alone-uniform', 'uniform', 'none'),
+        @('alone-cluster', 'cluster', 'none'),
+        @('pair-uniform-uniform', 'uniform', 'uniform'),
+        @('pair-cluster-cluster', 'cluster', 'cluster'),
+        @('pair-uniform-cluster', 'uniform', 'cluster')
+    )
+    function Get-Pair([string[]] $pair, [string] $drawing, [string] $file, [string] $threshold = '10000000') {
+        @(
+            '8000000', '6', '0.6', $pair[1], '600', '0', 'whole', 'color', 'Circle', 'blocks', 'draw',
+            $file, 'none', '10', '0', $drawing, 'even', $pair[2], $threshold
+        )
+    }
+
+    if ($Sets -contains 'pairraw') {
+        $kept = [System.Collections.Generic.List[object]]::new()
+        foreach ($s in $pairs) {
+            if ($s[0] -match $Only) {
+                $kept.Add($s)
+            }
+        }
+
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $order = if ($round % 2) { 0..($kept.Count - 1) } else { ($kept.Count - 1)..0 }
+            foreach ($i in $order) {
+                $s = $kept[$i]
+                Invoke-Scene "pair $($s[0]), round $round" (Get-Pair $s 'points' "$Out.pair-$($s[0])-r$round.csv")
+            }
+        }
+    }
+
+    if ($Sets -contains 'decide') {
+        # name, points a layer, layers, facet panels.
+        $cases = @(@('pair', '8000000', '2', '0'), @('8 layers 6 panels', '1000000', '8', '6'))
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $order = if ($round % 2) { 0..1 } else { 1..0 }
+            foreach ($i in $order) {
+                $c = $cases[$i]
+                [string[]] $arguments = @(
+                    $c[1], '6', '0.6', 'uniform', '600', '0', 'whole', 'color', 'Circle', 'blocks', 'draw',
+                    "$Out.decide-$($c[0] -replace '[^A-Za-z0-9]+', '-')-r$round.csv", 'none', '10', $c[3], 'auto', 'even', 'uniform', '10000000', $c[2]
+                )
+                Invoke-Scene "decide $($c[0]), round $round" $arguments
+            }
+        }
+    }
+
+    if ($Sets -contains 'pairtime') {
+        if (-not (Test-Path $Baseline)) {
+            throw "the pairtime set needs -Baseline, an executable of main with this scene"
+        }
+
+        $s = $pairs[2]
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $sides = if ($round % 2) { @('head', 'main') } else { @('main', 'head') }
+            foreach ($side in $sides) {
+                $program = if ($side -eq 'head') { $exe } else { $Baseline }
+                Invoke-Scene "auto2e7 $($s[0]) $side, round $round" (Get-Pair $s 'auto' "$Out.auto2e7-$($s[0])-$side-r$round.csv" '20000000') $program
+            }
+        }
+    }
+
+    if ($Sets -contains 'pair') {
+        if (-not (Test-Path $Baseline)) {
+            throw "the pair set needs -Baseline, an executable of main with this scene"
+        }
+
+        $kept = [System.Collections.Generic.List[object]]::new()
+        foreach ($s in $pairs) {
+            if ($s[0] -like 'pair-*' -and $s[0] -match $Only) {
+                $kept.Add($s)
+            }
+        }
+
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $sides = if ($round % 2) { @('head', 'main') } else { @('main', 'head') }
+            foreach ($s in $kept) {
+                foreach ($side in $sides) {
+                    $program = if ($side -eq 'head') { $exe } else { $Baseline }
+                    Invoke-Scene "auto $($s[0]) $side, round $round" (Get-Pair $s 'auto' "$Out.auto-$($s[0])-$side-r$round.csv") $program
+                }
             }
         }
     }
