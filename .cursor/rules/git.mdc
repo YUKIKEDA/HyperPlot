@@ -15,6 +15,8 @@ A worktree with changes is removed after its changes are undone with an edit or 
 
 This holds for a conflict that another PR's merge caused: ask how to solve it (rebase and force-push, or merge `main` into the branch) before running either, and do not reset another branch to follow it. The question comes before a local rebase too, not only before the push: after PR #247 merged, PR #249's branch was rebased locally before the owner was asked, and only the push waited for the answer.
 
+A conflict solved by a script is checked before the commit: count the conflict markers in each file (`^(<<<<<<<|=======|>>>>>>>)`; none may remain), and check by machine what each side added (one side's line without the other side's additions equals the other side's line). Line numbers are 1-based and array indices 0-based: PR #640's merge kept one `<<<<<<< HEAD` line in each of two files that way, and the count before the commit found them.
+
 When asked about such an operation, answer with the current `HEAD` SHA, the target SHA, what would disappear, and the exact command. Then wait.
 
 - Finished work goes to a PR in the same turn, without waiting for an ask: commit on the Issue's branch, push it, and open the PR (`.cursor/rules/workflow.mdc`). The owner reviews on the PR, from wherever they are; uncommitted changes on this machine cannot be reviewed. Do not stop at "may I commit?".
