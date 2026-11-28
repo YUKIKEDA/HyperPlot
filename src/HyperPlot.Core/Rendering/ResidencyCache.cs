@@ -160,7 +160,11 @@ public sealed class ResidencyCache
     /// <summary>Gets the color tables to send before the frame draws.</summary>
     internal ReadOnlySpan<(int Row, ColorMap Map)> TableUploads => CollectionsMarshal.AsSpan(_tableUploads);
 
-    /// <summary>Gets the number of bytes staged since the backend last sent: tiles and pages of points. Tests only: the frame's upload is bounded by <see cref="BytesThisTick"/>.</summary>
+    /// <summary>
+    /// Gets the number of bytes staged since the backend last sent: tiles and pages of points. The upload of a frame is bounded
+    /// by it and by <see cref="BytesThisTick"/> (<see cref="Admits"/>), so that what waits to be sent stays within
+    /// <see cref="FrameUpload"/> when a frame moves on before its uploads were sent.
+    /// </summary>
     internal long BytesThisFrame => ((long)_stagingFaces * FaceBytes) + Points.BytesThisFrame;
 
     /// <summary>
@@ -213,7 +217,9 @@ public sealed class ResidencyCache
             BeginFrame();
         }
 
-        (plan.Frame, plan.Raw) = (_frame, 0);
+        // The plan's raw bytes stay those of its last choice until this frame's (PointBudget.Decide), so that a Render
+        // that throws before it chooses leaves the last value, not 0, in the other plans' sums.
+        plan.Frame = _frame;
         PointBudget.Begin(plan, _frame);
     }
 
@@ -238,6 +244,14 @@ public sealed class ResidencyCache
     /// go of before it was sent stays counted: the frame's upload never grows past <see cref="FrameUpload"/> by it.
     /// </summary>
     internal void Stage(long bytes) => _staged += bytes;
+
+    /// <summary>
+    /// Returns whether the frame's upload has room for more bytes (design §5.5.2 "1 tick に送る量"): a headless render's
+    /// always does; otherwise both what every plan staged in the frame (<see cref="BytesThisTick"/>) and what waits to be sent
+    /// (<see cref="BytesThisFrame"/>, a frame's that moved on before the backend sent it included) stay within
+    /// <see cref="FrameUpload"/> with them.
+    /// </summary>
+    internal bool Admits(long bytes) => Unbounded || Math.Max(_staged, BytesThisFrame) + bytes <= FrameUpload;
 
     /// <summary>
     /// Returns whether no room can be made in this frame for the given bytes (design §5.5.2 "予算が満ちたフレーム"): the
@@ -583,7 +597,7 @@ public sealed class ResidencyCache
     private int Take(Format format, out int offset)
     {
         offset = 0;
-        if (!Unbounded && _staged + FaceBytes > FrameUpload)
+        if (!Admits(FaceBytes))
         {
             return -1;
         }
@@ -654,9 +668,9 @@ public sealed class ResidencyCache
     internal sealed class SharingPlan(long number)
     {
         /// <summary>
-        /// Gets the number of the plan's registration, from 1, never used again: the first key of the budget's order (design
-        /// §5.5.2 "同じ値のときの順"). The budget's list holds the drawing plan's layers alone, so the number keeps two plans'
-        /// layers apart by that, and orders none of them. Tests read it.
+        /// Gets the number of the plan's registration, from 1, never used again (design §5.5.2 "同じ値のときの順"). No choice
+        /// reads it: the budget's list holds the drawing plan's layers alone, so no two plans' layers are ever ordered or summed
+        /// together (Issue #664's decision, detail 3). Tests and diagnostics read it.
         /// </summary>
         public long Number => number;
 
@@ -665,7 +679,8 @@ public sealed class ResidencyCache
 
         /// <summary>
         /// Gets or sets the bytes the plan's last choice drew as raw points (design §5.5.2 "ほかの計画の最後の値"): its
-        /// <see cref="PointDraw.Points"/> layers and its Auto layers on raw points, in <see cref="Frame"/>.
+        /// <see cref="PointDraw.Points"/> layers and its Auto layers on raw points. A frame's choice writes it; a Render that throws
+        /// before its choice leaves the last one's.
         /// </summary>
         public long Raw { get; set; }
     }

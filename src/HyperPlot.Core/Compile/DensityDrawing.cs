@@ -316,7 +316,7 @@ internal sealed class PointBudget
     // The plan that draws (design §5.5.2 "予算の並び"): the layers entered are its own.
     private ResidencyCache.SharingPlan? _plan;
 
-    /// <summary>Gets the sum of the bytes the last choice left against the budget. Tests only.</summary>
+    /// <summary>Gets the sum of the bytes the last choice left against the budget; a frame with no layer entered leaves it. Tests and measurements only.</summary>
     internal long LastSum { get; private set; }
 
     /// <summary>Gets the number of panels whose sums the last choice read. Tests only.</summary>
@@ -328,7 +328,7 @@ internal sealed class PointBudget
     /// </summary>
     internal long DecideTicks { get; private set; }
 
-    /// <summary>Gets the sum of the other plans' raw bytes the last choice counted (design §5.5.2 "ほかの計画の最後の値"). Tests only.</summary>
+    /// <summary>Gets the sum of the other plans' raw bytes the last choice counted (design §5.5.2 "ほかの計画の最後の値"); a frame with no layer entered leaves it. Tests only.</summary>
     internal long LastOthers { get; private set; }
 
     /// <summary>
@@ -363,13 +363,21 @@ internal sealed class PointBudget
     /// Chooses the drawing of every layer the drawing plan entered in the cache's current frame, before any of them records:
     /// by the panels' sums of the times and the counts, then by the budget over them and the other plans' last raw bytes,
     /// then the way back; and keeps the plan's own raw bytes for the other plans' choices. A frame with no layer entered
-    /// chooses nothing, and the plan's raw bytes stay 0.
+    /// chooses nothing, and the plan's raw bytes are 0.
     /// </summary>
     public void Decide(ResidencyCache cache)
     {
         var frame = cache.Frame;
-        if (frame != _frame || _entered.Count == 0)
+        if (frame != _frame)
         {
+            return;
+        }
+
+        // A frame with no layer entered draws no raw point: the plan's raw bytes are 0, and the values the tests read stay the
+        // last choice's.
+        if (_entered.Count == 0)
+        {
+            _plan?.Raw = 0;
             return;
         }
 

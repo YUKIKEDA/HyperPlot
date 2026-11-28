@@ -416,8 +416,7 @@ public sealed class DensityTests
     /// Preconditions:
     /// - A density layer of 400,000 seeded points over [0, 100]² (a root tile) in an engine that does not wait, whose index
     ///   has ended; the null backend, which sends only when told.
-    /// - The upload of a frame of the cache that the engine has not joined yet filled with faces of another snapshot of 2,000
-    ///   points, until one is refused: 15 faces. The engine's next frame joins that frame (design §5.5.2 "tick の数え方").
+    /// - The frame's upload filled with faces of another snapshot of 2,000 points, until one is refused: 15 faces.
     ///
     /// Steps:
     /// - Render a frame; say the uploads were sent; render a frame.
@@ -452,10 +451,7 @@ public sealed class DensityTests
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
         Eventually.Completes(plan.SpatialIndex!.WhenComplete());
 
-        // A frame of the cache the engine is not in yet: its next frame joins it, and shares its upload (design §5.5.2 "1 tick
-        // に送る量").
         cache.Sent();
-        cache.BeginFrame();
         var staged = 0;
         while (cache.RequestDensity(other.Snapshot, 2, (ulong)staged, new DensityTile(bins, 1, 0)) >= 0)
         {

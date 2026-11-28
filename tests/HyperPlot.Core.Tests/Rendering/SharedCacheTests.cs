@@ -17,7 +17,10 @@ namespace HyperPlot.Tests;
 /// 100]², drawn whole on 640 × 360 without guides at markers of 1 DIP, so that its predicted time and count stay far under
 /// their thresholds and only the budget decides; it needs k × 786,432 bytes. An engine's frame is followed by the wait for
 /// the reads, so that the ticks a page takes do not depend on the workers' speed. The tests do not run in parallel: their
-/// tables hold up to 31 pages a layer, and the engines' frames wait for the shared pool.
+/// tables hold up to 31 pages a layer, and the engines' frames wait for the shared pool. The waits that draw until a state
+/// comes end at <see cref="Deadline"/>, 60 s: a watchdog, far above the time they take (the whole class ran in 48 s in a
+/// Debug build); a test that reaches it fails, so a slow machine fails it, never passes it. The upload of the rasters ends
+/// once 20 ticks in a row send nothing after something was sent (every tile in view is there), or at 30 s.
 /// </remarks>
 [Collection(nameof(SharedCacheTests))]
 [CollectionDefinition(nameof(SharedCacheTests), DisableParallelization = true)]
@@ -702,6 +705,45 @@ public sealed class SharedCacheTests : IDisposable
 
         Assert.InRange(largest, Page, ResidencyCache.FrameUpload);
         Assert.Equal(10 * Page, total);
+    }
+
+    /// <summary>
+    /// What waits to be sent stays within <see cref="ResidencyCache.FrameUpload"/> when frames move on before the backend
+    /// sends (design §5.5.2 "1 tick に送る量", PR #668 review): the tick's count starts at 0 with each frame, and the bytes
+    /// staged and not sent still bound the next frame's.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One engine of 1,280 × 1,280 on the null backend, whose draws do not send the tiles, a float raster of 2,048 × 2,048
+    ///   over [0, 100]² (more tiles than a frame sends).
+    ///
+    /// Steps:
+    /// - Draw frames, sending nothing, until a frame stages tiles; then 3 more frames. Then send, and draw a frame.
+    ///
+    /// Expected:
+    /// - The bytes staged and not sent stay within 4,194,304 through the 3 frames, though each moves the cache's frame on.
+    ///   After the send, the next frame stages tiles again.
+    /// </remarks>
+    [Fact]
+    public void Upload_NotSentBeforeTheFrameMovesOn_StaysWithinFrameUpload()
+    {
+        var table = Table(1);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 1280, 1280, 1, _pool);
+        engine.SetPlot(Raster2048(table, 3));
+        engine.RenderFrame();
+        Until(() => backend.Images.BytesThisFrame > 0, engine.RenderFrame, "No tile was staged");
+        for (var frame = 0; frame < 3; frame++)
+        {
+            var before = backend.Images.Frame;
+            engine.RenderFrame();
+            Assert.True(backend.Images.Frame > before);
+            Assert.InRange(backend.Images.BytesThisFrame, Face, ResidencyCache.FrameUpload);
+        }
+
+        backend.Images.Sent();
+        engine.RenderFrame();
+        Assert.True(backend.Images.BytesThisFrame > 0);
     }
 
     /// <summary>
