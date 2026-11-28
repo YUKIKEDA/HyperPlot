@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using HyperPlot.DataPath;
 using HyperPlot.Interaction;
 using HyperPlot.Rendering;
@@ -29,7 +30,7 @@ internal static class BudgetScene
     public static int Run(ReadOnlySpan<string> args)
     {
         const string Usage =
-            "budget full <dir> <count> | budget two | budget figure <raw|dense> <dir> [frame file] [count of dense, 1e8 by default] [plots, 4 by default]";
+            "budget full <dir> <count> | budget two | budget figure <raw|dense> <dir> [frame file] [count of dense, 1e8 by default] [plots, 4 by default] | budget engines <count> <move|still> [frame file]";
         _ = PointsScene.TimeBeginPeriod(1);
         try
         {
@@ -47,6 +48,11 @@ internal static class BudgetScene
                     args.Length > 3 && args[3].Length > 0 ? args[3] : null,
                     args.Length > 4 ? (long)double.Parse(args[4], CultureInfo.InvariantCulture) : 100_000_000,
                     args.Length > 5 ? int.Parse(args[5], CultureInfo.InvariantCulture) : 4
+                ),
+                >= 3 when args[0] == "engines" && args[2] is "move" or "still" => Engines(
+                    int.Parse(args[1], CultureInfo.InvariantCulture),
+                    args[2] == "move",
+                    args.Length > 3 ? args[3] : null
                 ),
                 _ => Fail(Usage),
             };
@@ -419,7 +425,258 @@ internal static class BudgetScene
         }
     }
 
+    /// <summary>
+    /// The ticks of engines that share one backend's cache (Issue #664, design §5.5.2 "キャッシュを分け合う計画", §9): one or
+    /// two engines of 1,920 × 1,080, each a Points layer of 4,000,000 seeded uniform points of its own (62 pages each,
+    /// within the budget together), drawn in turn each tick. "move": engine 0's view moves a millionth of its side each
+    /// tick, so that it records, and the others do not change; "still": no view moves, so that every engine keeps its
+    /// list. Once every index is complete and no tick is provisional for 60 ticks, 600 ticks after 120 of warm-up are
+    /// recorded and not drawn: the CPU time of each engine's frame and of the tick, and of each engine's keep of its list
+    /// and the budget's choice in its frame.
+    /// </summary>
+    private static int Engines(int count, bool move, string? frameFile)
+    {
+        const int Count = 4_000_000;
+        var columns = new List<IDisposable>();
+        var plots = new PlotSpec[count];
+        for (var k = 0; k < count; k++)
+        {
+            var random = new Random(664 + k);
+            var (xs, ys) = (new float[Count], new float[Count]);
+            for (var i = 0; i < Count; i++)
+            {
+                (xs[i], ys[i]) = ((float)random.NextDouble(), (float)random.NextDouble());
+            }
+
+            var (x, y) = (Column.Wrap(xs), Column.Wrap(ys));
+            columns.Add(x);
+            columns.Add(y);
+            var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+            plots[k] = Plot.Create(table)
+                .Point(table.Col<float>("x"), table.Col<float>("y"), p => p.Draw(PointDraw.Points))
+                .ScaleX(Scale.Linear().WithDomain(0, 1))
+                .ScaleY(Scale.Linear().WithDomain(0, 1))
+                .Build();
+        }
+
+        using var inner = D3D11Backend.Create();
+        var backend = new PointsScene.CountingBackend(inner);
+        var pool = new PlotWorkerPool(Math.Max(1, Environment.ProcessorCount - 1));
+        var engines = new List<PlotEngine>(count);
+        try
+        {
+            _ = DensityScene.Warm(inner);
+            for (var k = 0; k < count; k++)
+            {
+                engines.Add(new PlotEngine(backend, 1920, 1080, 1, pool));
+                engines[k].SetPlot(plots[k]);
+            }
+
+            var view = new PanelView2D(ViewRange.FromValues(0, 1), ViewRange.FromValues(0, 1));
+            var other = new PanelView2D(ViewRange.FromValues(1e-6, 1 + 1e-6), ViewRange.FromValues(0, 1));
+            var stages = new Stage[count];
+            var shown = Stopwatch.StartNew();
+            var (steady, frames) = (0, 0);
+            while (steady < 60)
+            {
+                if (shown.Elapsed > Deadline)
+                {
+                    Console.Error.WriteLine("engines: the ticks did not settle before the deadline");
+                    return 1;
+                }
+
+                Tick(engines, null, stages);
+                frames++;
+                var settled = engines.All(engine =>
+                    !engine.IsProvisional
+                    && engine.Plan?.Layers is { Count: > 0 } layers
+                    && layers[0] is IndexedPointPlan { SpatialIndex.IsComplete: true }
+                );
+                steady = settled ? steady + 1 : 0;
+            }
+
+            Console.WriteLine(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"settled: {shown.Elapsed.TotalSeconds:F1} s, {frames} ticks; pages {backend.Images.Points.PagesInUse}, bytes {backend.Images.BytesInUse} of {backend.Images.Budget}, cache frame {backend.Images.Frame}"
+                )
+            );
+            var load = MachineLoad.Now();
+            var (tick, own, keep, decide) = (new List<double>(), new List<double>[count], new List<double>[count], new List<double>[count]);
+            for (var k = 0; k < count; k++)
+            {
+                (own[k], keep[k], decide[k]) = (new List<double>(), new List<double>(), new List<double>());
+            }
+
+            var (recorded, allocated, provisional, firstFrame) = (new int[count], 0L, 0, backend.Images.Frame);
+            var rows = new List<string>(Measured);
+            backend.Skips = true;
+            for (var f = 0; f < Warmup + Measured; f++)
+            {
+                var at = DateTime.Now;
+                if (f == Warmup)
+                {
+                    firstFrame = backend.Images.Frame;
+                }
+
+                var total = Tick(engines, move ? (f % 2 == 0 ? other : view) : null, stages);
+                if (f < Warmup)
+                {
+                    continue;
+                }
+
+                var row = new StringBuilder(string.Create(CultureInfo.InvariantCulture, $"{f - Warmup},{at:HH:mm:ss.fff},{total:F3}"));
+                for (var k = 0; k < count; k++)
+                {
+                    var stage = stages[k];
+                    recorded[k] += stage.Recorded ? 1 : 0;
+                    own[k].Add(stage.Cpu);
+                    keep[k].Add(stage.Keep);
+                    decide[k].Add(stage.Decide);
+                    allocated += stage.Bytes;
+                    provisional += engines[k].IsProvisional ? 1 : 0;
+                    _ = row.Append(
+                        CultureInfo.InvariantCulture,
+                        $",{stage.Cpu:F3},{(stage.Recorded ? 1 : 0)},{stage.Scan:F4},{stage.Record:F4},{stage.Decide:F4},{stage.Keep:F4},{stage.Rest:F4},{stage.Staged},{stage.Gen0},{stage.Gen1},{stage.Gen2},{stage.Bytes}"
+                    );
+                }
+
+                tick.Add(total);
+                rows.Add(row.ToString());
+            }
+
+            backend.Skips = false;
+            var (otherCores, ownCores) = MachineLoad.CoresSince(load);
+            if (frameFile is not null)
+            {
+                var header =
+                    "tick,time,tick_cpu_ms"
+                    + string.Concat(
+                        Enumerable
+                            .Range(0, count)
+                            .Select(k =>
+                                $",cpu{k}_ms,recorded{k},scan{k}_ms,record{k}_ms,decide{k}_ms,keep{k}_ms,rest{k}_ms,staged{k},gen0_{k},gen1_{k},gen2_{k},bytes{k}"
+                            )
+                    );
+                File.WriteAllLines(frameFile, [header, .. rows]);
+            }
+
+            var text = new StringBuilder(
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"engines {count} {(move ? "move" : "still")}: ticks={tick.Count} tick cpu p50={PointsScene.Percentile([.. tick], 0.5):F3} p95={PointsScene.Percentile([.. tick], 0.95):F3} max={tick.Max():F3} ms; cache frames {backend.Images.Frame - firstFrame} in {Measured} ticks"
+                )
+            );
+            for (var k = 0; k < count; k++)
+            {
+                _ = text.Append(
+                    CultureInfo.InvariantCulture,
+                    $"; engine {k}: cpu p50={PointsScene.Percentile([.. own[k]], 0.5):F3} p95={PointsScene.Percentile([.. own[k]], 0.95):F3} ms, keep p50={PointsScene.Percentile([.. keep[k]], 0.5):F4} p95={PointsScene.Percentile([.. keep[k]], 0.95):F4} ms, choice p50={PointsScene.Percentile([.. decide[k]], 0.5):F4} ms, recorded {recorded[k]}"
+                );
+            }
+
+            _ = text.Append(
+                CultureInfo.InvariantCulture,
+                $"; provisional frames {provisional}; allocated {allocated} bytes; other processes' cores {otherCores:F2}, this process's {ownCores:F2}"
+            );
+            Console.WriteLine(text.ToString());
+
+            // The slowest tick's row, stage by stage (the header of the frame file names the columns).
+            Console.WriteLine($"slowest tick: {rows[tick.IndexOf(tick.Max())]}");
+            return 0;
+        }
+        finally
+        {
+            foreach (var engine in engines)
+            {
+                engine.Dispose();
+            }
+
+            pool.Dispose();
+            foreach (var column in columns)
+            {
+                column.Dispose();
+            }
+        }
+    }
+
+    /// <summary>The keep of a plot alone's list in its last frame, in ms (Issue #664).</summary>
+    private static double KeepMs(PlotPlan plan) => Ms(plan.KeepTicks);
+
+    /// <summary>
+    /// Draws one tick of engines in turn, at a view of engine 0 if one is given, and paces it to the period; returns the
+    /// tick's CPU time in ms, and each engine's stages.
+    /// </summary>
+    private static double Tick(List<PlotEngine> engines, PanelView2D? view, Stage[] stages)
+    {
+        var start = Stopwatch.GetTimestamp();
+        if (view is { } next)
+        {
+            engines[0].Views.SetView(Panel, next);
+        }
+
+        for (var k = 0; k < engines.Count; k++)
+        {
+            // Each engine's stages are read right after its frame: the budget is the cache's, so the next engine's frame
+            // writes its choice's time over this one's.
+            var plan = engines[k].Plan!;
+            var recordings = plan.Recordings;
+            var collections = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
+            var begun = Stopwatch.GetTimestamp();
+            var allocated = GC.GetAllocatedBytesForCurrentThread();
+            engines[k].RenderFrame();
+            var bytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
+            var frame = Stopwatch.GetElapsedTime(begun).TotalMilliseconds;
+            var recorded = plan.Recordings != recordings;
+            stages[k] = new Stage(
+                frame,
+                recorded,
+                recorded ? Ms(plan.ScanTicks) : 0,
+                recorded ? Ms(plan.RecordTicks) : 0,
+                Ms(plan.Budget.DecideTicks),
+                KeepMs(plan),
+                plan.Images.BytesThisFrame,
+                GC.CollectionCount(0) - collections.Item1,
+                GC.CollectionCount(1) - collections.Item2,
+                GC.CollectionCount(2) - collections.Item3,
+                bytes
+            );
+        }
+
+        var cpu = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+        var left = Period - Stopwatch.GetElapsedTime(start);
+        if (left > TimeSpan.Zero)
+        {
+            Thread.Sleep(left);
+        }
+
+        return cpu;
+    }
+
     private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>
+    /// The stages of an engine's frame of a tick (Issue #664): its CPU time; whether it recorded; the scan and the recording
+    /// of the layers, 0 for a frame that did not record; the budget's choice; the keep of the list; the bytes the cache
+    /// staged and the backend did not send yet; the collections of each generation during it; and its bytes.
+    /// </summary>
+    private readonly record struct Stage(
+        double Cpu,
+        bool Recorded,
+        double Scan,
+        double Record,
+        double Decide,
+        double Keep,
+        long Staged,
+        int Gen0,
+        int Gen1,
+        int Gen2,
+        long Bytes
+    )
+    {
+        /// <summary>Gets the rest of the frame: its CPU time less the stages timed.</summary>
+        public double Rest => Cpu - Scan - Record - Decide - Keep;
+    }
 
     /// <summary>Draws one frame, at a view if one is given, and paces it to the period; returns its CPU time in ms and its bytes.</summary>
     private static (double Cpu, long Bytes) Frame(PlotEngine engine, PanelView2D? view)

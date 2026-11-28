@@ -1768,10 +1768,11 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public ResidencyCache Images { get; init; } = new();
 
     /// <summary>
-    /// Gets the budget of the point layers on the index path (design §5.5.2 "予算"): the plan's own for a plot alone, the
-    /// figure's for a plot of a figure, so that one choice reads every layer that draws with the cache in the frame.
+    /// Gets the budget of the point layers on the index path (design §5.5.2 "予算", "キャッシュを分け合う計画"): the residency
+    /// cache's one, which the plan alone or the figure that draws begins, so that one choice reads every layer of the
+    /// drawing plan and the other plans' last raw bytes.
     /// </summary>
-    public PointBudget Budget { get; init; } = new();
+    public PointBudget Budget => Images.PointBudget;
 
     /// <summary>Gets or sets the number of the plot in its figure, 0 for a plot alone (design §5.5.2 "替える順").</summary>
     public int Plot { get; set; }

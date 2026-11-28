@@ -192,11 +192,12 @@ public sealed class PointBudgetTests : IDisposable
     ///
     /// Expected:
     /// - Alone, the layer's 22 pages are within the budget and it draws raw points.
-    /// - With the image, the last frame counts the slots the frame before it used. That frame drew the layer's raw points
-    ///   and the raster at level 1 (1,024 texels over about 360 pixels down, 2 to 4 a pixel): its 2 × 2 tiles, and the top
-    ///   level's one tile (level 2, 256 × 256), which it asked for first and did not draw (design §5.5.3 "送る順と仮の描画":
-    ///   the top level's tile is asked for first in every frame). These 5 faces and the layer's
-    ///   22 pages pass the budget, so the layer draws a density, and the sum left is the 5 faces.
+    /// - With the image, a frame counts the slots the frame before it used. The first drew the layer's raw points and the
+    ///   raster at level 1 (1,024 texels over about 360 pixels down, 2 to 4 a pixel): its 2 × 2 tiles, and the top level's
+    ///   one tile (level 2, 256 × 256), which it asked for first and did not draw (design §5.5.3 "送る順と仮の描画": the top
+    ///   level's tile is asked for first in every frame). These 5 faces and the layer's 22 pages pass the budget, so the
+    ///   layer draws a density. The render's last round records nothing and keeps its list, in a frame of its own (design
+    ///   §5.5.2 "tick の数え方"): it counts the 5 faces and the density's, and the sum left is those.
     /// </remarks>
     [Fact]
     public void Sum_CountsTheRasterTilesOfTheLastFrame()
@@ -218,11 +219,14 @@ public sealed class PointBudgetTests : IDisposable
         var layer = (IndexedPointPlan)renderer.Plan.Panels[0].Layers[1];
         Assert.Equal((1, 4), (raster.Level, raster.VisibleTiles));
 
-        // The frame before the last: the 2 × 2 tiles of level 1 drawn and the top level's one tile asked for.
-        const long Used = ((2 * 2) + 1) * (long)ResidencyCache.FaceBytes;
-        Assert.Equal(Used, backend.Images.TileBytesLastFrame);
+        // The frame before the last: the 2 × 2 tiles of level 1 drawn and the top level's one tile asked for, and the
+        // density's faces, which its list draws beside the raster's 4.
+        var density = renderer.Plan.List.Images.Length - raster.VisibleTiles;
+        Assert.InRange(density, 1, 4);
+        var used = ((2 * 2) + 1 + density) * (long)ResidencyCache.FaceBytes;
+        Assert.Equal(used, backend.Images.TileBytesLastFrame);
         Assert.True(layer.DrewDensity);
-        Assert.Equal(Used, renderer.Plan.Budget.LastSum);
+        Assert.Equal(used, renderer.Plan.Budget.LastSum);
     }
 
     /// <summary>
@@ -586,11 +590,13 @@ public sealed class PointBudgetTests : IDisposable
     /// Steps:
     /// - Render P; take the centers its list draws. Render Q's first plot, then its second, whose pages need room. Render
     ///   P's plot again, unchanged; then once more. Reset the cache as a lost device does, render Q with both layers as
-    ///   points (8 pages, which take all 7 slots), and render P's plot again.
+    ///   points (8 pages, which take all 7 slots), and render P's plot again, twice.
     ///
     /// Expected:
     /// - P's second render records again and draws the same 196,608 centers. Its third does not record, and draws them too.
-    ///   After the reset, P records again and draws them, though every slot holds a page again.
+    /// - After the reset, P records again; its render joins the frame of Q's last round, whose pages it cannot let go of
+    ///   (design §5.5.2 "キャッシュを分け合う計画"), so it draws none of its points. Its next render, in a frame of its own,
+    ///   draws them.
     /// </remarks>
     [Fact]
     public void SharedCache_PlotThatDoesNotChange_DrawsItsOwnPagesAgain()
@@ -618,13 +624,17 @@ public sealed class PointBudgetTests : IDisposable
         Assert.Equal(drawn, gpu.Centers(p.Plan.List));
         Assert.Equal(recordings, p.Plan.Recordings);
 
-        // A lost device forgets every page, and Q's 8 pages take all 7 slots again.
+        // A lost device forgets every page, and Q's 8 pages take all 7 slots again. P's render joins the frame of Q's last
+        // round, whose pages are not let go of for another plan of it (design §5.5.2 "tick の数え方", "今のフレームで使ったも
+        // の"): P records and draws none of its pages. Its next render moves the frame on, and draws them.
         backend.Images.Reset();
         q.Render(Spec(table, Points(1), Points(2)));
         Assert.Equal(7, backend.Images.Points.PagesInUse);
         p.Render(still);
-        Assert.Equal(drawn, gpu.Centers(p.Plan.List));
         Assert.True(p.Plan.Recordings > recordings);
+        Assert.All(gpu.Centers(p.Plan.List), center => Assert.True(float.IsNaN(center.X)));
+        p.Render(still);
+        Assert.Equal(drawn, gpu.Centers(p.Plan.List));
     }
 
     /// <summary>
@@ -890,89 +900,5 @@ public sealed class PointBudgetTests : IDisposable
 
         _table = builder.Build();
         return _table;
-    }
-
-    /// <summary>
-    /// The pages and the faces a GPU would hold, slot by slot, from what the draws of a null backend send: a dropped slot's
-    /// buffer goes, and a sent page's points or a sent face's texels take their slot's.
-    /// </summary>
-    private sealed class GpuPages
-    {
-        private readonly Dictionary<int, ResidentPoint[]> _pages = [];
-        private readonly Dictionary<(ResidencyCache.Format, int), uint[]> _faces = [];
-
-        public void Send(ResidencyCache cache)
-        {
-            foreach (var slot in cache.Points.Dropped)
-            {
-                _ = _pages.Remove(slot);
-            }
-
-            foreach (var upload in cache.Points.Uploads)
-            {
-                _pages[upload.Slot] = cache.Points.Staged(upload).ToArray();
-            }
-
-            foreach (var upload in cache.Uploads)
-            {
-                _faces[(upload.Format, upload.Slot)] = cache.Face(upload).ToArray();
-            }
-        }
-
-        /// <summary>Returns the faces a list's image records read, in the records' order: null for a slot that holds none.</summary>
-        public uint[]?[] Faces(RenderList list)
-        {
-            var images = list.Images;
-            var calls = list.ImageCalls;
-            var faces = new uint[]?[images.Length];
-            for (var i = 0; i < images.Length; i++)
-            {
-                // A call's page is the format a 1,024 and the texture array of the slot (ImagePlan.PageOf).
-                var page = calls[i].Page;
-                var format = page >= 1024 ? ResidencyCache.Format.Rgba : ResidencyCache.Format.Float;
-                faces[i] = _faces.GetValueOrDefault((format, ((page % 1024) * ResidencyCache.PageSlots) + (int)images[i].Slice));
-            }
-
-            return faces;
-        }
-
-        /// <summary>
-        /// Returns the centers a list's resident runs draw, sorted, each computed from the kept page as Markers.hlsl computes
-        /// it (the cell's pixel plus the point's units from the cell's base times its scale, clamped); NaN for a point of a
-        /// slot that holds no page or whose cell is not in the list's table.
-        /// </summary>
-        public (float X, float Y)[] Centers(RenderList list)
-        {
-            var centers = new List<(float X, float Y)>();
-            var cells = list.ResidentCells;
-            foreach (var run in list.ResidentRuns)
-            {
-                if (!_pages.TryGetValue(run.Slot, out var page) || run.First + run.Count > page.Length)
-                {
-                    centers.AddRange(Enumerable.Repeat((float.NaN, float.NaN), run.Count));
-                    continue;
-                }
-
-                for (var i = run.First; i < run.First + run.Count; i++)
-                {
-                    var point = page[i];
-                    var at = run.Cells + (long)point.Cell;
-                    if (at >= cells.Length)
-                    {
-                        centers.Add((float.NaN, float.NaN));
-                        continue;
-                    }
-
-                    var cell = cells[(int)at];
-                    var x = Math.Clamp(cell.PixelX + (Units(point.X, cell.BaseX) * cell.ScaleX), run.ClampLow.X, run.ClampHigh.X);
-                    var y = Math.Clamp(cell.PixelY + (Units(point.Y, cell.BaseY) * cell.ScaleY), run.ClampLow.Y, run.ClampHigh.Y);
-                    centers.Add(run.Swap ? (y, x) : (x, y));
-                }
-            }
-
-            return [.. centers.Order()];
-
-            static float Units(uint position, uint origin) => position >= origin ? position - origin : -(float)(origin - position);
-        }
     }
 }

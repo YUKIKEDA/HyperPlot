@@ -128,7 +128,7 @@ internal sealed class DensitySwitch(int layer)
         if (_entered != frame)
         {
             (_entered, _point, _scale, _timeScale, Plot) = (frame, point, context.Scale, context.GpuTimeScale, context.Plot);
-            context.Budget.Enter(this, frame);
+            context.Budget.Enter(this);
         }
 
         context.Budget.EnterPanel(this, context.Plot, context.PanelNumber);
@@ -298,8 +298,9 @@ internal sealed class DensitySwitch(int layer)
 /// plots too, against the cache's budget; over it, the Auto layers on raw points become densities, the one that needs the
 /// most bytes first, until the sum is within it. Last the way back: a panel lets back at most one density a frame, the
 /// shortest time first whose panels' sums with it as raw points let it and whose bytes leave the budget's sum under 0.8
-/// times the budget; the panels' candidates go back the fewest bytes first. A plot alone has a budget of its own, and a
-/// figure one for all its plots.
+/// times the budget; the panels' candidates go back the fewest bytes first. The residency cache has one (design §5.5.2
+/// "キャッシュを分け合う計画"), which each plan that draws with the cache, a plot alone or a figure of all its plots, begins
+/// in its frame: the sum counts the other plans' last raw bytes, and only the drawing plan's layers change.
 /// </summary>
 /// <remarks>One thread at a time: the frame's. After its lists have grown, a frame allocates nothing.</remarks>
 internal sealed class PointBudget
@@ -312,7 +313,10 @@ internal sealed class PointBudget
     private readonly List<bool> _returned = [];
     private long _frame = -1;
 
-    /// <summary>Gets the sum of the bytes the last choice left against the budget. Tests only.</summary>
+    // The plan that draws (design §5.5.2 "予算の並び"): the layers entered are its own.
+    private ResidencyCache.SharingPlan? _plan;
+
+    /// <summary>Gets the sum of the bytes the last choice left against the budget; a frame with no layer entered leaves it. Tests and measurements only.</summary>
     internal long LastSum { get; private set; }
 
     /// <summary>Gets the number of panels whose sums the last choice read. Tests only.</summary>
@@ -324,18 +328,22 @@ internal sealed class PointBudget
     /// </summary>
     internal long DecideTicks { get; private set; }
 
-    /// <summary>Enters a layer scanned in a frame; the layers of an earlier frame are let go of.</summary>
-    public void Enter(DensitySwitch layer, long frame)
-    {
-        if (frame != _frame)
-        {
-            _entered.Clear();
-            _panels.Clear();
-            _frame = frame;
-        }
+    /// <summary>Gets the sum of the other plans' raw bytes the last choice counted (design §5.5.2 "ほかの計画の最後の値"); a frame with no layer entered leaves it. Tests only.</summary>
+    internal long LastOthers { get; private set; }
 
-        _entered.Add(layer);
+    /// <summary>
+    /// Begins a plan's frame of the cache (design §5.5.2 "予算の並び"): the layers entered so far, an earlier plan's of the
+    /// same frame or of an earlier frame, are let go of, and the layers entered from now on are the plan's.
+    /// </summary>
+    public void Begin(ResidencyCache.SharingPlan plan, long frame)
+    {
+        _entered.Clear();
+        _panels.Clear();
+        (_plan, _frame) = (plan, frame);
     }
+
+    /// <summary>Enters a layer the drawing plan scanned in its frame.</summary>
+    public void Enter(DensitySwitch layer) => _entered.Add(layer);
 
     /// <summary>
     /// Enters a layer entered this frame (<see cref="Enter"/>) into the sums of a panel of its plot, once for the parts of
@@ -352,9 +360,10 @@ internal sealed class PointBudget
     }
 
     /// <summary>
-    /// Chooses the drawing of every layer entered in the cache's current frame, before any of them records: by the panels'
-    /// sums of the times and the counts, then by the budget over all of them, then the way back. A frame with no layer
-    /// entered chooses nothing.
+    /// Chooses the drawing of every layer the drawing plan entered in the cache's current frame, before any of them records:
+    /// by the panels' sums of the times and the counts, then by the budget over them and the other plans' last raw bytes,
+    /// then the way back; and keeps the plan's own raw bytes for the other plans' choices. A frame with no layer entered
+    /// chooses nothing, and the plan's raw bytes are 0.
     /// </summary>
     public void Decide(ResidencyCache cache)
     {
@@ -364,10 +373,31 @@ internal sealed class PointBudget
             return;
         }
 
+        // A frame with no layer entered draws no raw point: the plan's raw bytes are 0, and the values the tests read stay the
+        // last choice's.
+        if (_entered.Count == 0)
+        {
+            _plan?.Raw = 0;
+            return;
+        }
+
         var started = TimeProvider.System.GetTimestamp();
         _raw.Clear();
         _returning.Clear();
-        var sum = cache.TileBytesLastFrame;
+
+        // The tiles every plan used in the frame before, and what each other plan that is not quiet drew as raw points at
+        // its last choice, in this frame or the one before (design §5.5.2 "キャッシュを分け合う計画" "予算の合計").
+        var others = 0L;
+        foreach (var plan in cache.Plans)
+        {
+            if (plan != _plan && plan.Frame >= frame - 1)
+            {
+                others += plan.Raw;
+            }
+        }
+
+        LastOthers = others;
+        var sum = cache.TileBytesLastFrame + others;
         foreach (var layer in CollectionsMarshal.AsSpan(_entered))
         {
             if (layer.Gather(frame) == DensitySwitch.Share.Counted)
@@ -450,6 +480,17 @@ internal sealed class PointBudget
             }
         }
 
+        // What the plan draws as raw points, which the other plans' choices count (design §5.5.2 "ほかの計画の最後の値").
+        var own = 0L;
+        foreach (var layer in CollectionsMarshal.AsSpan(_entered))
+        {
+            if (layer.Role == DensitySwitch.Share.Counted || (layer.Role == DensitySwitch.Share.Summed && !layer.Density))
+            {
+                own += layer.Needed;
+            }
+        }
+
+        _plan?.Raw = own;
         LastSum = sum;
         DecideTicks = TimeProvider.System.GetTimestamp() - started;
 
