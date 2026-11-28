@@ -694,7 +694,7 @@ public sealed class TextEngineTests
         });
 
         Assert.Equal(1, atlas.PageCount);
-        Assert.True(atlas.TryFind(0, 0, 16, 0, out _) is false, "the first glyph of the first shelf is still held");
+        Assert.False(atlas.TryFind(0, 0, 16, 0, out _), "the first glyph of the first shelf was not taken out");
         for (var i = 0; i < 1_100; i++)
         {
             Assert.True(atlas.Contains(0, (ushort)(Inkless + i), 16, 0));
