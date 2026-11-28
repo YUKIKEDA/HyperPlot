@@ -86,6 +86,11 @@ public sealed class RowSelection
     }
 
     /// <summary>Sets the bits of a run of rows [start, end) in a set of a bit a row, a word at a time.</summary>
+    /// <remarks>
+    /// Leaves the set as it is when the run is empty. The caller keeps a run that is not empty inside the set:
+    /// <c>0 &lt;= start</c> and <c>end &lt;= 64 × bits.Length</c>. The method does not check them, and a run outside the
+    /// set throws.
+    /// </remarks>
     internal static void SetRun(ulong[] bits, long start, long end)
     {
         while (start < end)

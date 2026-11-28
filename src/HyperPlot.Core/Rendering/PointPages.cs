@@ -5,7 +5,8 @@ namespace HyperPlot.Rendering;
 /// <summary>
 /// The pages of points a backend keeps on the GPU (design §5.1 "生の点のページ", §5.5.2, row R3a): a page is a run of 65,536
 /// points of a spatial snapshot's copy, or the rest of it, 12 bytes a point. Core decides which pages stay, by the byte
-/// budget it shares with the tiles and least-recently-used order, and the frame sends the pages the workers have read; the
+/// budget it shares with the tiles and one least-recently-used order over the tiles and the pages (design §5.5.2 "1 つの
+/// LRU"), and the frame sends the pages the workers have read; the
 /// backend makes a buffer for each and draws from it. A page is cut into blocks of a size its layer's parts set (row R3b2,
 /// design §5.5.2 "ブロック"), and holds each block's points in steps of <see cref="Stride"/> through the copy's order, so a
 /// page is drawn by whole blocks.
@@ -130,6 +131,15 @@ internal sealed class PointPages
     /// <summary>Gets the number of pages the current frame staged to send.</summary>
     internal int ScheduledThisFrame { get; private set; }
 
+    /// <summary>Gets the number of pages on the GPU or staged for it that the current frame used.</summary>
+    internal int UsedThisFrame { get; private set; }
+
+    /// <summary>
+    /// Gets the number of requests of the current frame that searched the reads or the slots for a page not on the GPU
+    /// (design §5.5.2 "予算が満ちたフレーム"): none once the frame is known full. Tests only.
+    /// </summary>
+    internal int SearchesThisFrame { get; private set; }
+
     /// <summary>
     /// Gets or sets a value indicating whether a recording draws every block of each page it draws a block of, in view or
     /// not: the form the blocks in view are compared with (design §9 "重なりと予算", §10 R3b2 row). Tests and benchmarks
@@ -169,7 +179,8 @@ internal sealed class PointPages
     /// Returns the slot of a page, or −1 when it is not on the GPU and cannot be sent this frame (design §5.5.2 "ページの
     /// 読み出し"). A page a worker has read is sent when the frame's upload and the budget allow; a page not read yet takes a
     /// free read, which a worker of the snapshot's index's pool reads, and is sent in a later frame. A page used this frame
-    /// is never let go of for another this frame.
+    /// is never let go of for another this frame. Once the frame is known full, a page not on the GPU is −1 at once, with no
+    /// search (design §5.5.2 "予算が満ちたフレーム").
     /// </summary>
     /// <param name="snapshot">The full snapshot, which the caller borrows.</param>
     /// <param name="page">The page: the points from page × 65,536.</param>
@@ -186,11 +197,24 @@ internal sealed class PointPages
         var frame = _owner.Frame;
         if (_slots.TryGetValue(key, out var slot))
         {
-            _lastUsed[slot] = frame;
+            if (_lastUsed[slot] != frame)
+            {
+                _lastUsed[slot] = frame;
+                UsedThisFrame++;
+            }
+
             return slot;
         }
 
+        // A frame known full sends no page more, so the rest of its requests search for none (design §5.5.2 "予算が満ちた
+        // フレーム"): every tile and page is this frame's, and the budget has no room for one.
         MissedThisFrame++;
+        if (_owner.IsFull((long)PointsOf(snapshot, page) * PointBytes))
+        {
+            return -1;
+        }
+
+        SearchesThisFrame++;
         var r = FindRead(snapshot, page, block);
         if (r < 0)
         {
@@ -227,25 +251,12 @@ internal sealed class PointPages
             return -1;
         }
 
-        // Room in the budget: the pages used longest ago before this frame go first.
-        while (_owner.BytesInUse + bytes > ResidencyCache.DefaultBudget)
+        // Room in the budget: the tiles and the pages used longest ago before this frame go first, of any kind (design
+        // §5.5.2 "1 つの LRU").
+        if (!_owner.MakeRoom(bytes))
         {
-            var (oldest, when) = (-1, frame);
-            for (var s = 0; s < _keys.Length; s++)
-            {
-                if (_keys[s] is not null && _lastUsed[s] < when)
-                {
-                    (oldest, when) = (s, _lastUsed[s]);
-                }
-            }
-
-            if (oldest < 0)
-            {
-                read.Refused = frame;
-                return -1;
-            }
-
-            Drop(oldest);
+            read.Refused = frame;
+            return -1;
         }
 
         slot = Array.IndexOf(_keys, null);
@@ -267,6 +278,7 @@ internal sealed class PointPages
         (_keys[slot], _lastUsed[slot], _counts[slot]) = (key, frame, read.Count);
         _slots.Add(key, slot);
         BytesInUse += bytes;
+        UsedThisFrame++;
 
         // A slot let go of and taken again in one frame is not released after its new buffer is made.
         _ = _dropped.Remove(slot);
@@ -280,7 +292,7 @@ internal sealed class PointPages
     internal void BeginFrame()
     {
         var last = _owner.Frame - 1;
-        (MissedThisFrame, ScheduledThisFrame) = (0, 0);
+        (MissedThisFrame, ScheduledThisFrame, UsedThisFrame, SearchesThisFrame) = (0, 0, 0, 0);
         foreach (var read in _reads)
         {
             var state = Volatile.Read(ref read.State);
@@ -347,7 +359,7 @@ internal sealed class PointPages
     {
         _slots.Clear();
         Array.Clear(_keys);
-        BytesInUse = 0;
+        (BytesInUse, UsedThisFrame) = (0, 0);
         foreach (var read in _reads)
         {
             Forget(read);
@@ -407,6 +419,25 @@ internal sealed class PointPages
             }
         }
     }
+
+    /// <summary>Returns the slot of the page used longest ago before a frame, and its frame; −1 when every page was used since.</summary>
+    internal int Oldest(long before, out long when)
+    {
+        var oldest = -1;
+        when = before;
+        for (var s = 0; s < _keys.Length; s++)
+        {
+            if (_keys[s] is not null && _lastUsed[s] < when)
+            {
+                (oldest, when) = (s, _lastUsed[s]);
+            }
+        }
+
+        return oldest;
+    }
+
+    /// <summary>Lets go of the page in a slot for the budget (design §5.5.2 "1 つの LRU"); the backend releases its buffer.</summary>
+    internal void Evict(int slot) => Drop(slot);
 
     // Where a read's points go: the page it reads into first, and the page it sends from after it.
     private static int SourceOf(int read) => 2 * read * PagePoints;
@@ -678,6 +709,11 @@ internal sealed class PointPages
 
         _ = _slots.Remove(_keys[slot]!.Value);
         _keys[slot] = null;
+        if (_lastUsed[slot] == _owner.Frame)
+        {
+            UsedThisFrame--;
+        }
+
         BytesInUse -= (long)_counts[slot] * PointBytes;
         _dropped.Add(slot);
     }

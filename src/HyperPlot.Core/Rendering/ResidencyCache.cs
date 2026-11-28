@@ -7,15 +7,16 @@ namespace HyperPlot.Rendering;
 /// The tiles a backend keeps on the GPU (design §5.2, row G9): Core decides which tile goes in which slot, by a byte budget
 /// and least-recently-used order, and writes the tiles a frame sends; the backend sends them and draws, as with the glyph
 /// atlas of <see cref="TextEngine"/>. One per backend (<see cref="IGpuBackend.Images"/>). The density tiles of a spatial
-/// snapshot (row R3b1) take slots of the <see cref="Format.Float"/> pool beside the raster tiles.
+/// snapshot (row R3b1) take slots of the <see cref="Format.Float"/> pool beside the raster tiles, and the pages of points
+/// (row R3a) share the budget: one least-recently-used order over all three (design §5.5.2 "1 つの LRU", row R3b2).
 /// </summary>
 /// <remarks>
 /// Row G9 makes it for the Direct3D 11 backend only; the members a backend reads are internal, and a public constructor
-/// and those members come when another backend does. The budget is fixed.
+/// and those members come when another backend does. The budget is fixed for a backend.
 /// </remarks>
 public sealed class ResidencyCache
 {
-    /// <summary>The bytes of GPU memory the tiles take at most: 256 MB.</summary>
+    /// <summary>The bytes of GPU memory the tiles and the pages of points take at most together: 268,435,456 B (256 MiB).</summary>
     public const long DefaultBudget = 256L << 20;
 
     /// <summary>The bytes a frame sends at most: 4 MB. A headless render sends all it needs, its pages of points ten at a time.</summary>
@@ -39,7 +40,7 @@ public sealed class ResidencyCache
     /// <summary>The color tables a backend's table texture holds, a row of 256 colors each.</summary>
     internal const int MaxColorTables = 64;
 
-    /// <summary>The slots the budget holds over both formats.</summary>
+    /// <summary>The slots the default budget holds over both formats. Tests only.</summary>
     internal const int SlotCapacity = (int)(DefaultBudget / FaceBytes);
 
     private readonly Pool[] _pools = [new(), new()];
@@ -54,9 +55,27 @@ public sealed class ResidencyCache
     private int _stagingFaces;
     private long _frame;
 
-    internal ResidencyCache() => Points = new PointPages(this);
+    // The frame in which the cache found that nothing could be let go of (design §5.5.2 "予算が満ちたフレーム").
+    private long _fullFrame = -1;
 
-    /// <summary>Gets the pages of points (row R3a), which share the budget and a frame's upload with the tiles.</summary>
+    // The tiles' slots used in the frame before this one, for the budget's sum (design §5.5.2 "予算").
+    private int _tilesUsedLastFrame;
+
+    internal ResidencyCache()
+        : this(DefaultBudget) { }
+
+    /// <summary>Initializes a new instance of the <see cref="ResidencyCache"/> class with another budget than <see cref="DefaultBudget"/>. Tests only.</summary>
+    internal ResidencyCache(long budget)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(budget);
+        Budget = budget;
+        Points = new PointPages(this);
+    }
+
+    /// <summary>Gets the bytes the tiles and the pages of points take at most together: <see cref="DefaultBudget"/>, or less for a test.</summary>
+    internal long Budget { get; }
+
+    /// <summary>Gets the pages of points (row R3a), which share the budget, its least-recently-used order, and a frame's upload with the tiles.</summary>
     internal PointPages Points { get; }
 
     /// <summary>Gets the number of the current frame: what is asked for in it is not let go of for another in it.</summary>
@@ -64,6 +83,19 @@ public sealed class ResidencyCache
 
     /// <summary>Gets the bytes on the GPU or staged for it: the tiles' slots and the pages of points.</summary>
     internal long BytesInUse => ((long)SlotsInUse * FaceBytes) + Points.BytesInUse;
+
+    /// <summary>
+    /// Gets the bytes of the density and raster tiles' slots the frame before this one used (design §5.5.2 "予算"): the
+    /// tiles a frame uses are known only once its layers have recorded, so the budget's sum reads the last frame's.
+    /// </summary>
+    internal long TileBytesLastFrame => (long)_tilesUsedLastFrame * FaceBytes;
+
+    /// <summary>
+    /// Gets a value indicating whether the cache found in this frame that nothing can be let go of for more (design §5.5.2
+    /// "予算が満ちたフレーム"): every tile and page was used in this frame, and the budget has no room for a page. Tests and
+    /// measurements only.
+    /// </summary>
+    internal bool FullThisFrame => _fullFrame == _frame;
 
     /// <summary>The format of a tile.</summary>
     internal enum Format
@@ -105,8 +137,83 @@ public sealed class ResidencyCache
     /// </summary>
     internal void BeginFrame()
     {
+        _tilesUsedLastFrame = _pools[0].Used + _pools[1].Used;
+        _pools[0].Used = 0;
+        _pools[1].Used = 0;
         _frame++;
         Points.BeginFrame();
+    }
+
+    /// <summary>
+    /// Returns whether no room can be made in this frame for the given bytes (design §5.5.2 "予算が満ちたフレーム"): the
+    /// cache found so earlier in the frame, or the budget has no room for them and every tile and page was used in this
+    /// frame, so none can be let go of. Reads counts, and searches nothing.
+    /// </summary>
+    internal bool IsFull(long bytes)
+    {
+        if (_fullFrame == _frame)
+        {
+            return true;
+        }
+
+        if (BytesInUse + bytes <= Budget || _pools[0].Used + _pools[1].Used + Points.UsedThisFrame < SlotsInUse + Points.PagesInUse)
+        {
+            return false;
+        }
+
+        _fullFrame = _frame;
+        return true;
+    }
+
+    /// <summary>
+    /// Makes room in the budget for the given bytes (design §5.5.2 "1 つの LRU", "予算が満ちたフレーム"): lets go of the tiles
+    /// and the pages used longest ago before this frame, of any kind, until the bytes fit. False, and the frame is known
+    /// full, when every one left was used in this frame and the bytes still do not fit.
+    /// </summary>
+    internal bool MakeRoom(long bytes)
+    {
+        while (BytesInUse + bytes > Budget)
+        {
+            if (!EvictOldest())
+            {
+                _fullFrame = _frame;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Lets go of the tile or the page used longest ago before this frame, of any kind (design §5.5.2 "1 つの LRU"): a
+    /// density or raster tile's slot of either format, or a page of points. False when every one was used in this frame.
+    /// </summary>
+    private bool EvictOldest()
+    {
+        var (kind, slot, when) = (-1, -1, _frame);
+        for (var format = 0; format < _pools.Length; format++)
+        {
+            var at = _pools[format].Oldest(when, out var used);
+            if (at >= 0)
+            {
+                (kind, slot, when) = (format, at, used);
+            }
+        }
+
+        var page = Points.Oldest(when, out _);
+        if (page >= 0)
+        {
+            Points.Evict(page);
+            return true;
+        }
+
+        if (kind < 0)
+        {
+            return false;
+        }
+
+        _pools[kind].Free(slot, _frame);
+        return true;
     }
 
     /// <summary>
@@ -134,6 +241,7 @@ public sealed class ResidencyCache
         }
 
         _tables.Clear();
+        _tilesUsedLastFrame = 0;
         Points.Reset();
         Sent();
     }
@@ -147,7 +255,7 @@ public sealed class ResidencyCache
         var pool = _pools[(int)key.Format];
         if (pool.Slots.TryGetValue(key, out var slot))
         {
-            pool.LastUsed[slot] = _frame;
+            pool.Use(slot, _frame);
             return slot;
         }
 
@@ -176,7 +284,7 @@ public sealed class ResidencyCache
     /// Returns the slot of a density tile of a full snapshot (design §5.1 "密度タイル", row R3b1), sending it when it is not
     /// there and the frame's budget allows: the slot, or −1 when it is not there and cannot be sent this frame. The tile
     /// takes a slot of the <see cref="Format.Float"/> pool and shares the budget, the frame's upload, and the
-    /// least-recently-used order with the raster tiles. A tile used this frame is never let go of for another this frame.
+    /// least-recently-used order with the raster tiles and the pages of points. A tile used this frame is never let go of for another this frame.
     /// </summary>
     /// <remarks>
     /// The face holds the count of bin (x, y) as a <see cref="float"/> at face texel (x + 1, y + 1), the row of the least y
@@ -196,7 +304,7 @@ public sealed class ResidencyCache
         var pool = _pools[(int)Format.Float];
         if (pool.DensitySlots.TryGetValue(key, out var slot))
         {
-            pool.LastUsed[slot] = _frame;
+            pool.Use(slot, _frame);
             return slot;
         }
 
@@ -242,7 +350,7 @@ public sealed class ResidencyCache
         var pool = _pools[(int)Format.Float];
         if (pool.DensitySlots.TryGetValue(key, out var slot))
         {
-            pool.LastUsed[slot] = _frame;
+            pool.Use(slot, _frame);
             return slot;
         }
 
@@ -269,7 +377,7 @@ public sealed class ResidencyCache
     /// read. A face of the snapshot staged this frame is still sent, into a slot that is free or that a later upload of the
     /// same frame writes over.
     /// </summary>
-    internal void ForgetDensity(SpatialSnapshot snapshot) => _pools[(int)Format.Float].Forget(snapshot);
+    internal void ForgetDensity(SpatialSnapshot snapshot) => _pools[(int)Format.Float].Forget(snapshot, _frame);
 
     /// <summary>
     /// Returns the slot of a tile that is there, or −1, sending nothing (row W1b3): a mipmap being updated is written over,
@@ -280,7 +388,7 @@ public sealed class ResidencyCache
         var pool = _pools[(int)key.Format];
         if (pool.Slots.TryGetValue(key, out var slot))
         {
-            pool.LastUsed[slot] = _frame;
+            pool.Use(slot, _frame);
             return slot;
         }
 
@@ -355,11 +463,30 @@ public sealed class ResidencyCache
             return -1;
         }
 
-        // The slots the budget leaves beside the pages of points and the other format's tiles.
-        var slot = _pools[(int)format].Take(_frame, (int)((DefaultBudget - Points.BytesInUse) / FaceBytes) - _pools[1 - (int)format].InUse);
-        if (slot < 0)
+        // Room in the budget, then a slot of the format's pages: a free one, or a new page's within the slots the budget
+        // leaves beside the pages of points and the other format's tiles (design §5.5.2 "1 つの LRU").
+        var pool = _pools[(int)format];
+        int slot;
+        while (true)
         {
-            return -1;
+            if (!MakeRoom(FaceBytes))
+            {
+                return -1;
+            }
+
+            slot = pool.Take((int)((Budget - Points.BytesInUse) / FaceBytes) - _pools[1 - (int)format].InUse);
+            if (slot >= 0)
+            {
+                break;
+            }
+
+            // The bytes fit and the format has no slot: its own tile used longest ago before this frame frees one in place;
+            // without one, the oldest of any kind may leave room for another page of slots. Neither makes the frame full,
+            // since the budget has room for its bytes.
+            if (!pool.Evict(_frame) && !EvictOldest())
+            {
+                return -1;
+            }
         }
 
         // The face's texels go to the staging, which the backend sends before it draws.
@@ -408,6 +535,9 @@ public sealed class ResidencyCache
 
         public int InUse => Slots.Count + DensitySlots.Count;
 
+        /// <summary>Gets or sets the number of slots in use that the current frame used; the cache sets it to 0 when a frame begins.</summary>
+        public int Used { get; set; }
+
         public void Clear()
         {
             Slots.Clear();
@@ -415,10 +545,21 @@ public sealed class ResidencyCache
             Array.Clear(_keys);
             Array.Clear(_densityKeys);
             Pages = 0;
+            Used = 0;
         }
 
-        /// <summary>Returns a free slot, a new page's, or the one used longest ago before this frame; −1 when none is.</summary>
-        public int Take(long frame, int capacity)
+        /// <summary>Marks a slot in use as used in a frame, counted once a frame.</summary>
+        public void Use(int slot, long frame)
+        {
+            if (LastUsed[slot] != frame)
+            {
+                LastUsed[slot] = frame;
+                Used++;
+            }
+        }
+
+        /// <summary>Returns a free slot, or a new page's when the pages stay within a capacity in slots; −1 when neither is.</summary>
+        public int Take(int capacity)
         {
             var count = Pages * PageSlots;
             for (var slot = 0; slot < count; slot++)
@@ -440,18 +581,20 @@ public sealed class ResidencyCache
                 return count;
             }
 
-            var (oldest, when) = (-1, frame);
-            for (var slot = 0; slot < count; slot++)
+            return -1;
+        }
+
+        /// <summary>Returns the slot in use used longest ago before a frame, and its frame; −1 when every slot in use was used since.</summary>
+        public int Oldest(long before, out long when)
+        {
+            var oldest = -1;
+            when = before;
+            for (var slot = 0; slot < Pages * PageSlots; slot++)
             {
-                if (LastUsed[slot] < when)
+                if ((_keys[slot] is not null || _densityKeys[slot] is not null) && LastUsed[slot] < when)
                 {
                     (oldest, when) = (slot, LastUsed[slot]);
                 }
-            }
-
-            if (oldest >= 0)
-            {
-                Free(oldest);
             }
 
             return oldest;
@@ -462,6 +605,7 @@ public sealed class ResidencyCache
             _keys[slot] = key;
             Slots[key] = slot;
             LastUsed[slot] = frame;
+            Used++;
         }
 
         public void Assign(int slot, in DensityKey key, long frame)
@@ -469,22 +613,42 @@ public sealed class ResidencyCache
             _densityKeys[slot] = key;
             DensitySlots[key] = slot;
             LastUsed[slot] = frame;
+            Used++;
         }
 
         /// <summary>Frees the slots of a snapshot's density tiles.</summary>
-        public void Forget(SpatialSnapshot snapshot)
+        public void Forget(SpatialSnapshot snapshot, long frame)
         {
             for (var slot = 0; slot < _densityKeys.Length; slot++)
             {
                 if (_densityKeys[slot] is { } key && ReferenceEquals(key.Snapshot, snapshot))
                 {
-                    Free(slot);
+                    Free(slot, frame);
                 }
             }
         }
 
-        private void Free(int slot)
+        /// <summary>Frees the slot in use used longest ago before a frame; false when every slot in use was used since.</summary>
+        public bool Evict(long frame)
         {
+            var oldest = Oldest(frame, out _);
+            if (oldest < 0)
+            {
+                return false;
+            }
+
+            Free(oldest, frame);
+            return true;
+        }
+
+        /// <summary>Frees a slot in use; one the current frame used no longer counts as used.</summary>
+        public void Free(int slot, long frame)
+        {
+            if (LastUsed[slot] == frame)
+            {
+                Used--;
+            }
+
             if (_keys[slot] is { } tile)
             {
                 _ = Slots.Remove(tile);

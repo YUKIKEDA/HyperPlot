@@ -28,6 +28,12 @@
 #           views (the largest bin from the tiles and the estimate from the resident cells). Rounds -FirstRound to
 #           -Rounds (1 to 3 by default), the even rounds in the reverse order; -Only keeps the scenes whose names match a
 #           regular expression (.cursor/rules/pace.mdc: one round is read before the rest)
+#   full    (Issue #627) 1e9 uniform points drawn as points at the whole view, past the budget: the frames recorded and not
+#           drawn once the pages that fit are on the GPU, against a baseline build (-Baseline, the same code with the
+#           check of a full frame taken out), alternated A, B, B, A, A, B; its 8 GB of data files go under .dev/r3b2p5-data
+#           and are deleted at the end
+#   two     (Issue #627) two Auto layers of 150 MiB each, whose sum passes the budget: the switch of one of them to a
+#           density and the end of the provisional frames; 3 runs
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -129,7 +135,7 @@ function Get-Arguments([string] $distribution, [int] $categories, [string] $view
     @('10000000', '6', '0.6', $distribution, '600', "$categories", $view, $channel, 'Circle', $form, $frames)
 }
 
-Set-Content -Path $Out -Value "# r3b2 run (Issues #577, #600, and #603), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
+Set-Content -Path $Out -Value "# r3b2 run (Issues #577, #600, #603, #624, and #627), $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), commit $(git -C $repo rev-parse --short HEAD), sets $($Sets -join ' ')" -Encoding utf8
 $watcher = $null
 $clocks = $null
 try {
@@ -274,6 +280,32 @@ try {
     finally {
         if (Test-Path $data4) {
             Remove-Item -LiteralPath $data4 -Recurse -Force
+        }
+    }
+
+    if ($Sets -contains 'full') {
+        if (-not (Test-Path $Baseline)) {
+            throw "the full set needs -Baseline, an executable without the check of a full frame"
+        }
+
+        $data5 = Join-Path $dev 'r3b2p5-data'
+        New-Item -ItemType Directory -Force -Path $data5 | Out-Null
+        try {
+            $round = 0
+            foreach ($side in @('head', 'base', 'base', 'head', 'head', 'base')) {
+                $round++
+                $program = if ($side -eq 'head') { $exe } else { $Baseline }
+                Invoke-Scene "full 1e9 uniform $side, run $round" @('full', $data5, '1e9', "$Out.full-$side-r$round.csv") $program 'budget'
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $data5 -Recurse -Force
+        }
+    }
+
+    if ($Sets -contains 'two') {
+        for ($round = 1; $round -le 3; $round++) {
+            Invoke-Scene "two 150 MiB Auto layers, run $round" @('two') $exe 'budget'
         }
     }
 

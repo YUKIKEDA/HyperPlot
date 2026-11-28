@@ -151,6 +151,10 @@ internal sealed partial class PlotPlan
     /// words once each, under a mask of their columns, and every word between them whole. Bit <c>k &amp; 31</c> of word
     /// <c>k &gt;&gt; 5</c> is column k. Leaves the row as it is when the run is empty.
     /// </summary>
+    /// <remarks>
+    /// The caller keeps a run that is not empty inside the row: <c>0 &lt;= first</c> and <c>end &lt;= 32 × words.Length</c>.
+    /// The lasso clamps both to the panel's width. The method does not check them, and a run outside the row throws.
+    /// </remarks>
     /// <param name="words">The row's words.</param>
     /// <param name="first">The first column of the run.</param>
     /// <param name="end">The column after the run's last.</param>

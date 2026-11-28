@@ -637,6 +637,92 @@ public sealed class TextEngineTests
     }
 
     /// <summary>
+    /// Past its first room of 1,024 glyphs, the atlas's table reuses the slots of the glyphs that emptied shelves removed, so
+    /// it grows only when it holds more glyphs than ever before (design §5.6 "アトラス", PR #635's review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An atlas over the fake backend whose glyphs are 63 × 63 pixels, so that a page holds 32 shelves of 32 cells with
+    ///   no room left; 1,100 glyphs with no ink, which stay in the table; 992 glyphs on the first 31 shelves; 32 glyphs on
+    ///   the last shelf, asked in every draw after, so that the shelves emptied are never the last and are filled again
+    ///   without a new shelf. The table holds 2,124 glyphs, past its first room.
+    ///
+    /// Steps:
+    /// - With <c>PerformanceAssert.DoesNotAllocate</c> (1 run to warm, a collection, 1 run counted), draws that each ask for
+    ///   the 32 glyphs of the last shelf and 40 glyphs the atlas has not held, and clear the written rectangles as a
+    ///   backend does: 2 draws to warm, 400 counted. The counted run adds 16,000 glyphs while the table holds 2,124 at a
+    ///   time: a table that kept the glyphs of the emptied shelves would outgrow the room the warm run left it.
+    ///
+    /// Expected:
+    /// - 0 bytes; one page; the glyphs with no ink and those of the last shelf are still held; the first glyph of the first
+    ///   shelf was taken out.
+    /// </remarks>
+    [Fact]
+    public void Atlas_PastItsFirstRoom_ReusesTheSlotsOfEmptiedShelves()
+    {
+        const ushort Inkless = 0xF000;
+        const ushort Last = 0xE000;
+        var fake = new FakeTextBackend { Box = static (glyph, _) => glyph >= Inkless ? default : new GlyphBox(0, -63, 63, 63) };
+        fake.Rasterized.Capacity = 20_000;
+        var atlas = new GlyphAtlas(fake);
+        atlas.BeginDraw();
+        for (var i = 0; i < 1_100; i++)
+        {
+            Assert.True(atlas.TryGet(0, (ushort)(Inkless + i), 16, 0, out _));
+        }
+
+        for (var i = 0; i < 992; i++)
+        {
+            Assert.True(atlas.TryGet(0, (ushort)i, 16, 0, out _));
+        }
+
+        atlas.ClearDirty();
+        var next = 992;
+        PinAndAdd(0);
+
+        // The counted run is longer than the warm one: a table that kept the emptied shelves' glyphs would outgrow the room
+        // the warm run gave it.
+        var draws = 2;
+        PerformanceAssert.DoesNotAllocate(() =>
+        {
+            for (var draw = 0; draw < draws; draw++)
+            {
+                PinAndAdd(40);
+            }
+
+            draws = 400;
+        });
+
+        Assert.Equal(1, atlas.PageCount);
+        Assert.True(atlas.TryFind(0, 0, 16, 0, out _) is false, "the first glyph of the first shelf is still held");
+        for (var i = 0; i < 1_100; i++)
+        {
+            Assert.True(atlas.Contains(0, (ushort)(Inkless + i), 16, 0));
+        }
+
+        for (var i = 0; i < 32; i++)
+        {
+            Assert.True(atlas.TryFind(0, (ushort)(Last + i), 16, 0, out var slot) && slot.Y == 31 * 64, $"glyph {i} of the last shelf");
+        }
+
+        void PinAndAdd(int count)
+        {
+            atlas.BeginDraw();
+            for (var i = 0; i < 32; i++)
+            {
+                Assert.True(atlas.TryGet(0, (ushort)(Last + i), 16, 0, out _));
+            }
+
+            for (var i = 0; i < count; i++)
+            {
+                Assert.True(atlas.TryGet(0, (ushort)next++, 16, 0, out _));
+            }
+
+            atlas.ClearDirty();
+        }
+    }
+
+    /// <summary>
     /// A glyph outside the clip within the target is not recorded, but placed; one more than a page from the clip, or
     /// under an empty clip, is not even placed (design §5.6).
     /// </summary>

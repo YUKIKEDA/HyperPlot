@@ -150,7 +150,8 @@ public sealed class PointHitPanelTests
     /// <remarks>
     /// Preconditions:
     /// - A line and bars over x = 0, 10, …, 100 with y = 90 at x = 50 and 5 elsewhere, at the view [40, 60]² on domains
-    ///   [0, 100]², 640 × 360.
+    ///   [0, 100]², 640 × 360, on an engine that waits for its indexes: the first frame is not provisional (the guard of
+    ///   Issue #637; on an engine that does not wait, the first frame is always provisional).
     /// - The points of <see cref="Points_AnswerOnlyWhatIsDrawnInThePanel"/> on each path at the same view.
     ///
     /// Steps:
@@ -176,9 +177,13 @@ public sealed class PointHitPanelTests
             builder = bars
                 ? builder.Bar(table.Col<double>("x"), table.Col<double>("y"))
                 : builder.Line(table.Col<double>("x"), table.Col<double>("y"));
-            using var engine = new PlotEngine(new NullBackend(), 640, 360);
+
+            // The frames wait for the X statistics and the pyramid: until the workers compute them, the layer is pending and
+            // answers nothing, and a busy shared pool can be late past the second frame (Issue #637).
+            using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
             engine.SetPlot(builder.ScaleX(Scale.Linear().WithDomain(0, 100)).ScaleY(Scale.Linear().WithDomain(0, 100)).Build());
             engine.RenderFrame();
+            Assert.False(engine.IsProvisional, $"bars {bars}: the first frame has its indexes.");
             engine.Views.SetView(Panel, new PanelView2D(ViewRange.FromValues(40.0, 60.0), ViewRange.FromValues(40.0, 60.0)));
             engine.RenderFrame();
             var hit = Assert.Single(hits[..engine.HitTest(Pixel(engine, 50, 50), Radius, HitMode.X, hits)]);

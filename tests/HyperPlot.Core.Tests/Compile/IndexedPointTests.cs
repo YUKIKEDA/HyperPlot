@@ -691,7 +691,7 @@ public sealed class IndexedPointTests
             }
         }
 
-        Assert.False(engine.IsProvisional);
+        Assert.False(engine.IsProvisional, "The warm frames ended provisional: the counted frames would not take the final path.");
 
         PerformanceAssert.DoesNotAllocate(() =>
         {

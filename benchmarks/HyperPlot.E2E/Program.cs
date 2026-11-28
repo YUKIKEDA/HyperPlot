@@ -55,6 +55,13 @@ if (args.Length > 0 && args[0] == "reads")
     return HyperPlot.E2E.ReadScene.Run(args.AsSpan(1));
 }
 
+if (args.Length > 0 && args[0] == "budget")
+{
+    using var own = Process.GetCurrentProcess();
+    own.PriorityClass = ProcessPriorityClass.High;
+    return HyperPlot.E2E.BudgetScene.Run(args.AsSpan(1));
+}
+
 if (args.Length > 0 && args[0] == "density")
 {
     using var own = Process.GetCurrentProcess();

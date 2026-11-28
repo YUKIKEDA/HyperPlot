@@ -1754,6 +1754,15 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Gets the residency cache the image layers ask for their tiles (row G9): the backend's, or the plan's own.</summary>
     public ResidencyCache Images { get; init; } = new();
 
+    /// <summary>
+    /// Gets the budget of the point layers on the index path (design §5.5.2 "予算"): the plan's own for a plot alone, the
+    /// figure's for a plot of a figure, so that one choice reads every layer that draws with the cache in the frame.
+    /// </summary>
+    public PointBudget Budget { get; init; } = new();
+
+    /// <summary>Gets or sets the number of the plot in its figure, 0 for a plot alone (design §5.5.2 "替える順").</summary>
+    public int Plot { get; set; }
+
     /// <summary>Gets or sets the spec's theme, set before each recording (row G8): a text layer's font and locale.</summary>
     public Theme Theme { get; set; } = Theme.Light;
 
