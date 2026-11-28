@@ -49,6 +49,28 @@ public sealed class HeadlessRenderer : IDisposable
     /// <summary>Gets the scale from DIPs to physical pixels of <see cref="Render(PlotSpec)"/> (design §4.6).</summary>
     public float Scale { get; private set; }
 
+    /// <summary>
+    /// Gets or sets how much longer this machine's GPU takes to draw raw points than the reference machine's (design §5.5.2
+    /// "ほかの機械"): 1, the default, for the reference machine (an RTX 3060 Ti); 2.0 for a GPU half as fast. A point layer
+    /// drawn with <see cref="PointDraw.Auto"/> multiplies its predicted GPU time by it before comparing the time with the
+    /// switch's threshold and the band of the way back, so that a higher value draws a density sooner. The cap on the points
+    /// (<see cref="PointLayerSpec.DensityThreshold"/>) and the budget's condition take no scale. A change takes effect at the
+    /// next <see cref="Render(PlotSpec)"/> or <see cref="Render(FigureSpec)"/>, which records the plot again and judges each
+    /// layer's remembered drawing by the new times.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is not finite or not above 0.</exception>
+    public double GpuTimeScale
+    {
+        get;
+        set
+        {
+            PredictedTime.CheckScale(value);
+            field = value;
+            _plan?.GpuTimeScale = value;
+            _figure?.GpuTimeScale = value;
+        }
+    } = 1;
+
     /// <summary>Gets the render target the renderer draws to: <see cref="Interaction.PlotEngine.Target"/>.</summary>
     internal IRenderTarget Target => _target;
 
@@ -217,7 +239,13 @@ public sealed class HeadlessRenderer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         // The figure's plan goes only once the plot checks, as for a figure.
-        var plan = _plan ?? new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
+        var plan =
+            _plan
+            ?? new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images)
+            {
+                Waits = Waits,
+                GpuTimeScale = GpuTimeScale,
+            };
         try
         {
             plan.Check(plot);
@@ -243,7 +271,13 @@ public sealed class HeadlessRenderer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         // The plot's plan goes only once the figure checks: a figure that throws leaves what is drawn as it is.
-        var plan = _figure ?? new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
+        var plan =
+            _figure
+            ?? new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images)
+            {
+                Waits = Waits,
+                GpuTimeScale = GpuTimeScale,
+            };
         try
         {
             _ = plan.Check(figure);
@@ -269,7 +303,11 @@ public sealed class HeadlessRenderer : IDisposable
         // A plot alone and a figure have plans of their own: the one not drawn any more is released.
         _figure?.Dispose();
         _figure = null;
-        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
+        _plan ??= new PlotPlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images)
+        {
+            Waits = Waits,
+            GpuTimeScale = GpuTimeScale,
+        };
     }
 
     /// <summary>
@@ -319,7 +357,11 @@ public sealed class HeadlessRenderer : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         _plan?.Dispose();
         _plan = null;
-        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images) { Waits = Waits };
+        _figure ??= new FigurePlan(_pool ?? PlotWorkerPool.Shared, Width, Height, _backend.Text, Scale, _backend.Images)
+        {
+            Waits = Waits,
+            GpuTimeScale = GpuTimeScale,
+        };
         _backend.Images.Unbounded = Waits;
         try
         {
