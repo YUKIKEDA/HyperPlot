@@ -103,7 +103,7 @@ public sealed class AutoSwitchTests
         var (raw, outside, split, fitting) = (0, 0, 0, 0);
         foreach (var scene in Added)
         {
-            var time = PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            var time = Of(scene.Points, scene.Diameter, scene.LargestBin);
             Assert.True(Math.Abs(time - scene.Time) <= 0.01, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
             Assert.Equal(scene.Fit != Fit.In, scene.Density);
             Assert.Equal(scene.Density, DensitySwitch.Next(false, scene.Points, 10_000_000, time, time));
@@ -111,15 +111,9 @@ public sealed class AutoSwitchTests
 
         foreach (var scene in Scenes)
         {
-            var time = PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            var time = Of(scene.Points, scene.Diameter, scene.LargestBin);
             Assert.True(Math.Abs(time - scene.Time) <= 0.01, $"{scene.Name}: {time:F4} ms against the table's {scene.Time} ms.");
-            var density = DensitySwitch.Next(
-                density: false,
-                scene.Points,
-                10_000_000,
-                time,
-                PredictedTime.Of(scene.Points, scene.Diameter, 4 * scene.LargestBin)
-            );
+            var density = DensitySwitch.Next(density: false, scene.Points, 10_000_000, time, Of(scene.Points, scene.Diameter, 4 * scene.LargestBin));
             Assert.Equal(scene.Density, density);
             switch (scene.Fit)
             {
@@ -149,7 +143,7 @@ public sealed class AutoSwitchTests
         static double Time(string name)
         {
             var scene = Scenes.Single(s => s.Name == name);
-            return PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin);
+            return Of(scene.Points, scene.Diameter, scene.LargestBin);
         }
     }
 
@@ -172,11 +166,11 @@ public sealed class AutoSwitchTests
     [Fact]
     public void PredictedTime_NoPointOrNoBin_HasNoOverlapTerm()
     {
-        Assert.Equal(1.56, PredictedTime.Of(0, 6, 100));
-        Assert.Equal(1.56 + 3.055, PredictedTime.Of(5_000_000, 6, 0), 12);
+        Assert.Equal(1.56, Of(0, 6, 100));
+        Assert.Equal(1.56 + 3.055, Of(5_000_000, 6, 0), 12);
         var term = 0.0690 * 9 * Math.PI;
-        Assert.Equal(1.56 + 6.11 + term, PredictedTime.Of(10_000_000, 6, 1), 12);
-        Assert.Equal(1.56 + 6.11 + (5.4954 * term), PredictedTime.Of(10_000_000, 6, 100), 1e-3);
+        Assert.Equal(1.56 + 6.11 + term, Of(10_000_000, 6, 1), 12);
+        Assert.Equal(1.56 + 6.11 + (5.4954 * term), Of(10_000_000, 6, 100), 1e-3);
     }
 
     /// <summary>
@@ -251,10 +245,7 @@ public sealed class AutoSwitchTests
         bool Back(string name, double expectedTime, double expectedAtFour)
         {
             var scene = Scenes.Single(s => s.Name == name);
-            var (time, atFour) = (
-                PredictedTime.Of(scene.Points, scene.Diameter, scene.LargestBin),
-                PredictedTime.Of(scene.Points, scene.Diameter, 4 * scene.LargestBin)
-            );
+            var (time, atFour) = (Of(scene.Points, scene.Diameter, scene.LargestBin), Of(scene.Points, scene.Diameter, 4 * scene.LargestBin));
             Assert.Equal(expectedTime, time, 0.02);
             Assert.True(time < 11.28);
             if (!double.IsNaN(expectedAtFour))
@@ -310,8 +301,8 @@ public sealed class AutoSwitchTests
                                     density,
                                     count,
                                     10_000_000,
-                                    PredictedTime.Of(count, diameter, bin),
-                                    PredictedTime.Of(count, diameter, PredictedTime.LevelJump * bin)
+                                    Of(count, diameter, bin),
+                                    Of(count, diameter, PredictedTime.LevelJump * bin)
                                 );
                                 changes += next != density ? 1 : 0;
                                 density = next;
@@ -348,7 +339,7 @@ public sealed class AutoSwitchTests
         {
             for (var i = 0; i < 1_000; i++)
             {
-                var time = PredictedTime.Of(1_000_000 + i, 6, 10 + i);
+                var time = Of(1_000_000 + i, 6, 10 + i);
                 _sink += time + (DensitySwitch.Next(i % 2 == 0, i, 10_000_000, time, time) ? 1 : 0);
             }
         });
@@ -422,7 +413,7 @@ public sealed class AutoSwitchTests
         Assert.All(tops, t => Assert.True(t > 0));
         Assert.Equal(tops.Max(), choice.LastLargestBin);
         Assert.True(choice.LastLargestBin < tops.Sum());
-        Assert.Equal(PredictedTime.Of(Count, 6, tops.Max()), choice.LastTime);
+        Assert.Equal(Of(Count, 6, tops.Max()), choice.LastTime);
         Assert.All(parts, p => Assert.False(p.DrewDensity));
 
         // The diameter whose summed count predicts 15 ms: the third term is 15 − 1.56 − 6.11 n.
@@ -434,7 +425,7 @@ public sealed class AutoSwitchTests
         engine.RenderFrame();
         Assert.Equal((long)Count, choice.LastCount);
         Assert.Equal(15, choice.LastTime, 1e-4);
-        Assert.True(PredictedTime.Of(Count / 2, diameter, choice.LastLargestBin) < PredictedTime.Threshold);
+        Assert.True(Of(Count / 2, diameter, choice.LastLargestBin) < PredictedTime.Threshold);
         Assert.All(parts, p => Assert.True(p.DrewDensity));
     }
 
@@ -504,8 +495,8 @@ public sealed class AutoSwitchTests
             choice = parts[0].Switch;
             Assert.True(choice.LastCount <= 9_999_999);
             Assert.Equal(DensitySwitch.Next(last, choice.LastCount, 9_999_999, choice.LastTime, choice.LastTimeAtFourBins), density);
-            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, choice.LastLargestBin), choice.LastTime);
-            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins);
+            Assert.Equal(Of(choice.LastCount, diameter, choice.LastLargestBin), choice.LastTime);
+            Assert.Equal(Of(choice.LastCount, diameter, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins);
             Assert.Equal(parts.Max(p => p.PieceTop), choice.LastLargestBin);
             if (density)
             {
@@ -602,7 +593,7 @@ public sealed class AutoSwitchTests
             engine.RenderFrame();
             Assert.Same(plan, engine.Plan!.Layers[0]);
             Assert.Equal(16, choice.LastTime, 1e-4);
-            Assert.Equal(PredictedTime.Of(choice.LastCount, diameter, 4 * plan.Estimate), choice.LastTimeAtFourBins);
+            Assert.Equal(Of(choice.LastCount, diameter, 4 * plan.Estimate), choice.LastTimeAtFourBins);
             Assert.True(choice.LastCount <= 10_000_000);
             Assert.True(plan.DrewDensity);
 
@@ -945,8 +936,8 @@ public sealed class AutoSwitchTests
 
         var (count, bin, time) = Assert.Single(times.Distinct());
         Assert.True(count > 0 && bin > 0);
-        Assert.Equal(PredictedTime.Of(count, 12, bin), time);
-        Assert.NotEqual(PredictedTime.Of(count, 8, bin), time);
+        Assert.Equal(Of(count, 12, bin), time);
+        Assert.NotEqual(Of(count, 8, bin), time);
     }
 
     /// <summary>
@@ -1090,22 +1081,24 @@ public sealed class AutoSwitchTests
 
     /// <summary>
     /// A new spec whose layers over other columns change places makes every layer again, so no layer takes the drawing
-    /// another remembered: both start from raw points in the band (design §5.5.2 "入れ替わりを抑える", "索引の保管庫").
+    /// another remembered: both start from raw points with the panel's sum in the band (design §5.5.2 "入れ替わりを抑える",
+    /// "重なる層の和", "索引の保管庫").
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - Two point layers of 300,000 seeded points each, Auto: A over (x, y), a normal blob of σ 12 around (50, 50), and B
-    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. Each layer's sizes that predict
-    ///   16 ms and 12.7 ms (in the band) at the whole view are set from a first frame.
+    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. A's sizes that predict 16 ms and
+    ///   6 ms and B's that predicts 8 ms at the whole view are set from a first frame; the panel's sum of A at 6 ms and B is
+    ///   12.44 ms, in the band.
     ///
     /// Steps:
-    /// - Draw [A at 16 ms, B at 12.7 ms], then [A at 12.7 ms, B at 12.7 ms]. Then swap them: [B at 12.7 ms, A at 12.7 ms].
+    /// - Draw [A at 16 ms, B at 8 ms], then [A at 6 ms, B at 8 ms]. Then swap them: [B at 8 ms, A at 6 ms].
     ///
     /// Expected:
-    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 12.7 ms, and B draws
-    ///   raw points at 12.7 ms.
-    /// - After it both positions hold new plans with new switches, and both draw raw points at 12.7 ms; position 0 does not
-    ///   take the density position 0 remembered.
+    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 6 ms (the sum with
+    ///   it as raw points is in the band), and B draws raw points.
+    /// - After it both positions hold new plans with new switches, and both draw raw points; position 0 does not take the
+    ///   density position 0 remembered.
     /// </remarks>
     [Fact]
     public void Reorder_OfLayersOverOtherColumns_ForgetsTheirDrawings()
@@ -1151,7 +1144,7 @@ public sealed class AutoSwitchTests
 
         Draw(A(1), B(1));
         float Size(int at, double time) => DiameterFor(time, Layer(at).Switch.LastCount, Layer(at).Switch.LastLargestBin);
-        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 12.7), Size(1, 12.7));
+        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 6), Size(1, 8));
         var (planA, planB) = (Layer(0), Layer(1));
 
         Draw(A(overA), B(bandB));
@@ -1159,8 +1152,9 @@ public sealed class AutoSwitchTests
         Draw(A(bandA), B(bandB));
         Assert.Same(planA, Layer(0));
         Assert.Same(planB, Layer(1));
-        Assert.Equal(12.7, planA.Switch.LastTime, 1e-4);
-        Assert.Equal(12.7, planB.Switch.LastTime, 1e-4);
+        Assert.Equal(6, planA.Switch.LastTime, 1e-4);
+        Assert.Equal(8, planB.Switch.LastTime, 1e-4);
+        Assert.InRange(PredictedTime.Fixed + planA.Switch.Terms + planB.Switch.Terms, 11.28, 14.09);
         Assert.True(planA.DrewDensity);
         Assert.False(planB.DrewDensity);
 
@@ -1174,8 +1168,8 @@ public sealed class AutoSwitchTests
         Assert.NotSame(planB.Switch, first.Switch);
         Assert.NotSame(planA.Switch, second.Switch);
         Assert.NotSame(planB.Switch, second.Switch);
-        Assert.Equal(12.7, first.Switch.LastTime, 1e-4);
-        Assert.Equal(12.7, second.Switch.LastTime, 1e-4);
+        Assert.Equal(8, first.Switch.LastTime, 1e-4);
+        Assert.Equal(6, second.Switch.LastTime, 1e-4);
         Assert.False(first.DrewDensity);
         Assert.False(second.DrewDensity);
     }
@@ -1334,7 +1328,7 @@ public sealed class AutoSwitchTests
         Assert.Equal(recordings + 1, engine.Plan!.Recordings);
         Assert.True(Layer().DrewDensity);
         Assert.Equal(14.4, choice.LastTime, 1e-4);
-        Assert.Equal(2 * PredictedTime.Of(choice.LastCount, over, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins, 1e-9);
+        Assert.Equal(2 * Of(choice.LastCount, over, 4 * choice.LastLargestBin), choice.LastTimeAtFourBins, 1e-9);
 
         engine.GpuTimeScale = 2;
         Draw();
@@ -1390,7 +1384,7 @@ public sealed class AutoSwitchTests
         IndexedPointPlan Layer() => (IndexedPointPlan)engine.Plan!.Layers[0];
         var (count, bin) = (Layer().Switch.LastCount, Layer().Switch.LastLargestBin);
         float Size(double time) => DiameterFor(time, count, bin);
-        double AtFour(double time) => PredictedTime.Of(count, Size(time), 4 * bin);
+        double AtFour(double time) => Of(count, Size(time), 4 * bin);
         bool Draw(PlotSpec? spec = null)
         {
             if (spec is not null)
@@ -1464,7 +1458,7 @@ public sealed class AutoSwitchTests
         var layer = (IndexedPointPlan)engine.Plan!.Layers[0];
         var choice = layer.Switch;
         Assert.False(layer.DrewDensity);
-        Assert.Equal(0.5 * PredictedTime.Of(choice.LastCount, 1, choice.LastLargestBin), choice.LastTime, 1e-9);
+        Assert.Equal(0.5 * Of(choice.LastCount, 1, choice.LastLargestBin), choice.LastTime, 1e-9);
 
         engine.SetPlot(Spec(choice.LastCount - 1));
         backend.Images.Sent();
@@ -1581,6 +1575,284 @@ public sealed class AutoSwitchTests
         _ = Assert.Throws<ArgumentOutOfRangeException>(() => engine.GpuTimeScale = value);
         Assert.Equal((1.5, 1.5), (renderer.GpuTimeScale, engine.GpuTimeScale));
     }
+
+    /// <summary>
+    /// A very large time scale passes the check and keeps an Auto layer a density (design §5.5.2 "ほかの機械"): the scaled
+    /// time is +∞ or near it, past the threshold and never under the band of the way back.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, Auto, under the cap on the points. A headless renderer of 640 × 360
+    ///   of scale 1 and one of scale 1e308.
+    ///
+    /// Steps:
+    /// - Render at 16 DIP on each; then, on the second, at 1 DIP.
+    ///
+    /// Expected:
+    /// - At scale 1 and 16 DIP: a finite time. At 1e308 and 16 DIP: a density, the time and the time at four bins +∞.
+    /// - At 1e308 and 1 DIP, the layer coming from a density: still a density, its time finite and past 11.28 ms.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_VeryLarge_KeepsTheLayerADensity()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 636);
+        var table = blob.Table;
+        PlotSpec Spec(float size) =>
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = size,
+                }
+            );
+        static IndexedPointPlan Layer(HeadlessRenderer renderer) => (IndexedPointPlan)renderer.Plan!.Layers[0];
+
+        using (var reference = new HeadlessRenderer(new NullBackend(), 640, 360))
+        {
+            reference.Render(Spec(16));
+            Assert.True(double.IsFinite(Layer(reference).Switch.LastTime));
+        }
+
+        var backend = new NullBackend();
+        using var renderer = new HeadlessRenderer(backend, 640, 360) { GpuTimeScale = 1e308 };
+        renderer.Render(Spec(16));
+        var choice = Layer(renderer).Switch;
+        Assert.True(Layer(renderer).DrewDensity);
+        Assert.Equal((double.PositiveInfinity, double.PositiveInfinity), (choice.LastTime, choice.LastTimeAtFourBins));
+
+        backend.Images.Sent();
+        renderer.Render(Spec(1));
+        choice = Layer(renderer).Switch;
+        Assert.True(Layer(renderer).DrewDensity);
+        Assert.True(
+            double.IsFinite(choice.LastTime) && choice.LastTime >= PredictedTime.Threshold * DensitySwitch.Back,
+            $"Time: {choice.LastTime} ms."
+        );
+    }
+
+    /// <summary>
+    /// A subnormal time scale makes the scaled time nearly 0 (design §5.5.2 "ほかの機械"): the time draws no density, and
+    /// the cap on the points still does.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, Auto, 64 DIP. A headless renderer of 640 × 360 of scale 1 and one
+    ///   of scale <see cref="double.Epsilon"/>.
+    ///
+    /// Steps:
+    /// - Render with the default threshold on each; on the second, render with the threshold one under the count read.
+    ///
+    /// Expected:
+    /// - At scale 1: a density by the time alone (the count under the cap). At ε: raw points, the time under 1e-300 ms.
+    /// - With the threshold one under the count: a density.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_Subnormal_LeavesTheCapOnThePoints()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 637);
+        var table = blob.Table;
+        PlotSpec Spec(long threshold) =>
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = 64,
+                    DensityThreshold = threshold,
+                }
+            );
+        static IndexedPointPlan Layer(HeadlessRenderer renderer) => (IndexedPointPlan)renderer.Plan!.Layers[0];
+
+        using (var reference = new HeadlessRenderer(new NullBackend(), 640, 360))
+        {
+            reference.Render(Spec(10_000_000));
+            var first = Layer(reference);
+            Assert.True(first.DrewDensity && first.Switch.LastCount <= 10_000_000, $"Count: {first.Switch.LastCount}.");
+        }
+
+        var backend = new NullBackend();
+        using var renderer = new HeadlessRenderer(backend, 640, 360) { GpuTimeScale = double.Epsilon };
+        renderer.Render(Spec(10_000_000));
+        var choice = Layer(renderer).Switch;
+        Assert.False(Layer(renderer).DrewDensity);
+        Assert.True(choice.LastTime < 1e-300, $"Time: {choice.LastTime} ms.");
+
+        backend.Images.Sent();
+        renderer.Render(Spec(choice.LastCount - 1));
+        Assert.True(Layer(renderer).DrewDensity);
+    }
+
+    /// <summary>
+    /// A figure that grows takes the renderer's time scale into the plans of its new plots (design §5.5.2 "ほかの機械",
+    /// §7.5): a scale set after a figure of two plots reaches the two plans it holds and the third one a figure of three
+    /// makes.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12. Figures of two and of three plots side by side, each of one Auto
+    ///   layer over the blob, on 640 × 360 null backends. The size that predicts 7.2 ms in a cell of three is set from the
+    ///   figure of three drawn at 1 DIP at the scale 1.
+    ///
+    /// Steps:
+    /// - On a renderer of scale 1: render the figure of two; set the scale to 2; render the figure of three at 7.2 ms.
+    ///
+    /// Expected:
+    /// - Each of the three plots draws a density at 14.4 ms.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_FigureOfMorePlots_ReachesTheNewPlans()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 638);
+        var table = blob.Table;
+        PlotSpec Plot(float size) =>
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = size,
+                }
+            );
+        FigureSpec Three(float size) => Figure.HConcat(Plot(size), Plot(size), Plot(size));
+        IndexedPointPlan[] Layers(HeadlessRenderer renderer) => [.. renderer.Figure!.Plans.Select(p => (IndexedPointPlan)p.Layers[0])];
+
+        float size;
+        using (var measure = new HeadlessRenderer(new NullBackend(), 640, 360))
+        {
+            measure.Render(Three(1));
+            var first = Layers(measure)[0].Switch;
+            size = DiameterFor(7.2, first.LastCount, first.LastLargestBin);
+        }
+
+        var backend = new NullBackend();
+        using var renderer = new HeadlessRenderer(backend, 640, 360);
+        renderer.Render(Figure.HConcat(Plot(1), Plot(1)));
+        renderer.GpuTimeScale = 2;
+        backend.Images.Sent();
+        renderer.Render(Three(size));
+        var layers = Layers(renderer);
+        Assert.Equal(3, layers.Length);
+        Assert.All(layers, layer => Assert.Equal((true, 14.4), (layer.DrewDensity, Math.Round(layer.Switch.LastTime, 4))));
+    }
+
+    /// <summary>
+    /// A time scale set while the engine's frames are provisional (design §4.8, §5.5.2 "ほかの機械") is not lost in them: the
+    /// layer's first choice on a full snapshot, after the provisional frames, compares the scaled time.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, Auto, 1 DIP; an engine of 640 × 360 that does not wait, on a pool
+    ///   of 4 whose index builds stop after their coarse snapshot until the test lets them go.
+    ///
+    /// Steps:
+    /// - Draw a frame. Set the scale to 2 and draw a frame. Let the build go, and draw until the layer scans a full snapshot.
+    ///
+    /// Expected:
+    /// - Both first frames are provisional and read no time.
+    /// - On the full snapshot: the time is twice the reference's time of the count and the largest bin read.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_SetDuringAProvisionalFrame_TakesEffectOnTheFullSnapshot()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 639);
+        var table = blob.Table;
+        using var hold = new BuildHold(SpatialJob.PublishCoarse);
+        using var pool = new PlotWorkerPool(4) { IndexTuning = SpatialIndexTuning.Default with { JobEnded = hold.OnJob } };
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360, pool: pool);
+        try
+        {
+            engine.SetPlot(
+                GeomTesting.Spec(
+                    table,
+                    new PointLayerSpec
+                    {
+                        X = table.Col<double>("x"),
+                        Y = table.Col<double>("y"),
+                        Size = 1,
+                    }
+                )
+            );
+            engine.RenderFrame();
+            Assert.True(engine.IsProvisional);
+            engine.GpuTimeScale = 2;
+            backend.Images.Sent();
+            engine.RenderFrame();
+            Assert.True(engine.IsProvisional);
+            var layer = (IndexedPointPlan)engine.Plan!.Layers[0];
+            Assert.Equal(0, layer.Switch.LastTime);
+
+            hold.Release();
+            var clock = Stopwatch.StartNew();
+            while (layer.Switch.LastTime == 0)
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "No full snapshot was scanned in 60 s.");
+                backend.Images.Sent();
+                engine.RenderFrame();
+                layer = (IndexedPointPlan)engine.Plan!.Layers[0];
+            }
+
+            var choice = layer.Switch;
+            Assert.Equal(2 * Of(choice.LastCount, 1, choice.LastLargestBin), choice.LastTime, 1e-9);
+        }
+        finally
+        {
+            hold.Release();
+        }
+    }
+
+    /// <summary>
+    /// The engine's time scale is set from the engine's thread before it is disposed, as its other setters are (design §5.5.2
+    /// "ほかの機械", §7.1, §6.1); a refused set keeps the value. A headless renderer has no thread of its own: after its
+    /// disposal a set still checks the value and keeps it, and draws nothing.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine of scale 1.5 on a null backend. A headless renderer that rendered a figure of two plots, then disposed.
+    ///
+    /// Steps:
+    /// - Set the engine's scale to 2 from a task. Dispose the engine and set 2 again.
+    /// - Set the disposed renderer's scale to 2, then to NaN.
+    ///
+    /// Expected:
+    /// - InvalidOperationException from the task, then ObjectDisposedException; the engine reads 1.5 after each.
+    /// - The renderer reads 2, and NaN throws ArgumentOutOfRangeException.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_OtherThreadOrDisposed()
+    {
+        using var engine = new PlotEngine(new NullBackend(), 64, 64) { GpuTimeScale = 1.5 };
+        var task = Task.Run(() => engine.GpuTimeScale = 2, TestContext.Current.CancellationToken);
+        Assert.IsType<InvalidOperationException>(Eventually.Faults(task));
+        Assert.Equal(1.5, engine.GpuTimeScale);
+        engine.Dispose();
+        _ = Assert.Throws<ObjectDisposedException>(() => engine.GpuTimeScale = 2);
+        Assert.Equal(1.5, engine.GpuTimeScale);
+
+        using var x = Column.Wrap(new double[] { 0, 1 });
+        using var y = Column.Wrap(new double[] { 0, 1 });
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        PlotSpec Plot() => GeomTesting.Spec(table, new PointLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") });
+        using var renderer = new HeadlessRenderer(new NullBackend(), 64, 64);
+        renderer.Render(Figure.HConcat(Plot(), Plot()));
+        renderer.Dispose();
+        renderer.GpuTimeScale = 2;
+        Assert.Equal(2, renderer.GpuTimeScale);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => renderer.GpuTimeScale = double.NaN);
+        Assert.Equal(2, renderer.GpuTimeScale);
+    }
+
+    /// <summary>Returns a layer's predicted time alone, as the switch reads it at the reference machine's speed: the fixed term and the others.</summary>
+    private static double Of(long points, double diameter, double largestBin) =>
+        PredictedTime.Fixed + PredictedTime.Terms(points, diameter, largestBin);
 
     /// <summary>The tuning that makes density tiles from 2,048 points, so that a few hundred thousand points have deep tiles.</summary>
     private static SpatialIndexTuning SmallTiles => SpatialIndexTuning.Default with { DensitySplit = 2_048, TotalShare = 10 };

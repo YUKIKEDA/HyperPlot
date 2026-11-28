@@ -2890,6 +2890,8 @@ internal sealed partial class PlotPlan : IDisposable
         _scannedFrame = frame;
         for (var p = 0; p < _panels.Length; p++)
         {
+            // The panel's sums take the carried layers as the scan's (design §5.5.2 "重なる層の和").
+            _context.PanelNumber = p;
             ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped, carry: true);
         }
     }
@@ -2910,6 +2912,7 @@ internal sealed partial class PlotPlan : IDisposable
         var scanned = TimeProvider.System.GetTimestamp();
         for (var p = 0; p < _panels.Length; p++)
         {
+            _context.PanelNumber = p;
             ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped, carry: false);
         }
 

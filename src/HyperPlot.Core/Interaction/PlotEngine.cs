@@ -213,22 +213,10 @@ public sealed partial class PlotEngine : IDisposable
     /// <exception cref="ObjectDisposedException">The value is set after the engine was disposed.</exception>
     public double GpuTimeScale
     {
-        get;
-        set
-        {
-            CheckThread();
-            if (value == field)
-            {
-                return;
-            }
-
-            // The renderer checks the value first: a refused one changes nothing.
-            _renderer.GpuTimeScale = value;
-            field = value;
-            _kept = false;
-            RequestFrame();
-        }
-    } = 1;
+        // The renderer holds the one copy, as it holds the scale.
+        get => _renderer.GpuTimeScale;
+        set => SetGpuTimeScale(value);
+    }
 
     internal bool CanGoBack => Active() is { } state && state.Position > 0;
 
@@ -2715,6 +2703,20 @@ public sealed partial class PlotEngine : IDisposable
         {
             throw new InvalidOperationException("A PlotEngine is called from the thread that made it only (design §6.1).");
         }
+    }
+
+    private void SetGpuTimeScale(double value)
+    {
+        CheckThread();
+        if (value == _renderer.GpuTimeScale)
+        {
+            return;
+        }
+
+        // The renderer checks the value first: a refused one changes nothing.
+        _renderer.GpuTimeScale = value;
+        _kept = false;
+        RequestFrame();
     }
 
     private void Record<T>(in T e)

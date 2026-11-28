@@ -56,7 +56,8 @@ public sealed class HeadlessRenderer : IDisposable
     /// switch's threshold and the band of the way back, so that a higher value draws a density sooner. The cap on the points
     /// (<see cref="PointLayerSpec.DensityThreshold"/>) and the budget's condition take no scale. A change takes effect at the
     /// next <see cref="Render(PlotSpec)"/> or <see cref="Render(FigureSpec)"/>, which records the plot again and judges each
-    /// layer's remembered drawing by the new times.
+    /// layer's remembered drawing by the new times. After <see cref="Dispose"/>, a set still checks the value and keeps it,
+    /// and draws nothing.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is not finite or not above 0.</exception>
     public double GpuTimeScale

@@ -1777,8 +1777,15 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     public int Plot { get; set; }
 
     /// <summary>
+    /// Gets or sets the number of the plot's panel being scanned before the recording, whose <see cref="PointDraw.Auto"/>
+    /// layers' counts and times are summed (design §5.5.2 "重なる層の和").
+    /// </summary>
+    public int PanelNumber { get; set; }
+
+    /// <summary>
     /// Gets or sets the machine's scale of the predicted GPU time (design §5.5.2 "ほかの機械"): 1 for the reference machine,
-    /// finite and above 0. An <see cref="PointDraw.Auto"/> layer compares its predicted times times this scale.
+    /// finite and above 0. An <see cref="PointDraw.Auto"/> layer compares its predicted times, and a panel its sums, times
+    /// this scale.
     /// </summary>
     public double GpuTimeScale { get; set; } = 1;
 
