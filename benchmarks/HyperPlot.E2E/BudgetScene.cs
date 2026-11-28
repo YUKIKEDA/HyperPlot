@@ -474,8 +474,7 @@ internal static class BudgetScene
 
             var view = new PanelView2D(ViewRange.FromValues(0, 1), ViewRange.FromValues(0, 1));
             var other = new PanelView2D(ViewRange.FromValues(1e-6, 1 + 1e-6), ViewRange.FromValues(0, 1));
-            var times = new double[count];
-            var bytes = new long[count];
+            var stages = new Stage[count];
             var shown = Stopwatch.StartNew();
             var (steady, frames) = (0, 0);
             while (steady < 60)
@@ -486,7 +485,7 @@ internal static class BudgetScene
                     return 1;
                 }
 
-                Tick(engines, null, times, bytes);
+                Tick(engines, null, stages);
                 frames++;
                 var settled = engines.All(engine =>
                     !engine.IsProvisional
@@ -514,14 +513,13 @@ internal static class BudgetScene
             backend.Skips = true;
             for (var f = 0; f < Warmup + Measured; f++)
             {
-                var counts = engines.Select(engine => engine.Plan!.Recordings).ToArray();
                 var at = DateTime.Now;
                 if (f == Warmup)
                 {
                     firstFrame = backend.Images.Frame;
                 }
 
-                var total = Tick(engines, move ? (f % 2 == 0 ? other : view) : null, times, bytes);
+                var total = Tick(engines, move ? (f % 2 == 0 ? other : view) : null, stages);
                 if (f < Warmup)
                 {
                     continue;
@@ -530,17 +528,16 @@ internal static class BudgetScene
                 var row = new StringBuilder(string.Create(CultureInfo.InvariantCulture, $"{f - Warmup},{at:HH:mm:ss.fff},{total:F3}"));
                 for (var k = 0; k < count; k++)
                 {
-                    var plan = engines[k].Plan!;
-                    var again = plan.Recordings != counts[k];
-                    recorded[k] += again ? 1 : 0;
-                    own[k].Add(times[k]);
-                    keep[k].Add(KeepMs(plan));
-                    decide[k].Add(Ms(plan.Budget.DecideTicks));
-                    allocated += bytes[k];
+                    var stage = stages[k];
+                    recorded[k] += stage.Recorded ? 1 : 0;
+                    own[k].Add(stage.Cpu);
+                    keep[k].Add(stage.Keep);
+                    decide[k].Add(stage.Decide);
+                    allocated += stage.Bytes;
                     provisional += engines[k].IsProvisional ? 1 : 0;
                     _ = row.Append(
                         CultureInfo.InvariantCulture,
-                        $",{times[k]:F3},{(again ? 1 : 0)},{KeepMs(plan):F4},{Ms(plan.Budget.DecideTicks):F4},{bytes[k]}"
+                        $",{stage.Cpu:F3},{(stage.Recorded ? 1 : 0)},{stage.Scan:F4},{stage.Record:F4},{stage.Decide:F4},{stage.Keep:F4},{stage.Rest:F4},{stage.Staged},{stage.Gen0},{stage.Gen1},{stage.Gen2},{stage.Bytes}"
                     );
                 }
 
@@ -554,7 +551,13 @@ internal static class BudgetScene
             {
                 var header =
                     "tick,time,tick_cpu_ms"
-                    + string.Concat(Enumerable.Range(0, count).Select(k => $",cpu{k}_ms,recorded{k},keep{k}_ms,decide{k}_ms,bytes{k}"));
+                    + string.Concat(
+                        Enumerable
+                            .Range(0, count)
+                            .Select(k =>
+                                $",cpu{k}_ms,recorded{k},scan{k}_ms,record{k}_ms,decide{k}_ms,keep{k}_ms,rest{k}_ms,staged{k},gen0_{k},gen1_{k},gen2_{k},bytes{k}"
+                            )
+                    );
                 File.WriteAllLines(frameFile, [header, .. rows]);
             }
 
@@ -577,6 +580,9 @@ internal static class BudgetScene
                 $"; provisional frames {provisional}; allocated {allocated} bytes; other processes' cores {otherCores:F2}, this process's {ownCores:F2}"
             );
             Console.WriteLine(text.ToString());
+
+            // The slowest tick's row, stage by stage (the header of the frame file names the columns).
+            Console.WriteLine($"slowest tick: {rows[tick.IndexOf(tick.Max())]}");
             return 0;
         }
         finally
@@ -599,9 +605,9 @@ internal static class BudgetScene
 
     /// <summary>
     /// Draws one tick of engines in turn, at a view of engine 0 if one is given, and paces it to the period; returns the
-    /// tick's CPU time in ms, and each engine's time and bytes.
+    /// tick's CPU time in ms, and each engine's stages.
     /// </summary>
-    private static double Tick(List<PlotEngine> engines, PanelView2D? view, double[] times, long[] bytes)
+    private static double Tick(List<PlotEngine> engines, PanelView2D? view, Stage[] stages)
     {
         var start = Stopwatch.GetTimestamp();
         if (view is { } next)
@@ -611,11 +617,30 @@ internal static class BudgetScene
 
         for (var k = 0; k < engines.Count; k++)
         {
+            // Each engine's stages are read right after its frame: the budget is the cache's, so the next engine's frame
+            // writes its choice's time over this one's.
+            var plan = engines[k].Plan!;
+            var recordings = plan.Recordings;
+            var collections = (GC.CollectionCount(0), GC.CollectionCount(1), GC.CollectionCount(2));
             var begun = Stopwatch.GetTimestamp();
             var allocated = GC.GetAllocatedBytesForCurrentThread();
             engines[k].RenderFrame();
-            bytes[k] = GC.GetAllocatedBytesForCurrentThread() - allocated;
-            times[k] = Stopwatch.GetElapsedTime(begun).TotalMilliseconds;
+            var bytes = GC.GetAllocatedBytesForCurrentThread() - allocated;
+            var frame = Stopwatch.GetElapsedTime(begun).TotalMilliseconds;
+            var recorded = plan.Recordings != recordings;
+            stages[k] = new Stage(
+                frame,
+                recorded,
+                recorded ? Ms(plan.ScanTicks) : 0,
+                recorded ? Ms(plan.RecordTicks) : 0,
+                Ms(plan.Budget.DecideTicks),
+                KeepMs(plan),
+                plan.Images.BytesThisFrame,
+                GC.CollectionCount(0) - collections.Item1,
+                GC.CollectionCount(1) - collections.Item2,
+                GC.CollectionCount(2) - collections.Item3,
+                bytes
+            );
         }
 
         var cpu = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
@@ -629,6 +654,29 @@ internal static class BudgetScene
     }
 
     private static double Ms(long ticks) => ticks * 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>
+    /// The stages of an engine's frame of a tick (Issue #664): its CPU time; whether it recorded; the scan and the recording
+    /// of the layers, 0 for a frame that did not record; the budget's choice; the keep of the list; the bytes the cache
+    /// staged and the backend did not send yet; the collections of each generation during it; and its bytes.
+    /// </summary>
+    private readonly record struct Stage(
+        double Cpu,
+        bool Recorded,
+        double Scan,
+        double Record,
+        double Decide,
+        double Keep,
+        long Staged,
+        int Gen0,
+        int Gen1,
+        int Gen2,
+        long Bytes
+    )
+    {
+        /// <summary>Gets the rest of the frame: its CPU time less the stages timed.</summary>
+        public double Rest => Cpu - Scan - Record - Decide - Keep;
+    }
 
     /// <summary>Draws one frame, at a view if one is given, and paces it to the period; returns its CPU time in ms and its bytes.</summary>
     private static (double Cpu, long Bytes) Frame(PlotEngine engine, PanelView2D? view)
