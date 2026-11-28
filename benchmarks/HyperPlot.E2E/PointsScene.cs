@@ -22,7 +22,7 @@ internal static partial class PointsScene
     private const int Warmup = 120;
 
     /// <summary>Runs the scene and prints its figures; returns the exit code.</summary>
-    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), a file to write one row a frame to (its times and allocations), the selection the frames are drawn under: "none" (by default), "rectangle" ([25, 75]²), or "lasso" (a circle of radius 30 around (50, 50)); then (Issue #624) the clump's σ (10 by default), the panels of a facet that wraps the rows (0 by default: no facet), the layer's drawing ("auto" by default, or "points"), and how the rows fall into the categories ("even" by default, or "uneven": nine rows in ten in the first); then (Issue #563) a second layer of the same count over the first in the same panel: "none" (by default), "uniform", or "cluster", with the first's diameter, opacity, and drawing.</param>
+    /// <param name="args">The count, the diameter in DIPs, the opacity, "uniform" or "cluster", the frames measured (600 by default), the categories (0 by default), "whole" or "zoom", what the categories set ("color", "shape", "both"; "size" and "shapesize" size the points by a number too, row R3f), the layer's shape, "blocks" (the blocks in view, the product's form) or "pages" (every block of each page drawn, row R3b2), and "draw" or "record" (the measured frames record and do not draw, so that their CPU time is the recording's), a file to write one row a frame to (its times and allocations), the selection the frames are drawn under: "none" (by default), "rectangle" ([25, 75]²), or "lasso" (a circle of radius 30 around (50, 50)); then (Issue #624) the clump's σ (10 by default), the panels of a facet that wraps the rows (0 by default: no facet), the layer's drawing ("auto" by default, or "points"), and how the rows fall into the categories ("even" by default, or "uneven": nine rows in ten in the first); then (Issue #563) a second layer of the same count over the first in the same panel: "none" (by default), "uniform", or "cluster", with the first's diameter, opacity, and drawing; then (Issue #650) the layers' DensityThreshold (10,000,000 by default).</param>
     public static int Run(ReadOnlySpan<string> args)
     {
         // Row R3b2: a file of one row a frame, when named after the other arguments.
@@ -30,7 +30,7 @@ internal static partial class PointsScene
         if (args.Length < 4)
         {
             Console.Error.WriteLine(
-                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame] [none|rectangle|lasso] [sigma] [panels] [auto|points] [even|uneven] [none|uniform|cluster]"
+                "points <count> <diameter> <opacity> <uniform|cluster> [frames] [categories] [whole|zoom] [color|shape|both|size|shapesize] [shape] [blocks|pages] [draw|record] [file of one row a frame] [none|rectangle|lasso] [sigma] [panels] [auto|points] [even|uneven] [none|uniform|cluster] [density threshold]"
             );
             return 2;
         }
@@ -72,6 +72,9 @@ internal static partial class PointsScene
             Console.Error.WriteLine($"unknown second layer {second}: none, uniform, or cluster");
             return 2;
         }
+
+        // Issue #650: the layers' DensityThreshold, which a pair of 8e6 points passes summed at the default.
+        var threshold = args.Length > 18 ? long.Parse(args[18], CultureInfo.InvariantCulture) : 10_000_000;
 
         // Seeded: uniform over [0, 100]², or a normal blob of σ (a tenth of the side by default) around the middle.
         var random = new Random(1);
@@ -140,6 +143,7 @@ internal static partial class PointsScene
             void Style(PointBuilder p)
             {
                 _ = p.Size(diameter).Opacity(opacity).Shape(shape).Draw(drawing);
+                _ = threshold != 10_000_000 ? p.Density(threshold: threshold) : p;
                 _ = categories > 0 && channel is "color" or "both" ? p.ColorBy(table.Cat("c")) : p;
                 _ = categories > 0 && channel is "shape" or "both" or "shapesize" ? p.ShapeBy(table.Cat("c")) : p;
                 _ = channel is "size" or "shapesize" ? p.SizeBy(table.Col<double>("s")) : p;
@@ -324,7 +328,7 @@ internal static partial class PointsScene
         Console.WriteLine(
             string.Create(
                 CultureInfo.InvariantCulture,
-                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} second={second} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
+                $"points={count} diameter={diameter} opacity={opacity} dist={args[3]} second={second} threshold={threshold} categories={categories} channel={channel} shape={shape} script={(whole ? "whole" : "zoom")} frames={frames} (after {Warmup}) frame_period_ms={seconds * 1000 / total:F2}"
             )
         );
         Console.WriteLine(

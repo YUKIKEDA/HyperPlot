@@ -41,6 +41,8 @@
 #   pair    (Issue #650) the same three pairs drawn with Auto, against a baseline build (-Baseline, an executable of main with
 #           this scene, which compares each layer alone), alternated head, main in the odd rounds and main, head in the
 #           even ones; -Rounds and -Only as above
+#   pairtime (Issue #650) the uniform pair with a DensityThreshold of 2e7, so that the counts' sum (1.6e7) stays under it and
+#           the times' sum alone decides, against -Baseline in the same order
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
 # The machine log and the GPU clock log go next to the output file (<output>.machine.log, <output>.clocks.csv), and so
 # does a file of one row a frame for each run (<output>.<run>.csv). The published build goes under .dev/ and is deleted at
@@ -400,10 +402,10 @@ try {
         @('pair-cluster-cluster', 'cluster', 'cluster'),
         @('pair-uniform-cluster', 'uniform', 'cluster')
     )
-    function Get-Pair([string[]] $pair, [string] $drawing, [string] $file) {
+    function Get-Pair([string[]] $pair, [string] $drawing, [string] $file, [string] $threshold = '10000000') {
         @(
             '8000000', '6', '0.6', $pair[1], '600', '0', 'whole', 'color', 'Circle', 'blocks', 'draw',
-            $file, 'none', '10', '0', $drawing, 'even', $pair[2]
+            $file, 'none', '10', '0', $drawing, 'even', $pair[2], $threshold
         )
     }
 
@@ -420,6 +422,21 @@ try {
             foreach ($i in $order) {
                 $s = $kept[$i]
                 Invoke-Scene "pair $($s[0]), round $round" (Get-Pair $s 'points' "$Out.pair-$($s[0])-r$round.csv")
+            }
+        }
+    }
+
+    if ($Sets -contains 'pairtime') {
+        if (-not (Test-Path $Baseline)) {
+            throw "the pairtime set needs -Baseline, an executable of main with this scene"
+        }
+
+        $s = $pairs[2]
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $sides = if ($round % 2) { @('head', 'main') } else { @('main', 'head') }
+            foreach ($side in $sides) {
+                $program = if ($side -eq 'head') { $exe } else { $Baseline }
+                Invoke-Scene "auto2e7 $($s[0]) $side, round $round" (Get-Pair $s 'auto' "$Out.auto2e7-$($s[0])-$side-r$round.csv" '20000000') $program
             }
         }
     }
