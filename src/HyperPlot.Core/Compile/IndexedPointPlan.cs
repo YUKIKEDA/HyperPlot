@@ -832,6 +832,20 @@ internal sealed class IndexedPointPlan : LayerPlan
     }
 
     /// <summary>
+    /// Takes the last scan as this frame's (design §5.5.2 "予算", Issue #636): its count, its largest bin, its needed bytes,
+    /// its pieces, and the cells it found stand, and the layer enters the frame's budget with them.
+    /// </summary>
+    internal override void Carry(RecordContext context)
+    {
+        _scanFrame = context.Images.Frame;
+        _switch.Enter(context, (PointLayerSpec)Spec);
+    }
+
+    /// <summary>Returns whether the drawing the frame chose differs from the one the last recording drew; a part on its coarse snapshot draws a density anyway.</summary>
+    internal override bool DrawingChanged(RecordContext context) =>
+        (_snapshot is null ? _coarse is not null : _switch.Choose(context, (PointLayerSpec)Spec)) != _drawsDensity;
+
+    /// <summary>
     /// Walks the resident cells once (design §5.5.2 "見えるブロックだけを描く", "密度タイルが付く前", "セルの表"): writes each
     /// cell's record of the view, keeps the positions of those that reach into the view widened by a marker's reach, whose
     /// points the recording draws, and takes the estimate of the largest bin, the greatest "points over the area on the

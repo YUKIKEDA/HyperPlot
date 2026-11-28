@@ -77,8 +77,16 @@ internal sealed partial class PlotPlan : IDisposable
     private bool _pendingExtract;
     private bool _pendingRecord;
 
+    // The plot does not change and its list draws items of the cache: kept while they are there (design §5.5.2 "予算").
+    private bool _pendingKeep;
+
     // The frame of the residency cache whose scan before the recording ran (design §5.5.2 "記録の前の走査").
     private long _scannedFrame = -1;
+
+    // The frame of the residency cache in which the list was last recorded or kept, and the cache's device losses then: an
+    // item let go of after that frame is not the one the list draws (design §5.5.2 "予算", Issue #636).
+    private long _keptFrame = -1;
+    private long _keptResets;
 
     // A render that waits recorded pages not on the GPU yet: the next one records again (design §5.5.2 "ヘッドレス").
     private bool _recordAgain;
@@ -664,8 +672,14 @@ internal sealed partial class PlotPlan : IDisposable
         // Annotations of other nodes, or moved by the engine, are recorded again alone (row I4a): no scale, no layout.
         _pendingAnnotations = previous is null || !SameAnnotations(previous, spec) || _shiftsChanged;
         _shiftsChanged = false;
-        (_pendingExtract, _pendingRecord) = (false, false);
+        (_pendingExtract, _pendingRecord, _pendingKeep) = (false, false, false);
     }
+
+    /// <summary>
+    /// Returns whether the list drawn last holds items of the residency cache (design §5.5.2 "予算", Issue #636): the density
+    /// and raster tiles of its images, or the pages of its resident markers.
+    /// </summary>
+    private bool HoldsCacheItems() => _list.Images.Length > 0 || _list.ResidentRuns.Length > 0;
 
     /// <summary>Returns whether the layer at a position is stale in any panel (row W1b2).</summary>
     private bool LayerStale(int layer)
@@ -953,6 +967,12 @@ internal sealed partial class PlotPlan : IDisposable
             // A new selection is recorded again alone, as annotations are: the point layers highlight it (row R3c).
             _pendingRecord = true;
         }
+        else
+        {
+            // A list that draws tiles or pages of the cache is kept only while they are there; a figure's plot also marks
+            // them this frame's and enters its layers into the budget (design §5.5.2 "予算", Issue #636).
+            _pendingKeep = !_guides.Empty && HoldsCacheItems();
+        }
 
         return _pendingExtract;
     }
@@ -985,10 +1005,18 @@ internal sealed partial class PlotPlan : IDisposable
             IsProvisional = Provisional();
         }
 
+        // A kept list is recorded again when an item it draws was let go of since (a plot alone, whose cache other plans may
+        // share), or when the figure's budget chose another drawing for a layer (design §5.5.2 "予算", Issue #636).
+        if (_pendingKeep && (_inFigure ? DrawingChanged() : !Keep(mark: false)))
+        {
+            _pendingRecord = true;
+        }
+
         if (_pendingRecord)
         {
             Record(_pendingSpec!, _pendingFlipped);
             Recordings++;
+            (_keptFrame, _keptResets) = (_context.Images.Frame, _context.Images.Resets);
             _recordAgain = Waits && RecordedProvisional();
 
             // An image that drew a tile from an ancestor waits for tiles the frame's budget left out (design §5.5.3, Issue
@@ -1000,7 +1028,7 @@ internal sealed partial class PlotPlan : IDisposable
         }
 
         _spec = _pendingSpec;
-        (_pendingSpec, _pendingExtract, _pendingRecord) = (null, false, false);
+        (_pendingSpec, _pendingExtract, _pendingRecord, _pendingKeep) = (null, false, false, false);
     }
 
     /// <summary>Releases the pyramids, and gives up the makings without waiting for them (Issue #297 Decision 8).</summary>
@@ -2715,13 +2743,133 @@ internal sealed partial class PlotPlan : IDisposable
 
     /// <summary>
     /// The scan of a figure's plot before any plot records (design §5.5.2 "予算"): the plot that records this frame scans its
-    /// layers, so that the figure's budget reads every plot's point layers.
+    /// layers, and a plot that keeps its list marks its items of the cache this frame's and carries its last scan, so that
+    /// the figure's budget reads every plot's point layers.
     /// </summary>
     internal void ScanPending()
     {
+        // A plot that does not change keeps its list when every item it draws is still there: marked this frame's before any
+        // plot asks for more, so that none is let go of for another, and its layers enter the budget with their last scan
+        // (design §5.5.2 "予算", Issue #636). Otherwise it records.
+        if (_pendingKeep)
+        {
+            if (Keep(mark: true))
+            {
+                (_keptFrame, _keptResets) = (_context.Images.Frame, _context.Images.Resets);
+                Carry(_pendingSpec!, _pendingFlipped);
+                return;
+            }
+
+            (_pendingKeep, _pendingRecord) = (false, true);
+        }
+
         if (_pendingRecord && _whole is null)
         {
             Scan(_pendingSpec!, _pendingFlipped);
+        }
+    }
+
+    /// <summary>
+    /// Returns whether every item of the residency cache the list draws is still the one it drew (design §5.5.2 "予算",
+    /// Issue #636): no device was lost since the list was recorded or kept, and no tile's slot, table row, or page's slot was
+    /// let go of or taken by another map since. Marks them used in this frame when asked to and they are. Searches nothing.
+    /// </summary>
+    private bool Keep(bool mark)
+    {
+        var cache = _context.Images;
+        if (cache.Resets != _keptResets)
+        {
+            return false;
+        }
+
+        var images = _list.Images;
+        var calls = _list.ImageCalls;
+        var runs = _list.ResidentRuns;
+        for (var pass = 0; pass < (mark ? 2 : 1); pass++)
+        {
+            for (var i = 0; i < images.Length; i++)
+            {
+                var (format, slot) = ImagePlan.SlotOf(calls[i].Page, images[i].Slice);
+                var table = (images[i].Flags & ImageInstance.Rgba) == 0 ? (int)images[i].Table : -1;
+                if (pass == 0 && (!cache.Holds(format, slot, _keptFrame) || (table >= 0 && !cache.HoldsTable(table, _keptFrame))))
+                {
+                    return false;
+                }
+
+                if (pass == 1)
+                {
+                    cache.Keep(format, slot);
+                    if (table >= 0)
+                    {
+                        cache.KeepTable(table);
+                    }
+                }
+            }
+
+            foreach (ref readonly var run in runs)
+            {
+                if (run.Slot < 0)
+                {
+                    continue;
+                }
+
+                if (pass == 0 && !cache.Points.Holds(run.Slot, _keptFrame))
+                {
+                    return false;
+                }
+
+                if (pass == 1)
+                {
+                    cache.Points.Keep(run.Slot);
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Returns whether the frame's budget chose another drawing than the list drew for a layer the carry entered (design
+    /// §5.5.2 "予算"): the drawn layers that scan, of the panels that are not polar, as <see cref="ScanPanel"/> takes them.
+    /// </summary>
+    private bool DrawingChanged()
+    {
+        for (var p = 0; p < _panels.Length; p++)
+        {
+            if (_guides.PanelAt(p).Polar is not null)
+            {
+                continue;
+            }
+
+            var layers = _panels[p].Layers;
+            for (var i = 0; i < layers.Length; i++)
+            {
+                if (layers[i].Scans && Drawn(i, layers[i]) && layers[i].DrawingChanged(_context))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Takes the last scan as this frame's for the layers it scanned (design §5.5.2 "予算", Issue #636), once a frame of the
+    /// residency cache: the plot does not change, so the last scan's findings stand, and the layers enter the frame's budget.
+    /// </summary>
+    private void Carry(PlotSpec spec, bool flipped)
+    {
+        var frame = _context.Images.Frame;
+        if (_scannedFrame == frame)
+        {
+            return;
+        }
+
+        _scannedFrame = frame;
+        for (var p = 0; p < _panels.Length; p++)
+        {
+            ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped, carry: true);
         }
     }
 
@@ -2741,7 +2889,7 @@ internal sealed partial class PlotPlan : IDisposable
         var scanned = TimeProvider.System.GetTimestamp();
         for (var p = 0; p < _panels.Length; p++)
         {
-            ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
+            ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped, carry: false);
         }
 
         ScanTicks = TimeProvider.System.GetTimestamp() - scanned;
@@ -2835,7 +2983,7 @@ internal sealed partial class PlotPlan : IDisposable
     /// Scans a panel's drawn layers before any records (design §5.5.2 "`Auto` の切り替え"), each mapped by its pair's axes.
     /// A polar panel has no layer to scan: the index path does not take polar (row R3a).
     /// </summary>
-    private void ScanPanel(PlotSpec spec, PlotPanel panel, PanelGuide guide, bool flipped)
+    private void ScanPanel(PlotSpec spec, PlotPanel panel, PanelGuide guide, bool flipped, bool carry)
     {
         if (guide.Polar is not null)
         {
@@ -2860,7 +3008,14 @@ internal sealed partial class PlotPlan : IDisposable
             }
 
             current = BeginPair(panel, Pair(layer.Spec), current, flipped);
-            layer.Scan(_context);
+            if (carry)
+            {
+                layer.Carry(_context);
+            }
+            else
+            {
+                layer.Scan(_context);
+            }
         }
     }
 

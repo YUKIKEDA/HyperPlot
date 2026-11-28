@@ -50,6 +50,9 @@ public sealed class ResidencyCache
     // The frame each table row was last used in: a full table texture takes the row used longest ago for a new map, so
     // that maps made on the fly (a layer's own color, row R3b1) do not fill it for good.
     private readonly long[] _tableUsed = new long[MaxColorTables];
+
+    // The frame each table row last took a map in, which a list kept from an earlier frame checks (design §5.5.2 "予算").
+    private readonly long[] _tableWritten = new long[MaxColorTables];
     private readonly List<Upload> _uploads = [];
     private uint[] _staging = new uint[FrameUpload / 4];
     private int _stagingFaces;
@@ -80,6 +83,12 @@ public sealed class ResidencyCache
 
     /// <summary>Gets the number of the current frame: what is asked for in it is not let go of for another in it.</summary>
     internal long Frame => _frame;
+
+    /// <summary>
+    /// Gets the number of times the cache forgot every slot and table after the device was lost (<see cref="Reset"/>): a list
+    /// kept from before one draws nothing that is there (design §5.5.2 "予算", Issue #636).
+    /// </summary>
+    internal long Resets { get; private set; }
 
     /// <summary>Gets the bytes on the GPU or staged for it: the tiles' slots and the pages of points.</summary>
     internal long BytesInUse => ((long)SlotsInUse * FaceBytes) + Points.BytesInUse;
@@ -242,8 +251,34 @@ public sealed class ResidencyCache
 
         _tables.Clear();
         _tilesUsedLastFrame = 0;
+        Resets++;
         Points.Reset();
         Sent();
+    }
+
+    /// <summary>
+    /// Returns whether a tile's slot still holds what it held in a frame (design §5.5.2 "予算", Issue #636): in use, and not
+    /// let go of since that frame. A slot taken in the frame after a let-go of that frame holds the later tile. Searches
+    /// nothing.
+    /// </summary>
+    internal bool Holds(Format format, int slot, long since) => _pools[(int)format].Holds(slot, since);
+
+    /// <summary>Marks a tile's slot in use as used in this frame, so that it is not let go of for another in it (design §5.5.2 "1 つの LRU").</summary>
+    internal void Keep(Format format, int slot) => _pools[(int)format].Use(slot, _frame);
+
+    /// <summary>
+    /// Returns whether a table row still holds the map it held in a frame: no map has taken it since. A row no map took
+    /// (an image of numbers that reads no table) holds nothing to lose.
+    /// </summary>
+    internal bool HoldsTable(int row, long since) => row >= _tables.Count || _tableWritten[row] <= since;
+
+    /// <summary>Marks a table row that holds a map as used in this frame, so that no new map takes it in it.</summary>
+    internal void KeepTable(int row)
+    {
+        if (row < _tables.Count)
+        {
+            _tableUsed[row] = _frame;
+        }
     }
 
     /// <summary>
@@ -407,6 +442,7 @@ public sealed class ResidencyCache
             _tables.Add(map);
             row = _tables.Count - 1;
             _tableUploads.Add((row, map));
+            _tableWritten[row] = _frame;
         }
         else if (row < 0)
         {
@@ -426,6 +462,7 @@ public sealed class ResidencyCache
 
             _tables[row] = map;
             _tableUploads.Add((row, map));
+            _tableWritten[row] = _frame;
         }
 
         _tableUsed[row] = _frame;
@@ -531,6 +568,9 @@ public sealed class ResidencyCache
 
         public long[] LastUsed { get; private set; } = [];
 
+        /// <summary>Gets the frame each slot was last let go of in; 0 for a slot never let go of.</summary>
+        public long[] LastFreed { get; private set; } = [];
+
         public int Pages { get; private set; }
 
         public int InUse => Slots.Count + DensitySlots.Count;
@@ -578,6 +618,9 @@ public sealed class ResidencyCache
                 var used = LastUsed;
                 Array.Resize(ref used, Pages * PageSlots);
                 LastUsed = used;
+                var freed = LastFreed;
+                Array.Resize(ref freed, Pages * PageSlots);
+                LastFreed = freed;
                 return count;
             }
 
@@ -641,9 +684,14 @@ public sealed class ResidencyCache
             return true;
         }
 
+        /// <summary>Returns whether a slot is in use and was not let go of after a frame.</summary>
+        public bool Holds(int slot, long since) =>
+            slot >= 0 && slot < Pages * PageSlots && (_keys[slot] is not null || _densityKeys[slot] is not null) && LastFreed[slot] <= since;
+
         /// <summary>Frees a slot in use; one the current frame used no longer counts as used.</summary>
         public void Free(int slot, long frame)
         {
+            LastFreed[slot] = frame;
             if (LastUsed[slot] == frame)
             {
                 Used--;

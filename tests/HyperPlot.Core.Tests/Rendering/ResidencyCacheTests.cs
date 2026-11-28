@@ -362,6 +362,78 @@ public sealed class ResidencyCacheTests : IDisposable
     }
 
     /// <summary>
+    /// The checks a kept list reads (design §5.5.2 "予算", Issue #636): a tile's slot, a table row, and a page's slot hold what
+    /// a frame drew until they are let go of (a row until another map takes it), or until the device is lost; a slot taken
+    /// again after a let-go holds the later item for the frames after; and a kept row is not taken in its frame.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A residency cache with no frame budget, a full snapshot of 140,000 points, a density tile, and 65 color maps.
+    ///
+    /// Steps:
+    /// - Frame 1: request the snapshot's tile of code 0, read page 0, and take a table row for map 0; frame 2 asks for
+    ///   nothing. Frame 3: forget the snapshot's density and its pages, and take rows for maps 1 to 64. Frame 4: request the
+    ///   tile and read the page again. Frame 5: keep the row of map 64 and take a row for map 0. Then reset the cache.
+    ///
+    /// Expected:
+    /// - In frame 2 each of the three holds what frame 1 drew. In frame 3 none does: the tile and the page were let go of,
+    ///   and map 64 took map 0's row, the one used longest ago. In frame 4 the slots taken again hold frame 4's items, not
+    ///   frame 1's. In frame 5 map 0 takes another row than map 64's. After the reset, the count of resets moved and no slot
+    ///   holds its item.
+    /// </remarks>
+    [Fact]
+    public void Holds_UntilLetGoOfTakenAgainOrReset()
+    {
+        var (xs, ys) = SpatialData.Uniform(140_000, seed: 50);
+        using var built = SpatialBuilt.Of(xs, ys);
+        var bins = Bins(Counts(1), 1);
+        var maps = Enumerable.Range(0, 65).Select(i => new ColorMap(new Color((byte)i, 0, 0, 255), new Color(0, (byte)i, 0, 255))).ToArray();
+        var cache = new ResidencyCache { Unbounded = true };
+        int Tile() => cache.RequestDensity(built.Snapshot, 2, 0, new DensityTile(bins, 1, 0));
+
+        cache.BeginFrame();
+        var (tile, page, row) = (Tile(), cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints), cache.Table(maps[0]));
+        var drawn = cache.Frame;
+        cache.Sent();
+        cache.BeginFrame();
+        Assert.Equal(
+            (true, true, true),
+            (cache.Holds(ResidencyCache.Format.Float, tile, drawn), cache.HoldsTable(row, drawn), cache.Points.Holds(page, drawn))
+        );
+
+        cache.BeginFrame();
+        cache.ForgetDensity(built.Snapshot);
+        cache.Points.Forget(built.Snapshot);
+        for (var m = 1; m < maps.Length; m++)
+        {
+            _ = cache.Table(maps[m]);
+        }
+
+        Assert.Equal(row, cache.Table(maps[64]));
+        Assert.Equal(
+            (false, false, false),
+            (cache.Holds(ResidencyCache.Format.Float, tile, drawn), cache.HoldsTable(row, drawn), cache.Points.Holds(page, drawn))
+        );
+
+        cache.Sent();
+        cache.BeginFrame();
+        var (again, pageAgain) = (Tile(), cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints));
+        Assert.Equal((tile, page), (again, pageAgain));
+        Assert.Equal((false, false), (cache.Holds(ResidencyCache.Format.Float, again, drawn), cache.Points.Holds(pageAgain, drawn)));
+        Assert.Equal((true, true), (cache.Holds(ResidencyCache.Format.Float, again, cache.Frame), cache.Points.Holds(pageAgain, cache.Frame)));
+
+        cache.Sent();
+        cache.BeginFrame();
+        cache.KeepTable(row);
+        Assert.NotEqual(row, cache.Table(maps[0]));
+
+        var (resets, now) = (cache.Resets, cache.Frame);
+        cache.Reset();
+        Assert.Equal(resets + 1, cache.Resets);
+        Assert.Equal((false, false), (cache.Holds(ResidencyCache.Format.Float, again, now), cache.Points.Holds(pageAgain, now)));
+    }
+
+    /// <summary>
     /// ForgetDensity lets go of the density tiles and the coarse density of one snapshot only, and the slots it frees are
     /// taken again; a reset after a device loss forgets every face, and the next request stages the same face again.
     /// </summary>
