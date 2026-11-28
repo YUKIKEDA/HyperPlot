@@ -1090,22 +1090,24 @@ public sealed class AutoSwitchTests
 
     /// <summary>
     /// A new spec whose layers over other columns change places makes every layer again, so no layer takes the drawing
-    /// another remembered: both start from raw points in the band (design §5.5.2 "入れ替わりを抑える", "索引の保管庫").
+    /// another remembered: both start from raw points with the panel's sum in the band (design §5.5.2 "入れ替わりを抑える",
+    /// "重なる層の和", "索引の保管庫").
     /// </summary>
     /// <remarks>
     /// Preconditions:
     /// - Two point layers of 300,000 seeded points each, Auto: A over (x, y), a normal blob of σ 12 around (50, 50), and B
-    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. Each layer's sizes that predict
-    ///   16 ms and 12.7 ms (in the band) at the whole view are set from a first frame.
+    ///   over (u, v), another of σ 10. An engine of 640 × 360 that waits for its indexes. A's sizes that predict 16 ms and
+    ///   6 ms and B's that predicts 8 ms at the whole view are set from a first frame; the panel's sum of A at 6 ms and B is
+    ///   12.44 ms, in the band.
     ///
     /// Steps:
-    /// - Draw [A at 16 ms, B at 12.7 ms], then [A at 12.7 ms, B at 12.7 ms]. Then swap them: [B at 12.7 ms, A at 12.7 ms].
+    /// - Draw [A at 16 ms, B at 8 ms], then [A at 6 ms, B at 8 ms]. Then swap them: [B at 8 ms, A at 6 ms].
     ///
     /// Expected:
-    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 12.7 ms, and B draws
-    ///   raw points at 12.7 ms.
-    /// - After it both positions hold new plans with new switches, and both draw raw points at 12.7 ms; position 0 does not
-    ///   take the density position 0 remembered.
+    /// - Before the swap the plans and their switches stay; A draws a density at 16 ms and holds it at 6 ms (the sum with
+    ///   it as raw points is in the band), and B draws raw points.
+    /// - After it both positions hold new plans with new switches, and both draw raw points; position 0 does not take the
+    ///   density position 0 remembered.
     /// </remarks>
     [Fact]
     public void Reorder_OfLayersOverOtherColumns_ForgetsTheirDrawings()
@@ -1151,7 +1153,7 @@ public sealed class AutoSwitchTests
 
         Draw(A(1), B(1));
         float Size(int at, double time) => DiameterFor(time, Layer(at).Switch.LastCount, Layer(at).Switch.LastLargestBin);
-        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 12.7), Size(1, 12.7));
+        var (overA, bandA, bandB) = (Size(0, 16), Size(0, 6), Size(1, 8));
         var (planA, planB) = (Layer(0), Layer(1));
 
         Draw(A(overA), B(bandB));
@@ -1159,8 +1161,9 @@ public sealed class AutoSwitchTests
         Draw(A(bandA), B(bandB));
         Assert.Same(planA, Layer(0));
         Assert.Same(planB, Layer(1));
-        Assert.Equal(12.7, planA.Switch.LastTime, 1e-4);
-        Assert.Equal(12.7, planB.Switch.LastTime, 1e-4);
+        Assert.Equal(6, planA.Switch.LastTime, 1e-4);
+        Assert.Equal(8, planB.Switch.LastTime, 1e-4);
+        Assert.InRange(PredictedTime.Fixed + planA.Switch.Terms + planB.Switch.Terms, 11.28, 14.09);
         Assert.True(planA.DrewDensity);
         Assert.False(planB.DrewDensity);
 
@@ -1174,8 +1177,8 @@ public sealed class AutoSwitchTests
         Assert.NotSame(planB.Switch, first.Switch);
         Assert.NotSame(planA.Switch, second.Switch);
         Assert.NotSame(planB.Switch, second.Switch);
-        Assert.Equal(12.7, first.Switch.LastTime, 1e-4);
-        Assert.Equal(12.7, second.Switch.LastTime, 1e-4);
+        Assert.Equal(8, first.Switch.LastTime, 1e-4);
+        Assert.Equal(6, second.Switch.LastTime, 1e-4);
         Assert.False(first.DrewDensity);
         Assert.False(second.DrewDensity);
     }

@@ -2741,6 +2741,7 @@ internal sealed partial class PlotPlan : IDisposable
         var scanned = TimeProvider.System.GetTimestamp();
         for (var p = 0; p < _panels.Length; p++)
         {
+            _context.PanelNumber = p;
             ScanPanel(spec, _panels[p], _guides.PanelAt(p), flipped);
         }
 

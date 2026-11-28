@@ -1763,6 +1763,12 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Gets or sets the number of the plot in its figure, 0 for a plot alone (design §5.5.2 "替える順").</summary>
     public int Plot { get; set; }
 
+    /// <summary>
+    /// Gets or sets the number of the plot's panel being scanned before the recording, whose <see cref="PointDraw.Auto"/>
+    /// layers' counts and times are summed (design §5.5.2 "重なる層の和").
+    /// </summary>
+    public int PanelNumber { get; set; }
+
     /// <summary>Gets or sets the spec's theme, set before each recording (row G8): a text layer's font and locale.</summary>
     public Theme Theme { get; set; } = Theme.Light;
 
