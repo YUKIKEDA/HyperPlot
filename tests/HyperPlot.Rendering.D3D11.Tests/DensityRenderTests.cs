@@ -399,7 +399,7 @@ public sealed class DensityRenderTests
         var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
 
         var last = engine.Plan!.List.ResidentRuns.ToArray();
-        Assert.False(engine.IsProvisional);
+        Assert.False(engine.IsProvisional, "The counted frame is provisional: it did not draw the final data.");
         Assert.Equal((Pages, Pages), (last.Length, last.Count(run => run.Slot >= 0)));
         Assert.Equal(0, bytes);
         Assert.Equal((Pages, 5), (first.Length, first.Count(run => run.Slot >= 0)));

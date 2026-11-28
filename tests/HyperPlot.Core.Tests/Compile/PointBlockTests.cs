@@ -678,7 +678,7 @@ public sealed class PointBlockTests
                 Draw(view);
             }
         });
-        Assert.False(engine.IsProvisional);
+        Assert.False(engine.IsProvisional, "The last counted frame is provisional: it did not draw the final data.");
 
         void Draw(PanelView2D view)
         {

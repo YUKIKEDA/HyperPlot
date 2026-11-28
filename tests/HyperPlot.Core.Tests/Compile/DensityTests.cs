@@ -792,7 +792,7 @@ public sealed class DensityTests
 
         Assert.Contains(true, drawn);
         Assert.Contains(false, drawn);
-        Assert.False(engine.IsProvisional);
+        Assert.False(engine.IsProvisional, "The warm frames ended provisional: the counted frames would not take the final path.");
 
         PerformanceAssert.DoesNotAllocate(() =>
         {

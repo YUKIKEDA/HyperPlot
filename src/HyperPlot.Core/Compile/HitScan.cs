@@ -554,9 +554,8 @@ internal ref struct HitScan
         xs = xs[..last];
         ys = ys[..last];
 
-        // Most points lie farther along than the reach: that one test comes before the call for the rest. With every point of
-        // both passes through the call, which NativeAOT does not inline, and the least kept by Math.Min, the scan of 131,072
-        // points took 0.47 to 0.63 ms at p50, where row R3a's code took 0.07 to 0.14 ms in alternated runs (Issue #607).
+        // Most points lie farther along than the reach, so both passes make that test before the call, which NativeAOT does
+        // not inline (Issue #607). It is the first test of PointDistance, taken out ahead of the call: the two change together.
         var (least, nearest) = (double.PositiveInfinity, -1);
         for (var i = 0; i < xs.Length; i++)
         {
