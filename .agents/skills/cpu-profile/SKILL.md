@@ -66,7 +66,7 @@ xperf -i $etl -symbols -o "$scratch\stacks.txt" -a stack -butterfly 50 -process 
 
 In a NativeAOT binary, GC and allocation helpers appear as runtime functions (`RhpNewFast`, `RhpGcAlloc`, `WKS::gc_heap::*`). Their inclusive share is the cost of allocation and collection; report it separately from the frame stages. Frames shown as `ntdll.dll!***unknown***` still have an RVA; resolve it with `dumpbin /exports C:\Windows\System32\ntdll.dll`. Time in `ntoskrnl.exe` page-fault handlers under a read of a column is the mapped file being paged in: say whether the file was in the page cache.
 
-A scene that presents with the vertical sync lasts its frame count / 60 seconds. Choose the frame count for the length of run the samples need, and say how long the run took.
+A scene that presents with the vertical sync lasts its frame count / 60 seconds. Choose the frame count for the length of run the samples need, and say how long the run took. The `CpuUsageHigh` trace grows with the load on the machine: on a busy machine, 600 frames of the hit-test scene passed 100 MB and `xperf` could not read it (`0x80070570`, Issue #607). Cut the scene to fit (60 frames worked); `CpuUsageLow` gave 139 samples, too few to use.
 
 ### Comparing two builds
 
