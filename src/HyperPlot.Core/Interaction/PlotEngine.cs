@@ -61,6 +61,14 @@ public sealed partial class PlotEngine : IDisposable
     private bool _disposed;
     private bool _quietLinks;
 
+    // The last zoom (design §6.2, Issue #633): its panel, pixel, and shares of the primary and the secondary scales, and the
+    // view it left. A zoom at that pixel over that view takes those shares again; a resize or a new spec drops them.
+    private bool _zoomPinned;
+    private PanelId _zoomPanel;
+    private Vector2 _zoomPixel;
+    private ((double X, double Y) Primary, (double X, double Y) Secondary) _zoomShares;
+    private PanelDomains _zoomView;
+
     // The hover (design §6.5, row I2b): the tool that hovers, where, and the hits; a buffer for the next hits and the tooltip.
     private SeriesHit[] _hover = new SeriesHit[16];
     private SeriesHit[] _hits = new SeriesHit[16];
@@ -237,6 +245,7 @@ public sealed partial class PlotEngine : IDisposable
 
         (_plot, _figure) = (plot, null);
         _kept = false;
+        _zoomPinned = false;
         RequestFrame();
     }
 
@@ -262,6 +271,7 @@ public sealed partial class PlotEngine : IDisposable
 
         (_plot, _figure) = (null, figure);
         _kept = false;
+        _zoomPinned = false;
         RequestFrame();
     }
 
@@ -289,6 +299,7 @@ public sealed partial class PlotEngine : IDisposable
 
         _renderer.Resize(width, height, scale);
         _kept = false;
+        _zoomPinned = false;
         RequestFrame();
     }
 
@@ -894,8 +905,14 @@ public sealed partial class PlotEngine : IDisposable
         _active = panel;
         var moves = Movable(panel.Plot, axes);
         var next = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Target[panel.Panel]);
-        var (fx, fy) = Fractions(panel, pixel, secondary: false);
-        var (fx2, fy2) = Fractions(panel, pixel, secondary: true);
+
+        // At the pixel of the zoom before, over the view it left, the zoom keeps that zoom's shares (design §6.2, Issue
+        // #633): the panel the view's tick labels laid out since may have moved under the still pointer.
+        var shares =
+            _zoomPinned && _zoomPanel == panel && _zoomPixel == pixel && Same(_zoomView, next)
+                ? _zoomShares
+                : (Fractions(panel, pixel, secondary: false), Fractions(panel, pixel, secondary: true));
+        var ((fx, fy), (fx2, fy2)) = shares;
         next = new PanelDomains(
             (moves & ViewAxes.X) != 0 ? Zoom(next.X, fx, factor) : next.X,
             (moves & ViewAxes.Y) != 0 ? Zoom(next.Y, fy, factor) : next.Y,
@@ -903,6 +920,8 @@ public sealed partial class PlotEngine : IDisposable
             (moves & ViewAxes.Y2) != 0 ? Zoom(next.Y2, fy2, factor) : next.Y2
         );
         Commit(panel, next, moves, animate, grouped ? HistoryMode.Group : HistoryMode.Push);
+        (_zoomPinned, _zoomPanel, _zoomPixel, _zoomShares) = (true, panel, pixel, shares);
+        _zoomView = Resolve(panel.Plot, panel.Panel, _states[panel.Plot].Target[panel.Panel]);
     }
 
     internal void Pan(PanelId panel, Vector2 pixels, ViewAxes axes, bool grouped)

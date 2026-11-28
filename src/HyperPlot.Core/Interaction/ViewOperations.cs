@@ -27,6 +27,12 @@ public sealed class ViewOperations
     public bool CanGoForward => _engine.CanGoForward;
 
     /// <summary>Zooms a panel's view at a pixel: the value under the pixel stays under it.</summary>
+    /// <remarks>
+    /// At the panel and pixel of the zoom before, over the view that zoom left, it zooms at that zoom's share of each range
+    /// again, though the tick labels of the new view moved the panel (design §6.2, Issue #633): turns in and out at a still
+    /// pointer then give the view back. Another pixel, a view changed otherwise, a <see cref="PlotEngine.Resize"/>, or a
+    /// <see cref="PlotEngine.SetPlot"/> or <see cref="PlotEngine.SetFigure"/> reads the share from the panel drawn now.
+    /// </remarks>
     /// <param name="panel">The panel.</param>
     /// <param name="pixel">The pixel, in device pixels.</param>
     /// <param name="factor">The zoom: above 1 zooms in, below 1 out; finite and above 0.</param>

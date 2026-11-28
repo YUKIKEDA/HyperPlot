@@ -287,6 +287,166 @@ public sealed class ViewOperationTests
     }
 
     /// <summary>
+    /// Wheel turns in and out at a still pixel give the view back (design §6.2, Issue #633): the zooms keep the pixel's share
+    /// of the first, though the tick labels of the views they make move the panel between the turns.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's line with y fixed to [0, 100]: the full view's widest y label ("100") is wider than those of a view
+    ///   zoomed in by a notch, so the panel's left edge moves between the frames. Animations off, or on with a frame every
+    ///   16.7 ms (the turns come while the animation runs).
+    ///
+    /// Steps:
+    /// - Turn the wheel at the middle of the first frame's panel one notch in and one notch out, five times, with a frame
+    ///   after each turn; then move the time past the animation and draw.
+    ///
+    /// Expected:
+    /// - The panel's left edge in some frame is not the first frame's; the x and y ranges at the end are the first ones
+    ///   within 1e-9. Before the fix, x over [0, 1000] ended 4.88 to the left of where it began with animations off, and
+    ///   0.98 with them on.
+    /// </remarks>
+    /// <param name="animate">Whether the zooms animate.</param>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Wheel_InAndOutAtAStillPixel_GivesTheViewBack(bool animate)
+    {
+        using var f = new EngineFixture(b => b.ScaleY(Scale.Linear().WithDomain(0, 100)));
+        f.Engine.Options.ZoomAnimation = animate ? TimeSpan.FromMilliseconds(150) : TimeSpan.Zero;
+        var (start, left, at) = (f.View(), f.Rect.Left, f.Middle);
+        var moved = false;
+        for (var i = 0; i < 10; i++)
+        {
+            _ = f.Wheel(at, i % 2 == 0 ? 1 : -1);
+            f.Frame(TimeSpan.FromMilliseconds(16.7));
+            moved |= f.Rect.Left != left;
+        }
+
+        f.Settle();
+        Assert.True(moved, $"The panel's left edge stayed at {left}: the labels did not move it.");
+        Assert.Equal(Low(start.X), Low(f.View().X), 1e-9);
+        Assert.Equal(High(start.X), High(f.View().X), 1e-9);
+        Assert.Equal(Low(start.Y), Low(f.View().Y), 1e-9);
+        Assert.Equal(High(start.Y), High(f.View().Y), 1e-9);
+    }
+
+    /// <summary>
+    /// A zoom reads the pixel's share from the panel drawn now when the pixel, the view, the target's size, or the spec
+    /// changed after the zoom before (design §6.2, Issue #633): the value under the pixel stays under it in that panel.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The fixture's line with y fixed to [0, 100], whose panel moves between the full view and a view zoomed in by a
+    ///   notch, as a plot, or as a figure of that plot alone in the last case; animations off.
+    ///
+    /// Steps:
+    /// - Zoom in by 1.2 at the middle of the panel and draw. Then one of: nothing more, and zoom again a pixel to the right;
+    ///   pan by 3 pixels and draw; resize the target to 700 × 360 and draw; set the plot again with a title, which keeps
+    ///   the view, and draw; set the figure again with the titled plot, which keeps the view, and draw. Read the values under
+    ///   the pixel of the next zoom, zoom by 1.2 there (at the first pixel in all cases but the first), and read them again.
+    ///
+    /// Expected:
+    /// - The view before the next zoom is the first zoom's; the panel at the next zoom is not the panel at the first; the
+    ///   values under the pixel unchanged within 1e-9.
+    /// </remarks>
+    /// <param name="change">0 another pixel, 1 a pan, 2 a resize, 3 a new plot, 4 a new figure.</param>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void ZoomAt_AfterAChange_ReadsTheShareFromThePanelNow(int change)
+    {
+        using var f = new EngineFixture(b => b.ScaleY(Scale.Linear().WithDomain(0, 100)));
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        var titled = Plot.Create(f.Table)
+            .Line(f.Table.Col<double>("x"), f.Table.Col<float>("y"))
+            .ScaleY(Scale.Linear().WithDomain(0, 100))
+            .Title("A title")
+            .Build();
+        if (change == 4)
+        {
+            f.Engine.SetFigure(Figure.HConcat(f.Spec));
+            f.Engine.RenderFrame();
+        }
+
+        var first = f.Engine.PanelRectangle(EngineFixture.Panel);
+        var at = new Vector2(first.Left + (first.Width / 2f), first.Top + (first.Height / 2f));
+        f.Engine.Views.ZoomAt(EngineFixture.Panel, at, 1.2);
+        f.Engine.RenderFrame();
+        var zoomed = f.Engine.CurrentView(EngineFixture.Panel);
+        switch (change)
+        {
+            case 0:
+                at += new Vector2(1, 0);
+                break;
+            case 1:
+                f.Engine.Views.Pan(EngineFixture.Panel, new Vector2(3, 0));
+                f.Engine.RenderFrame();
+                zoomed = f.Engine.CurrentView(EngineFixture.Panel);
+                break;
+            case 2:
+                f.Engine.Resize(700, EngineFixture.Height, 1);
+                f.Engine.RenderFrame();
+                break;
+            case 3:
+                f.Engine.SetPlot(titled);
+                f.Engine.RenderFrame();
+                break;
+            default:
+                f.Engine.SetFigure(Figure.HConcat(titled));
+                f.Engine.RenderFrame();
+                break;
+        }
+
+        var (now, before) = ((PanelView2D)f.Engine.CurrentView(EngineFixture.Panel), (PanelView2D)zoomed);
+        Assert.Equal((before.X, before.Y), (now.X, now.Y));
+        Assert.NotEqual(first, f.Engine.PanelRectangle(EngineFixture.Panel));
+        var (x, y) = f.Engine.PixelToView(EngineFixture.Panel, at);
+        f.Engine.Views.ZoomAt(EngineFixture.Panel, at, 1.2);
+        var (zoomedX, zoomedY) = f.Engine.PixelToView(EngineFixture.Panel, at);
+        Assert.Equal(x.LowValue, zoomedX.LowValue, 1e-9);
+        Assert.Equal(y.LowValue, zoomedY.LowValue, 1e-9);
+    }
+
+    /// <summary>
+    /// A zoom of another panel at the pixel of the zoom before, over the same view, reads its own share (design §6.2, Issue
+    /// #633): the shares a zoom keeps are its panel's.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A figure of the fixture's plot twice, side by side; animations off.
+    ///
+    /// Steps:
+    /// - Zoom the first plot's panel in by 1.2 at its middle; set the second plot's view to the first's. Read the values of
+    ///   the second panel under the same pixel, zoom the second panel by 1.2 there, and read them again.
+    ///
+    /// Expected:
+    /// - The values unchanged within 1e-9 (the pixel lies left of the second panel, so its x share is below 0).
+    /// </remarks>
+    [Fact]
+    public void ZoomAt_AnotherPanelAtTheSamePixel_ReadsItsOwnShare()
+    {
+        using var f = new EngineFixture();
+        f.Engine.Options.ZoomAnimation = TimeSpan.Zero;
+        f.Engine.SetFigure(Figure.HConcat(f.Spec, f.Spec));
+        f.Engine.RenderFrame();
+        var (one, two) = (new PanelId(0, 0), new PanelId(1, 0));
+        var (left, top, width, height) = f.Engine.PanelRectangle(one);
+        var at = new Vector2(left + (width / 2f), top + (height / 2f));
+        f.Engine.Views.ZoomAt(one, at, 1.2);
+        f.Engine.Views.SetView(two, f.Engine.CurrentView(one));
+        f.Engine.RenderFrame();
+
+        var (x, y) = f.Engine.PixelToView(two, at);
+        f.Engine.Views.ZoomAt(two, at, 1.2);
+        var (zoomedX, zoomedY) = f.Engine.PixelToView(two, at);
+        Assert.Equal(x.LowValue, zoomedX.LowValue, 1e-9);
+        Assert.Equal(y.LowValue, zoomedY.LowValue, 1e-9);
+    }
+
+    /// <summary>
     /// The view stage of the plan (design §4.8): a view that changes lays out, extracts, and records again, but does not
     /// learn; an axis over a view takes its range with no nice.
     /// </summary>
