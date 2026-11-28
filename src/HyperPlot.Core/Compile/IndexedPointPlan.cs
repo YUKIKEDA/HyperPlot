@@ -99,7 +99,7 @@ internal sealed class SpatialIndexing
     {
         if (!_switches.TryGetValue(layer, out var shared))
         {
-            shared = new DensitySwitch();
+            shared = new DensitySwitch(layer);
             _switches[layer] = shared;
         }
 
@@ -169,6 +169,9 @@ internal sealed class IndexedPointPlan : LayerPlan
     private int[] _visible = new int[64];
     private int _visibleCount;
 
+    // The bytes of the pages that hold a block in view, whole (design §5.5.2 "予算"): what drawing the part as raw points needs.
+    private long _needed;
+
     // The cells' records of this frame's view (design §5.5.2 "セルの表"), written by the same walk that finds the visible
     // cells, and copied into the list when the part records raw points.
     private ResidentCellRecord[] _records = new ResidentCellRecord[64];
@@ -221,6 +224,13 @@ internal sealed class IndexedPointPlan : LayerPlan
 
     /// <summary>Gets the upper count of the view the scan of this frame found, on a full snapshot; 0 otherwise.</summary>
     internal long ScannedCount => _scanCount;
+
+    /// <summary>
+    /// Gets the bytes the part needs to draw raw points in the view the scan of this frame found (design §5.5.2 "予算"): the
+    /// whole contents of each page that holds a block in view, counted from the cells the recording draws, on a full
+    /// snapshot; 0 otherwise, and for a <see cref="PointDraw.Density"/> layer.
+    /// </summary>
+    internal long NeededBytes => _needed;
 
     /// <summary>
     /// Gets the largest bin the scan of this frame found (design §5.5.2 "最大のビン"): the top of the part's pieces once the
@@ -776,7 +786,8 @@ internal sealed class IndexedPointPlan : LayerPlan
     internal override void Scan(RecordContext context)
     {
         var point = (PointLayerSpec)Spec;
-        (_scanFrame, _scanFull, _scanCount, _largestBin, _estimate) = (context.Images.Frame, false, 0, 0, 0);
+        (_scanFrame, _scanFull, _scanCount, _largestBin, _estimate, _needed) = (context.Images.Frame, false, 0, 0, 0, 0);
+        _switch.Enter(context, point);
         (_pieceCount, _top, _visibleCount) = (0, 0, 0);
         var snapshot = _snapshot ?? _coarse;
         if (snapshot is null)
@@ -811,6 +822,7 @@ internal sealed class IndexedPointPlan : LayerPlan
         {
             var binArea = DensityMath.BinArea(Math.ScaleB(rangeX, -_tileLevel), Math.ScaleB(rangeY, -_tileLevel), x.PerUnit, y.PerUnit);
             ScanCells(snapshot.ResidentCells, x, y, point.Size * context.Scale, binArea);
+            _needed = NeededOf(snapshot, snapshot.ResidentCells, _visible.AsSpan(0, _visibleCount));
         }
 
         _largestBin =
@@ -861,6 +873,34 @@ internal sealed class IndexedPointPlan : LayerPlan
         }
 
         (_visibleCount, _estimate) = (count, estimate);
+    }
+
+    /// <summary>
+    /// Returns the bytes of the pages that hold a block of the cells the recording draws (design §5.5.2 "予算"): each page's
+    /// whole contents, 12 bytes a point, once, as the residency cache holds pages whole. The cells come in the copy's order,
+    /// so their pages do too.
+    /// </summary>
+    internal static long NeededOf(SpatialSnapshot snapshot, ReadOnlySpan<ResidentCell> cells, ReadOnlySpan<int> visible)
+    {
+        var (bytes, counted) = (0L, -1L);
+        foreach (var c in visible)
+        {
+            ref readonly var cell = ref cells[c];
+            if (cell.Count <= 0)
+            {
+                continue;
+            }
+
+            var last = (cell.First + cell.Count - 1) / PointPages.PagePoints;
+            for (var page = Math.Max(counted + 1, cell.First / PointPages.PagePoints); page <= last; page++)
+            {
+                bytes += (long)PointPages.PointsOf(snapshot, (int)page) * PointPages.PointBytes;
+            }
+
+            counted = Math.Max(counted, last);
+        }
+
+        return bytes;
     }
 
     /// <summary>

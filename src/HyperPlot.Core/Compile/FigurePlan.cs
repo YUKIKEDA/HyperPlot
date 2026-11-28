@@ -17,6 +17,9 @@ internal sealed class FigurePlan : IDisposable
     private readonly ResidencyCache _images;
     private readonly bool _ownImages;
     private readonly PyramidStore _store = new();
+
+    // The budget of the point layers of every plot (design §5.5.2 "予算"): chosen once a frame, before any plot records.
+    private readonly PointBudget _budget = new();
     private readonly RenderList _list = new();
     private float _scale;
     private int _width;
@@ -128,6 +131,14 @@ internal sealed class FigurePlan : IDisposable
             Extractions++;
         }
 
+        // Every plot that records scans first, and the budget chooses the point layers' drawings over all of them (design
+        // §5.5.2 "予算": the sum counts the layers of the figure's other plots).
+        for (var i = 0; i < count; i++)
+        {
+            _plans[i].ScanPending();
+        }
+
+        _budget.Decide(_images);
         for (var i = 0; i < count; i++)
         {
             _plans[i].Finish();
@@ -289,7 +300,10 @@ internal sealed class FigurePlan : IDisposable
         {
             if (i < count)
             {
-                plans[i] = i < _plans.Length ? _plans[i] : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store) { Waits = Waits };
+                plans[i] =
+                    i < _plans.Length
+                        ? _plans[i]
+                        : new PlotPlan(_pool, _width, _height, _text, _scale, _images, _store, _budget) { Waits = Waits, Ordinal = i };
             }
             else
             {

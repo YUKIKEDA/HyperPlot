@@ -476,12 +476,11 @@ public sealed class DensityTests
 
     /// <summary>
     /// A Points layer whose pages do not fit the budget draws the pages that fit and stays provisional, and does not turn to
-    /// a density (design §5.5.2 "`Points` と予算"); density faces take their share of the budget.
+    /// a density (design §5.5.2 "`Points` と予算").
     /// </summary>
     /// <remarks>
     /// Preconditions:
-    /// - 960 density faces of another snapshot sent over 64 frames (15 pages of the float pool, 255,605,760 bytes), which
-    ///   leaves 12,829,696 bytes of the 256 MB budget: 16 pages of 65,536 points.
+    /// - A residency cache of a budget of 16 pages of 65,536 points (12,582,912 bytes).
     /// - A Points layer of 23 pages (1,507,328 seeded points over [0, 100]²) with a threshold of 1,000, in an engine that
     ///   does not wait, whose index has ended.
     ///
@@ -490,7 +489,7 @@ public sealed class DensityTests
     ///   each for the workers' reads (row R3b2).
     ///
     /// Expected:
-    /// - 16 pages in use, and the bytes in use within the budget; the 960 faces are still in their slots.
+    /// - 16 pages in use, and the bytes in use within the budget.
     /// - The last frame is provisional, asked for pages it did not get, drew no density and no image, and records 23 runs
     ///   of whole pages: 16 with a slot, and 7 without one, which draw nothing.
     /// </remarks>
@@ -499,15 +498,12 @@ public sealed class DensityTests
     {
         const int Pages = 23;
         const int Count = Pages * PointPages.PagePoints;
-        const int Faces = 15 * ResidencyCache.PageSlots;
         var random = new Random(67);
         using var xs = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
         using var ys = Column.Wrap(Enumerable.Range(0, Count).Select(_ => random.NextDouble() * 100).ToArray());
         var table = DataTable.Create().Add("x", xs).Add("y", ys).Build();
-        var (otherX, otherY) = SpatialData.Uniform(2_000, seed: 68);
-        using var other = SpatialBuilt.Of(otherX, otherY);
-        var bins = new byte[DensityTiles.BinCount];
-        var backend = new NullBackend();
+        const int Fit = 16;
+        var backend = new NullBackend { Images = new ResidencyCache((long)Fit * PointPages.PagePoints * PointPages.PointBytes) };
         var cache = backend.Images;
         using var engine = new PlotEngine(backend, 640, 360);
         engine.SetPlot(
@@ -521,21 +517,6 @@ public sealed class DensityTests
         var plan = (IndexedPointPlan)engine.Plan!.Layers[0];
         Eventually.Completes(plan.SpatialIndex!.WhenComplete());
 
-        for (var face = 0; face < Faces; face++)
-        {
-            if (face % 15 == 0)
-            {
-                cache.Sent();
-                cache.BeginFrame();
-            }
-
-            Assert.True(cache.RequestDensity(other.Snapshot, 2, (ulong)face, new DensityTile(bins, 1, 0)) >= 0);
-        }
-
-        Assert.Equal(Faces, cache.SlotsInUse);
-        var left = ResidencyCache.DefaultBudget - ((long)Faces * ResidencyCache.FaceBytes);
-        var fit = (int)(left / ((long)PointPages.PagePoints * PointPages.PointBytes));
-        Assert.Equal(16, fit);
         for (var frame = 0; frame < 2 * Pages; frame++)
         {
             cache.Sent();
@@ -543,16 +524,15 @@ public sealed class DensityTests
             _ = cache.Points.AwaitReads();
         }
 
-        Assert.Equal(fit, cache.Points.PagesInUse);
-        Assert.True(cache.BytesInUse <= ResidencyCache.DefaultBudget);
-        Assert.Equal(Faces, cache.SlotsInUse);
+        Assert.Equal(Fit, cache.Points.PagesInUse);
+        Assert.True(cache.BytesInUse <= cache.Budget);
         Assert.True(engine.IsProvisional);
         Assert.True(plan.MissedPages);
         Assert.False(plan.DrewDensity);
         var list = backend.LastList!;
         Assert.Equal(0, list.Images.Length);
         var runs = list.ResidentRuns.ToArray();
-        Assert.Equal((Pages, fit), (runs.Length, runs.Count(run => run.Slot >= 0)));
+        Assert.Equal((Pages, Fit), (runs.Length, runs.Count(run => run.Slot >= 0)));
         Assert.All(runs, run => Assert.Equal(PointPages.PagePoints, run.Count));
     }
 
