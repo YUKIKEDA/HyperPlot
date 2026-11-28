@@ -893,6 +893,40 @@ public sealed class HyperPlotViewTests(WpfThread wpf)
     }
 
     /// <summary>
+    /// The view's time scale is the engine's (design §5.5.2 "ほかの機械", §7.2): a set reaches the engine, a value that is not
+    /// finite or not above 0 throws as the engine's does, and a disposed view's set does nothing.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A view of its dispatcher's backend, not in a window.
+    ///
+    /// Steps:
+    /// - Read the scale; set 2; set 0, −1, NaN, +∞, and −∞ in turn; dispose the view and set NaN.
+    ///
+    /// Expected:
+    /// - 1 at first; 2 on the view and the engine; each refused value throws <see cref="ArgumentOutOfRangeException"/> and
+    ///   leaves 2; NaN on the disposed view throws nothing and leaves 2.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_IsTheEngines() =>
+        wpf.Run(() =>
+        {
+            using var view = new HyperPlotView();
+            Assert.Equal(1, view.GpuTimeScale);
+            view.GpuTimeScale = 2;
+            Assert.Equal((2.0, 2.0), (view.GpuTimeScale, view.Engine.GpuTimeScale));
+            foreach (var refused in new[] { 0, -1, double.NaN, double.PositiveInfinity, double.NegativeInfinity })
+            {
+                _ = Assert.Throws<ArgumentOutOfRangeException>(() => view.GpuTimeScale = refused);
+                Assert.Equal(2, view.GpuTimeScale);
+            }
+
+            view.Dispose();
+            view.GpuTimeScale = double.NaN;
+            Assert.Equal(2, view.GpuTimeScale);
+        });
+
+    /// <summary>
     /// A disposed view that is still in its window takes no input, size, or spec: each does nothing and throws nothing
     /// (Issue #601, design §7.2). Before the fix, each one that reached the engine threw <see cref="ObjectDisposedException"/>
     /// out of WPF's input, and the others marked the event as the view's.

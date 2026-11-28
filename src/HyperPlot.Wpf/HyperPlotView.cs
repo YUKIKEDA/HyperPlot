@@ -115,6 +115,19 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     /// <summary>Gets the engine that draws and takes the input: its views, bindings, constraints, options, and notices.</summary>
     public PlotEngine Engine { get; }
 
+    /// <summary>
+    /// Gets or sets how much longer this machine's GPU takes to draw raw points than the reference machine's (design §5.5.2
+    /// "ほかの機械", §7.2): the engine's <see cref="PlotEngine.GpuTimeScale"/>, 1 by default. Another value draws the next
+    /// frame with the new scale. After <see cref="Dispose"/>, a set does nothing and checks nothing, as a new size or spec
+    /// does.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is not finite or not above 0, on a view not disposed.</exception>
+    public double GpuTimeScale
+    {
+        get => Engine.GpuTimeScale;
+        set => SetGpuTimeScale(value);
+    }
+
     /// <summary>Gets the backend the view draws with.</summary>
     internal D3D11Backend Backend => _backend;
 
@@ -638,6 +651,14 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
         IsVisibleChanged += (_, _) => OnVisibleChanged();
         Unloaded += (_, _) => Detach();
         return engine;
+    }
+
+    private void SetGpuTimeScale(double value)
+    {
+        if (!_disposed)
+        {
+            Engine.GpuTimeScale = value;
+        }
     }
 
     private void OnSpecChanged(SpecNode? spec)

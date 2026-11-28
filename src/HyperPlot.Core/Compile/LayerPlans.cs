@@ -1776,6 +1776,12 @@ internal sealed class RecordContext(PlotGuides guides, M4Batch batch, RenderList
     /// <summary>Gets or sets the number of the plot in its figure, 0 for a plot alone (design §5.5.2 "替える順").</summary>
     public int Plot { get; set; }
 
+    /// <summary>
+    /// Gets or sets the machine's scale of the predicted GPU time (design §5.5.2 "ほかの機械"): 1 for the reference machine,
+    /// finite and above 0. An <see cref="PointDraw.Auto"/> layer compares its predicted times times this scale.
+    /// </summary>
+    public double GpuTimeScale { get; set; } = 1;
+
     /// <summary>Gets or sets the spec's theme, set before each recording (row G8): a text layer's font and locale.</summary>
     public Theme Theme { get; set; } = Theme.Light;
 

@@ -657,6 +657,39 @@ public sealed class HoverTests
     }
 
     /// <summary>
+    /// A new GPU time scale draws the plot again, not the plot kept for the frames of the mouse alone (design §5.4, §5.5.2
+    /// "ほかの機械"): the layers choose their drawings by the new times.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The hover plot, its tool with the crosshair on, so that a hover frame keeps the plot under its overlay.
+    ///
+    /// Steps:
+    /// - Hover and draw; hover a pixel further and draw. Set the scale to 2 and draw.
+    ///
+    /// Expected:
+    /// - The second frame copies the kept plot and records nothing. After the scale, the frame records the plot once more.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_New_DrawsThePlotAgainOverTheKeptOne()
+    {
+        using var hover = HoverPlot.Make();
+        var (engine, backend, tool) = (hover.Engine, hover.Backend, hover.Tool);
+        var at = engine.ViewToPixel(Panel, ViewRange.FromValues(41.0, 41.0), ViewRange.FromValues(10.25, 10.25));
+        tool.Crosshair = HoverCrosshair.Both;
+        engine.OnPointer(Move(at));
+        engine.RenderFrame();
+        engine.OnPointer(Move(at + new Vector2(1, 0)));
+        var drawn = engine.Plan!.Recordings;
+        engine.RenderFrame();
+        Assert.Equal((1, drawn), (backend.CopiesInFrame, engine.Plan.Recordings));
+
+        engine.GpuTimeScale = 2;
+        engine.RenderFrame();
+        Assert.Equal(drawn + 1, engine.Plan.Recordings);
+    }
+
+    /// <summary>
     /// Each marker takes its series' color (row I2b): a line's own color, an area's fill made opaque, and each category's
     /// color of a line split by a category.
     /// </summary>

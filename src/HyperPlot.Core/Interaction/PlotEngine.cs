@@ -199,6 +199,37 @@ public sealed partial class PlotEngine : IDisposable
     /// <summary>Gets the scale from device-independent to device pixels.</summary>
     public float Scale => _renderer.Scale;
 
+    /// <summary>
+    /// Gets or sets how much longer this machine's GPU takes to draw raw points than the reference machine's (design §5.5.2
+    /// "ほかの機械", §7.1), as <see cref="HeadlessRenderer.GpuTimeScale"/>: 1, the default, for the reference machine (an
+    /// RTX 3060 Ti); 2.0 for a GPU half as fast. A point layer drawn with <see cref="PointDraw.Auto"/> multiplies its
+    /// predicted GPU time by it before comparing the time with the switch's threshold and the band of the way back. An
+    /// application may set it while the engine runs, from the frame times it sees; another value asks for a frame, which
+    /// records the plot again and judges each layer's remembered drawing by the new times and band. The same value does
+    /// nothing.
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">The value is not finite or not above 0.</exception>
+    /// <exception cref="InvalidOperationException">The value is set from another thread than the engine's.</exception>
+    /// <exception cref="ObjectDisposedException">The value is set after the engine was disposed.</exception>
+    public double GpuTimeScale
+    {
+        get;
+        set
+        {
+            CheckThread();
+            if (value == field)
+            {
+                return;
+            }
+
+            // The renderer checks the value first: a refused one changes nothing.
+            _renderer.GpuTimeScale = value;
+            field = value;
+            _kept = false;
+            RequestFrame();
+        }
+    } = 1;
+
     internal bool CanGoBack => Active() is { } state && state.Position > 0;
 
     internal bool CanGoForward => Active() is { } state && state.Position < state.Count - 1;

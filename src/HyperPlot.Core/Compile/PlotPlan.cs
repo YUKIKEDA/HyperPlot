@@ -90,6 +90,9 @@ internal sealed partial class PlotPlan : IDisposable
 
     // A render that waits recorded pages not on the GPU yet: the next one records again (design §5.5.2 "ヘッドレス").
     private bool _recordAgain;
+
+    // The machine's time scale changed since the last recording, which then records again (design §5.5.2 "ほかの機械").
+    private bool _timeScaleChanged;
     private PanelDomains[] _views = [];
     private PanelDomains[] _full = [];
     private bool _viewChanged;
@@ -199,6 +202,23 @@ internal sealed partial class PlotPlan : IDisposable
 
     /// <summary>Gets the budget of the point layers the plan's recordings choose by (design §5.5.2 "予算"). Tests only.</summary>
     internal PointBudget Budget => _context.Budget;
+
+    /// <summary>
+    /// Gets or sets the machine's scale of the predicted GPU time the <see cref="PointDraw.Auto"/> layers compare (design
+    /// §5.5.2 "ほかの機械"), checked by the caller. Another value makes the next Render record again, even with nothing else
+    /// changed, and each layer judges the drawing it remembers by the new times and band.
+    /// </summary>
+    internal double GpuTimeScale
+    {
+        get;
+        set
+        {
+            if (value != field)
+            {
+                (field, _context.GpuTimeScale, _timeScaleChanged) = (value, value, true);
+            }
+        }
+    } = 1;
 
     /// <summary>
     /// Gets the time the last Render's M4 extraction of every series took, in ticks of <see cref="TimeProvider.System"/>, or
@@ -961,10 +981,11 @@ internal sealed partial class PlotPlan : IDisposable
                 SkipSeries();
             }
         }
-        else if ((_pendingAnnotations || _selectionChanged || _recordAgain) && !_guides.Empty)
+        else if ((_pendingAnnotations || _selectionChanged || _recordAgain || _timeScaleChanged) && !_guides.Empty)
         {
             // A render that waits records again while pages the workers read are missing (design §5.5.2 "ヘッドレス").
-            // A new selection is recorded again alone, as annotations are: the point layers highlight it (row R3c).
+            // A new selection is recorded again alone, as annotations are: the point layers highlight it (row R3c). So is a
+            // new time scale: the Auto layers choose their drawings again (design §5.5.2 "ほかの機械").
             _pendingRecord = true;
         }
         else
@@ -2703,7 +2724,7 @@ internal sealed partial class PlotPlan : IDisposable
     private void Record(PlotSpec spec, bool flipped)
     {
         _list.Clear();
-        _selectionChanged = false;
+        (_selectionChanged, _timeScaleChanged) = (false, false);
         _context.Theme = spec.Theme;
         if (_ownImages && !_inFigure)
         {
