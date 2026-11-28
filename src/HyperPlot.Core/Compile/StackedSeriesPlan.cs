@@ -10,7 +10,7 @@ namespace HyperPlot;
 /// </summary>
 internal sealed class StackedSeriesPlan : LayerPlan
 {
-    /// <summary>The series a group of the stack is numbered by in a hit test: an area's one, or a band's low and high edges.</summary>
+    /// <summary>The series a group of the stack is numbered by in a hit test: its positive side's and its negative side's.</summary>
     private const int GroupWidth = 2;
 
     private readonly List<Part> _parts = [];
@@ -89,7 +89,7 @@ internal sealed class StackedSeriesPlan : LayerPlan
                 var side = up ? _stack.Positive : _stack.Negative;
                 var (outer, inner) = (side[k]!, side[k + 1]);
                 var make = Piece(Ref(data, _stack.X), Ref(data, outer), inner is null ? null : Ref(data, inner), up);
-                _parts.Add(new Part(categories[k], MakePlan(make(spec), inner is null ? null : Ref(data, inner), up, build), make, up));
+                _parts.Add(new Part(categories[k], MakePlan(make(spec), inner is null ? null : Ref(data, inner), up, build), make, up, outer, inner));
             }
         }
 
@@ -186,24 +186,30 @@ internal sealed class StackedSeriesPlan : LayerPlan
 
     /// <summary>
     /// Answers for each group's part, numbered by its group (rows I2a, I2c): the rows are the stack's table's, of each group's
-    /// x joined (Issue #341 Decision 3). A group's bars answer for their positive piece as series 2 · group and their negative
-    /// one as 2 · group + 1. The outline lines repeat the parts and do not answer.
+    /// x joined (Issue #341 Decision 3). A group answers for its positive piece as series 2 · group and its negative one as
+    /// 2 · group + 1, a bar from its inner end to its outer one and an area or a band by its outer edge alone (Issue #361).
+    /// The outline lines repeat the parts and do not answer.
     /// </summary>
     internal override void Hit(ref HitScan scan)
     {
         var (base0, width, derived) = (scan.SeriesBase, scan.SeriesWidth, scan.Derived);
         scan.Derived = true;
-        for (var k = 0; k < _parts.Count; k++)
+        foreach (var part in _parts)
         {
-            if (_parts[k].Plan is LinePlan)
+            if (part.Plan is LinePlan)
             {
                 continue;
             }
 
-            // Every group is numbered 2 wide (PR #352's review): the lowest group is an area of one series and the ones above
-            // bands of two, and numbering each by its own width made the band's high edge and the next group's area meet.
-            (scan.SeriesBase, scan.SeriesWidth) = (Math.Max(_parts[k].Category, 0), GroupWidth);
-            _parts[k].Plan.Hit(ref scan);
+            (scan.SeriesBase, scan.SeriesWidth) = (Math.Max(part.Category, 0), GroupWidth);
+            if (part.Plan is FloatingBarPlan)
+            {
+                part.Plan.Hit(ref scan);
+                continue;
+            }
+
+            // A band's inner edge is the outer edge of the group next to 0, which answers for it (Issue #361).
+            scan.Side(part.Up ? 0 : 1, _stack.X, part.Outer!, part.Inner, RowRange.All);
         }
 
         (scan.SeriesBase, scan.SeriesWidth, scan.Derived) = (base0, width, derived);
@@ -373,18 +379,25 @@ internal sealed class StackedSeriesPlan : LayerPlan
         return (series, categories, gathers);
     }
 
-    /// <summary>One piece: its category (−1 for the layer's own color), its plan, and how its node is made from the layer's.</summary>
-    /// <summary>A group's piece: its category (−1 for a layer that is not split), its plan, how it is made, and its side.</summary>
-    private readonly record struct Part(int Category, LayerPlan Plan, Func<LayerSpec, LayerSpec> Make, bool Up = true);
+    /// <summary>
+    /// A group's piece: its category (−1 for a layer that is not split), its plan, how it is made, its side, and its outer and
+    /// inner edges: both null for an outline, the inner one null for the group next to 0.
+    /// </summary>
+    private readonly record struct Part(
+        int Category,
+        LayerPlan Plan,
+        Func<LayerSpec, LayerSpec> Make,
+        bool Up = true,
+        Column<double>? Outer = null,
+        Column<double>? Inner = null
+    );
 
     /// <summary>
-    /// Returns whether a part answers for a series (rows I2b, I2c): its group's, and for a bar its side's, the positive piece
+    /// Returns whether a part answers for a series (rows I2b, I2c, Issue #361): its group's side's, the positive piece
     /// 2 · group and the negative one 2 · group + 1.
     /// </summary>
     private static bool Answers(in Part part, int series) =>
-        part.Plan is not LinePlan
-        && Math.Max(part.Category, 0) == series / GroupWidth
-        && (part.Plan is not FloatingBarPlan || part.Up == (series % GroupWidth == 0));
+        part.Plan is not LinePlan && Math.Max(part.Category, 0) == series / GroupWidth && part.Up == (series % GroupWidth == 0);
 }
 
 /// <summary>

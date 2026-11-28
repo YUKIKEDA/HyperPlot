@@ -561,6 +561,43 @@ public sealed class PositionTests
     }
 
     /// <summary>
+    /// A group of an area stack is 0 at its own crossing of 0, not the rounding off its interpolation gives, so that its sides
+    /// there have no height (design §6.3, Issue #361).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One group at x 40 and 41 of 2 and −0.01: interpolated at the crossing, it is −6.66 × 10^-15.
+    /// - One group at the integer x 0 and 10 of 3 and −1: it crosses at 7.5, rounded to 8.
+    ///
+    /// Steps:
+    /// - Stack it.
+    ///
+    /// Expected:
+    /// - One point between 40 and 41, where the positive and the negative side are both exactly 0.
+    /// - The integer x: one point between, at 8, of the value there, −0.2.
+    /// </remarks>
+    [Fact]
+    public void AreaStack_IsZeroAtACrossing()
+    {
+        using var x = Column.Wrap(new double[] { 40, 41 });
+        using var y = Column.Wrap(new double[] { 2, -0.01 });
+        using var stack = SeriesStack.Build([new StackSeries(x, y, 0, 2)], area: true, fill: false, integer: false, origin: 0);
+        var crossing = Assert.Single(Enumerable.Range(0, (int)stack.Length), i => stack.X.DifferenceAt(i, 0) is > 40 and < 41);
+        Assert.Equal((0.0, 0.0), (stack.Positive[0]!.DifferenceAt(crossing, 0), stack.Negative[0]!.DifferenceAt(crossing, 0)));
+
+        // An integer x rounds the crossing to a whole x, where the group is not 0: its value there stays.
+        using var wholeX = Column.Wrap(new long[] { 0, 10 });
+        using var wholeY = Column.Wrap(new double[] { 3, -1 });
+        using var whole = SeriesStack.Build([new StackSeries(wholeX, wholeY, 0, 2)], area: true, fill: false, integer: true, origin: 0);
+        var at = Assert.Single(Enumerable.Range(0, (int)whole.Length), i => whole.X.DifferenceAt(i, 0) is > 0 and < 10);
+        Assert.Equal(
+            (8.0, -0.2),
+            (whole.X.DifferenceAt(at, 0), whole.Negative[0]!.DifferenceAt(at, 0)),
+            (p, q) => p.Item1 == q.Item1 && Math.Abs(p.Item2 - q.Item2) < 1e-12
+        );
+    }
+
+    /// <summary>
     /// An area stack is each group interpolated along its own x and summed (design §4.1, §5.5.3, ggplot2's stat_align): 0
     /// outside a group's range, a vertical edge where it starts, ends, or steps, and a point where it crosses 0, so that the
     /// positive and negative pieces meet on 0.

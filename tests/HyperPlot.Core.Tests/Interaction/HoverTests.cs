@@ -749,7 +749,7 @@ public sealed class HoverTests
 
     /// <summary>
     /// A stacked layer's markers take each group's color, as its parts are drawn, and its groups' series are numbered 2 a
-    /// group (design §6.3, row I2b, the review of PR #352).
+    /// group (design §6.3, row I2b, the review of PR #352, Issue #361).
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -760,8 +760,8 @@ public sealed class HoverTests
     /// - Hover at the middle of the panel in X mode; draw.
     ///
     /// Expected:
-    /// - Three hits of three series: the lowest group's area and the upper group's band's two edges, numbered 2 a group so
-    ///   that no two meet. Each disc is the palette's color of its hit's group (series / 2), made opaque.
+    /// - Two hits, series 0 and 2: each group's positive side by its outer edge, numbered 2 a group so that no two meet. Each
+    ///   disc is the palette's color of its hit's group (series / 2), made opaque.
     /// </remarks>
     [Fact]
     public void Markers_TakeEachStackedGroupsColor()
@@ -786,13 +786,11 @@ public sealed class HoverTests
         engine.OnPointer(Move(new Vector2(guide.Left + (guide.Width / 2f), guide.Top + (guide.Height / 2f))));
         engine.RenderFrame();
 
-        // The lowest group answers its area (2 · group), the one above its band's two edges (2 · group and 2 · group + 1).
+        // Each group answers its positive side's outer edge (2 · group); a band's inner edge is the next group's outer one.
         var hits = engine.Hover.ToArray();
-        Assert.Equal(3, hits.Length);
-        Assert.Equal(3, hits.Select(h => h.Series).Distinct().Count());
-        Assert.Equal(2, hits.Select(h => h.Series / 2).Distinct().Count());
+        Assert.Equal([0, 2], hits.Select(h => h.Series).Order());
         var discs = backend.LastList!.SectorCalls.ToArray();
-        Assert.Equal(6, discs.Length);
+        Assert.Equal(4, discs.Length);
         for (var i = 0; i < hits.Length; i++)
         {
             Assert.Equal(Premultiplied(Theme.Light.Palette.Series(hits[i].Series / 2) with { A = 255 }), discs[(2 * i) + 1].Color);

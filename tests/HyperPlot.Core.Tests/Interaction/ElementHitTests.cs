@@ -311,6 +311,193 @@ public sealed class ElementHitTests
     }
 
     /// <summary>
+    /// A numeric stack of areas whose group has a positive and a negative side answers for each by its outer edge with its own
+    /// number, 2 · group and 2 · group + 1, in the hit test and the statistics; stacked and filled alike (Issue #361).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 100 x values, 2 groups "a" and "b": "a" is 1 everywhere, "b" is 2 at even x and −2 at odd x; areas stacked, then
+    ///   filled.
+    ///
+    /// Steps:
+    /// - Hit test in X mode at x = 40 and x = 41; sum the statistics over x from 10 to 60.
+    ///
+    /// Expected:
+    /// - Stacked, x = 40: series 0 (a's positive side, y 3) and 2 (b's, y 2). x = 41: series 0 (y 1) and 3 (b's negative
+    ///   side, y −2). Filled: the same series, of y 1 and 2 / 3, then 1 and −1. Every hit is marked derived.
+    /// - The statistics: series 0, 2, and 3, once each.
+    /// </remarks>
+    [Fact]
+    public void StackedAreas_KeepEachSidesNumber()
+    {
+        var table = SignedGroups(-2);
+        var hits = new SeriesHit[8];
+        foreach (
+            var (position, even, odd) in new (PositionSpec, double[], double[])[]
+            {
+                (Position.Stack, [3, 2], [1, -2]),
+                (Position.Fill, [1, 2 / 3.0], [1, -1]),
+            }
+        )
+        {
+            using var engine = Drawn(Stacked(table, position));
+            var atEven = hits[..engine.HitTest(Pixel(engine, 40, 0.5), 0, HitMode.X, hits)].OrderBy(h => h.Series).ToArray();
+            Assert.Equal([0, 2], atEven.Select(h => h.Series));
+            Assert.Equal(even, atEven.Select(h => h.Y), (p, q) => Math.Abs(p - q) < 1e-12);
+            var atOdd = hits[..engine.HitTest(Pixel(engine, 41, 0.5), 0, HitMode.X, hits)].OrderBy(h => h.Series).ToArray();
+            Assert.Equal([0, 3], atOdd.Select(h => h.Series));
+            Assert.Equal(odd, atOdd.Select(h => h.Y), (p, q) => Math.Abs(p - q) < 1e-12);
+            Assert.All(atEven.Concat(atOdd), h => Assert.True(h.Derived));
+
+            var statistics = new SeriesStatistics[8];
+            var summed = statistics[..engine.Statistics(Panel, ViewRange.FromValues(10, 60), statistics)];
+            Assert.Equal([0, 2, 3], summed.Select(s => s.Series).Order());
+        }
+    }
+
+    /// <summary>
+    /// A side of a stacked area with no height at the row found does not answer, as a stacked bar of no height does not (design
+    /// §6.3, Issue #361): in X mode and in XY.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The groups of <see cref="StackedAreas_KeepEachSidesNumber"/>, stacked: at x = 40 "b"'s negative side, and at x = 41
+    ///   its positive one, lies on 0 with no height.
+    ///
+    /// Steps:
+    /// - Hit test in X mode at x = 40 and at x = 41; in XY with a radius of 4 pixels at (40, 0).
+    /// - With "a" of −1 at even x, so that it has a negative side, hit test in X mode at x = 41, where "a" is 1 and "b" −2:
+    ///   a's negative side lies on b's, at −2, with no height.
+    ///
+    /// Expected:
+    /// - X: no hit of series 3 at x = 40, none of series 2 at x = 41. XY: no hit (b's negative side is nearest there, on 0
+    ///   with no height; a's side and b's positive one lie farther than the radius). The second stack at x = 41: series 0
+    ///   (a's positive side) and 3 (b's negative side), not 1.
+    /// </remarks>
+    [Fact]
+    public void StackedAreas_ASideOfNoHeightAnswersNothing()
+    {
+        using var engine = Drawn(Stacked(SignedGroups(-2), Position.Stack));
+        var hits = new SeriesHit[8];
+        Assert.DoesNotContain(3, hits[..engine.HitTest(Pixel(engine, 40, 0.5), 0, HitMode.X, hits)].Select(h => h.Series));
+        Assert.DoesNotContain(2, hits[..engine.HitTest(Pixel(engine, 41, 0.5), 0, HitMode.X, hits)].Select(h => h.Series));
+        Assert.Equal(0, engine.HitTest(Pixel(engine, 40, 0), 4, HitMode.XY, hits));
+
+        // The outer group's side lies on the inner group's, away from 0: a's negative side at x = 41.
+        using var outer = Drawn(Stacked(SignedGroups(-2, aEven: -1), Position.Stack));
+        Assert.Equal([0, 3], hits[..outer.HitTest(Pixel(outer, 41, 0.5), 0, HitMode.X, hits)].Select(h => h.Series).Order());
+    }
+
+    /// <summary>
+    /// A stack of one sign answers once a group, by its side's outer edge: 2 · group when positive, 2 · group + 1 when
+    /// negative, in the hit test and the statistics (design §6.3, Issue #361).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 100 x values, 2 groups "a" and "b" of 1 everywhere; then of −1 everywhere; areas stacked.
+    ///
+    /// Steps:
+    /// - Hit test in X mode at x = 40; sum the statistics over x from 10 to 60.
+    ///
+    /// Expected:
+    /// - Positive: series 0 (y 2) and 2 (y 1); negative: series 1 (y −2) and 3 (y −1). The statistics have the same series.
+    /// </remarks>
+    [Fact]
+    public void StackedAreas_OfOneSign_AnswerOnceAGroup()
+    {
+        foreach (var (sign, series) in new[] { (1.0, new[] { 0, 2 }), (-1.0, [1, 3]) })
+        {
+            using var x = Column.Wrap(Enumerable.Range(0, 200).Select(i => (double)(i / 2)).ToArray());
+            using var y = Column.Wrap(Enumerable.Repeat(sign, 200).ToArray());
+            var groups = Column.Categorical([.. Enumerable.Range(0, 200).Select(i => i % 2 == 0 ? "a" : "b")]);
+            using var engine = Drawn(Stacked(DataTable.Create().Add("x", x).Add("y", y).Add("g", groups).Build(), Position.Stack));
+            var hits = new SeriesHit[8];
+            var found = hits[..engine.HitTest(Pixel(engine, 40, sign / 2), 0, HitMode.X, hits)].OrderBy(h => h.Series).ToArray();
+            Assert.Equal(series, found.Select(h => h.Series));
+            Assert.Equal([2 * sign, sign], found.Select(h => h.Y));
+            var statistics = new SeriesStatistics[8];
+            Assert.Equal(series, statistics[..engine.Statistics(Panel, ViewRange.FromValues(10, 60), statistics)].Select(s => s.Series).Order());
+        }
+    }
+
+    /// <summary>
+    /// A stat's areas stacked by group (a histogram colored by a category) answer as a stack of areas does: each group by its
+    /// outer edge, 2 · group (design §6.3, Issue #361).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 2,000 rows of x = row % 100, a category of 2 values alternating row by row; an area of the bins of x, colored by
+    ///   the category (stacked by default).
+    ///
+    /// Steps:
+    /// - Hit test in X mode at the panel's middle.
+    ///
+    /// Expected:
+    /// - Two hits, series 0 and 2, marked derived; the outer group's y is greater than the inner one's.
+    /// </remarks>
+    [Fact]
+    public void StackedStatAreas_AnswerByEachGroupsOuterEdge()
+    {
+        using var x = Column.Wrap(Enumerable.Range(0, 2000).Select(i => (double)(i % 100)).ToArray());
+        var groups = Column.Categorical([.. Enumerable.Range(0, 2000).Select(i => i % 2 == 0 ? "a" : "b")]);
+        var table = DataTable.Create().Add("x", x).Add("g", groups).Build();
+        using var engine = Drawn(
+            new PlotSpec
+            {
+                Data = table,
+                Layers =
+                [
+                    new AreaLayerSpec
+                    {
+                        X = table.Col<double>("x"),
+                        Stat = Stat.Bin(),
+                        ColorBy = table.Cat("g").ToColumnRef(),
+                    },
+                ],
+            }
+        );
+        var hits = new SeriesHit[8];
+        var found = hits[..engine.HitTest(Inside(engine, 0.5, 0.5), 0, HitMode.X, hits)].OrderBy(h => h.Series).ToArray();
+        Assert.Equal([0, 2], found.Select(h => h.Series));
+        Assert.All(found, h => Assert.True(h.Derived));
+        Assert.True(found[0].Y > found[1].Y);
+    }
+
+    /// <summary>
+    /// A shift-click on a stacked area's group with two signs selects the side drawn there: the selection's points are told
+    /// apart by layer, series, and row, and the side of no height at that row no longer stands in for it (design §6.4,
+    /// Issue #361).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - The groups of <see cref="StackedAreas_KeepEachSidesNumber"/> with "b" of −0.05 at odd x; stacked; the y domain [−1, 4], so that −0.05 lies 3 pixels below 0.
+    ///
+    /// Steps:
+    /// - Shift-click at (41, −0.05), within the click's radius of 8 pixels of 0.
+    ///
+    /// Expected:
+    /// - A selection of one point: series 3 (b's negative side), its y −0.05. Before Issue #361, b's positive side of no height at that row took
+    ///   the same series and row first, and the negative side was dropped.
+    /// </remarks>
+    [Fact]
+    public void StackedAreas_PointsClick_KeepsTheSideDrawn()
+    {
+        using var engine = Drawn(Stacked(SignedGroups(-0.05), Position.Stack) with { ScaleY = Scale.Linear().WithDomain(-1, 4) });
+        var at = Pixel(engine, 41, -0.05);
+        var time = 10 * System.Diagnostics.Stopwatch.Frequency;
+        engine.OnPointer(
+            new PointerEvent(PointerEventKind.Down, at, PointerButtons.Left, PointerButtons.Left, ModifierKeys.Shift, PointerKind.Mouse, time)
+        );
+        engine.OnPointer(
+            new PointerEvent(PointerEventKind.Up, at, PointerButtons.Left, PointerButtons.None, ModifierKeys.Shift, PointerKind.Mouse, time)
+        );
+        var selection = Assert.IsType<Selection2D>(engine.Selection(0));
+        Assert.Equal(SelectionKind.Points, selection.Kind);
+        var point = Assert.Single(selection.Points.ToArray());
+        Assert.Equal((3, -0.05), (point.Series, point.Y));
+    }
+
+    /// <summary>
     /// Dodged bars answer with the row of the plot's table and its data x; the hover's marker sits on the dodged bar's middle
     /// (Issue #355 Decision 5).
     /// </summary>
@@ -732,6 +919,31 @@ public sealed class ElementHitTests
             );
         }
     }
+
+    /// <summary>
+    /// Returns 100 x values of 2 groups: "a" of <paramref name="aEven"/> at even x and 1 at odd x, "b" of 2 at even x and
+    /// <paramref name="odd"/> at odd x.
+    /// </summary>
+    private static DataTable SignedGroups(double odd, double aEven = 1)
+    {
+        var x = Column.Wrap(Enumerable.Range(0, 200).Select(i => (double)(i / 2)).ToArray());
+        var y = Column.Wrap(
+            Enumerable
+                .Range(0, 200)
+                .Select(i =>
+                    i % 2 == 0 ? ((i / 2) % 2 == 0 ? aEven : 1)
+                    : (i / 2) % 2 == 0 ? 2
+                    : odd
+                )
+                .ToArray()
+        );
+        var groups = Column.Categorical([.. Enumerable.Range(0, 200).Select(i => i % 2 == 0 ? "a" : "b")]);
+        return DataTable.Create().Add("x", x).Add("y", y).Add("g", groups).Build();
+    }
+
+    /// <summary>Returns a plot of a table's y as areas over its x, colored by its "g" and placed as given.</summary>
+    private static PlotSpec Stacked(DataTable table, PositionSpec position) =>
+        Plot.Create(table).Area(table.Col<double>("x"), table.Col<double>("y"), configure: a => a.ColorBy(table.Cat("g")).Position(position)).Build();
 
     private static PlotEngine Drawn(PlotSpec spec, NullBackend? backend = null)
     {
