@@ -232,7 +232,7 @@ public sealed class ScriptRecordingTests
 
         // Final from the first frame: without waiting, a rule is not drawn until the workers have its column's statistics
         // (row W1b1), and warm rounds that drew no rule left the growth of its buffers to the counted round (Issue #634).
-        Assert.False(engine.IsProvisional);
+        Assert.False(engine.IsProvisional, "The first frame is provisional: the engine did not wait for its indexes.");
         var views = new PanelView2D[60];
         for (var i = 0; i < views.Length; i++)
         {
