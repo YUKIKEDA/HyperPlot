@@ -644,6 +644,117 @@ public sealed class PointSelectionTests
     }
 
     /// <summary>
+    /// A lasso's mask holds each pixel of the panel whose center the polygon holds by the even-odd rule, where the runs of a
+    /// pixel row begin and end on either side of a word's boundary (design §6.4 "生の点の強調", Issue #591): the mask's bits
+    /// are set a word at a time between a row's crossings.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 2,000 seeded points over [0, 100]² at the view [0, 100]², 640 × 360. Four lassos over [0, 100]², each a slanted band
+    ///   from the panel's bottom left to its top right whose rows are runs of 1.5, 2.5, 33.3, and 70.7 pixels: the band's left
+    ///   edge moves by a fraction of a pixel more than one from row to row, so the runs begin and end at many columns.
+    ///
+    /// Steps:
+    /// - Select each lasso and draw. For each pixel of the panel, ask the region and the even-odd rule over the polygon's
+    ///   pixels. From the rule's runs of each row, note the column of the run's first and last pixel within its word, and how
+    ///   many words the run spans.
+    ///
+    /// Expected:
+    /// - The region holds a pixel's center as the rule does, but a center within a thousandth of a pixel of an edge.
+    /// - The runs begin at columns 31, 0, and 1 of a word and end at columns 30, 31, and 0 of one; some lie in one word, some
+    ///   in two, and some in three or more.
+    /// </remarks>
+    [Fact]
+    public void LassoMask_RunsAcrossWordBoundaries_HoldThePixelsThePolygonHolds()
+    {
+        var (_, _, table) = Uniform(2_000, seed: 42);
+        using var engine = Drawn(new NullBackend(), Plot.Create(table).Point(table.Col<double>("x"), table.Col<double>("y")));
+        var g = engine.Plan!.Guides;
+        var (firsts, lasts, spans) = (new HashSet<int>(), new HashSet<int>(), new HashSet<int>());
+        foreach (var run in (float[])[1.5f, 2.5f, 33.3f, 70.7f])
+        {
+            var w = run / g.Width;
+            Vector2[] band = [new(0, 0), new(w, 0), new(1, 1), new(1 - w, 1)];
+            engine.Select(Selection2D.Lasso(Panel, ViewRange.FromValues(0.0, 100.0), ViewRange.FromValues(0.0, 100.0), band));
+            engine.RenderFrame();
+            var list = engine.Plan!.List;
+            Assert.NotEqual(0u, Assert.Single(list.Highlights.ToArray()).MaskStride);
+            var polygon = band.Select(s => Pixel(engine, s.X * 100.0, s.Y * 100.0)).ToArray();
+            for (var py = g.Top; py < g.Top + g.Height; py++)
+            {
+                var (first, edges) = (-1, false);
+                for (var px = g.Left; px <= g.Left + g.Width; px++)
+                {
+                    var center = new Vector2(px + 0.5f, py + 0.5f);
+                    var (inside, edge) = px < g.Left + g.Width ? EvenOdd(polygon, center) : (false, false);
+                    edges |= edge;
+                    Assert.True(edge || inside == list.Holds(1, center), $"The band {run}: the pixel ({px}, {py}), inside {inside}.");
+                    var column = px - g.Left;
+                    if (inside && first < 0)
+                    {
+                        first = column;
+                    }
+                    else if (!inside && first >= 0)
+                    {
+                        // A run whose ends the rule judges a thousandth of a pixel from an edge is not counted.
+                        if (!edges)
+                        {
+                            firsts.Add(first & 31);
+                            lasts.Add((column - 1) & 31);
+                            spans.Add(Math.Min(((column - 1) >> 5) - (first >> 5), 2));
+                        }
+
+                        (first, edges) = (-1, false);
+                    }
+                }
+            }
+        }
+
+        Assert.Superset(new HashSet<int> { 31, 0, 1 }, firsts);
+        Assert.Superset(new HashSet<int> { 30, 31, 0 }, lasts);
+        Assert.Superset(new HashSet<int> { 0, 1, 2 }, spans);
+    }
+
+    /// <summary>
+    /// The bits a lasso mask's row sets for a run of columns are those of the run's columns, a word at a time, and the bits
+    /// set before stay (Issue #591): runs that begin and end on either side of a word's boundary, in one word and across
+    /// several, and the empty run.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A row of 5 words (160 columns) with seeded bits set before.
+    ///
+    /// Steps:
+    /// - For each first column from 0 to 160 and each end from 0 to 160, set the run's columns, and set them one bit at a
+    ///   time on a copy of the row.
+    ///
+    /// Expected:
+    /// - The two rows are equal, word for word; a run whose end is not after its first leaves the row as it was.
+    /// </remarks>
+    [Fact]
+    public void SetColumns_EveryRun_SetsTheRunsBitsAndKeepsTheOthers()
+    {
+        var random = new Random(43);
+        var before = Enumerable.Range(0, 5).Select(_ => (uint)random.Next() & (uint)random.Next()).ToArray();
+        var (words, expected) = (new uint[5], new uint[5]);
+        for (var first = 0; first <= 160; first++)
+        {
+            for (var end = 0; end <= 160; end++)
+            {
+                before.CopyTo(words, 0);
+                before.CopyTo(expected, 0);
+                for (var column = first; column < end; column++)
+                {
+                    expected[column >> 5] |= 1u << (column & 31);
+                }
+
+                PlotPlan.SetColumns(words, first, end);
+                Assert.True(expected.AsSpan().SequenceEqual(words), $"The run [{first}, {end}).");
+            }
+        }
+    }
+
+    /// <summary>
     /// The overlay's fill of a lasso covers the pixels of the panel whose centers the polygon holds by the even-odd rule, a
     /// rectangle a run of a pixel row, between the row's crossings in order (design §6.4 "強調", Issue #364 Decision 5).
     /// </summary>

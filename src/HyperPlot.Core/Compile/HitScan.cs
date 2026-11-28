@@ -551,10 +551,25 @@ internal ref struct HitScan
         var (along, across, xMode, radius, panel) = (Along, Across, Mode == HitMode.X, (double)Radius, PanelBox);
         var reach = xMode ? radius : radius + markerRadius;
         var last = Math.Min(xs.Length, ys.Length);
-        var least = double.PositiveInfinity;
-        for (var i = 0; i < last; i++)
+        xs = xs[..last];
+        ys = ys[..last];
+
+        // Most points lie farther along than the reach: that one test comes before the call for the rest. With every point of
+        // both passes through the call, which NativeAOT does not inline, and the least kept by Math.Min, the scan of 131,072
+        // points took 0.47 to 0.63 ms at p50, where row R3a's code took 0.07 to 0.14 ms in alternated runs (Issue #607).
+        var (least, nearest) = (double.PositiveInfinity, -1);
+        for (var i = 0; i < xs.Length; i++)
         {
-            least = Math.Min(least, PointDistance(xs[i], ys[i], i, radii));
+            if (!(Math.Abs(xs[i] - along) <= reach))
+            {
+                continue;
+            }
+
+            var distance = PointDistance(xs[i], ys[i], i, radii);
+            if (distance < least)
+            {
+                (least, nearest) = (distance, i);
+            }
         }
 
         if (!(least <= reach))
@@ -562,17 +577,21 @@ internal ref struct HitScan
             return;
         }
 
-        // The first point within half a pixel of the least distance has the least row.
-        for (var i = 0; i < last; i++)
+        // The first point within half a pixel of the least distance has the least row: the nearest one, or a row before it.
+        var bound = least + Tolerance;
+        var answer = nearest;
+        for (var i = 0; i < nearest; i++)
         {
-            if (PointDistance(xs[i], ys[i], i, radii) <= least + Tolerance)
+            if (Math.Abs(xs[i] - along) <= reach && PointDistance(xs[i], ys[i], i, radii) <= bound)
             {
-                var row = first + i;
-                var (dx, dy) = (xs[i] - along, ys[i] - across);
-                Add(0, row, ValueOf(X, x, row), y.DifferenceAt(row, 0), Math.Sqrt((dx * dx) + (dy * dy)), derived: false, provisional: false);
-                return;
+                answer = i;
+                break;
             }
         }
+
+        var row = first + answer;
+        var (dx, dy) = (xs[answer] - along, ys[answer] - across);
+        Add(0, row, ValueOf(X, x, row), y.DifferenceAt(row, 0), Math.Sqrt((dx * dx) + (dy * dy)), derived: false, provisional: false);
 
         // A point's distance as the mode measures it, or ∞ when it lies outside the reach or the panel, or does not map.
         double PointDistance(double pointAlong, double pointAcross, int i, ReadOnlySpan<float> own)
