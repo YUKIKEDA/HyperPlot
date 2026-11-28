@@ -193,7 +193,7 @@ public sealed class ScriptRecordingTests
     /// - An engine of 640 × 360 on the null backend over 4,000 seeded points, y in increasing order, with x and y domains
     ///   [0, 100]: a point layer
     ///   (points); a point layer on a secondary x scale of domain [0, 100] (secondary); a horizontal rule of the y values
-    ///   on a flipped coordinate system (flipped rule). A first frame drawn.
+    ///   on a flipped coordinate system (flipped rule). The engine waits for its indexes. A first frame drawn, final.
     /// - The script: 60 square views centered at (50, 50), of side 100 · 0.001^(i / 59), each set and drawn.
     ///
     /// Steps:
@@ -224,11 +224,15 @@ public sealed class ScriptRecordingTests
             "secondary" => builder.ScaleX2(Scale.Linear().WithDomain(0, 100)).Point(x, y, p => p.SecondaryX()),
             _ => builder.HRule(y).Coord(Coord.Cartesian(flip: true)),
         };
-        using var engine = new PlotEngine(new NullBackend(), 640, 360);
+        using var engine = new PlotEngine(new NullBackend(), 640, 360) { WaitsForIndexes = true };
         var failures = 0;
         engine.WorkFailed += (in WorkFailure _) => failures++;
         engine.SetPlot(builder.Build());
         engine.RenderFrame();
+
+        // Final from the first frame: without waiting, a rule is not drawn until the workers have its column's statistics
+        // (row W1b1), and warm rounds that drew no rule left the growth of its buffers to the counted round (Issue #634).
+        Assert.False(engine.IsProvisional);
         var views = new PanelView2D[60];
         for (var i = 0; i < views.Length; i++)
         {

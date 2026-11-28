@@ -131,10 +131,7 @@ internal sealed partial class PlotPlan
                 // The columns whose centers lie in [from, to): column k's center is rect.Left + k + 0.5.
                 var first = (int)Math.Clamp(MathF.Ceiling(crossings[c] - rect.Left - 0.5f), 0, rect.Width);
                 var end = (int)Math.Clamp(MathF.Ceiling(crossings[c + 1] - rect.Left - 0.5f), 0, rect.Width);
-                for (var column = first; column < end; column++)
-                {
-                    words[column >> 5] |= 1u << (column & 31);
-                }
+                SetColumns(words, first, end);
             }
         }
 
@@ -147,5 +144,34 @@ internal sealed partial class PlotPlan
             var t = (d - axis.Domain.Lower) / (axis.Domain.Upper - axis.Domain.Lower);
             return (float)(axis.Offset + ((axis.Descending ? 1 - t : t) * axis.Size));
         }
+    }
+
+    /// <summary>
+    /// Sets the bits of a lasso mask's row for the columns from one to another, a word at a time (Issue #591): the two end
+    /// words once each, under a mask of their columns, and every word between them whole. Bit <c>k &amp; 31</c> of word
+    /// <c>k &gt;&gt; 5</c> is column k. Leaves the row as it is when the run is empty.
+    /// </summary>
+    /// <param name="words">The row's words.</param>
+    /// <param name="first">The first column of the run.</param>
+    /// <param name="end">The column after the run's last.</param>
+    internal static void SetColumns(Span<uint> words, int first, int end)
+    {
+        if (first >= end)
+        {
+            return;
+        }
+
+        var (low, high) = (first >> 5, (end - 1) >> 5);
+        var head = uint.MaxValue << (first & 31);
+        var tail = uint.MaxValue >> (31 - ((end - 1) & 31));
+        if (low == high)
+        {
+            words[low] |= head & tail;
+            return;
+        }
+
+        words[low] |= head;
+        words[(low + 1)..high].Fill(uint.MaxValue);
+        words[high] |= tail;
     }
 }

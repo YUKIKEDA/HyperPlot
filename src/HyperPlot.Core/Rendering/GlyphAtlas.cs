@@ -11,6 +11,9 @@ namespace HyperPlot.Rendering;
 /// When a glyph does not fit, the atlas empties the shelf used longest ago among those the current <c>Draw</c> has not
 /// used, and tries again; a glyph the current <c>Draw</c> placed never moves, since the records written before it name its
 /// place. When no such shelf is left, it adds a page, up to <see cref="MaxPages"/>. The thread that draws owns it.
+/// A new glyph on a shelf that has room allocates nothing while the atlas holds at most <see cref="GlyphCapacity"/> glyphs
+/// (Issue #532): the table of glyphs has that room from the start, and a shelf finds its glyphs through the table's slots,
+/// not a list of its own.
 /// </remarks>
 internal sealed class GlyphAtlas
 {
@@ -20,9 +23,15 @@ internal sealed class GlyphAtlas
     /// <summary>The most pages: 32 MB on the CPU and as much on the GPU.</summary>
     internal const int MaxPages = 8;
 
+    /// <summary>
+    /// The glyphs the table holds from the start: the 95 printable ASCII characters at the 4 phases in 2 sizes take 760.
+    /// A wheel frame under a still hover allocated 13,448 B when the table, grown as glyphs came, took its 90th (Issue #532).
+    /// </summary>
+    internal const int GlyphCapacity = 1024;
+
     private readonly ITextBackend _backend;
     private readonly List<Page> _pages = [];
-    private readonly Dictionary<GlyphKey, GlyphSlot> _glyphs = [];
+    private readonly Dictionary<GlyphKey, GlyphSlot> _glyphs = new(GlyphCapacity);
     private byte[] _scratch = new byte[1024];
     private long _draw;
 
@@ -135,7 +144,7 @@ internal sealed class GlyphAtlas
     }
 
     private static bool Fits(Shelf shelf, int width, int height) =>
-        shelf.Glyphs.Count > 0 && shelf.Height >= height && shelf.Height - height <= Math.Max(2, height / 4) && shelf.X + width <= PageSize;
+        shelf.Count > 0 && shelf.Height >= height && shelf.Height - height <= Math.Max(2, height / 4) && shelf.X + width <= PageSize;
 
     private bool TryAdd(GlyphKey key, out GlyphSlot slot)
     {
@@ -183,10 +192,10 @@ internal sealed class GlyphAtlas
 
         pixels.AsSpan(((shelf.Y + box.Height) * PageSize) + x, width).Clear();
         AddDirty(page, new AtlasRect(x, shelf.Y, width, height));
-        shelf.Glyphs.Add(key);
         shelf.LastUsed = _draw;
-        slot = new GlyphSlot(box, page.Index, x, shelf.Y, shelf);
+        slot = new GlyphSlot(box, page.Index, x, shelf.Y, shelf, shelf.Last);
         _glyphs[key] = slot;
+        (shelf.Last, shelf.Count) = (key, shelf.Count + 1);
         return true;
     }
 
@@ -255,7 +264,7 @@ internal sealed class GlyphAtlas
             {
                 foreach (var candidate in CollectionsMarshal.AsSpan(candidatePage.Shelves))
                 {
-                    if (candidate.Glyphs.Count == 0 && candidate.Height >= height && (best is null || candidate.Height < best.Height))
+                    if (candidate.Count == 0 && candidate.Height >= height && (best is null || candidate.Height < best.Height))
                     {
                         (best, bestPage) = (candidate, candidatePage);
                     }
@@ -304,7 +313,7 @@ internal sealed class GlyphAtlas
         {
             foreach (var shelf in CollectionsMarshal.AsSpan(page.Shelves))
             {
-                if (shelf.Glyphs.Count > 0 && shelf.LastUsed < _draw && (oldest is null || shelf.LastUsed < oldest.LastUsed))
+                if (shelf.Count > 0 && shelf.LastUsed < _draw && (oldest is null || shelf.LastUsed < oldest.LastUsed))
                 {
                     (oldest, oldestPage) = (shelf, page);
                 }
@@ -316,24 +325,26 @@ internal sealed class GlyphAtlas
             return false;
         }
 
-        foreach (var key in CollectionsMarshal.AsSpan(oldest.Glyphs))
+        // The shelf's glyphs, each slot naming the one placed on the shelf before it.
+        for (var key = oldest.Last; oldest.Count > 0; oldest.Count--)
         {
-            _glyphs.Remove(key);
+            _ = _glyphs.Remove(key, out var removed);
+            key = removed.Next;
         }
 
-        oldest.Glyphs.Clear();
+        oldest.Last = default;
         oldest.X = 0;
         var shelves = oldestPage!.Shelves;
         for (var i = shelves.Count - 1; i > 0; i--)
         {
-            if (shelves[i].Glyphs.Count == 0 && shelves[i - 1].Glyphs.Count == 0)
+            if (shelves[i].Count == 0 && shelves[i - 1].Count == 0)
             {
                 shelves[i - 1].Height += shelves[i].Height;
                 shelves.RemoveAt(i);
             }
         }
 
-        if (shelves[^1].Glyphs.Count == 0)
+        if (shelves[^1].Count == 0)
         {
             shelves.RemoveAt(shelves.Count - 1);
         }
@@ -357,13 +368,19 @@ internal sealed class GlyphAtlas
 /// <summary>The key of a glyph in the atlas: its face, its number, the em size, and the quarter-pixel phase from 0 to 3.</summary>
 internal readonly record struct GlyphKey(int Face, ushort Glyph, float Size, byte Phase);
 
-/// <summary>Where a glyph is: its box, its page (−1 for a glyph with no ink), the top left of its coverage, and its shelf.</summary>
-internal readonly record struct GlyphSlot(GlyphBox Box, int Page, int X, int Y, Shelf? Shelf);
+/// <summary>
+/// Where a glyph is: its box, its page (−1 for a glyph with no ink), the top left of its coverage, its shelf, and the glyph
+/// placed on the same shelf before it (the first of a shelf names none).
+/// </summary>
+internal readonly record struct GlyphSlot(GlyphBox Box, int Page, int X, int Y, Shelf? Shelf, GlyphKey Next = default);
 
 /// <summary>A rectangle of an atlas page, in pixels.</summary>
 internal readonly record struct AtlasRect(int X, int Y, int Width, int Height);
 
-/// <summary>A row of an atlas page: its top, its height, the left of its free part, its glyphs, and their newest use.</summary>
+/// <summary>
+/// A row of an atlas page: its top, its height, the left of its free part, the number of its glyphs and the one placed last
+/// (each glyph's slot names the one before it), and their newest use.
+/// </summary>
 internal sealed class Shelf(int y, int height)
 {
     internal int Y { get; } = y;
@@ -372,7 +389,9 @@ internal sealed class Shelf(int y, int height)
 
     internal int X { get; set; }
 
-    internal List<GlyphKey> Glyphs { get; } = [];
+    internal int Count { get; set; }
+
+    internal GlyphKey Last { get; set; }
 
     internal long LastUsed { get; set; }
 }
