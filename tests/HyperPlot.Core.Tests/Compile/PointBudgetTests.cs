@@ -191,9 +191,10 @@ public sealed class PointBudgetTests : IDisposable
     ///
     /// Expected:
     /// - Alone, the layer's 22 pages are within the budget and it draws raw points.
-    /// - With the image, the frames after the first count its tiles (more than one face), the layer's bytes and the tiles'
-    ///   pass the budget, and the layer draws a density; the sum left holds the tiles, a face for each image record the
-    ///   last list draws (the raster's tiles and the density's), as the frame before it drew the same.
+    /// - With the image, the last frame counts the slots the frame before it used. That frame drew the layer's raw points
+    ///   and the raster at level 1 (1,024 texels over about 360 pixels down, 2 to 4 a pixel): its 2 × 2 tiles, and the top
+    ///   level's one tile (level 2, 256 × 256), which it asked for first and did not draw. These 5 faces and the layer's
+    ///   22 pages pass the budget, so the layer draws a density, and the sum left is the 5 faces.
     /// </remarks>
     [Fact]
     public void Sum_CountsTheRasterTilesOfTheLastFrame()
@@ -211,11 +212,15 @@ public sealed class PointBudgetTests : IDisposable
         var backend = new NullBackend { Images = new ResidencyCache(budget) };
         using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
         renderer.Render(Spec(table, image, Auto(0)));
-        var layer = (IndexedPointPlan)renderer.Plan!.Panels[0].Layers[1];
-        Assert.InRange(backend.Images.TileBytesLastFrame, 2L * ResidencyCache.FaceBytes, budget);
-        Assert.Equal(backend.LastList!.Images.Length * (long)ResidencyCache.FaceBytes, backend.Images.TileBytesLastFrame);
+        var raster = (ImagePlan)renderer.Plan!.Panels[0].Layers[0];
+        var layer = (IndexedPointPlan)renderer.Plan.Panels[0].Layers[1];
+        Assert.Equal((1, 4), (raster.Level, raster.VisibleTiles));
+
+        // The frame before the last: the 2 × 2 tiles of level 1 drawn and the top level's one tile asked for.
+        const long Used = ((2 * 2) + 1) * (long)ResidencyCache.FaceBytes;
+        Assert.Equal(Used, backend.Images.TileBytesLastFrame);
         Assert.True(layer.DrewDensity);
-        Assert.Equal(backend.Images.TileBytesLastFrame, renderer.Plan.Budget.LastSum);
+        Assert.Equal(Used, renderer.Plan.Budget.LastSum);
     }
 
     /// <summary>
