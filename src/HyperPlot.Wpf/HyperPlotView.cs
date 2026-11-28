@@ -122,6 +122,7 @@ public sealed partial class HyperPlotView : FrameworkElement, IDisposable
     /// does.
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">The value is not finite or not above 0, on a view not disposed.</exception>
+    /// <exception cref="InvalidOperationException">The value is set from another thread than the view's, on a view not disposed.</exception>
     public double GpuTimeScale
     {
         get => Engine.GpuTimeScale;

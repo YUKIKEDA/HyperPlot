@@ -1582,6 +1582,280 @@ public sealed class AutoSwitchTests
         Assert.Equal((1.5, 1.5), (renderer.GpuTimeScale, engine.GpuTimeScale));
     }
 
+    /// <summary>
+    /// A very large time scale passes the check and keeps an Auto layer a density (design §5.5.2 "ほかの機械"): the scaled
+    /// time is +∞ or near it, past the threshold and never under the band of the way back.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, Auto, under the cap on the points. A headless renderer of 640 × 360
+    ///   of scale 1 and one of scale 1e308.
+    ///
+    /// Steps:
+    /// - Render at 16 DIP on each; then, on the second, at 1 DIP.
+    ///
+    /// Expected:
+    /// - At scale 1 and 16 DIP: a finite time. At 1e308 and 16 DIP: a density, the time and the time at four bins +∞.
+    /// - At 1e308 and 1 DIP, the layer coming from a density: still a density, its time finite and past 11.28 ms.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_VeryLarge_KeepsTheLayerADensity()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 636);
+        var table = blob.Table;
+        PlotSpec Spec(float size) =>
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = size,
+                }
+            );
+        static IndexedPointPlan Layer(HeadlessRenderer renderer) => (IndexedPointPlan)renderer.Plan!.Layers[0];
+
+        using (var reference = new HeadlessRenderer(new NullBackend(), 640, 360))
+        {
+            reference.Render(Spec(16));
+            Assert.True(double.IsFinite(Layer(reference).Switch.LastTime));
+        }
+
+        var backend = new NullBackend();
+        using var renderer = new HeadlessRenderer(backend, 640, 360) { GpuTimeScale = 1e308 };
+        renderer.Render(Spec(16));
+        var choice = Layer(renderer).Switch;
+        Assert.True(Layer(renderer).DrewDensity);
+        Assert.Equal((double.PositiveInfinity, double.PositiveInfinity), (choice.LastTime, choice.LastTimeAtFourBins));
+
+        backend.Images.Sent();
+        renderer.Render(Spec(1));
+        choice = Layer(renderer).Switch;
+        Assert.True(Layer(renderer).DrewDensity);
+        Assert.True(
+            double.IsFinite(choice.LastTime) && choice.LastTime >= PredictedTime.Threshold * DensitySwitch.Back,
+            $"Time: {choice.LastTime} ms."
+        );
+    }
+
+    /// <summary>
+    /// A subnormal time scale makes the scaled time nearly 0 (design §5.5.2 "ほかの機械"): the time draws no density, and
+    /// the cap on the points still does.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, Auto, 64 DIP. A headless renderer of 640 × 360 of scale 1 and one
+    ///   of scale <see cref="double.Epsilon"/>.
+    ///
+    /// Steps:
+    /// - Render with the default threshold on each; on the second, render with the threshold one under the count read.
+    ///
+    /// Expected:
+    /// - At scale 1: a density by the time alone (the count under the cap). At ε: raw points, the time under 1e-300 ms.
+    /// - With the threshold one under the count: a density.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_Subnormal_LeavesTheCapOnThePoints()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 637);
+        var table = blob.Table;
+        PlotSpec Spec(long threshold) =>
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = 64,
+                    DensityThreshold = threshold,
+                }
+            );
+        static IndexedPointPlan Layer(HeadlessRenderer renderer) => (IndexedPointPlan)renderer.Plan!.Layers[0];
+
+        using (var reference = new HeadlessRenderer(new NullBackend(), 640, 360))
+        {
+            reference.Render(Spec(10_000_000));
+            var first = Layer(reference);
+            Assert.True(first.DrewDensity && first.Switch.LastCount <= 10_000_000, $"Count: {first.Switch.LastCount}.");
+        }
+
+        var backend = new NullBackend();
+        using var renderer = new HeadlessRenderer(backend, 640, 360) { GpuTimeScale = double.Epsilon };
+        renderer.Render(Spec(10_000_000));
+        var choice = Layer(renderer).Switch;
+        Assert.False(Layer(renderer).DrewDensity);
+        Assert.True(choice.LastTime < 1e-300, $"Time: {choice.LastTime} ms.");
+
+        backend.Images.Sent();
+        renderer.Render(Spec(choice.LastCount - 1));
+        Assert.True(Layer(renderer).DrewDensity);
+    }
+
+    /// <summary>
+    /// A figure that grows takes the renderer's time scale into the plans of its new plots (design §5.5.2 "ほかの機械",
+    /// §7.5): a scale set after a figure of two plots reaches the two plans it holds and the third one a figure of three
+    /// makes.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12. Figures of two and of three plots side by side, each of one Auto
+    ///   layer over the blob, on 640 × 360 null backends. The size that predicts 7.2 ms in a cell of three is set from the
+    ///   figure of three drawn at 1 DIP at the scale 1.
+    ///
+    /// Steps:
+    /// - On a renderer of scale 1: render the figure of two; set the scale to 2; render the figure of three at 7.2 ms.
+    ///
+    /// Expected:
+    /// - Each of the three plots draws a density at 14.4 ms.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_FigureOfMorePlots_ReachesTheNewPlans()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 638);
+        var table = blob.Table;
+        PlotSpec Plot(float size) =>
+            GeomTesting.Spec(
+                table,
+                new PointLayerSpec
+                {
+                    X = table.Col<double>("x"),
+                    Y = table.Col<double>("y"),
+                    Size = size,
+                }
+            );
+        FigureSpec Three(float size) => Figure.HConcat(Plot(size), Plot(size), Plot(size));
+        IndexedPointPlan[] Layers(HeadlessRenderer renderer) => [.. renderer.Figure!.Plans.Select(p => (IndexedPointPlan)p.Layers[0])];
+
+        float size;
+        using (var measure = new HeadlessRenderer(new NullBackend(), 640, 360))
+        {
+            measure.Render(Three(1));
+            var first = Layers(measure)[0].Switch;
+            size = DiameterFor(7.2, first.LastCount, first.LastLargestBin);
+        }
+
+        var backend = new NullBackend();
+        using var renderer = new HeadlessRenderer(backend, 640, 360);
+        renderer.Render(Figure.HConcat(Plot(1), Plot(1)));
+        renderer.GpuTimeScale = 2;
+        backend.Images.Sent();
+        renderer.Render(Three(size));
+        var layers = Layers(renderer);
+        Assert.Equal(3, layers.Length);
+        Assert.All(layers, layer => Assert.Equal((true, 14.4), (layer.DrewDensity, Math.Round(layer.Switch.LastTime, 4))));
+    }
+
+    /// <summary>
+    /// A time scale set while the engine's frames are provisional (design §4.8, §5.5.2 "ほかの機械") is not lost in them: the
+    /// layer's first choice on a full snapshot, after the provisional frames, compares the scaled time.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - 300,000 seeded points of a normal blob of σ 12, Auto, 1 DIP; an engine of 640 × 360 that does not wait, on a pool
+    ///   of 4 whose index builds stop after their coarse snapshot until the test lets them go.
+    ///
+    /// Steps:
+    /// - Draw a frame. Set the scale to 2 and draw a frame. Let the build go, and draw until the layer scans a full snapshot.
+    ///
+    /// Expected:
+    /// - Both first frames are provisional and read no time.
+    /// - On the full snapshot: the time is twice the reference's time of the count and the largest bin read.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_SetDuringAProvisionalFrame_TakesEffectOnTheFullSnapshot()
+    {
+        const int Count = 300_000;
+        using var blob = new Blob(Count, sigma: 12, seed: 639);
+        var table = blob.Table;
+        using var hold = new BuildHold(SpatialJob.PublishCoarse);
+        using var pool = new PlotWorkerPool(4) { IndexTuning = SpatialIndexTuning.Default with { JobEnded = hold.OnJob } };
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 640, 360, pool: pool);
+        try
+        {
+            engine.SetPlot(
+                GeomTesting.Spec(
+                    table,
+                    new PointLayerSpec
+                    {
+                        X = table.Col<double>("x"),
+                        Y = table.Col<double>("y"),
+                        Size = 1,
+                    }
+                )
+            );
+            engine.RenderFrame();
+            Assert.True(engine.IsProvisional);
+            engine.GpuTimeScale = 2;
+            backend.Images.Sent();
+            engine.RenderFrame();
+            Assert.True(engine.IsProvisional);
+            var layer = (IndexedPointPlan)engine.Plan!.Layers[0];
+            Assert.Equal(0, layer.Switch.LastTime);
+
+            hold.Release();
+            var clock = Stopwatch.StartNew();
+            while (layer.Switch.LastTime == 0)
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "No full snapshot was scanned in 60 s.");
+                backend.Images.Sent();
+                engine.RenderFrame();
+                layer = (IndexedPointPlan)engine.Plan!.Layers[0];
+            }
+
+            var choice = layer.Switch;
+            Assert.Equal(2 * PredictedTime.Of(choice.LastCount, 1, choice.LastLargestBin), choice.LastTime, 1e-9);
+        }
+        finally
+        {
+            hold.Release();
+        }
+    }
+
+    /// <summary>
+    /// The engine's time scale is set from the engine's thread before it is disposed, as its other setters are (design §5.5.2
+    /// "ほかの機械", §7.1, §6.1); a refused set keeps the value. A headless renderer has no thread of its own: after its
+    /// disposal a set still checks the value and keeps it, and draws nothing.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine of scale 1.5 on a null backend. A headless renderer that rendered a figure of two plots, then disposed.
+    ///
+    /// Steps:
+    /// - Set the engine's scale to 2 from a task. Dispose the engine and set 2 again.
+    /// - Set the disposed renderer's scale to 2, then to NaN.
+    ///
+    /// Expected:
+    /// - InvalidOperationException from the task, then ObjectDisposedException; the engine reads 1.5 after each.
+    /// - The renderer reads 2, and NaN throws ArgumentOutOfRangeException.
+    /// </remarks>
+    [Fact]
+    public void GpuTimeScale_OtherThreadOrDisposed()
+    {
+        using var engine = new PlotEngine(new NullBackend(), 64, 64) { GpuTimeScale = 1.5 };
+        var task = Task.Run(() => engine.GpuTimeScale = 2, TestContext.Current.CancellationToken);
+        Assert.IsType<InvalidOperationException>(Eventually.Faults(task));
+        Assert.Equal(1.5, engine.GpuTimeScale);
+        engine.Dispose();
+        _ = Assert.Throws<ObjectDisposedException>(() => engine.GpuTimeScale = 2);
+        Assert.Equal(1.5, engine.GpuTimeScale);
+
+        using var x = Column.Wrap(new double[] { 0, 1 });
+        using var y = Column.Wrap(new double[] { 0, 1 });
+        var table = DataTable.Create().Add("x", x).Add("y", y).Build();
+        PlotSpec Plot() => GeomTesting.Spec(table, new PointLayerSpec { X = table.Col<double>("x"), Y = table.Col<double>("y") });
+        using var renderer = new HeadlessRenderer(new NullBackend(), 64, 64);
+        renderer.Render(Figure.HConcat(Plot(), Plot()));
+        renderer.Dispose();
+        renderer.GpuTimeScale = 2;
+        Assert.Equal(2, renderer.GpuTimeScale);
+        _ = Assert.Throws<ArgumentOutOfRangeException>(() => renderer.GpuTimeScale = double.NaN);
+        Assert.Equal(2, renderer.GpuTimeScale);
+    }
+
     /// <summary>The tuning that makes density tiles from 2,048 points, so that a few hundred thousand points have deep tiles.</summary>
     private static SpatialIndexTuning SmallTiles => SpatialIndexTuning.Default with { DensitySplit = 2_048, TotalShare = 10 };
 
