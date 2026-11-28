@@ -194,7 +194,8 @@ public sealed class PointBudgetTests : IDisposable
     /// - Alone, the layer's 22 pages are within the budget and it draws raw points.
     /// - With the image, the last frame counts the slots the frame before it used. That frame drew the layer's raw points
     ///   and the raster at level 1 (1,024 texels over about 360 pixels down, 2 to 4 a pixel): its 2 × 2 tiles, and the top
-    ///   level's one tile (level 2, 256 × 256), which it asked for first and did not draw. These 5 faces and the layer's
+    ///   level's one tile (level 2, 256 × 256), which it asked for first and did not draw (design §5.5.3 "送る順と仮の描画":
+    ///   the top level's tile is asked for first in every frame). These 5 faces and the layer's
     ///   22 pages pass the budget, so the layer draws a density, and the sum left is the 5 faces.
     /// </remarks>
     [Fact]
