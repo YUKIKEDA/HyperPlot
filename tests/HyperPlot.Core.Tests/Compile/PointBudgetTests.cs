@@ -61,8 +61,8 @@ public sealed class PointBudgetTests : IDisposable
     }
 
     /// <summary>
-    /// The machine's time scale does not reach the budget's condition (design §5.5.2 "ほかの機械"): at 0.5 and at 2 the same
-    /// layer goes as at 1, and the sum left is the same.
+    /// The machine's time scale does not reach the budget's condition (design §5.5.2 "ほかの機械"): at 0.5, at 2, and at a subnormal
+    /// scale, whose times are nearly 0, the same layer goes as at 1, and the sum left is the same.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -78,6 +78,7 @@ public sealed class PointBudgetTests : IDisposable
     [Theory]
     [InlineData(0.5)]
     [InlineData(2.0)]
+    [InlineData(double.Epsilon)]
     public void Sum_TakesNoTimeScale(double scale)
     {
         var table = Table(5, 4);
