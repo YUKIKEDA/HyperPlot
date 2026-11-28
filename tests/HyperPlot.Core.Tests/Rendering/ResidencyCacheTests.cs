@@ -304,6 +304,64 @@ public sealed class ResidencyCacheTests : IDisposable
     }
 
     /// <summary>
+    /// A tile whose format has no slot while the budget has room for its bytes lets go of its own format's tile used longest
+    /// ago, and when none is, fails without making the frame full: a page that fits the budget is still placed (design §5.5.2
+    /// "1 つの LRU", "予算が満ちたフレーム"; PR #638's review).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A residency cache of a budget of 64 faces, 2 pages of points, and a face (19,409,952 bytes) and no frame budget: the
+    ///   float pool makes one texture array of 64 slots and has no room for a second. A full snapshot of 140,000 points.
+    ///
+    /// Steps:
+    /// - Frame 1: read and stage page 0. Frame 2: request density tiles D0 to D63.
+    /// - Frame 3: request D1 to D63, then a new tile X; request page 0; then a new tile Y; then read page 1.
+    ///
+    /// Expected:
+    /// - X takes D0's slot, the oldest of its format, and page 0 (frame 1, older still) stays: 1 page on the GPU.
+    /// - Y is −1: every slot of the format is this frame's, and nothing else is old. The frame is not full, and page 1 gets
+    ///   a slot: 2 pages on the GPU, within the budget.
+    /// - Without the fix, Y's failure made the frame full and page 1 was −1 (the last assertion guards it); letting go of
+    ///   the oldest of any kind for X let page 0 go first.
+    /// </remarks>
+    [Fact]
+    public void TileFormatWithNoSlot_LetsItsOwnTileGoAndLeavesTheFrameOpen()
+    {
+        const long Page = (long)PointPages.PagePoints * PointPages.PointBytes;
+        var budget = (65L * ResidencyCache.FaceBytes) + (2 * Page);
+        var (xs, ys) = SpatialData.Uniform(140_000, seed: 49);
+        using var built = SpatialBuilt.Of(xs, ys);
+        var bins = Bins(Counts(1), 1);
+        var cache = new ResidencyCache(budget) { Unbounded = true };
+        int Tile(int code) => cache.RequestDensity(built.Snapshot, 2, (ulong)code, new DensityTile(bins, 1, 0));
+
+        cache.BeginFrame();
+        var page0 = cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints);
+        cache.BeginFrame();
+        for (var code = 0; code < 64; code++)
+        {
+            Assert.True(Tile(code) >= 0);
+        }
+
+        cache.Sent();
+        Assert.Equal(1, cache.PageCount(ResidencyCache.Format.Float));
+        cache.BeginFrame();
+        for (var code = 1; code < 64; code++)
+        {
+            Assert.True(Tile(code) >= 0);
+        }
+
+        Assert.True(Tile(100) >= 0);
+        Assert.Equal((64, 1), (cache.SlotsInUse, cache.Points.PagesInUse));
+        Assert.Equal(page0, cache.Points.Request(built.Snapshot, 0, PointPages.MaxBlockPoints));
+        Assert.Equal(-1, Tile(101));
+        Assert.False(cache.FullThisFrame);
+        Assert.True(cache.Points.Read(built.Snapshot, 1, PointPages.MaxBlockPoints) >= 0);
+        Assert.Equal(2, cache.Points.PagesInUse);
+        Assert.InRange(cache.BytesInUse, 0, budget);
+    }
+
+    /// <summary>
     /// ForgetDensity lets go of the density tiles and the coarse density of one snapshot only, and the slots it frees are
     /// taken again; a reset after a device loss forgets every face, and the next request stages the same face again.
     /// </summary>

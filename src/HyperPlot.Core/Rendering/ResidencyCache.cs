@@ -40,7 +40,7 @@ public sealed class ResidencyCache
     /// <summary>The color tables a backend's table texture holds, a row of 256 colors each.</summary>
     internal const int MaxColorTables = 64;
 
-    /// <summary>The slots the budget holds over both formats.</summary>
+    /// <summary>The slots the default budget holds over both formats. Tests only.</summary>
     internal const int SlotCapacity = (int)(DefaultBudget / FaceBytes);
 
     private readonly Pool[] _pools = [new(), new()];
@@ -92,7 +92,8 @@ public sealed class ResidencyCache
 
     /// <summary>
     /// Gets a value indicating whether the cache found in this frame that nothing can be let go of for more (design §5.5.2
-    /// "予算が満ちたフレーム"): every tile and page was used in this frame, and the budget has no room for a page.
+    /// "予算が満ちたフレーム"): every tile and page was used in this frame, and the budget has no room for a page. Tests and
+    /// measurements only.
     /// </summary>
     internal bool FullThisFrame => _fullFrame == _frame;
 
@@ -165,11 +166,29 @@ public sealed class ResidencyCache
     }
 
     /// <summary>
-    /// Lets go of the tile or the page used longest ago before this frame, of any kind (design §5.5.2 "1 つの LRU"): a
-    /// density or raster tile's slot of either format, or a page of points. False, and the frame is known full, when every
-    /// one was used in this frame.
+    /// Makes room in the budget for the given bytes (design §5.5.2 "1 つの LRU", "予算が満ちたフレーム"): lets go of the tiles
+    /// and the pages used longest ago before this frame, of any kind, until the bytes fit. False, and the frame is known
+    /// full, when every one left was used in this frame and the bytes still do not fit.
     /// </summary>
-    internal bool EvictOldest()
+    internal bool MakeRoom(long bytes)
+    {
+        while (BytesInUse + bytes > Budget)
+        {
+            if (!EvictOldest())
+            {
+                _fullFrame = _frame;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Lets go of the tile or the page used longest ago before this frame, of any kind (design §5.5.2 "1 つの LRU"): a
+    /// density or raster tile's slot of either format, or a page of points. False when every one was used in this frame.
+    /// </summary>
+    private bool EvictOldest()
     {
         var (kind, slot, when) = (-1, -1, _frame);
         for (var format = 0; format < _pools.Length; format++)
@@ -190,7 +209,6 @@ public sealed class ResidencyCache
 
         if (kind < 0)
         {
-            _fullFrame = _frame;
             return false;
         }
 
@@ -223,6 +241,7 @@ public sealed class ResidencyCache
         }
 
         _tables.Clear();
+        _tilesUsedLastFrame = 0;
         Points.Reset();
         Sent();
     }
@@ -444,23 +463,27 @@ public sealed class ResidencyCache
             return -1;
         }
 
-        // Room in the budget and a slot of the format's pages, a free one or a new page's within the slots the budget leaves
-        // beside the pages of points and the other format's tiles; otherwise the tile or the page used longest ago before
-        // this frame, of any kind, is let go of (design §5.5.2 "1 つの LRU").
+        // Room in the budget, then a slot of the format's pages: a free one, or a new page's within the slots the budget
+        // leaves beside the pages of points and the other format's tiles (design §5.5.2 "1 つの LRU").
         var pool = _pools[(int)format];
         int slot;
         while (true)
         {
-            if (BytesInUse + FaceBytes <= Budget)
+            if (!MakeRoom(FaceBytes))
             {
-                slot = pool.Take((int)((Budget - Points.BytesInUse) / FaceBytes) - _pools[1 - (int)format].InUse);
-                if (slot >= 0)
-                {
-                    break;
-                }
+                return -1;
             }
 
-            if (!EvictOldest())
+            slot = pool.Take((int)((Budget - Points.BytesInUse) / FaceBytes) - _pools[1 - (int)format].InUse);
+            if (slot >= 0)
+            {
+                break;
+            }
+
+            // The bytes fit and the format has no slot: its own tile used longest ago before this frame frees one in place;
+            // without one, the oldest of any kind may leave room for another page of slots. Neither makes the frame full,
+            // since the budget has room for its bytes.
+            if (!pool.Evict(_frame) && !EvictOldest())
             {
                 return -1;
             }
@@ -603,6 +626,19 @@ public sealed class ResidencyCache
                     Free(slot, frame);
                 }
             }
+        }
+
+        /// <summary>Frees the slot in use used longest ago before a frame; false when every slot in use was used since.</summary>
+        public bool Evict(long frame)
+        {
+            var oldest = Oldest(frame, out _);
+            if (oldest < 0)
+            {
+                return false;
+            }
+
+            Free(oldest, frame);
+            return true;
         }
 
         /// <summary>Frees a slot in use; one the current frame used no longer counts as used.</summary>

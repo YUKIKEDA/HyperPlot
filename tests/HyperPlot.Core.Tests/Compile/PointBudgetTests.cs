@@ -158,7 +158,8 @@ public sealed class PointBudgetTests : IDisposable
     /// Expected:
     /// - Alone, the layer's 22 pages are within the budget and it draws raw points.
     /// - With the image, the frames after the first count its tiles (more than one face), the layer's bytes and the tiles'
-    ///   pass the budget, and the layer draws a density; the sum left holds the tiles.
+    ///   pass the budget, and the layer draws a density; the sum left holds the tiles, a face for each image record the
+    ///   last list draws (the raster's tiles and the density's), as the frame before it drew the same.
     /// </remarks>
     [Fact]
     public void Sum_CountsTheRasterTilesOfTheLastFrame()
@@ -178,6 +179,7 @@ public sealed class PointBudgetTests : IDisposable
         renderer.Render(Spec(table, image, Auto(0)));
         var layer = (IndexedPointPlan)renderer.Plan!.Panels[0].Layers[1];
         Assert.InRange(backend.Images.TileBytesLastFrame, 2L * ResidencyCache.FaceBytes, budget);
+        Assert.Equal(backend.LastList!.Images.Length * (long)ResidencyCache.FaceBytes, backend.Images.TileBytesLastFrame);
         Assert.True(layer.DrewDensity);
         Assert.Equal(backend.Images.TileBytesLastFrame, renderer.Plan.Budget.LastSum);
     }
@@ -193,11 +195,12 @@ public sealed class PointBudgetTests : IDisposable
     ///
     /// Steps:
     /// - Render headless. Render again with P drawn as a density, so that the raw layers need 3 pages (Q's); the tiles' slots
-    ///   are none (a budget under 64 faces makes no texture array).
+    ///   are none (a budget under 64 faces makes no texture array). Render the same spec 30 more times.
     ///
     /// Expected:
     /// - First: S and L draw densities. Then S goes back (3 + 3 = 6 pages under 9.6) and L stays a density (6 + 4 = 10 pages
-    ///   is not under 9.6, though it is within the budget); the sum left is 6 pages.
+    ///   is not under 9.6, though it is within the budget); the sum left is 6 pages. In 30 more renders of the same spec,
+    ///   no frame changes either drawing.
     /// </remarks>
     [Fact]
     public void Back_FewestBytesFirst_WhileUnderEightTenths()
@@ -212,6 +215,17 @@ public sealed class PointBudgetTests : IDisposable
         Assert.Equal(0, backend.Images.TileBytesLastFrame);
         Assert.Equal((false, true), (Layer(renderer, 2).DrewDensity, Layer(renderer, 3).DrewDensity));
         Assert.Equal(6 * Page, renderer.Plan!.Budget.LastSum);
+
+        // The same view for 30 more renders, each a frame or more: the drawings do not swing between frames.
+        var changes = 0;
+        for (var round = 0; round < 30; round++)
+        {
+            backend.Images.Sent();
+            renderer.Render(Spec(table, Points(0) with { Draw = PointDraw.Density }, Points(1), Auto(2), Auto(3)));
+            changes += Layer(renderer, 2).DrewDensity || !Layer(renderer, 3).DrewDensity ? 1 : 0;
+        }
+
+        Assert.Equal(0, changes);
     }
 
     /// <summary>
@@ -264,8 +278,8 @@ public sealed class PointBudgetTests : IDisposable
     /// - Render headless, which sends every page the view needs.
     ///
     /// Expected:
-    /// - The layer needs the bytes of the pages the cache holds after the render, the pages the recording asked for, which
-    ///   are more than the bytes of the blocks the list draws.
+    /// - The layer needs the bytes of the pages the list draws from, counted by their slots (each a whole page of 786,432
+    ///   bytes), which are the bytes the cache holds after the render, and more than the bytes of the blocks the list draws.
     /// </remarks>
     [Fact]
     public void Needed_IsThePagesWithABlockInView()
@@ -277,6 +291,7 @@ public sealed class PointBudgetTests : IDisposable
         var needed = Layer(renderer, 0).Switch.Needed;
         var drawn = backend.LastList!.ResidentRuns.ToArray();
         Assert.All(drawn, run => Assert.True(run.Slot >= 0));
+        Assert.Equal(drawn.Select(run => run.Slot).Distinct().Count() * Page, needed);
         Assert.Equal(backend.Images.Points.BytesInUse, needed);
         Assert.InRange(needed, 1, 5 * Page);
         Assert.True(drawn.Sum(run => (long)run.Count) * PointPages.PointBytes < needed);

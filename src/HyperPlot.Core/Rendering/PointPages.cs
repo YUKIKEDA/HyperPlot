@@ -253,13 +253,10 @@ internal sealed class PointPages
 
         // Room in the budget: the tiles and the pages used longest ago before this frame go first, of any kind (design
         // §5.5.2 "1 つの LRU").
-        while (_owner.BytesInUse + bytes > _owner.Budget)
+        if (!_owner.MakeRoom(bytes))
         {
-            if (!_owner.EvictOldest())
-            {
-                read.Refused = frame;
-                return -1;
-            }
+            read.Refused = frame;
+            return -1;
         }
 
         slot = Array.IndexOf(_keys, null);
