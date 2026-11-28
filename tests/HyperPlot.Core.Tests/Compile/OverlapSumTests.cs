@@ -498,6 +498,128 @@ public sealed class OverlapSumTests
     }
 
     /// <summary>
+    /// The way back's time is the panel's sum too, not the layer's alone: a density whose time alone and whose sum of four
+    /// times the bins are under their bounds stays one while the sum of the times is at or over 11.28 ms.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A panel of two Auto layers whose sums are set as a full scan leaves them (<see cref="DensitySwitch.SetSums"/>): a
+    ///   raw layer whose terms are its points' alone, 9 ms at the largest bin and at four times it (about 1.5e7 points in
+    ///   view, past what a test's data reaches; the overlap's term 0), and a density drawn as one in the last frame of
+    ///   terms of 1 ms at both. Counts of 1,000 each, thresholds of 1e7.
+    /// - A second panel of the same layers but the raw one's terms 5 ms.
+    ///
+    /// Steps:
+    /// - Read each panel's way back (<see cref="PointBudget.Qualify"/>).
+    ///
+    /// Expected:
+    /// - First panel: the time alone is 2.56 ms and the sum of four times the bins 11.56 ms, under 14.1, but the sum of the
+    ///   times is 11.56 ms, not under 11.28, so the density may not go back. Second panel: the sums are 7.56 ms and it may.
+    /// </remarks>
+    [Fact]
+    public void Back_TimesSumOfTheOtherLayers_KeepsADensity()
+    {
+        var (raw, density) = (new DensitySwitch(0), new DensitySwitch(1));
+        raw.SetSums(1_000, 10_000_000, 9, 9, density: false, wasDensity: false);
+        density.SetSums(1_000, 10_000_000, 1, 1, density: true, wasDensity: true);
+        PointBudget.Qualify([raw, density]);
+        Assert.Equal(2.56, density.LastTime, 1e-12);
+        Assert.False(density.MayReturn);
+
+        raw.SetSums(1_000, 10_000_000, 5, 5, density: false, wasDensity: false);
+        density.SetSums(1_000, 10_000_000, 1, 1, density: true, wasDensity: true);
+        PointBudget.Qualify([raw, density]);
+        Assert.True(density.MayReturn);
+    }
+
+    /// <summary>
+    /// A panel that let a density back lets no other back in the same frame, though another panel, whose layers differ while
+    /// a part's index is still pending there, nominates another layer of it.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - Two Auto layers of 300,000 points each, faceted by 2 names row by row: panels 0 and 1, each with a part of both
+    ///   layers. A pool of 4 whose fourth index build (layer 1's part in panel 1) stops after its first job until the test
+    ///   lets it go, so that the part has no snapshot and is not scanned; an engine of 960 × 480 that does not wait.
+    ///
+    /// Steps:
+    /// - Draw until the other three parts scan their full snapshots and their indexes are complete. Draw both layers at
+    ///   16 ms. Draw layer 0 at 3 ms and layer 1 at 2 ms.
+    ///
+    /// Expected:
+    /// - Panel 0 sums both layers, panel 1 layer 0 alone (two panels read). At 16 ms both draw densities. Then panel 0's
+    ///   candidate is layer 1 (the shorter) and panel 1's layer 0; one goes back, the other stays a density: whichever goes
+    ///   first was let back by panel 0, which holds both.
+    /// </remarks>
+    [Fact]
+    public void Back_PanelThatLetOneBack_LetsNoOtherInTheFrame()
+    {
+        using var data = new Layers(300_000, 300_000);
+        using var released = new ManualResetEventSlim();
+        var allocations = 0;
+        var tuning = SpatialIndexTuning.Default with
+        {
+            JobEnded = (job, elapsed) =>
+            {
+                if (job == SpatialJob.Allocate && Interlocked.Increment(ref allocations) == 4)
+                {
+                    _ = released.Wait(TimeSpan.FromSeconds(60));
+                }
+            },
+        };
+        using var pool = new PlotWorkerPool(4) { IndexTuning = tuning };
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 960, 480, pool: pool);
+        IndexedPointPlan Part(int panel, int layer) => (IndexedPointPlan)engine.Plan!.Panels[panel].Layers[layer];
+        void Draw(float first, float second)
+        {
+            var spec = data.Spec(data.Auto(0, first), data.Auto(1, second));
+            engine.SetPlot(spec with { Facet = new FacetWrapSpec { By = data.Table.Cat("g").ToColumnRef() } });
+            backend.Images.Sent();
+            engine.RenderFrame();
+        }
+
+        try
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            bool Settled() =>
+                Volatile.Read(ref allocations) == 4
+                && engine.Plan is { Panels.Count: 2 }
+                && Part(0, 0).ScannedFull(backend.Images.Frame)
+                && Part(0, 1).ScannedFull(backend.Images.Frame)
+                && Part(1, 0).ScannedFull(backend.Images.Frame)
+                && Part(0, 0).SpatialIndex!.IsComplete
+                && Part(0, 1).SpatialIndex!.IsComplete
+                && Part(1, 0).SpatialIndex!.IsComplete;
+            Draw(1, 1);
+            while (!Settled())
+            {
+                Assert.True(clock.Elapsed < TimeSpan.FromSeconds(60), "The three parts did not settle in 60 s.");
+                Draw(1, 1);
+            }
+
+            Draw(1, 1);
+            Assert.Equal(4, Volatile.Read(ref allocations));
+            Assert.False(Part(1, 1).ScannedFull(backend.Images.Frame));
+            Assert.Equal(2, engine.Plan!.Budget.LastPanels);
+            var (first, second) = (Part(0, 0).Switch, Part(0, 1).Switch);
+            float Size(DensitySwitch layer, double time) => DiameterFor(time, layer.LastCount, layer.LastLargestBin);
+            var (over0, over1, back0, back1) = (Size(first, 16), Size(second, 16), Size(first, 3), Size(second, 2));
+
+            Draw(over0, over1);
+            Assert.Equal((true, true), (first.Density, second.Density));
+
+            Draw(back0, back1);
+            Assert.True(first.LastTime > second.LastTime);
+            Assert.True(first.Density ^ second.Density, $"Layer 0 drew a density: {first.Density}; layer 1: {second.Density}.");
+        }
+        finally
+        {
+            released.Set();
+        }
+    }
+
+    /// <summary>
     /// Frames whose panel's sums switch one of two Auto layers both ways allocate nothing once warm (invariant 3, design
     /// §5.5.2 "確保").
     /// </summary>
@@ -560,7 +682,7 @@ public sealed class OverlapSumTests
 
     /// <summary>
     /// A table of a pair of columns (x, y) a layer of data, each of seeded uniform points over [0, 100]² and NaN in the rows
-    /// past them, with a facet column of 6 names row by row.
+    /// past them, with facet columns of 6 names (f) and 2 names (g) row by row.
     /// </summary>
     private sealed class Layers : IDisposable
     {
@@ -585,7 +707,10 @@ public sealed class OverlapSumTests
                 builder = builder.Add($"x{layer}", x).Add($"y{layer}", y);
             }
 
-            Table = builder.Add("f", Column.Categorical(Enumerable.Range(0, rows).Select(i => (string?)Six[i % 6]).ToArray())).Build();
+            Table = builder
+                .Add("f", Column.Categorical(Enumerable.Range(0, rows).Select(i => (string?)Six[i % 6]).ToArray()))
+                .Add("g", Column.Categorical(Enumerable.Range(0, rows).Select(i => (string?)Six[i % 2]).ToArray()))
+                .Build();
         }
 
         public DataTable Table { get; }

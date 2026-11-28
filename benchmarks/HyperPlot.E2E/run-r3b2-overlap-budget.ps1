@@ -41,6 +41,8 @@
 #   pair    (Issue #650) the same three pairs drawn with Auto, against a baseline build (-Baseline, an executable of main with
 #           this scene, which compares each layer alone), alternated head, main in the odd rounds and main, head in the
 #           even ones; -Rounds and -Only as above
+#   decide  (Issue #650) the time of the choice over the layers (PointBudget.Decide) on the uniform pair and on 8 uniform
+#           layers of 1e6 points over a facet of 6 panels, drawn with Auto; rounds -FirstRound to -Rounds, in turn
 #   pairtime (Issue #650) the uniform pair with a DensityThreshold of 2e7, so that the counts' sum (1.6e7) stays under it and
 #           the times' sum alone decides, against -Baseline in the same order
 # Usage, from PowerShell 7: pwsh -NoProfile -File benchmarks/HyperPlot.E2E/run-r3b2-overlap-budget.ps1 <output file> [sets]
@@ -422,6 +424,22 @@ try {
             foreach ($i in $order) {
                 $s = $kept[$i]
                 Invoke-Scene "pair $($s[0]), round $round" (Get-Pair $s 'points' "$Out.pair-$($s[0])-r$round.csv")
+            }
+        }
+    }
+
+    if ($Sets -contains 'decide') {
+        # name, points a layer, layers, facet panels.
+        $cases = @(@('pair', '8000000', '2', '0'), @('8 layers 6 panels', '1000000', '8', '6'))
+        for ($round = $FirstRound; $round -le $Rounds; $round++) {
+            $order = if ($round % 2) { 0..1 } else { 1..0 }
+            foreach ($i in $order) {
+                $c = $cases[$i]
+                [string[]] $arguments = @(
+                    $c[1], '6', '0.6', 'uniform', '600', '0', 'whole', 'color', 'Circle', 'blocks', 'draw',
+                    "$Out.decide-$($c[0] -replace '[^A-Za-z0-9]+', '-')-r$round.csv", 'none', '10', $c[3], 'auto', 'even', 'uniform', '10000000', $c[2]
+                )
+                Invoke-Scene "decide $($c[0]), round $round" $arguments
             }
         }
     }

@@ -157,6 +157,23 @@ internal sealed class DensitySwitch(int layer)
     internal void Bar() => _mayReturn = false;
 
     /// <summary>
+    /// Sets what a frame's choice reads of an <see cref="PointDraw.Auto"/> layer, as a full scan would leave it: for tests
+    /// of the panels' sums at counts no test's data reaches (the points' term of 9e6 points and more in view). Tests only.
+    /// </summary>
+    /// <param name="count">The upper count of the points in the view.</param>
+    /// <param name="threshold">The layer's <see cref="PointLayerSpec.DensityThreshold"/>.</param>
+    /// <param name="terms">The terms of the predicted time past the fixed one, in ms.</param>
+    /// <param name="termsAtFour">The same with four times the largest bin.</param>
+    /// <param name="density">Whether the layer draws a density in the frame so far.</param>
+    /// <param name="wasDensity">Whether the layer drew a density in the last frame.</param>
+    internal void SetSums(long count, long threshold, double terms, double termsAtFour, bool density, bool wasDensity)
+    {
+        (Role, LastCount, _threshold, _terms, _termsAtFour) = (Share.Summed, count, threshold, terms, termsAtFour);
+        (LastTime, LastTimeAtFourBins) = (PredictedTime.Fixed + terms, PredictedTime.Fixed + termsAtFour);
+        (_density, _wasDensity, _mayReturn) = (density, wasDensity, true);
+    }
+
+    /// <summary>
     /// Returns the drawing of an <see cref="PointDraw.Auto"/> layer after a frame by the time and the count (design §5.5.2
     /// "`Auto` の切り替え", "入れ替わりを抑える", "水準が替わるところ"): from raw points, a density when the upper count passes
     /// the threshold or the predicted time reaches <see cref="PredictedTime.Threshold"/> (<see cref="Raises"/>); from a
@@ -284,6 +301,12 @@ internal sealed class PointBudget
     /// <summary>Gets the number of panels whose sums the last choice read. Tests only.</summary>
     internal int LastPanels { get; private set; }
 
+    /// <summary>
+    /// Gets the time the last choice took (<see cref="Decide"/>: the panels' sums, the budget, and the way back), in ticks of
+    /// <see cref="TimeProvider.System"/>: the stage the measurements of design §9 time. Measurements only.
+    /// </summary>
+    internal long DecideTicks { get; private set; }
+
     /// <summary>Enters a layer scanned in a frame; the layers of an earlier frame are let go of.</summary>
     public void Enter(DensitySwitch layer, long frame)
     {
@@ -324,6 +347,7 @@ internal sealed class PointBudget
             return;
         }
 
+        var started = TimeProvider.System.GetTimestamp();
         _raw.Clear();
         _returning.Clear();
         var sum = cache.TileBytesLastFrame;
@@ -410,6 +434,7 @@ internal sealed class PointBudget
         }
 
         LastSum = sum;
+        DecideTicks = TimeProvider.System.GetTimestamp() - started;
 
         static int First(DensitySwitch a, DensitySwitch b) => a.Plot != b.Plot ? a.Plot.CompareTo(b.Plot) : a.Layer.CompareTo(b.Layer);
     }
@@ -468,7 +493,7 @@ internal sealed class PointBudget
     /// 和" "戻り"): the counts of the raw layers and its own against 0.8 times the least threshold among them, and the times
     /// with the largest bins and with four times every layer's, the fixed term once.
     /// </summary>
-    private static void Qualify(ReadOnlySpan<DensitySwitch> members)
+    internal static void Qualify(ReadOnlySpan<DensitySwitch> members)
     {
         var (count, limit, terms, termsAtFour) = (0L, long.MaxValue, 0.0, 0.0);
         foreach (var layer in members)
