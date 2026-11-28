@@ -256,7 +256,8 @@ public sealed class OverlapSumTests
     /// <remarks>
     /// Preconditions:
     /// - A figure of two plots side by side on a headless renderer of 1,280 × 360, each with an Auto layer over the same
-    ///   300,000 points, sized from a first render so that each predicts 9 ms.
+    ///   300,000 points, sized from a first render so that each predicts 9 ms. Both layers are number 0 of their plot, so
+    ///   only the plot's number tells their panels apart.
     ///
     /// Steps:
     /// - Render the figure.
