@@ -72,6 +72,10 @@ internal sealed class PointPages
     private readonly object _readGate = new();
     private Key?[] _keys = [];
     private long[] _lastUsed = [];
+
+    // The release (ResidencyCache.Releases) at which each slot was last let go of, which a kept list checks (design §5.5.2
+    // "予算").
+    private long[] _lastFreed = [];
     private int[] _counts = [];
     private ResidentPoint[]? _staging;
     private int _staged;
@@ -266,6 +270,7 @@ internal sealed class PointPages
             var length = Math.Max(16, slot * 2);
             Array.Resize(ref _keys, length);
             Array.Resize(ref _lastUsed, length);
+            Array.Resize(ref _lastFreed, length);
             Array.Resize(ref _counts, length);
         }
 
@@ -438,6 +443,23 @@ internal sealed class PointPages
 
     /// <summary>Lets go of the page in a slot for the budget (design §5.5.2 "1 つの LRU"); the backend releases its buffer.</summary>
     internal void Evict(int slot) => Drop(slot);
+
+    /// <summary>
+    /// Returns whether a slot still holds the page it held when <see cref="ResidencyCache.Releases"/> was a count (design
+    /// §5.5.2 "予算", Issue #636): a page is there, and the slot was not let go of after that release. Searches nothing.
+    /// </summary>
+    internal bool Holds(int slot, long since) => slot >= 0 && slot < _keys.Length && _keys[slot] is not null && _lastFreed[slot] <= since;
+
+    /// <summary>Marks a slot that holds a page as used in this frame, so that the page is not let go of for another in it.</summary>
+    internal void Keep(int slot)
+    {
+        var frame = _owner.Frame;
+        if (_lastUsed[slot] != frame)
+        {
+            _lastUsed[slot] = frame;
+            UsedThisFrame++;
+        }
+    }
 
     // Where a read's points go: the page it reads into first, and the page it sends from after it.
     private static int SourceOf(int read) => 2 * read * PagePoints;
@@ -709,6 +731,7 @@ internal sealed class PointPages
 
         _ = _slots.Remove(_keys[slot]!.Value);
         _keys[slot] = null;
+        _lastFreed[slot] = _owner.Release();
         if (_lastUsed[slot] == _owner.Frame)
         {
             UsedThisFrame--;

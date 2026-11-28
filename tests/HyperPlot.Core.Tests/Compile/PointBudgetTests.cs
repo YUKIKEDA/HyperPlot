@@ -194,7 +194,8 @@ public sealed class PointBudgetTests : IDisposable
     /// - Alone, the layer's 22 pages are within the budget and it draws raw points.
     /// - With the image, the last frame counts the slots the frame before it used. That frame drew the layer's raw points
     ///   and the raster at level 1 (1,024 texels over about 360 pixels down, 2 to 4 a pixel): its 2 × 2 tiles, and the top
-    ///   level's one tile (level 2, 256 × 256), which it asked for first and did not draw. These 5 faces and the layer's
+    ///   level's one tile (level 2, 256 × 256), which it asked for first and did not draw (design §5.5.3 "送る順と仮の描画":
+    ///   the top level's tile is asked for first in every frame). These 5 faces and the layer's
     ///   22 pages pass the budget, so the layer draws a density, and the sum left is the 5 faces.
     /// </remarks>
     [Fact]
@@ -435,9 +436,393 @@ public sealed class PointBudgetTests : IDisposable
         Assert.Equal((0, true), (searches, full));
     }
 
+    /// <summary>
+    /// A figure's plot that does not change keeps its list of pages of the cache without recording (design §5.5.2 "予算",
+    /// Issue #636): its pages are marked this frame's, so another plot's requests let go of other pages, its list draws the
+    /// same points, and its bytes, from its last scan, are in the budget's sum.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages, on a null backend whose draws keep each page sent in its slot, as a GPU's buffers would. Plot 0:
+    ///   a Points layer of 3 pages. Plot 1: a Points layer A of 4 pages, then a Points layer B of 4 other pages.
+    ///
+    /// Steps:
+    /// - Render the figure of plot 0 and plot 1 with A headless, and take the centers plot 0's list draws, computed from the
+    ///   kept pages as the markers' shader computes them. Render the figure again with plot 1 drawing B, plot 0 unchanged.
+    ///
+    /// Expected:
+    /// - The first time, plot 0 draws its 3 pages: 196,608 centers. The second time, plot 0 did not record, its list draws the
+    ///   same centers, B draws its 4 pages, and the sum left is 7 pages: plot 0's 3 with B's 4.
+    /// - Without the fix, B's pages let plot 0's go first: they and A's were last used in the same frame, and the cache lets
+    ///   go of the lowest slot of the oldest frame first (the tie's order of PointPages.Oldest), which plot 0, recorded
+    ///   first, holds.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_KeepsItsPagesAndEntersTheSum()
+    {
+        var table = Table(3, 4, 4);
+        var (still, first, second) = (Spec(table, Points(0)), Spec(table, Points(1), Hidden(2)), Spec(table, Hidden(1), Points(2)));
+        var gpu = new GpuPages();
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page), Sending = gpu.Send };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, first));
+        var plans = renderer.Figure!.Plans;
+        var drawn = gpu.Centers(plans[0].List);
+        Assert.Equal(3 * PointPages.PagePoints, drawn.Length);
+        Assert.DoesNotContain(drawn, center => float.IsNaN(center.X));
+
+        var recordings = plans[0].Recordings;
+        renderer.Render(Figure.HConcat(still, second));
+        Assert.Equal(drawn, gpu.Centers(plans[0].List));
+        Assert.Equal(4 * PointPages.PagePoints, gpu.Centers(plans[1].List).Count(center => !float.IsNaN(center.X)));
+        Assert.Equal(7 * Page, plans[0].Budget.LastSum);
+        Assert.Equal(recordings, plans[0].Recordings);
+    }
+
+    /// <summary>
+    /// A figure's plot that does not change keeps its list of raster tiles of the cache without recording (design §5.5.2
+    /// "予算", "1 つの LRU", Issue #636): its tiles and its table row are marked this frame's, so another plot's pages and
+    /// tiles let go of other items, and its list draws the same faces.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 64 faces and 4 pages (a pool of tiles makes its first texture array of 64 faces), on a null backend
+    ///   whose draws keep each face and page sent in its slot and then count the uploads as sent, as a GPU backend does.
+    ///   Plot 0: a float raster of 1,024 × 1,024 over [0, 100]² with guides. Plot 1: Points layer A of 20 pages and layer
+    ///   B of 20 pages drawn as a density; then A drawn as a density and B as points; then the same with a float raster of
+    ///   5,000 everywhere over [0, 100]² after them.
+    ///
+    /// Steps:
+    /// - Render the figure headless and take the faces plot 0's image records draw. Render it again with plot 1's layers
+    ///   swapped, then with plot 1's raster too, plot 0 unchanged: B's pages need room, and the raster's tiles take free
+    ///   slots.
+    ///
+    /// Expected:
+    /// - Plot 0 draws at least one tile. Each time after, it did not record and draws the same faces in the same order, and
+    ///   plot 1's raster draws tiles.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_KeepsItsRasterTiles()
+    {
+        var table = Table(20, 20);
+        var values = new float[1024 * 1024];
+        for (var i = 0; i < values.Length; i++)
+        {
+            values[i] = i % 977;
+        }
+
+        using var pixels = Column.Wrap(values);
+        var still = Plot.Create(table).Image(Raster.Of(pixels, 1024), i => i.Extent(0, 100, 0, 100)).Build();
+        var gpu = new GpuPages();
+        var backend = new NullBackend { Images = new ResidencyCache((64L * ResidencyCache.FaceBytes) + (4 * Page)) };
+        backend.Sending = cache =>
+        {
+            gpu.Send(cache);
+            cache.Sent();
+        };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(0), Hidden(1))));
+        var plans = renderer.Figure!.Plans;
+        var drawn = gpu.Faces(plans[0].List);
+        Assert.NotEmpty(drawn);
+        Assert.DoesNotContain(drawn, face => face is null);
+
+        var recordings = plans[0].Recordings;
+        renderer.Render(Figure.HConcat(still, Spec(table, Hidden(0), Points(1))));
+        Assert.Equal(drawn, gpu.Faces(plans[0].List));
+
+        // Another image's tiles take the slots the pages let go of.
+        using var others = Column.Wrap(Enumerable.Repeat(5_000f, 1024 * 1024).ToArray());
+        var other = Plot.Create(table).Image(Raster.Of(others, 1024), i => i.Extent(0, 100, 0, 100)).Build().Layers[0];
+        renderer.Render(Figure.HConcat(still, Spec(table, Hidden(0), Points(1), other)));
+        Assert.NotEmpty(gpu.Faces(plans[1].List));
+        Assert.Equal(drawn, gpu.Faces(plans[0].List));
+        Assert.Equal(recordings, plans[0].Recordings);
+    }
+
+    /// <summary>
+    /// The bytes of a figure's plot that does not change are in the sum that chooses another plot's Auto layer (design
+    /// §5.5.2 "予算", Issue #636): the other plot's layer, within the budget alone, draws a density.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages. Plot 0: a Points layer of 3 pages. Plot 1: a Points layer of 1 page, then an Auto layer of 5
+    ///   pages.
+    ///
+    /// Steps:
+    /// - Render the figure headless; render it again with plot 1 drawing the Auto layer, plot 0 unchanged.
+    ///
+    /// Expected:
+    /// - The Auto layer needs 5 pages, within the budget alone; with plot 0's 3 the sum is 8 pages, so it draws a density,
+    ///   and the sum left is plot 0's 3 pages.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_CountsForAnotherPlotsAutoLayer()
+    {
+        var table = Table(3, 1, 5);
+        var still = Spec(table, Points(0));
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page) };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(1))));
+        renderer.Render(Figure.HConcat(still, Spec(table, Auto(2))));
+        var plans = renderer.Figure!.Plans;
+        var auto = (IndexedPointPlan)plans[1].Panels[0].Layers[0];
+        Assert.Equal(5 * Page, auto.Switch.Needed);
+        Assert.True(auto.DrewDensity);
+        Assert.Equal(3 * Page, plans[0].Budget.LastSum);
+    }
+
+    /// <summary>
+    /// A plot alone that does not change records again when a page its list draws was let go of since, in a cache it shares
+    /// with another plan (two renderers on one backend; design §5.5.2 "予算", Issue #636), and keeps its list while its
+    /// pages are there: each render draws the same points.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One null backend of a budget of 7 pages, whose draws keep each page sent in its slot. Renderer P draws a Points layer
+    ///   of 3 pages; renderer Q draws Points layer A of 4 pages and B of 4 pages drawn as a density, then A as a density and
+    ///   B as points.
+    ///
+    /// Steps:
+    /// - Render P; take the centers its list draws. Render Q's first plot, then its second, whose pages need room. Render
+    ///   P's plot again, unchanged; then once more. Reset the cache as a lost device does, render Q with both layers as
+    ///   points (8 pages, which take all 7 slots), and render P's plot again.
+    ///
+    /// Expected:
+    /// - P's second render records again and draws the same 196,608 centers. Its third does not record, and draws them too.
+    ///   After the reset, P records again and draws them, though every slot holds a page again.
+    /// </remarks>
+    [Fact]
+    public void SharedCache_PlotThatDoesNotChange_DrawsItsOwnPagesAgain()
+    {
+        var table = Table(3, 4, 4);
+        var still = Spec(table, Points(0));
+        var gpu = new GpuPages();
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page), Sending = gpu.Send };
+        using var p = new HeadlessRenderer(backend, 640, 360, _pool);
+        using var q = new HeadlessRenderer(backend, 640, 360, _pool);
+        p.Render(still);
+        var drawn = gpu.Centers(p.Plan!.List);
+        Assert.Equal(3 * PointPages.PagePoints, drawn.Length);
+
+        q.Render(Spec(table, Points(1), Hidden(2)));
+        q.Render(Spec(table, Hidden(1), Points(2)));
+        Assert.Equal(4 * PointPages.PagePoints, gpu.Centers(q.Plan!.List).Length);
+        var recordings = p.Plan.Recordings;
+        p.Render(still);
+        Assert.Equal(drawn, gpu.Centers(p.Plan.List));
+        Assert.True(p.Plan.Recordings > recordings);
+
+        recordings = p.Plan.Recordings;
+        p.Render(still);
+        Assert.Equal(drawn, gpu.Centers(p.Plan.List));
+        Assert.Equal(recordings, p.Plan.Recordings);
+
+        // A lost device forgets every page, and Q's 8 pages take all 7 slots again.
+        backend.Images.Reset();
+        q.Render(Spec(table, Points(1), Points(2)));
+        Assert.Equal(7, backend.Images.Points.PagesInUse);
+        p.Render(still);
+        Assert.Equal(drawn, gpu.Centers(p.Plan.List));
+        Assert.True(p.Plan.Recordings > recordings);
+    }
+
+    /// <summary>
+    /// A plot alone that does not change records again when a tile its list draws was let go of and its slot taken by
+    /// another renderer's tile, or when the device was lost and the slots were taken again, in a cache the two renderers
+    /// share (design §5.5.2 "予算", Issue #636): each render draws the same faces.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - One null backend of a budget of 64 faces and 4 pages, whose draws keep each face and page sent in its slot and then
+    ///   count the uploads as sent. Renderer P draws a float raster of 1,024 × 1,024 over [0, 100]²; renderer Q draws a
+    ///   Points layer of 25 pages, which needs room P's tiles hold, then that layer as a density with a raster of 5,000
+    ///   everywhere over [0, 100]², whose tiles take free slots.
+    ///
+    /// Steps:
+    /// - Render P; take the faces its list draws. Render Q's first plot and its second. Render P's plot again, unchanged.
+    ///   Then reset the cache as a lost device does, render Q's second plot again, which takes the slots from the first, and
+    ///   render P's plot again.
+    ///
+    /// Expected:
+    /// - Each of P's renders after the first records again and draws the same faces in the same order.
+    /// </remarks>
+    [Fact]
+    public void SharedCache_PlotThatDoesNotChange_DrawsItsOwnTilesAgain()
+    {
+        var table = Table(25);
+        var values = new float[1024 * 1024];
+        for (var i = 0; i < values.Length; i++)
+        {
+            values[i] = i % 977;
+        }
+
+        using var pixels = Column.Wrap(values);
+        using var others = Column.Wrap(Enumerable.Repeat(5_000f, 1024 * 1024).ToArray());
+        var still = Plot.Create(table).Image(Raster.Of(pixels, 1024), i => i.Extent(0, 100, 0, 100)).Build();
+        var other = Plot.Create(table).Image(Raster.Of(others, 1024), i => i.Extent(0, 100, 0, 100)).Build().Layers[0];
+        var gpu = new GpuPages();
+        var backend = new NullBackend { Images = new ResidencyCache((64L * ResidencyCache.FaceBytes) + (4 * Page)) };
+        backend.Sending = cache =>
+        {
+            gpu.Send(cache);
+            cache.Sent();
+        };
+        using var p = new HeadlessRenderer(backend, 640, 360, _pool);
+        using var q = new HeadlessRenderer(backend, 640, 360, _pool);
+        p.Render(still);
+        var drawn = gpu.Faces(p.Plan!.List);
+        Assert.NotEmpty(drawn);
+        Assert.DoesNotContain(drawn, face => face is null);
+
+        q.Render(Spec(table, Points(0)));
+        q.Render(Spec(table, Hidden(0), other));
+        var recordings = p.Plan.Recordings;
+        p.Render(still);
+        Assert.Equal(drawn, gpu.Faces(p.Plan.List));
+        Assert.True(p.Plan.Recordings > recordings);
+
+        backend.Images.Reset();
+        q.Render(Spec(table, Hidden(0), other));
+        recordings = p.Plan.Recordings;
+        p.Render(still);
+        Assert.Equal(drawn, gpu.Faces(p.Plan.List));
+        Assert.True(p.Plan.Recordings > recordings);
+    }
+
+    /// <summary>
+    /// A figure's plot that does not change records again when the frame's budget, counting another plot's new layer, chooses
+    /// another drawing for one of its layers (design §5.5.2 "予算", Issue #636).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages. Plot 0: an Auto layer of 3 pages. Plot 1: a Points layer of 1 page, then a Points layer of 5
+    ///   pages.
+    ///
+    /// Steps:
+    /// - Render the figure headless; render it again with plot 1's layer of 5 pages, plot 0 unchanged.
+    ///
+    /// Expected:
+    /// - First, plot 0's layer draws raw points (4 pages in all), its list drawing pages. Then the sum is 8 pages, plot 0's
+    ///   layer is the only Auto layer on raw points, and plot 0 records again and draws it as a density, its list drawing no
+    ///   page (under 64 faces of budget no tile is sent either); the sum left is plot 1's 5 pages.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_RecordsWhenTheBudgetChangesItsDrawing()
+    {
+        var table = Table(3, 1, 5);
+        var still = Spec(table, Auto(0));
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page) };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(1))));
+        var plans = renderer.Figure!.Plans;
+        var layer = (IndexedPointPlan)plans[0].Panels[0].Layers[0];
+        Assert.False(layer.DrewDensity);
+        Assert.NotEmpty(plans[0].List.ResidentRuns.ToArray());
+
+        var recordings = plans[0].Recordings;
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(2))));
+        Assert.True(plans[0].Recordings > recordings);
+        Assert.True(layer.DrewDensity);
+        Assert.Empty(plans[0].List.ResidentRuns.ToArray());
+        Assert.Equal(5 * Page, plans[0].Budget.LastSum);
+    }
+
+    /// <summary>
+    /// A kept plot's layer split by a category takes its parts' last scans into the budget, and the plot records again when
+    /// the budget makes the layer a density (design §5.5.2 "予算", Issue #636): the split layer's carry and its check of
+    /// the drawing reach every part.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages. Plot 0: an Auto layer of 196,608 seeded points over [0, 100]² colored by a category of 2
+    ///   values, row by row (2 parts of 98,304 points, which need 3 pages' bytes together). Plot 1: a Points layer of 1
+    ///   page, then a Points layer of 5 pages.
+    ///
+    /// Steps:
+    /// - Render the figure headless; render it again with plot 1's layer of 5 pages, plot 0 unchanged.
+    ///
+    /// Expected:
+    /// - First, both parts draw raw points, the layer needing 3 pages. Then the sum is 8 pages, plot 0 records again, and
+    ///   both parts draw a density; the sum left is plot 1's 5 pages.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_SplitLayerRecordsWhenTheBudgetChangesItsDrawing()
+    {
+        const int Rows = 3 * PointPages.PagePoints;
+        var random = new Random(636);
+        using var xs = Column.Wrap(Enumerable.Range(0, Rows).Select(_ => random.NextDouble() * 100).ToArray());
+        using var ys = Column.Wrap(Enumerable.Range(0, Rows).Select(_ => random.NextDouble() * 100).ToArray());
+        var split = DataTable
+            .Create()
+            .Add("x", xs)
+            .Add("y", ys)
+            .Add("c", Column.Categorical(Enumerable.Range(0, Rows).Select(i => (string?)(i % 2 == 0 ? "a" : "b")).ToArray()))
+            .Build();
+        var layer = Plot.Create(split).Point(split.Col<double>("x"), split.Col<double>("y"), p => p.Size(1).ColorBy(split.Cat("c"))).Build().Layers[
+            0
+        ];
+        var still = Spec(split, layer);
+        var table = Table(1, 5);
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page) };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(0))));
+        var plans = renderer.Figure!.Plans;
+        var parts = ((SplitPlan)plans[0].Panels[0].Layers[0]).Parts.Cast<IndexedPointPlan>().ToArray();
+        Assert.Equal(2, parts.Length);
+        Assert.Equal((false, false), (parts[0].DrewDensity, parts[1].DrewDensity));
+        Assert.Equal(3 * Page, parts[0].Switch.Needed);
+
+        var recordings = plans[0].Recordings;
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(1))));
+        Assert.True(plans[0].Recordings > recordings);
+        Assert.Equal((true, true), (parts[0].DrewDensity, parts[1].DrewDensity));
+        Assert.Equal(5 * Page, plans[0].Budget.LastSum);
+    }
+
     /// <summary>Returns a layer's predicted time alone, as the switch reads it at the reference machine's speed: the fixed term and the others.</summary>
     private static double Of(long points, double diameter, double largestBin) =>
         PredictedTime.Fixed + PredictedTime.Terms(points, diameter, largestBin);
+
+    /// <summary>
+    /// A kept plot whose layer draws nothing yet (a density with no tile sent) still enters the frame's budget with its last
+    /// scan, and a kept plot records again when the machine's time scale changes (design §5.5.2 "予算", "ほかの機械", Issue
+    /// #636).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages, under the 64 faces a texture array needs, so that no tile is sent. Plot 0: a layer of 3 pages
+    ///   drawn as a density. Plot 1: a Points layer of 1 page, then of 5 pages.
+    ///
+    /// Steps:
+    /// - Render the figure headless; render it with plot 1's second layer; set the renderer's time scale to 2 and render
+    ///   the same figure.
+    ///
+    /// Expected:
+    /// - Plot 0's list draws nothing of the cache. The second render does not record plot 0, and its layer took a full scan
+    ///   in the frame (carried). The third records plot 0 again.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_CarriesALayerThatDrawsNothingAndRecordsForATimeScale()
+    {
+        var table = Table(3, 1, 5);
+        var still = Spec(table, Hidden(0));
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page) };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(1))));
+        var plans = renderer.Figure!.Plans;
+        var layer = (IndexedPointPlan)plans[0].Panels[0].Layers[0];
+        Assert.Equal((0, 0), (plans[0].List.Images.Length, plans[0].List.ResidentRuns.Length));
+
+        var recordings = plans[0].Recordings;
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(2))));
+        Assert.Equal(recordings, plans[0].Recordings);
+        Assert.True(layer.ScannedFull(backend.Images.Frame));
+
+        renderer.GpuTimeScale = 2;
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(2))));
+        Assert.True(plans[0].Recordings > recordings);
+    }
 
     /// <summary>Returns the markers' diameter, in pixels, that makes a count and a largest bin predict a time.</summary>
     private static float Diameter(double time, long count, double largestBin)
@@ -453,6 +838,9 @@ public sealed class PointBudgetTests : IDisposable
     private static IndexedPointPlan Layer(PlotEngine engine, int layer) => (IndexedPointPlan)engine.Plan!.Panels[0].Layers[layer];
 
     private PointLayerSpec Auto(int layer) => Points(layer) with { Draw = PointDraw.Auto };
+
+    /// <summary>A layer drawn as a density, which draws no page: under 64 faces of budget no tile is sent, so it draws nothing.</summary>
+    private PointLayerSpec Hidden(int layer) => Points(layer) with { Draw = PointDraw.Density };
 
     private PointLayerSpec Points(int layer) =>
         new()
@@ -502,5 +890,89 @@ public sealed class PointBudgetTests : IDisposable
 
         _table = builder.Build();
         return _table;
+    }
+
+    /// <summary>
+    /// The pages and the faces a GPU would hold, slot by slot, from what the draws of a null backend send: a dropped slot's
+    /// buffer goes, and a sent page's points or a sent face's texels take their slot's.
+    /// </summary>
+    private sealed class GpuPages
+    {
+        private readonly Dictionary<int, ResidentPoint[]> _pages = [];
+        private readonly Dictionary<(ResidencyCache.Format, int), uint[]> _faces = [];
+
+        public void Send(ResidencyCache cache)
+        {
+            foreach (var slot in cache.Points.Dropped)
+            {
+                _ = _pages.Remove(slot);
+            }
+
+            foreach (var upload in cache.Points.Uploads)
+            {
+                _pages[upload.Slot] = cache.Points.Staged(upload).ToArray();
+            }
+
+            foreach (var upload in cache.Uploads)
+            {
+                _faces[(upload.Format, upload.Slot)] = cache.Face(upload).ToArray();
+            }
+        }
+
+        /// <summary>Returns the faces a list's image records read, in the records' order: null for a slot that holds none.</summary>
+        public uint[]?[] Faces(RenderList list)
+        {
+            var images = list.Images;
+            var calls = list.ImageCalls;
+            var faces = new uint[]?[images.Length];
+            for (var i = 0; i < images.Length; i++)
+            {
+                // A call's page is the format a 1,024 and the texture array of the slot (ImagePlan.PageOf).
+                var page = calls[i].Page;
+                var format = page >= 1024 ? ResidencyCache.Format.Rgba : ResidencyCache.Format.Float;
+                faces[i] = _faces.GetValueOrDefault((format, ((page % 1024) * ResidencyCache.PageSlots) + (int)images[i].Slice));
+            }
+
+            return faces;
+        }
+
+        /// <summary>
+        /// Returns the centers a list's resident runs draw, sorted, each computed from the kept page as Markers.hlsl computes
+        /// it (the cell's pixel plus the point's units from the cell's base times its scale, clamped); NaN for a point of a
+        /// slot that holds no page or whose cell is not in the list's table.
+        /// </summary>
+        public (float X, float Y)[] Centers(RenderList list)
+        {
+            var centers = new List<(float X, float Y)>();
+            var cells = list.ResidentCells;
+            foreach (var run in list.ResidentRuns)
+            {
+                if (!_pages.TryGetValue(run.Slot, out var page) || run.First + run.Count > page.Length)
+                {
+                    centers.AddRange(Enumerable.Repeat((float.NaN, float.NaN), run.Count));
+                    continue;
+                }
+
+                for (var i = run.First; i < run.First + run.Count; i++)
+                {
+                    var point = page[i];
+                    var at = run.Cells + (long)point.Cell;
+                    if (at >= cells.Length)
+                    {
+                        centers.Add((float.NaN, float.NaN));
+                        continue;
+                    }
+
+                    var cell = cells[(int)at];
+                    var x = Math.Clamp(cell.PixelX + (Units(point.X, cell.BaseX) * cell.ScaleX), run.ClampLow.X, run.ClampHigh.X);
+                    var y = Math.Clamp(cell.PixelY + (Units(point.Y, cell.BaseY) * cell.ScaleY), run.ClampLow.Y, run.ClampHigh.Y);
+                    centers.Add(run.Swap ? (y, x) : (x, y));
+                }
+            }
+
+            return [.. centers.Order()];
+
+            static float Units(uint position, uint origin) => position >= origin ? position - origin : -(float)(origin - position);
+        }
     }
 }

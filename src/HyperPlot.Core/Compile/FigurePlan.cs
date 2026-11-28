@@ -6,8 +6,9 @@ namespace HyperPlot;
 /// <summary>
 /// A compiled figure of several plots (design §4.5, §4.6, §4.8, row G6c): the cells' rectangles, a plan a plot laid out in
 /// its cell, the pyramids the plots share, and the figure's own list of the cells' backgrounds and the title. Each plot's
-/// plan records into its own list, which stays when the plot does not change; the renderer draws the figure's list and the
-/// plots' lists in one frame, copying none.
+/// plan records into its own list, which stays when the plot does not change, while the tiles and pages of the residency
+/// cache it draws are there (design §5.5.2 "予算"); the renderer draws the figure's list and the plots' lists in one frame,
+/// copying none.
 /// </summary>
 /// <remarks>One thread at a time uses a figure's plan. Plots are matched to the last figure's by their places.</remarks>
 internal sealed class FigurePlan : IDisposable
@@ -93,8 +94,9 @@ internal sealed class FigurePlan : IDisposable
     /// <summary>
     /// Compiles a figure against the last one drawn (design §4.8): checks it, lays its cells out (§4.6), compiles each plot in
     /// its cell, checks the panels of all the plots, waits, learns, and lays each plot out, extracts all the plots' batches
-    /// at once, and records the plots that changed and the figure's list. Allocates nothing for the figure drawn last once
-    /// warm.
+    /// at once, keeps the lists of the plots that did not change, marking the items of the residency cache they draw this
+    /// frame's (design §5.5.2 "予算"), and records the other plots, a kept plot whose items went or whose drawing the budget
+    /// changed, and the figure's list. Allocates nothing for the figure drawn last once warm.
     /// </summary>
     /// <exception cref="ArgumentNullException">The figure or a member, a plot, or a cell is null.</exception>
     /// <exception cref="ArgumentException">The figure does not check (design §4.5), or a plot does not (§4.8).</exception>
@@ -149,7 +151,8 @@ internal sealed class FigurePlan : IDisposable
         }
 
         // Every plot that records scans first, and the budget chooses the point layers' drawings over all of them (design
-        // §5.5.2 "予算": the sum counts the layers of the figure's other plots).
+        // §5.5.2 "予算": the sum counts the layers of the figure's other plots). A plot that keeps its list marks the items of
+        // the cache it draws this frame's before any plot asks for more, and its layers enter the sum with their last scan.
         for (var i = 0; i < count; i++)
         {
             _plans[i].ScanPending();

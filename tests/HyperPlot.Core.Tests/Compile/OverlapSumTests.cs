@@ -803,6 +803,75 @@ public sealed class OverlapSumTests
             new(ViewRange.FromValues(50 - (side / 2), 50 + (side / 2)), ViewRange.FromValues(50 - (side / 2), 50 + (side / 2)));
     }
 
+    /// <summary>
+    /// A figure's plot that does not change and keeps its list enters its layers into its panel's sums with their last scan,
+    /// and records again in the frame the sums let its other density go back (design §5.5.2 "予算" "変わらないプロット",
+    /// "重なる層の和" "戻り", Issue #636): the one-a-frame return goes on while the plot keeps its list.
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - An engine of 1,280 × 360 that waits for its indexes, on the null backend, drawing a figure of two plots. Plot 0: two
+    ///   Auto layers of 300,000 points each, alone or faceted by 2 names row by row (2 panels, each of which takes the
+    ///   carried layers into its own sums); plot 1: an Auto layer over the same columns as plot 0's layer 0.
+    ///
+    /// Steps:
+    /// - Draw at 1 DIP until no frame is provisional (every page on the GPU). Draw plot 0's layers at 16 ms each: both
+    ///   densities. Draw them at 3 ms and 2 ms: the sums let layer 1 go back. Draw a frame in which only plot 1 changes.
+    ///
+    /// Expected:
+    /// - At 3 ms and 2 ms, layer 1 draws raw points and layer 0 a density, and no frame is provisional. In the frame after,
+    ///   plot 0 did not change, yet it recorded again and layer 0 draws raw points too, from the sums of its carried scans;
+    ///   the figure's choice read a sum for each panel of plot 0 and one for plot 1.
+    /// </remarks>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Figure_PlotThatDoesNotChange_GoesOnGoingBackOneAFrame(bool facet)
+    {
+        using var data = new Layers(300_000, 300_000);
+        using var pool = new PlotWorkerPool(4);
+        var backend = new NullBackend();
+        using var engine = new PlotEngine(backend, 1280, 360, pool: pool) { WaitsForIndexes = true };
+        IndexedPointPlan Part(int layer) => (IndexedPointPlan)engine.Figure!.Plans[0].Panels[0].Layers[layer];
+        void Draw(PlotSpec first, float other)
+        {
+            engine.SetFigure(Figure.HConcat(first, data.Spec(data.Auto(0, other))));
+            backend.Images.Sent();
+            engine.RenderFrame();
+        }
+
+        PlotSpec Plot0(float size0, float size1)
+        {
+            var spec = data.Spec(data.Auto(0, size0), data.Auto(1, size1));
+            return facet ? spec with { Facet = new FacetWrapSpec { By = data.Table.Cat("g").ToColumnRef() } } : spec;
+        }
+
+        Draw(Plot0(1, 1), 1);
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (engine.IsProvisional)
+        {
+            Assert.True(clock.Elapsed < TimeSpan.FromSeconds(30), "The pages did not come in 30 s.");
+            _ = backend.Images.Points.AwaitReads();
+            backend.Images.Sent();
+            engine.RenderFrame();
+        }
+
+        float SizeFor(int layer, double time) => DiameterFor(time, Part(layer).Switch.LastCount, Part(layer).Switch.LastLargestBin);
+        Draw(Plot0(SizeFor(0, 16), SizeFor(1, 16)), 1);
+        Assert.Equal((true, true), (Part(0).DrewDensity, Part(1).DrewDensity));
+
+        var back = Plot0(SizeFor(0, 3), SizeFor(1, 2));
+        Draw(back, 1);
+        Assert.Equal((true, false), (Part(0).DrewDensity, Part(1).DrewDensity));
+        Assert.False(engine.IsProvisional);
+
+        var recordings = engine.Figure!.Plans[0].Recordings;
+        Draw(back, 1.5f);
+        Assert.True(engine.Figure.Plans[0].Recordings > recordings);
+        Assert.Equal((false, false), (Part(0).DrewDensity, Part(1).DrewDensity));
+        Assert.Equal(facet ? 3 : 2, engine.Figure.Plans[0].Budget.LastPanels);
+    }
+
     /// <summary>Returns the markers' diameter, in pixels, that makes a count and a largest bin predict a time.</summary>
     private static float DiameterFor(double time, long count, double largestBin)
     {

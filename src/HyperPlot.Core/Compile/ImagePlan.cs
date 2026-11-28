@@ -252,6 +252,10 @@ internal sealed class ImagePlan : LayerPlan
     /// <summary>Returns the page id a slot's tile is read from: the format and the page of the slot.</summary>
     internal static int PageOf(bool rgba, int slot) => ((rgba ? 1 : 0) * 1024) + (slot / ResidencyCache.PageSlots);
 
+    /// <summary>Returns the format and the slot of an image record from its call's page id (<see cref="PageOf"/>) and its slice.</summary>
+    internal static (ResidencyCache.Format Format, int Slot) SlotOf(int page, uint slice) =>
+        (page >= 1024 ? ResidencyCache.Format.Rgba : ResidencyCache.Format.Float, ((page % 1024) * ResidencyCache.PageSlots) + (int)slice);
+
     private static (double Low, double High) Ordered(double a, double b) => a <= b ? (a, b) : (b, a);
 
     /// <summary>
@@ -264,7 +268,7 @@ internal sealed class ImagePlan : LayerPlan
         var instance = new ImageInstance
         {
             Opacity = (float)image.Opacity,
-            Flags = (image.Interpolation == RasterInterpolation.Bilinear ? 1u : 0) | (image.Raster.IsRgba ? 2u : 0),
+            Flags = (image.Interpolation == RasterInterpolation.Bilinear ? 1u : 0) | (image.Raster.IsRgba ? ImageInstance.Rgba : 0),
         };
         if (image.Raster.IsRgba || Colors is not { Inner: { } inner, Map: { } map } colors)
         {

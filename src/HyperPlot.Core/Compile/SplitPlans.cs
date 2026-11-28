@@ -917,6 +917,27 @@ internal sealed class SplitPlan : LayerPlan, ISourceRows
         }
     }
 
+    internal override void Carry(RecordContext context)
+    {
+        foreach (var part in CollectionsMarshal.AsSpan(_parts))
+        {
+            part.Plan.Carry(context);
+        }
+    }
+
+    internal override bool DrawingChanged(RecordContext context)
+    {
+        foreach (var part in CollectionsMarshal.AsSpan(_parts))
+        {
+            if (part.Plan.DrawingChanged(context))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     public override void Release()
     {
         foreach (var part in _parts)
