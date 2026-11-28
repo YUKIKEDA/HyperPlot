@@ -447,6 +447,9 @@ public sealed class PointBudgetTests : IDisposable
     /// Expected:
     /// - The first time, plot 0 draws its 3 pages: 196,608 centers. The second time, plot 0 did not record, its list draws the
     ///   same centers, B draws its 4 pages, and the sum left is 7 pages: plot 0's 3 with B's 4.
+    /// - Without the fix, B's pages let plot 0's go first: they and A's were last used in the same frame, and the cache lets
+    ///   go of the lowest slot of the oldest frame first (the tie's order of PointPages.Oldest), which plot 0, recorded
+    ///   first, holds.
     /// </remarks>
     [Fact]
     public void Figure_PlotThatDoesNotChange_KeepsItsPagesAndEntersTheSum()
@@ -694,8 +697,9 @@ public sealed class PointBudgetTests : IDisposable
     /// - Render the figure headless; render it again with plot 1's layer of 5 pages, plot 0 unchanged.
     ///
     /// Expected:
-    /// - First, plot 0's layer draws raw points (4 pages in all). Then the sum is 8 pages, plot 0's layer is the only Auto
-    ///   layer on raw points, and plot 0 records again and draws it as a density; the sum left is plot 1's 5 pages.
+    /// - First, plot 0's layer draws raw points (4 pages in all), its list drawing pages. Then the sum is 8 pages, plot 0's
+    ///   layer is the only Auto layer on raw points, and plot 0 records again and draws it as a density, its list drawing no
+    ///   page (under 64 faces of budget no tile is sent either); the sum left is plot 1's 5 pages.
     /// </remarks>
     [Fact]
     public void Figure_PlotThatDoesNotChange_RecordsWhenTheBudgetChangesItsDrawing()
@@ -708,11 +712,13 @@ public sealed class PointBudgetTests : IDisposable
         var plans = renderer.Figure!.Plans;
         var layer = (IndexedPointPlan)plans[0].Panels[0].Layers[0];
         Assert.False(layer.DrewDensity);
+        Assert.NotEmpty(plans[0].List.ResidentRuns.ToArray());
 
         var recordings = plans[0].Recordings;
         renderer.Render(Figure.HConcat(still, Spec(table, Points(2))));
         Assert.True(plans[0].Recordings > recordings);
         Assert.True(layer.DrewDensity);
+        Assert.Empty(plans[0].List.ResidentRuns.ToArray());
         Assert.Equal(5 * Page, plans[0].Budget.LastSum);
     }
 
@@ -771,6 +777,46 @@ public sealed class PointBudgetTests : IDisposable
     /// <summary>Returns a layer's predicted time alone, as the switch reads it at the reference machine's speed: the fixed term and the others.</summary>
     private static double Of(long points, double diameter, double largestBin) =>
         PredictedTime.Fixed + PredictedTime.Terms(points, diameter, largestBin);
+
+    /// <summary>
+    /// A kept plot whose layer draws nothing yet (a density with no tile sent) still enters the frame's budget with its last
+    /// scan, and a kept plot records again when the machine's time scale changes (design §5.5.2 "予算", "ほかの機械", Issue
+    /// #636).
+    /// </summary>
+    /// <remarks>
+    /// Preconditions:
+    /// - A budget of 7 pages, under the 64 faces a texture array needs, so that no tile is sent. Plot 0: a layer of 3 pages
+    ///   drawn as a density. Plot 1: a Points layer of 1 page, then of 5 pages.
+    ///
+    /// Steps:
+    /// - Render the figure headless; render it with plot 1's second layer; set the renderer's time scale to 2 and render
+    ///   the same figure.
+    ///
+    /// Expected:
+    /// - Plot 0's list draws nothing of the cache. The second render does not record plot 0, and its layer took a full scan
+    ///   in the frame (carried). The third records plot 0 again.
+    /// </remarks>
+    [Fact]
+    public void Figure_PlotThatDoesNotChange_CarriesALayerThatDrawsNothingAndRecordsForATimeScale()
+    {
+        var table = Table(3, 1, 5);
+        var still = Spec(table, Hidden(0));
+        var backend = new NullBackend { Images = new ResidencyCache(7 * Page) };
+        using var renderer = new HeadlessRenderer(backend, 640, 360, _pool);
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(1))));
+        var plans = renderer.Figure!.Plans;
+        var layer = (IndexedPointPlan)plans[0].Panels[0].Layers[0];
+        Assert.Equal((0, 0), (plans[0].List.Images.Length, plans[0].List.ResidentRuns.Length));
+
+        var recordings = plans[0].Recordings;
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(2))));
+        Assert.Equal(recordings, plans[0].Recordings);
+        Assert.True(layer.ScannedFull(backend.Images.Frame));
+
+        renderer.GpuTimeScale = 2;
+        renderer.Render(Figure.HConcat(still, Spec(table, Points(2))));
+        Assert.True(plans[0].Recordings > recordings);
+    }
 
     /// <summary>Returns the markers' diameter, in pixels, that makes a count and a largest bin predict a time.</summary>
     private static float Diameter(double time, long count, double largestBin)

@@ -73,7 +73,8 @@ internal sealed class PointPages
     private Key?[] _keys = [];
     private long[] _lastUsed = [];
 
-    // The frame each slot was last let go of in, which a list kept from an earlier frame checks (design §5.5.2 "予算").
+    // The release (ResidencyCache.Releases) at which each slot was last let go of, which a kept list checks (design §5.5.2
+    // "予算").
     private long[] _lastFreed = [];
     private int[] _counts = [];
     private ResidentPoint[]? _staging;
@@ -444,9 +445,8 @@ internal sealed class PointPages
     internal void Evict(int slot) => Drop(slot);
 
     /// <summary>
-    /// Returns whether a slot still holds the page it held in a frame (design §5.5.2 "予算", Issue #636): a page is there, and
-    /// the slot was not let go of since that frame. A slot taken in the frame after a let-go of that frame holds the later
-    /// page. Searches nothing.
+    /// Returns whether a slot still holds the page it held when <see cref="ResidencyCache.Releases"/> was a count (design
+    /// §5.5.2 "予算", Issue #636): a page is there, and the slot was not let go of after that release. Searches nothing.
     /// </summary>
     internal bool Holds(int slot, long since) => slot >= 0 && slot < _keys.Length && _keys[slot] is not null && _lastFreed[slot] <= since;
 
@@ -731,7 +731,7 @@ internal sealed class PointPages
 
         _ = _slots.Remove(_keys[slot]!.Value);
         _keys[slot] = null;
-        _lastFreed[slot] = _owner.Frame;
+        _lastFreed[slot] = _owner.Release();
         if (_lastUsed[slot] == _owner.Frame)
         {
             UsedThisFrame--;

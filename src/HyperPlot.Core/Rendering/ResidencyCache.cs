@@ -43,7 +43,7 @@ public sealed class ResidencyCache
     /// <summary>The slots the default budget holds over both formats. Tests only.</summary>
     internal const int SlotCapacity = (int)(DefaultBudget / FaceBytes);
 
-    private readonly Pool[] _pools = [new(), new()];
+    private readonly Pool[] _pools;
     private readonly List<ColorMap> _tables = [];
     private readonly List<(int Row, ColorMap Map)> _tableUploads = [];
 
@@ -51,7 +51,7 @@ public sealed class ResidencyCache
     // that maps made on the fly (a layer's own color, row R3b1) do not fill it for good.
     private readonly long[] _tableUsed = new long[MaxColorTables];
 
-    // The frame each table row last took a map in, which a list kept from an earlier frame checks (design §5.5.2 "予算").
+    // The release (Releases) at which each table row last took a map, which a kept list checks (design §5.5.2 "予算").
     private readonly long[] _tableWritten = new long[MaxColorTables];
     private readonly List<Upload> _uploads = [];
     private uint[] _staging = new uint[FrameUpload / 4];
@@ -72,6 +72,7 @@ public sealed class ResidencyCache
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(budget);
         Budget = budget;
+        _pools = [new(this), new(this)];
         Points = new PointPages(this);
     }
 
@@ -89,6 +90,14 @@ public sealed class ResidencyCache
     /// kept from before one draws nothing that is there (design §5.5.2 "予算", Issue #636).
     /// </summary>
     internal long Resets { get; private set; }
+
+    /// <summary>
+    /// Gets the number of releases so far: each let-go of a tile's slot or a page's slot, and each new map a table row takes,
+    /// counts one, and the slot or the row keeps its number. A list kept or recorded when the count was n draws what it
+    /// drew while none of its slots and rows has a number above n (design §5.5.2 "予算", Issue #636), a let-go later in
+    /// the same frame included.
+    /// </summary>
+    internal long Releases { get; private set; }
 
     /// <summary>Gets the bytes on the GPU or staged for it: the tiles' slots and the pages of points.</summary>
     internal long BytesInUse => ((long)SlotsInUse * FaceBytes) + Points.BytesInUse;
@@ -257,17 +266,19 @@ public sealed class ResidencyCache
     }
 
     /// <summary>
-    /// Returns whether a tile's slot still holds what it held in a frame (design §5.5.2 "予算", Issue #636): in use, and not
-    /// let go of since that frame. A slot taken in the frame after a let-go of that frame holds the later tile. Searches
-    /// nothing.
+    /// Returns whether a tile's slot still holds what it held when <see cref="Releases"/> was a count (design §5.5.2 "予算",
+    /// Issue #636): in use, and not let go of after that release. Searches nothing.
     /// </summary>
     internal bool Holds(Format format, int slot, long since) => _pools[(int)format].Holds(slot, since);
+
+    /// <summary>Counts a release and returns its number (<see cref="Releases"/>).</summary>
+    internal long Release() => ++Releases;
 
     /// <summary>Marks a tile's slot in use as used in this frame, so that it is not let go of for another in it (design §5.5.2 "1 つの LRU").</summary>
     internal void Keep(Format format, int slot) => _pools[(int)format].Use(slot, _frame);
 
     /// <summary>
-    /// Returns whether a table row still holds the map it held in a frame: no map has taken it since. A row no map took
+    /// Returns whether a table row still holds the map it held when <see cref="Releases"/> was a count: no map has taken it since. A row no map took
     /// (an image of numbers that reads no table) holds nothing to lose.
     /// </summary>
     internal bool HoldsTable(int row, long since) => row >= _tables.Count || _tableWritten[row] <= since;
@@ -442,7 +453,7 @@ public sealed class ResidencyCache
             _tables.Add(map);
             row = _tables.Count - 1;
             _tableUploads.Add((row, map));
-            _tableWritten[row] = _frame;
+            _tableWritten[row] = Release();
         }
         else if (row < 0)
         {
@@ -462,7 +473,7 @@ public sealed class ResidencyCache
 
             _tables[row] = map;
             _tableUploads.Add((row, map));
-            _tableWritten[row] = _frame;
+            _tableWritten[row] = Release();
         }
 
         _tableUsed[row] = _frame;
@@ -557,7 +568,7 @@ public sealed class ResidencyCache
     internal readonly record struct Upload(Format Format, int Slot, int Offset);
 
     /// <summary>The slots of one format: a slot holds a raster tile or, in the <see cref="Format.Float"/> pool, a density tile.</summary>
-    private sealed class Pool
+    private sealed class Pool(ResidencyCache owner)
     {
         private TileKey?[] _keys = [];
         private DensityKey?[] _densityKeys = [];
@@ -568,7 +579,7 @@ public sealed class ResidencyCache
 
         public long[] LastUsed { get; private set; } = [];
 
-        /// <summary>Gets the frame each slot was last let go of in; 0 for a slot never let go of.</summary>
+        /// <summary>Gets the release (<see cref="Releases"/>) at which each slot was last let go of; 0 for a slot never let go of.</summary>
         public long[] LastFreed { get; private set; } = [];
 
         public int Pages { get; private set; }
@@ -684,14 +695,14 @@ public sealed class ResidencyCache
             return true;
         }
 
-        /// <summary>Returns whether a slot is in use and was not let go of after a frame.</summary>
+        /// <summary>Returns whether a slot is in use and was not let go of after a release.</summary>
         public bool Holds(int slot, long since) =>
             slot >= 0 && slot < Pages * PageSlots && (_keys[slot] is not null || _densityKeys[slot] is not null) && LastFreed[slot] <= since;
 
         /// <summary>Frees a slot in use; one the current frame used no longer counts as used.</summary>
         public void Free(int slot, long frame)
         {
-            LastFreed[slot] = frame;
+            LastFreed[slot] = owner.Release();
             if (LastUsed[slot] == frame)
             {
                 Used--;

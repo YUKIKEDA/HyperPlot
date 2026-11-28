@@ -841,7 +841,10 @@ internal sealed class IndexedPointPlan : LayerPlan
         _switch.Enter(context, (PointLayerSpec)Spec);
     }
 
-    /// <summary>Returns whether the drawing the frame chose differs from the one the last recording drew; a part on its coarse snapshot draws a density anyway.</summary>
+    /// <summary>
+    /// Returns whether the drawing the frame chose differs from the one the last recording drew. A part with no full snapshot
+    /// draws its coarse density when it has one and nothing when it has none, whatever the choice (<see cref="PlanDensity"/>).
+    /// </summary>
     internal override bool DrawingChanged(RecordContext context) =>
         (_snapshot is null ? _coarse is not null : _switch.Choose(context, (PointLayerSpec)Spec)) != _drawsDensity;
 

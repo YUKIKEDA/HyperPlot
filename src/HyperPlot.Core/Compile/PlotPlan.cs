@@ -83,9 +83,9 @@ internal sealed partial class PlotPlan : IDisposable
     // The frame of the residency cache whose scan before the recording ran (design §5.5.2 "記録の前の走査").
     private long _scannedFrame = -1;
 
-    // The frame of the residency cache in which the list was last recorded or kept, and the cache's device losses then: an
-    // item let go of after that frame is not the one the list draws (design §5.5.2 "予算", Issue #636).
-    private long _keptFrame = -1;
+    // The residency cache's count of releases right after the list was last recorded or kept, and its device losses then: an
+    // item let go of after that release is not the one the list draws (design §5.5.2 "予算", Issue #636).
+    private long _keptRelease = -1;
     private long _keptResets;
 
     // A render that waits recorded pages not on the GPU yet: the next one records again (design §5.5.2 "ヘッドレス").
@@ -701,6 +701,23 @@ internal sealed partial class PlotPlan : IDisposable
     /// </summary>
     private bool HoldsCacheItems() => _list.Images.Length > 0 || _list.ResidentRuns.Length > 0;
 
+    /// <summary>Returns whether a layer of a panel has a scan before the recording, whose findings a kept plot carries into the budget.</summary>
+    private bool ScansALayer()
+    {
+        foreach (var panel in _panels)
+        {
+            foreach (var layer in panel.Layers)
+            {
+                if (layer.Scans)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>Returns whether the layer at a position is stale in any panel (row W1b2).</summary>
     private bool LayerStale(int layer)
     {
@@ -991,8 +1008,9 @@ internal sealed partial class PlotPlan : IDisposable
         else
         {
             // A list that draws tiles or pages of the cache is kept only while they are there; a figure's plot also marks
-            // them this frame's and enters its layers into the budget (design §5.5.2 "予算", Issue #636).
-            _pendingKeep = !_guides.Empty && HoldsCacheItems();
+            // them this frame's and enters its layers into the budget, those that draw nothing yet included (design §5.5.2
+            // "予算", Issue #636).
+            _pendingKeep = !_guides.Empty && (HoldsCacheItems() || ScansALayer());
         }
 
         return _pendingExtract;
@@ -1037,7 +1055,7 @@ internal sealed partial class PlotPlan : IDisposable
         {
             Record(_pendingSpec!, _pendingFlipped);
             Recordings++;
-            (_keptFrame, _keptResets) = (_context.Images.Frame, _context.Images.Resets);
+            (_keptRelease, _keptResets) = (_context.Images.Releases, _context.Images.Resets);
             _recordAgain = Waits && RecordedProvisional();
 
             // An image that drew a tile from an ancestor waits for tiles the frame's budget left out (design §5.5.3, Issue
@@ -2776,7 +2794,7 @@ internal sealed partial class PlotPlan : IDisposable
         {
             if (Keep(mark: true))
             {
-                (_keptFrame, _keptResets) = (_context.Images.Frame, _context.Images.Resets);
+                (_keptRelease, _keptResets) = (_context.Images.Releases, _context.Images.Resets);
                 Carry(_pendingSpec!, _pendingFlipped);
                 return;
             }
@@ -2812,7 +2830,7 @@ internal sealed partial class PlotPlan : IDisposable
             {
                 var (format, slot) = ImagePlan.SlotOf(calls[i].Page, images[i].Slice);
                 var table = (images[i].Flags & ImageInstance.Rgba) == 0 ? (int)images[i].Table : -1;
-                if (pass == 0 && (!cache.Holds(format, slot, _keptFrame) || (table >= 0 && !cache.HoldsTable(table, _keptFrame))))
+                if (pass == 0 && (!cache.Holds(format, slot, _keptRelease) || (table >= 0 && !cache.HoldsTable(table, _keptRelease))))
                 {
                     return false;
                 }
@@ -2834,7 +2852,7 @@ internal sealed partial class PlotPlan : IDisposable
                     continue;
                 }
 
-                if (pass == 0 && !cache.Points.Holds(run.Slot, _keptFrame))
+                if (pass == 0 && !cache.Points.Holds(run.Slot, _keptRelease))
                 {
                     return false;
                 }

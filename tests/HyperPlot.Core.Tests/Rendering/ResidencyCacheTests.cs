@@ -363,8 +363,9 @@ public sealed class ResidencyCacheTests : IDisposable
 
     /// <summary>
     /// The checks a kept list reads (design §5.5.2 "予算", Issue #636): a tile's slot, a table row, and a page's slot hold what
-    /// a frame drew until they are let go of (a row until another map takes it), or until the device is lost; a slot taken
-    /// again after a let-go holds the later item for the frames after; and a kept row is not taken in its frame.
+    /// they held at a count of releases until they are let go of (a row until another map takes it), or until the device is
+    /// lost; a slot taken again after a let-go, in a later frame or in the frame the count was read in, holds the later item;
+    /// and a kept row is not taken in its frame.
     /// </summary>
     /// <remarks>
     /// Preconditions:
@@ -373,12 +374,15 @@ public sealed class ResidencyCacheTests : IDisposable
     /// Steps:
     /// - Frame 1: request the snapshot's tile of code 0, read page 0, and take a table row for map 0; frame 2 asks for
     ///   nothing. Frame 3: forget the snapshot's density and its pages, and take rows for maps 1 to 64. Frame 4: request the
-    ///   tile and read the page again. Frame 5: keep the row of map 64 and take a row for map 0. Then reset the cache.
+    ///   tile and read the page again, read the count, forget the pages and read the page again, then forget the density and request the
+    ///   tile again (each let-go the first after the count). Frame 5: keep the row
+    ///   of map 64 and take a row for map 0. Then reset the cache.
     ///
     /// Expected:
-    /// - In frame 2 each of the three holds what frame 1 drew. In frame 3 none does: the tile and the page were let go of,
-    ///   and map 64 took map 0's row, the one used longest ago. In frame 4 the slots taken again hold frame 4's items, not
-    ///   frame 1's. In frame 5 map 0 takes another row than map 64's. After the reset, the count of resets moved and no slot
+    /// - In frame 2 each of the three holds what it held at the count of frame 1. In frame 3 none does: the tile and the page
+    ///   were let go of, and map 64 took map 0's row, the one used longest ago. In frame 4 the slots taken again hold what
+    ///   they held at frame 4's count, not frame 1's; the tile and the page taken again after the count of frame 4, in the
+    ///   same slots, do not hold what it held at that count, and hold what they hold at the count after. In frame 5 map 0 takes another row than map 64's. After the reset, the count of resets moved and no slot
     ///   holds its item.
     /// </remarks>
     [Fact]
@@ -393,7 +397,7 @@ public sealed class ResidencyCacheTests : IDisposable
 
         cache.BeginFrame();
         var (tile, page, row) = (Tile(), cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints), cache.Table(maps[0]));
-        var drawn = cache.Frame;
+        var drawn = cache.Releases;
         cache.Sent();
         cache.BeginFrame();
         Assert.Equal(
@@ -420,14 +424,25 @@ public sealed class ResidencyCacheTests : IDisposable
         var (again, pageAgain) = (Tile(), cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints));
         Assert.Equal((tile, page), (again, pageAgain));
         Assert.Equal((false, false), (cache.Holds(ResidencyCache.Format.Float, again, drawn), cache.Points.Holds(pageAgain, drawn)));
-        Assert.Equal((true, true), (cache.Holds(ResidencyCache.Format.Float, again, cache.Frame), cache.Points.Holds(pageAgain, cache.Frame)));
+        var kept = cache.Releases;
+        Assert.Equal((true, true), (cache.Holds(ResidencyCache.Format.Float, again, kept), cache.Points.Holds(pageAgain, kept)));
+
+        // Let go of and taken again in the frame the count was read in, after the read: the later item.
+        cache.Points.Forget(built.Snapshot);
+        Assert.Equal(pageAgain, cache.Resident(built.Snapshot, 0, PointPages.MaxBlockPoints));
+        Assert.False(cache.Points.Holds(pageAgain, kept));
+        Assert.True(cache.Points.Holds(pageAgain, cache.Releases));
+        cache.ForgetDensity(built.Snapshot);
+        Assert.Equal(again, Tile());
+        Assert.False(cache.Holds(ResidencyCache.Format.Float, again, kept));
+        Assert.True(cache.Holds(ResidencyCache.Format.Float, again, cache.Releases));
 
         cache.Sent();
         cache.BeginFrame();
         cache.KeepTable(row);
         Assert.NotEqual(row, cache.Table(maps[0]));
 
-        var (resets, now) = (cache.Resets, cache.Frame);
+        var (resets, now) = (cache.Resets, cache.Releases);
         cache.Reset();
         Assert.Equal(resets + 1, cache.Resets);
         Assert.Equal((false, false), (cache.Holds(ResidencyCache.Format.Float, again, now), cache.Points.Holds(pageAgain, now)));
