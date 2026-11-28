@@ -206,7 +206,17 @@ internal ref struct HitScan
     /// nearest the cursor within the radius. Reads O(log N) values and the pyramid's extremes; never waits for the workers
     /// (Issue #337 Decision 5).
     /// </summary>
-    public void Series(int series, Column x, Column y, RowRange rows, bool derived)
+    public void Series(int series, Column x, Column y, RowRange rows, bool derived) => Series(series, x, y, rows, derived, null, sided: false);
+
+    /// <summary>
+    /// Answers for one side of a stacked group's piece of area (design §6.3, Issue #361): its outer edge, as
+    /// <see cref="Series(int, Column, Column, RowRange, bool)"/> does, unless the side has no height at the row found, its
+    /// inner edge (0 when <paramref name="inner"/> is null) equal to its outer one. The statistics read the outer edge.
+    /// </summary>
+    public void Side(int series, Column x, Column outer, Column? inner, RowRange rows) =>
+        Series(series, x, outer, rows, derived: true, inner, sided: true);
+
+    private void Series(int series, Column x, Column y, RowRange rows, bool derived, Column? inner, bool sided)
     {
         if (_store.Find(y) is not { } pyramid)
         {
@@ -229,7 +239,7 @@ internal ref struct HitScan
         if (Mode == HitMode.X)
         {
             var row = NearestInX(pyramid, x, y, start, end, 0, ref provisional);
-            if (row >= 0)
+            if (row >= 0 && (!sided || HasHeight(y, inner, row)))
             {
                 var (px, py) = (PixelOfRow(X, x, row), PixelOfValue(Y, y.DifferenceAt(row, 0)));
                 Add(series, row, ValueOf(X, x, row), y.DifferenceAt(row, 0), Distance(px, py), derived, provisional);
@@ -246,10 +256,13 @@ internal ref struct HitScan
             Nearest(pyramid, x, y, low, high, ColumnGap(column), ref best, ref bestRow, ref provisional);
         }
 
-        if (bestRow >= 0)
+        if (bestRow >= 0 && (!sided || HasHeight(y, inner, bestRow)))
         {
             Add(series, bestRow, ValueOf(X, x, bestRow), y.DifferenceAt(bestRow, 0), best, derived, provisional);
         }
+
+        // A stacked side of no height at a row is not drawn there (PR #360's review, Issue #361).
+        static bool HasHeight(Column outer, Column? inner, long row) => outer.DifferenceAt(row, 0) != (inner?.DifferenceAt(row, 0) ?? 0);
     }
 
     /// <summary>

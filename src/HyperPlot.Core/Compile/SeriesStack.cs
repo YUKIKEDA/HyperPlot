@@ -246,6 +246,7 @@ internal sealed class SeriesStack : IDisposable
         private readonly double[] _right;
         private readonly double[] _before;
         private readonly double[] _values;
+        private readonly double[] _crossAt;
         private readonly double[] _up;
         private readonly double[] _down;
         private readonly double[] _sumsUp;
@@ -278,7 +279,7 @@ internal sealed class SeriesStack : IDisposable
             (_from, _to, _write, _at) = (from, to, write, at);
             var n = series.Count;
             (_next, _nextX, _previousX, _previousY, _started) = (new long[n], new double[n], new double[n], new double[n], new bool[n]);
-            (_left, _right, _before, _values) = (new double[n], new double[n], new double[n], new double[n]);
+            (_left, _right, _before, _values, _crossAt) = (new double[n], new double[n], new double[n], new double[n], new double[n]);
             (_up, _down, _sumsUp, _sumsDown) = (new double[n], new double[n], new double[n], new double[n]);
             (HasPositive, HasNegative) = (new bool[n], new bool[n]);
             (_positive, _negative) = (new Writer<double>?[n], new Writer<double>?[n]);
@@ -547,6 +548,7 @@ internal sealed class SeriesStack : IDisposable
             _crossings.Clear();
             for (var s = 0; s < _series.Count; s++)
             {
+                _crossAt[s] = double.NaN;
                 var (a, b) = (_before[s], _left[s]);
                 if ((a > 0 && b < 0) || (a < 0 && b > 0))
                 {
@@ -557,6 +559,7 @@ internal sealed class SeriesStack : IDisposable
                     if (x > previous && x < u)
                     {
                         _crossings.Add(x);
+                        _crossAt[s] = x;
                     }
                 }
             }
@@ -573,7 +576,9 @@ internal sealed class SeriesStack : IDisposable
                 var t = (x - previous) / (u - previous);
                 for (var s = 0; s < _series.Count; s++)
                 {
-                    _values[s] = _before[s] + ((_left[s] - _before[s]) * t);
+                    // A group is 0 at its own crossing: interpolated, it came out a rounding off (Issue #361), and its
+                    // sides there, of no height, would answer a hit test.
+                    _values[s] = _crossAt[s] == x && !_integer ? 0 : _before[s] + ((_left[s] - _before[s]) * t);
                 }
 
                 EmitValues(x, _values);
